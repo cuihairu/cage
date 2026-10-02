@@ -1,0 +1,116 @@
+/* ============================================================
+   Cage 品牌主题 — 陶土棕（对齐 logo #b95932）
+ *   #b95932  logo 主色 / 链接 / 按钮
+ *   #a04c28  hover（深一档）
+ *   #874120  active / 标题强调（深两档）
+ *   #e08a5f  暗色模式提亮一档
+ * 其余沿用 VitePress 默认中性色，避免整站被染色。
+ * ============================================================ */
+
+:root {
+  --vp-c-brand-1: #b95932;
+  --vp-c-brand-2: #a04c28;
+  --vp-c-brand-3: #874120;
+  --vp-c-brand-soft: rgba(185, 89, 50, 0.13);
+
+  --vp-button-brand-bg: #b95932;
+  --vp-button-brand-hover-bg: #a04c28;
+  --vp-button-brand-active-bg: #874120;
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(
+    115deg,
+    #874120 8%,
+    #b95932 52%,
+    #e08a5f 96%
+  );
+  --vp-home-hero-image-background-image: radial-gradient(
+    circle 120px at 50% 40%,
+    rgba(185, 89, 50, 0.18),
+    transparent 70%
+  );
+
+  --vp-custom-outline: #b95932;
+
+  .VPFeature .icon {
+    border-radius: 10px;
+    background-color: var(--vp-c-brand-soft);
+    color: var(--vp-c-brand-1);
+  }
+}
+
+/* 暗色：陶土棕在暗底发闷，整体提亮一档 */
+.dark {
+  --vp-c-brand-1: #e08a5f;
+  --vp-c-brand-2: #d1794c;
+  --vp-c-brand-3: #e08a5f;
+  --vp-c-brand-soft: rgba(224, 138, 95, 0.16);
+
+  --vp-button-brand-bg: #b95932;
+  --vp-button-brand-hover-bg: #e08a5f;
+  --vp-button-brand-active-bg: #d1794c;
+
+  --vp-home-hero-name-background: linear-gradient(
+    115deg,
+    #e08a5f 8%,
+    #d1794c 52%,
+    #b95932 96%
+  );
+  --vp-home-hero-image-background-image: radial-gradient(
+    circle 120px at 50% 40%,
+    rgba(224, 138, 95, 0.2),
+    transparent 70%
+  );
+
+  --vp-custom-outline: #e08a5f;
+}
+
+/* ============================================================
+   中文排印：16.5px / 行高 1.75 / 段首缩进 2em
+   列表、表格、容器（提示块/引用/代码组）内的段落不缩进。
+   ============================================================ */
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Segoe UI',
+    sans-serif;
+  font-size: 16.5px;
+  line-height: 1.75;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(185, 89, 50, 0.2);
+}
+.dark ::selection {
+  background: rgba(224, 138, 95, 0.28);
+}
+
+/* 段首缩进：仅正文段落 */
+.vp-doc p {
+  text-indent: 2em;
+}
+
+/* 容器内不缩进：提示块、引用、代码组、详情折叠、表格单元格、列表内段落 */
+.vp-doc li p,
+.vp-doc td p,
+.vp-doc th p,
+.vp-doc blockquote p,
+.vp-doc .custom-block p,
+.vp-doc .code-group p,
+.vp-doc details p {
+  text-indent: 0;
+}
+
+/* 首页（home 布局）正文区段落维持缩进，特性卡片描述不缩进 */
+.VPHome .vp-doc p {
+  text-indent: 2em;
+}
+.VPFeature p {
+  text-indent: 0;
+}
+
+/* 行内代码沿用品牌色，替掉默认蓝 */
+code {
+  color: var(--vp-c-brand-1);
+}

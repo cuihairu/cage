@@ -4,12 +4,12 @@
 
 # Cage
 
-**游戏配置编译与验证框架**
-
 [![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+
+**游戏配置编译与验证框架**
 
 English: **Cage is a configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.**
 

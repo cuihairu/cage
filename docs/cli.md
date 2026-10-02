@@ -1,0 +1,78 @@
+# CLI
+
+Cage 的命令行入口（`cage-cli` crate，基于 [clap](https://crates.io/crates/clap)）：
+
+```bash
+cage check
+cage build
+cage inspect
+cage diff
+cage verify
+cage graph
+```
+
+MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`verify` / `graph` 为第二阶段。
+
+## check
+
+```bash
+cage check config/
+```
+
+只验证，不生成 Runtime Artifact。可以分级执行：
+
+```bash
+cage check --level schema       # 只做 Schema 层
+cage check --level reference    # 只做到引用层
+cage check --profile client     # 按 Profile 验证
+```
+
+## build
+
+```bash
+cage build config/ --profile client
+cage build config/ --profile server
+```
+
+验证并生成目标产物，同时输出 [Build Manifest](/build#build-manifest)。
+
+## inspect
+
+```bash
+cage inspect Item
+```
+
+查看 Schema 和配置结构。
+
+## diff
+
+```bash
+cage diff build/a build/b
+```
+
+比较两个配置版本。
+
+## verify
+
+```bash
+cage verify runtime/
+```
+
+验证已经生成的 Artifact（第二阶段）。
+
+## graph
+
+```bash
+cage graph
+```
+
+输出[配置依赖图](/build#配置依赖图)（第二阶段）。
+
+## 快速开始
+
+```bash
+cage check config/                 # 只验证，不生成
+cage build config/ --profile client  # 验证并生成目标产物
+cage diff build/a build/b          # 比较两个配置版本
+cage inspect Item                  # 查看 Schema 与配置结构
+```
