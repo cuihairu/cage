@@ -1,0 +1,1935 @@
+# Cage
+
+> Game Configuration Compiler, Validation & Transformation Framework
+
+**Cage** 是一个面向游戏研发的通用配置编译、验证与转换框架。
+
+它将各种**人类可维护的配置源（Authoring Sources）**解析为统一的中间配置模型，经过多层次验证、跨配置引用解析、业务语义校验与规范化处理后，再按照目标平台和运行时的需求生成不同格式的配置资产或代码。
+
+Cage 不绑定 Excel，也不绑定 JSON。
+
+Excel 只是 Cage 的一种输入源；JSON、YAML、CSV、数据库、表格服务以及未来其他配置源，都可以通过 Source Adapter 接入。
+
+---
+
+## 1. 定位
+
+Cage 解决的问题不是：
+
+> Excel 转 JSON
+
+而是：
+
+> **如何将游戏开发过程中分散、异构、面向人的配置数据，可靠地编译成经过验证、确定性构建、可供不同运行时直接消费的配置资产。**
+
+核心流程：
+
+```text
+Authoring Sources
+       |
+       v
++------------------+
+|  Source Adapters |
++--------+---------+
+         |
+         v
++------------------+
+| Canonical Model  |
++--------+---------+
+         |
+         v
++--------------------------+
+| Validation Pipeline      |
+|                          |
+| Syntax / Schema / Type   |
+| Value / Table / Reference|
+| Semantic / Game Rules    |
++------------+-------------+
+             |
+             v
++------------------+
+| Normalize / IR   |
++--------+---------+
+         |
+         v
++------------------+
+| Target Generators|
++--------+---------+
+         |
+    +----+----+--------+
+    |    |    |        |
+   JSON CSV  C#       Lua
+             Python   Protobuf
+             ...
+```
+
+---
+
+# 2. 为什么需要 Cage
+
+游戏项目中的配置通常同时服务于：
+
+- 策划
+- 程序
+- 客户端
+- 服务端
+- 工具链
+- CI/CD
+- 测试环境
+- 运营
+
+不同角色需要不同的表达形式。
+
+例如同一份 Item 配置：
+
+```text
+策划：
+    Excel
+
+客户端：
+    JSON / CSV / C#
+
+服务端：
+    JSON / CSV / Lua / Python
+
+工具：
+    JSON / SQLite / Binary
+```
+
+如果没有统一的配置构建系统，项目很容易演变成：
+
+```text
+Excel -> Python Script
+Excel -> C# Script
+Excel -> Lua Script
+Excel -> JSON Script
+Excel -> CSV Script
+```
+
+然后每个脚本：
+
+- 自己解析
+- 自己转换
+- 自己校验
+- 自己处理默认值
+- 自己处理引用
+- 自己报错
+
+最终产生多个问题：
+
+1. 不同输出可能产生不同结果。
+2. 校验逻辑散落在不同脚本中。
+3. 跨表引用无法统一验证。
+4. 配置错误直到游戏运行时才暴露。
+5. 修改一个字段需要修改多个转换器。
+6. CI 无法得到统一的配置质量门禁。
+7. 配置无法形成可追踪、可复现的构建产物。
+
+Cage 的目标就是把这条链统一起来。
+
+---
+
+# 3. 核心概念
+
+Cage 将配置系统划分为六个核心概念：
+
+```text
+Source
+Schema
+Model
+Validation
+Transform
+Artifact
+```
+
+## 3.1 Source
+
+配置的输入来源。
+
+例如：
+
+```text
+Excel
+CSV
+JSON
+YAML
+TOML
+XML
+SQLite
+Database
+Remote API
+Google Sheets
+Custom Format
+```
+
+Source 只负责：
+
+> **把外部数据读取进 Cage。**
+
+它不应该负责业务验证。
+
+---
+
+## 3.2 Schema
+
+定义配置的结构和约束。
+
+例如：
+
+```yaml
+table: Item
+
+primary_key: id
+
+fields:
+  id:
+    type: uint32
+    required: true
+
+  name:
+    type: string
+    required: true
+
+  price:
+    type: uint32
+    min: 0
+
+  type:
+    type: enum
+    values:
+      - Weapon
+      - Armor
+      - Consumable
+```
+
+Schema 定义：
+
+- 字段
+- 类型
+- 必填
+- 默认值
+- 范围
+- 枚举
+- 数组
+- 对象
+- 唯一性
+- 引用
+- 输出信息
+
+---
+
+## 3.3 Canonical Model
+
+所有 Source 都应该进入统一的中间模型。
+
+例如：
+
+```text
+Excel
+JSON
+YAML
+CSV
+SQLite
+       |
+       v
+Canonical Model
+```
+
+Canonical Model 不应该直接等同于 JSON。
+
+推荐基本类型：
+
+```text
+Null
+Bool
+Int
+UInt
+Float
+String
+Bytes
+Array
+Object
+```
+
+并携带：
+
+```text
+Source Location
+Schema Information
+Type Information
+Metadata
+```
+
+这样可以做到：
+
+```text
+monster.xlsx
+Sheet: Monster
+Row: 27
+Column: DropItemID
+```
+
+在错误信息中精确定位。
+
+---
+
+# 4. Source Adapter
+
+Source Adapter 是 Cage 的输入插件。
+
+架构：
+
+```text
+                  Cage Core
+                     |
+        +------------+-------------+
+        |            |             |
+     Excel         JSON          YAML
+        |            |             |
+        +------------+-------------+
+                     |
+              Canonical Model
+```
+
+第一阶段可以支持：
+
+```text
+Excel
+CSV
+JSON
+YAML
+```
+
+以后扩展：
+
+```text
+XML
+TOML
+SQLite
+MySQL
+PostgreSQL
+Google Sheets
+HTTP API
+Custom Binary
+```
+
+重要原则：
+
+> Source Adapter 只负责读取和解析，不负责游戏业务逻辑。
+
+---
+
+# 5. Excel
+
+Excel 是游戏行业非常常见的 Authoring Source，但它不是 Cage 的核心抽象。
+
+例如：
+
+```text
+Item.xlsx
+Monster.xlsx
+Skill.xlsx
+Quest.xlsx
+```
+
+Excel Adapter 可以处理：
+
+- Workbook
+- Worksheet
+- Header
+- Cell
+- Row
+- Column
+- Merged Cells
+- Formula
+- Comment
+- Cell Type
+- Sheet Metadata
+
+最终转换成：
+
+```text
+Document
+  |
+  +-- Table: Item
+  +-- Table: Monster
+  +-- Table: Skill
+```
+
+---
+
+# 6. Schema 与 Source 解耦
+
+不要把 Schema 固定写进 Excel。
+
+例如：
+
+```text
+Excel
+   |
+   +---- Source Adapter
+   |
+   v
+Canonical Model
+   ^
+   |
+Schema
+```
+
+这样未来可以：
+
+```text
+Excel + Schema
+JSON + Schema
+YAML + Schema
+CSV + Schema
+```
+
+同一个 Schema 可以用于多个 Source。
+
+---
+
+# 7. Validation Pipeline
+
+Cage 的核心不是 Transform，而是 Validation。
+
+推荐将验证拆成多个阶段。
+
+```text
+Parse
+  |
+  v
+Schema
+  |
+  v
+Type
+  |
+  v
+Value
+  |
+  v
+Table
+  |
+  v
+Reference
+  |
+  v
+Semantic
+  |
+  v
+Game Rules
+```
+
+---
+
+# 8. Syntax Validation
+
+首先检查输入是否可以被正确解析。
+
+例如：
+
+```yaml
+foo:
+    - a
+      - b
+```
+
+YAML 本身非法。
+
+Cage：
+
+```text
+ERROR E0001
+
+Source:
+    config/test.yaml
+
+Location:
+    line 3
+
+Invalid YAML syntax.
+```
+
+---
+
+# 9. Schema Validation
+
+检查配置结构是否符合 Schema。
+
+例如缺少字段：
+
+```text
+ERROR E1001
+
+Item[10001]
+
+Missing required field:
+    price
+```
+
+未知字段：
+
+```text
+ERROR E1002
+
+Item[10001]
+
+Unknown field:
+    pric
+```
+
+---
+
+# 10. Type Validation
+
+例如：
+
+```text
+Level = "abc"
+```
+
+Schema：
+
+```yaml
+type: uint32
+```
+
+错误：
+
+```text
+ERROR E1101
+
+Item[10001].Level
+
+Expected:
+    uint32
+
+Actual:
+    string
+
+Value:
+    "abc"
+```
+
+---
+
+# 11. Value Validation
+
+类型正确也不代表值合理。
+
+例如：
+
+```yaml
+level:
+  type: uint32
+  min: 1
+  max: 100
+```
+
+数据：
+
+```text
+level = 999
+```
+
+结果：
+
+```text
+ERROR E1201
+
+Item[10001].level = 999
+
+Allowed range:
+    1..100
+```
+
+支持：
+
+```text
+min
+max
+min_length
+max_length
+regex
+enum
+unique
+required
+```
+
+---
+
+# 12. Table Validation
+
+检查单张表内部的一致性。
+
+例如：
+
+```text
+ID 必须唯一
+```
+
+数据：
+
+```text
+10001
+10002
+10001
+```
+
+结果：
+
+```text
+ERROR E1301
+
+Duplicate primary key:
+
+Item.ID = 10001
+
+Rows:
+    2
+    4
+```
+
+还可以检查：
+
+```text
+组合唯一
+字段组合约束
+排序要求
+空值规则
+```
+
+---
+
+# 13. Reference Validation
+
+游戏配置中最重要的能力之一。
+
+例如：
+
+### Item
+
+```text
+ID
+10001
+10002
+10003
+```
+
+### Monster
+
+```text
+ID       DropItemID
+20001    10001
+20002    10002
+20003    99999
+```
+
+Schema：
+
+```yaml
+DropItemID:
+  type: uint32
+
+  reference:
+    table: Item
+    field: ID
+```
+
+Cage：
+
+```text
+ERROR E1401
+
+Monster[20003].DropItemID
+
+Value:
+    99999
+
+Reference:
+    Item.ID
+
+Target does not exist.
+```
+
+---
+
+# 14. Reference 不应该只验证“存在”
+
+例如：
+
+```text
+Monster.DropItemID
+        |
+        v
+Item.ID
+```
+
+Item 存在：
+
+```text
+Item[10001]
+```
+
+但：
+
+```text
+Item[10001].Type = QuestItem
+```
+
+而 Monster 掉落只允许：
+
+```text
+Weapon
+Armor
+Consumable
+```
+
+这时候应该继续报告：
+
+```text
+ERROR E1410
+
+Monster[20001].DropItemID = 10001
+
+Referenced Item exists,
+but its type is not valid for Monster drops.
+
+Actual:
+    QuestItem
+
+Allowed:
+    Weapon
+    Armor
+    Consumable
+```
+
+因此 Reference 系统应该支持：
+
+```text
+Existence
+Type
+Predicate
+Cardinality
+Compatibility
+```
+
+---
+
+# 15. Configuration Dependency Graph
+
+Cage 应该建立配置依赖图。
+
+例如：
+
+```text
+Monster
+   |
+   | DropTableID
+   v
+DropTable
+   |
+   | ItemID
+   v
+Item
+```
+
+最终：
+
+```text
+Monster
+   |
+   +----> DropTable
+              |
+              +----> Item
+```
+
+这个依赖图可以用于：
+
+- 引用检查
+- 构建顺序
+- 增量构建
+- 变更影响分析
+- 删除检查
+- 循环依赖检测
+- 调试
+
+---
+
+# 16. Semantic Validation
+
+Schema 解决的是结构问题。
+
+Semantic Validation 解决：
+
+> 数据组合起来有没有意义。
+
+例如：
+
+```text
+MinLevel <= MaxLevel
+```
+
+```text
+BuyPrice >= SellPrice
+```
+
+```text
+Skill.Cost >= 0
+```
+
+```text
+Monster.DropTableID 必须存在
+```
+
+可以定义表达式：
+
+```yaml
+rules:
+  - name: level_range
+    assert: min_level <= max_level
+
+  - name: price_range
+    assert: sell_price <= buy_price
+```
+
+---
+
+# 17. Game Rule Validator
+
+复杂的游戏业务逻辑不应该全部塞进 Schema DSL。
+
+应该支持插件：
+
+```text
+Schema
+Expression
+Code Validator
+```
+
+例如：
+
+```cpp
+class Validator {
+public:
+    virtual void validate(
+        const ConfigContext& context,
+        const Document& document,
+        Diagnostics& diagnostics
+    ) = 0;
+};
+```
+
+游戏项目可以实现：
+
+```text
+ItemValidator
+SkillValidator
+MonsterValidator
+QuestValidator
+DropTableValidator
+MapValidator
+```
+
+这样 Cage Core 不需要理解具体游戏业务。
+
+---
+
+# 18. Validation Level
+
+建议定义：
+
+```text
+L0 Parse
+L1 Schema
+L2 Type
+L3 Value
+L4 Table
+L5 Reference
+L6 Semantic
+L7 Game Rule
+```
+
+但这些不是必须全部执行。
+
+可以：
+
+```bash
+cage check
+```
+
+执行完整验证。
+
+也可以：
+
+```bash
+cage check --level schema
+```
+
+只做 Schema 层。
+
+---
+
+# 19. Diagnostics
+
+Diagnostics 应该是一等公民。
+
+每个错误至少包含：
+
+```text
+Code
+Severity
+Source
+Location
+Table
+Row
+Column
+Field
+Value
+Message
+Hint
+```
+
+例如：
+
+```text
+ERROR E1401
+
+File:
+    monster.xlsx
+
+Sheet:
+    Monster
+
+Cell:
+    G27
+
+Row:
+    Monster[20003]
+
+Field:
+    DropItemID
+
+Value:
+    99999
+
+Reference:
+    Item.ID
+
+Message:
+    Target does not exist.
+
+Hint:
+    Add Item[99999] or change DropItemID.
+```
+
+支持：
+
+```text
+ERROR
+WARNING
+INFO
+```
+
+这样可以直接被：
+
+- CLI
+- IDE
+- CI
+- Web UI
+
+消费。
+
+---
+
+# 20. Normalize
+
+验证通过后进入规范化。
+
+例如：
+
+```text
+"100"
+100
+100.0
+```
+
+统一：
+
+```text
+UInt32(100)
+```
+
+布尔值：
+
+```text
+yes
+YES
+true
+1
+```
+
+统一为：
+
+```text
+Bool(true)
+```
+
+Normalize 的目标：
+
+> 相同语义的数据应该产生相同的 Canonical Representation。
+
+---
+
+# 21. Transform
+
+Transform 负责：
+
+> Canonical Model → Target Artifact
+
+而不是重新验证数据。
+
+架构：
+
+```text
+                  Valid Model
+                       |
+       +---------------+---------------+
+       |               |               |
+      CSV             JSON             Code
+                                       |
+                              +--------+--------+
+                              |        |        |
+                             C#      Python    Lua
+```
+
+---
+
+# 22. Target Generator
+
+Target Generator 也是插件。
+
+第一阶段：
+
+```text
+CSV
+JSON
+C#
+Python
+Lua
+```
+
+以后：
+
+```text
+TypeScript
+C++
+Go
+Protobuf
+MessagePack
+FlatBuffers
+Binary
+SQLite
+```
+
+---
+
+# 23. Data Serialization 与 Code Generation
+
+这两类 Target 应明确区分。
+
+## Data Targets
+
+```text
+JSON
+CSV
+YAML
+MessagePack
+Protobuf
+FlatBuffers
+Binary
+```
+
+## Code Targets
+
+```text
+C#
+Python
+Lua
+C++
+Go
+TypeScript
+```
+
+例如同一份数据：
+
+```text
+Canonical Model
+      |
+      +---- JSON
+      |
+      +---- CSV
+      |
+      +---- C#
+      |
+      +---- Python
+      |
+      +---- Lua
+```
+
+---
+
+# 24. Frontend / Backend Profiles
+
+不要把“客户端”和“服务端”写死在 Core。
+
+可以定义 Build Profile：
+
+```yaml
+profile: client
+
+targets:
+  - json
+  - csv
+  - csharp
+```
+
+服务端：
+
+```yaml
+profile: server
+
+targets:
+  - json
+  - csv
+  - python
+  - lua
+```
+
+然后：
+
+```bash
+cage build --profile client
+cage build --profile server
+```
+
+---
+
+# 25. Field Visibility
+
+不同目标可能不需要全部字段。
+
+例如：
+
+```yaml
+fields:
+
+  id:
+    type: uint32
+
+  name:
+    type: string
+
+  admin_note:
+    type: string
+    targets:
+      - server
+```
+
+客户端：
+
+```text
+id
+name
+```
+
+服务端：
+
+```text
+id
+name
+admin_note
+```
+
+这样可以避免：
+
+> 为客户端和服务器维护两套配置。
+
+---
+
+# 26. Build Manifest
+
+每次构建生成 Manifest：
+
+```json
+{
+  "project": "game",
+  "profile": "client",
+  "cage_version": "0.1.0",
+  "schema_hash": "...",
+  "source_hash": "...",
+  "content_hash": "...",
+  "artifacts": {
+    "item.json": "...",
+    "monster.json": "...",
+    "skill.json": "..."
+  }
+}
+```
+
+用途：
+
+- 版本追踪
+- 部署
+- 回滚
+- 客户端/服务端版本匹配
+- CI
+- 缓存
+- 增量构建
+
+---
+
+# 27. Deterministic Build
+
+相同：
+
+```text
+Source
+Schema
+Cage Version
+Profile
+```
+
+应该得到相同：
+
+```text
+Artifact
+Hash
+Manifest
+```
+
+即：
+
+```text
+Build(A) == Build(A)
+```
+
+避免：
+
+- 时间戳导致文件变化
+- 不确定 Map 顺序
+- 随机 ID
+- 非稳定排序
+
+这是配置构建系统的重要基础。
+
+---
+
+# 28. Incremental Build
+
+有了 Dependency Graph 后，可以支持增量构建。
+
+例如：
+
+```text
+Item.xlsx 修改
+```
+
+影响：
+
+```text
+Item
+ |
+ +--> DropTable
+ |
+ +--> Monster
+```
+
+那么：
+
+```text
+Skill
+Quest
+Map
+```
+
+无需重新生成。
+
+最终：
+
+```text
+Changed Sources
+      |
+      v
+Dependency Graph
+      |
+      v
+Affected Tables
+      |
+      v
+Incremental Build
+```
+
+这属于后期能力。
+
+---
+
+# 29. Configuration Registry
+
+后期可以增加远程配置仓库：
+
+```text
+Cage Registry
+```
+
+存储：
+
+```text
+Schema
+Source Metadata
+Build Manifest
+Artifacts
+Hash
+Version
+```
+
+例如：
+
+```text
+game-config/
+    v1.0.0/
+    v1.1.0/
+    v1.2.0/
+```
+
+但 Registry 不应该进入 MVP。
+
+---
+
+# 30. CLI
+
+推荐核心 CLI：
+
+```bash
+cage check
+cage build
+cage inspect
+cage diff
+cage verify
+cage graph
+```
+
+## check
+
+```bash
+cage check config/
+```
+
+只验证，不生成 Runtime Artifact。
+
+## build
+
+```bash
+cage build config/
+```
+
+验证并生成目标。
+
+## inspect
+
+```bash
+cage inspect Item
+```
+
+查看 Schema 和配置结构。
+
+## diff
+
+```bash
+cage diff build/a build/b
+```
+
+比较配置版本。
+
+## verify
+
+```bash
+cage verify runtime/
+```
+
+验证已经生成的 Artifact。
+
+## graph
+
+```bash
+cage graph
+```
+
+输出配置依赖图。
+
+---
+
+# 31. CI/CD
+
+Cage 应该天然适合 CI。
+
+```text
+Git Push
+    |
+    v
+CI
+    |
+    v
+cage check
+    |
+    +---- Error ---> Build Failed
+    |
+    v
+cage build
+    |
+    v
+Artifacts
+    |
+    v
+Package / Deploy
+```
+
+例如：
+
+```bash
+cage check --profile client
+cage check --profile server
+
+cage build --profile client
+cage build --profile server
+```
+
+任何配置错误都在进入游戏之前失败。
+
+---
+
+# 32. Warning Policy
+
+建议支持：
+
+```text
+warning
+error
+```
+
+并允许 CI 配置：
+
+```yaml
+ci:
+  warnings_as_errors: false
+```
+
+生产构建：
+
+```yaml
+ci:
+  warnings_as_errors: true
+```
+
+---
+
+# 33. Project Structure
+
+推荐：
+
+```text
+cage/
+├── README.md
+├── LICENSE
+├── CMakeLists.txt
+│
+├── docs/
+│   ├── architecture.md
+│   ├── source.md
+│   ├── schema.md
+│   ├── validation.md
+│   ├── transform.md
+│   ├── targets.md
+│   ├── cli.md
+│   └── build.md
+│
+├── src/
+│   ├── core/
+│   │   ├── value/
+│   │   ├── document/
+│   │   ├── schema/
+│   │   ├── diagnostics/
+│   │   ├── validation/
+│   │   ├── reference/
+│   │   ├── dependency/
+│   │   ├── normalize/
+│   │   └── manifest/
+│   │
+│   ├── source/
+│   │   ├── excel/
+│   │   ├── csv/
+│   │   ├── json/
+│   │   └── yaml/
+│   │
+│   ├── target/
+│   │   ├── csv/
+│   │   ├── json/
+│   │   ├── csharp/
+│   │   ├── python/
+│   │   └── lua/
+│   │
+│   ├── validator/
+│   │   └── ...
+│   │
+│   └── cli/
+│
+├── schemas/
+├── examples/
+├── tests/
+└── plugins/
+```
+
+---
+
+# 34. Plugin Model
+
+Cage 的核心应该尽量稳定。
+
+```text
+                    Cage Core
+                       |
+       +---------------+----------------+
+       |               |                |
+ Source Plugins   Validator Plugins   Target Plugins
+       |               |                |
+     Excel          SkillValidator      JSON
+     CSV            QuestValidator      CSV
+     YAML           MonsterValidator    C#
+     JSON                                Python
+                                         Lua
+```
+
+这样第三方可以扩展 Cage，而无需修改 Core。
+
+---
+
+# 35. Security / Isolation
+
+如果允许项目编写业务 Validator，需要注意：
+
+```text
+Validator
+    |
+    v
+可能执行任意代码
+```
+
+因此：
+
+- 本地开发可以使用 Native Plugin
+- CI 可以考虑 Sandbox
+- 不应默认执行不可信项目代码
+- Remote Registry 不应该直接执行上传的 Validator
+
+这是后期需要重点考虑的问题。
+
+---
+
+# 36. MVP
+
+第一版不要试图解决所有问题。
+
+建议 MVP：
+
+### Source
+
+```text
+Excel
+JSON
+YAML
+CSV
+```
+
+### Schema
+
+```text
+type
+required
+default
+enum
+min
+max
+unique
+reference
+```
+
+### Validation
+
+```text
+Syntax
+Schema
+Type
+Value
+Unique
+Reference
+Expression
+```
+
+### Target
+
+```text
+JSON
+CSV
+```
+
+### CLI
+
+```text
+check
+build
+diff
+inspect
+```
+
+### Build
+
+```text
+Deterministic
+Manifest
+Hash
+```
+
+这已经足够形成真正有价值的基础设施。
+
+---
+
+# 37. 第二阶段
+
+加入：
+
+```text
+C#
+Python
+Lua
+Protobuf
+MessagePack
+```
+
+以及：
+
+```text
+Plugin SDK
+Game Rule Validator
+Dependency Graph
+Incremental Build
+CI Integration
+```
+
+---
+
+# 38. 第三阶段
+
+再考虑：
+
+```text
+Web UI
+Schema Editor
+Configuration Registry
+Remote Source
+Google Sheets
+Database Source
+Migration
+Artifact Distribution
+```
+
+---
+
+# 39. 不应该做的事情
+
+Cage 不应该变成：
+
+### ❌ Excel 编辑器
+
+Excel 本身已经是成熟的 Authoring Tool。
+
+### ❌ 游戏数据库
+
+Cage 构建配置，不负责成为游戏运行时数据库。
+
+### ❌ Secret Manager
+
+密码、Token、Key 不属于普通游戏配置。
+
+### ❌ 游戏逻辑框架
+
+Cage 可以验证业务规则，但不应该成为游戏服务器逻辑框架。
+
+### ❌ 强绑定某一个游戏引擎
+
+不绑定：
+
+```text
+Unity
+Unreal
+Godot
+Cocos
+```
+
+它应该服务于所有游戏客户端和服务器。
+
+---
+
+# 40. 与普通配置转换器的区别
+
+普通 Converter：
+
+```text
+A -> B
+```
+
+Cage：
+
+```text
+Source
+  |
+  v
+Parse
+  |
+  v
+Canonical Model
+  |
+  +--> Schema
+  |
+  +--> Type
+  |
+  +--> Constraint
+  |
+  +--> Reference
+  |
+  +--> Semantic
+  |
+  +--> Game Rules
+  |
+  v
+Validated Model
+  |
+  +--> JSON
+  +--> CSV
+  +--> C#
+  +--> Python
+  +--> Lua
+  +--> Protobuf
+  +--> ...
+```
+
+所以 Cage 的价值不是：
+
+> **转换。**
+
+而是：
+
+> **建立一条可靠的配置编译链。**
+
+---
+
+# 41. Casino Cage 隐喻
+
+Cage 的命名来自赌场中的 **Cage / Cashier's Cage**。
+
+赌场中的 Cage 是：
+
+```text
+Cash
+  |
+  v
+Cage
+  |
+  +--> Verify
+  +--> Exchange
+  +--> Record
+  |
+  v
+Chips
+```
+
+Cage：
+
+```text
+Authoring Data
+  |
+  v
+Cage
+  |
+  +--> Parse
+  +--> Validate
+  +--> Normalize
+  +--> Transform
+  +--> Audit
+  |
+  v
+Runtime Assets
+```
+
+所以它不是：
+
+> “Excel 转换器”
+
+而更像：
+
+> **配置进入运行时世界之前的兑换与清算边界。**
+
+赌场里的 Cage 不关心你最后玩：
+
+```text
+Poker
+Blackjack
+Baccarat
+```
+
+同样，Cage 不应该关心配置最终服务：
+
+```text
+Unity
+Cocos
+Unreal
+Game Server
+Tool
+```
+
+它只负责：
+
+> **输入的数据必须合法、完整、可验证，然后才能兑换成运行时资产。**
+
+---
+
+# 42. 一句话定义
+
+英文：
+
+> **Cage is a configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.**
+
+中文：
+
+> **Cage 是一个面向游戏研发的配置编译与验证框架，将异构的配置源转换为经过验证、确定性构建的运行时配置资产。**
+
+---
+
+# 43. 核心设计原则总结
+
+```text
+1. 不绑定 Excel
+2. Source 与 Target 解耦
+3. 所有输入进入统一 Canonical Model
+4. Validation 与 Transformation 分离
+5. Schema 负责结构
+6. Reference 负责跨配置关系
+7. Semantic Rule 负责组合逻辑
+8. Plugin Validator 负责复杂游戏业务
+9. Target Generator 负责输出
+10. Build 必须可重复
+11. Artifact 必须可追踪
+12. Diagnostics 必须精确到 Source Location
+13. Client / Server 使用 Profile，而不是硬编码
+14. Core 不绑定具体游戏引擎
+15. Excel 只是第一种 Source
+```
+
+---
+
+# 44. 最终架构
+
+```text
+                             CAGE
+              Game Configuration Compiler
+                                  |
+       +--------------------------+--------------------------+
+       |                          |                          |
+       v                          v                          v
+  Authoring Sources           Schema / Rules             Profiles
+       |                          |                          |
+  +----+----+----+                |                    +-----+-----+
+  |    |    |    |                |                    |           |
+Excel CSV JSON YAML               |                 Client       Server
+  |    |    |    |                |                    |           |
+  +----+----+----+----------------+--------------------+-----------+
+                                  |
+                                  v
+                         +----------------+
+                         | Canonical IR   |
+                         +-------+--------+
+                                 |
+                                 v
+                      +-----------------------+
+                      | Validation Pipeline   |
+                      |                       |
+                      | Parse                 |
+                      | Schema                |
+                      | Type                  |
+                      | Value                 |
+                      | Table                 |
+                      | Reference             |
+                      | Semantic              |
+                      | Game Rules             |
+                      +-----------+-----------+
+                                  |
+                                  v
+                         Validated Model
+                                  |
+                    +-------------+-------------+
+                    |             |             |
+                    v             v             v
+                  JSON          CSV           Code
+                                              |
+                                      +-------+-------+
+                                      |       |       |
+                                     C#     Python   Lua
+                    |
+                    +-----------> Protobuf
+                    |
+                    +-----------> MsgPack
+                    |
+                    +-----------> Binary
+                                  |
+                                  v
+                           Runtime Artifacts
+                                  |
+                                  v
+                         Manifest / Hash / CI
+```
+
+---
+
+## 结论
+
+Cage 最应该建立的抽象不是：
+
+```text
+Excel -> JSON
+```
+
+而是：
+
+```text
+                 Any Source
+                     |
+                     v
+               Canonical Model
+                     |
+                     v
+           Validate Everything
+                     |
+                     v
+              Validated Model
+                     |
+                     v
+               Any Target
+```
+
+**Excel、CSV、YAML、JSON 只是 Source；JSON、CSV、C#、Python、Lua、Protobuf 等只是 Target。**
+
+真正属于 Cage Core 的，是中间这部分：
+
+> **Schema + Canonical Model + Reference Graph + Validation Pipeline + Semantic Rules + Deterministic Build**
+
+这也是这个项目最值得做成独立开源基础设施的部分。
+
