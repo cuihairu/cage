@@ -11,6 +11,10 @@ members = [
     "crates/cage-target-cs",
     "crates/cage-target-py",
     "crates/cage-target-lua",
+    "crates/cage-target-ts",
+    "crates/cage-target-cpp",
+    "crates/cage-target-go",
+    "crates/cage-target-java",
     "crates/cage-cli",
 ]
 

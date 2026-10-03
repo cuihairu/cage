@@ -24,6 +24,10 @@ cage-target-csv = { path = "../cage-target-csv" }
 cage-target-cs = { path = "../cage-target-cs" }
 cage-target-py = { path = "../cage-target-py" }
 cage-target-lua = { path = "../cage-target-lua" }
+cage-target-ts = { path = "../cage-target-ts" }
+cage-target-cpp = { path = "../cage-target-cpp" }
+cage-target-go = { path = "../cage-target-go" }
+cage-target-java = { path = "../cage-target-java" }
 clap = { workspace = true }
 indexmap = { workspace = true }
 serde_json = { workspace = true }

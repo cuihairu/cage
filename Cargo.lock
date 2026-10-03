@@ -123,11 +123,15 @@ dependencies = [
  "cage-source-excel",
  "cage-source-json",
  "cage-source-yaml",
+ "cage-target-cpp",
  "cage-target-cs",
  "cage-target-csv",
+ "cage-target-go",
+ "cage-target-java",
  "cage-target-json",
  "cage-target-lua",
  "cage-target-py",
+ "cage-target-ts",
  "clap",
  "indexmap",
  "serde_json",
@@ -189,6 +193,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cage-target-cpp"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "indexmap",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
 name = "cage-target-cs"
 version = "0.1.0"
 dependencies = [
@@ -209,6 +223,26 @@ dependencies = [
  "indexmap",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "cage-target-go"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "indexmap",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
+name = "cage-target-java"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "indexmap",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]
@@ -234,6 +268,16 @@ dependencies = [
 
 [[package]]
 name = "cage-target-py"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "indexmap",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
+name = "cage-target-ts"
 version = "0.1.0"
 dependencies = [
  "cage-core",
