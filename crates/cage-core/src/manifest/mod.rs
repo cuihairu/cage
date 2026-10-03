@@ -1,0 +1,558 @@
+//! Build Manifest - deterministic build artifacts with hashes for traceability
+
+use crate::value::Document;
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+
+/// Build manifest generated after successful build
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildManifest {
+    /// Project name
+    pub project: String,
+    /// Build profile name
+    pub profile: String,
+    /// Cage version that produced the build
+    pub cage_version: String,
+    /// Blake3 hash of the schema document
+    pub schema_hash: String,
+    /// Blake3 hash of all source content
+    pub source_hash: String,
+    /// Blake3 hash of all artifact content
+    pub content_hash: String,
+    /// Artifacts by output path
+    pub artifacts: IndexMap<String, ArtifactInfo>,
+}
+
+/// Individual artifact information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactInfo {
+    /// Output path (relative to project root)
+    pub path: String,
+    /// Blake3 hash of content
+    pub hash: String,
+    /// Content size in bytes
+    pub size: usize,
+    /// Output format (json, csv, csharp, etc.)
+    pub format: String,
+    /// Which table this artifact represents
+    pub table: Option<String>,
+    /// Text encoding (utf-8, binary, etc.)
+    pub encoding: String,
+}
+
+/// Manifest generator
+pub struct ManifestGenerator {
+    project_name: String,
+    profile_name: String,
+    cage_version: String,
+}
+
+impl ManifestGenerator {
+    /// Create a generator for a project / profile / tool version
+    pub fn new(project_name: String, profile_name: String, cage_version: String) -> Self {
+        Self {
+            project_name,
+            profile_name,
+            cage_version,
+        }
+    }
+
+    /// Generate manifest from build outputs
+    pub fn generate(
+        &self,
+        schema: &crate::schema::Schema,
+        document: &Document,
+        artifacts: &[(String, Vec<u8>, String, Option<String>)], // (path, content, format, table)
+    ) -> BuildManifest {
+        let schema_hash = Self::hash_schema(schema);
+        let source_hash = Self::hash_source(document);
+        let content_hash = Self::hash_content(artifacts);
+
+        let mut artifact_infos = IndexMap::new();
+        for (path, content, format, table) in artifacts {
+            let hash = blake3::hash(content).to_hex().to_string();
+            artifact_infos.insert(
+                path.clone(),
+                ArtifactInfo {
+                    path: path.clone(),
+                    hash,
+                    size: content.len(),
+                    format: format.clone(),
+                    table: table.clone(),
+                    encoding: "utf-8".to_string(),
+                },
+            );
+        }
+
+        BuildManifest {
+            project: self.project_name.clone(),
+            profile: self.profile_name.clone(),
+            cage_version: self.cage_version.clone(),
+            schema_hash,
+            source_hash,
+            content_hash,
+            artifacts: artifact_infos,
+        }
+    }
+
+    fn hash_schema(schema: &crate::schema::Schema) -> String {
+        // Deterministic serialization of schema (sorted keys)
+        let json = serde_json::to_vec(schema).expect("Schema serialization failed");
+        blake3::hash(&json).to_hex().to_string()
+    }
+
+    fn hash_source(document: &Document) -> String {
+        // Hash all source content deterministically
+        let mut hasher = blake3::Hasher::new();
+
+        // Sort tables by name for determinism
+        let mut tables: Vec<_> = document.tables.iter().collect();
+        tables.sort_by_key(|(k, _)| *k);
+
+        for (table_name, table) in tables {
+            hasher.update(table_name.as_bytes());
+            hasher.update(b"\0");
+
+            // Hash rows in order
+            for row in &table.rows {
+                // Hash primary key
+                for pk in &row.primary_key {
+                    hasher.update(&Self::value_to_bytes(pk));
+                }
+                // Hash all fields in sorted order
+                let mut fields: Vec<_> = row.fields.iter().collect();
+                fields.sort_by_key(|(k, _)| *k);
+                for (field_name, typed_value) in fields {
+                    hasher.update(field_name.as_bytes());
+                    hasher.update(b"\0");
+                    hasher.update(&Self::value_to_bytes(&typed_value.value));
+                }
+            }
+        }
+
+        hasher.finalize().to_hex().to_string()
+    }
+
+    fn hash_content(artifacts: &[(String, Vec<u8>, String, Option<String>)]) -> String {
+        let mut hasher = blake3::Hasher::new();
+
+        // Sort artifacts by path for determinism
+        let mut sorted = artifacts.to_vec();
+        sorted.sort_by_key(|(path, _, _, _)| path.clone());
+
+        for (path, content, _, _) in &sorted {
+            hasher.update(path.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(content);
+        }
+
+        hasher.finalize().to_hex().to_string()
+    }
+
+    fn value_to_bytes(value: &crate::value::Value) -> Vec<u8> {
+        // Deterministic binary representation
+        match value {
+            crate::value::Value::Null => b"null".to_vec(),
+            crate::value::Value::Bool(b) => {
+                if *b {
+                    b"true".to_vec()
+                } else {
+                    b"false".to_vec()
+                }
+            }
+            crate::value::Value::Int(i) => i.to_string().into_bytes(),
+            crate::value::Value::UInt(u) => u.to_string().into_bytes(),
+            crate::value::Value::Float(f) => {
+                // Use fixed precision for determinism
+                format!("{f:.17e}").into_bytes()
+            }
+            crate::value::Value::String(s) => s.as_bytes().to_vec(),
+            crate::value::Value::Bytes(b) => b.clone(),
+            crate::value::Value::Array(arr) => {
+                let mut bytes = Vec::new();
+                bytes.push(b'[');
+                for (i, v) in arr.iter().enumerate() {
+                    if i > 0 {
+                        bytes.push(b',');
+                    }
+                    bytes.extend_from_slice(&Self::value_to_bytes(v));
+                }
+                bytes.push(b']');
+                bytes
+            }
+            crate::value::Value::Object(obj) => {
+                let mut bytes = Vec::new();
+                bytes.push(b'{');
+                // Sort keys
+                let mut keys: Vec<_> = obj.keys().collect();
+                keys.sort();
+                for (i, k) in keys.iter().enumerate() {
+                    if i > 0 {
+                        bytes.push(b',');
+                    }
+                    bytes.extend_from_slice(k.as_bytes());
+                    bytes.push(b':');
+                    bytes.extend_from_slice(&Self::value_to_bytes(&obj[*k]));
+                }
+                bytes.push(b'}');
+                bytes
+            }
+        }
+    }
+}
+
+/// Verify manifest against actual artifacts
+pub fn verify_manifest(
+    manifest: &BuildManifest,
+    artifacts: &[(String, Vec<u8>)],
+) -> crate::diagnostics::Diagnostics {
+    let mut diags = crate::diagnostics::Diagnostics::new();
+
+    // Check all artifacts in manifest exist
+    for (path, expected_info) in &manifest.artifacts {
+        let found = artifacts.iter().find(|(p, _)| p == path);
+
+        match found {
+            Some((_, content)) => {
+                let actual_hash = blake3::hash(content).to_hex().to_string();
+                if actual_hash != expected_info.hash {
+                    diags.add(
+                        crate::diagnostics::Diagnostic::error(
+                            crate::error::codes::build::E9003,
+                            format!("Artifact hash mismatch: {path}"),
+                        )
+                        .with_source("manifest")
+                        .with_hint(format!(
+                            "Expected: {}, Got: {}",
+                            expected_info.hash, actual_hash
+                        )),
+                    );
+                }
+                if content.len() != expected_info.size {
+                    diags.add(
+                        crate::diagnostics::Diagnostic::error(
+                            crate::error::codes::build::E9003,
+                            format!("Artifact size mismatch: {path}"),
+                        )
+                        .with_source("manifest")
+                        .with_hint(format!(
+                            "Expected: {}, Got: {}",
+                            expected_info.size,
+                            content.len()
+                        )),
+                    );
+                }
+            }
+            None => {
+                diags.add(
+                    crate::diagnostics::Diagnostic::error(
+                        crate::error::codes::build::E9003,
+                        format!("Missing artifact: {path}"),
+                    )
+                    .with_source("manifest"),
+                );
+            }
+        }
+    }
+
+    // Check for extra artifacts not in manifest
+    let manifest_paths: std::collections::HashSet<_> = manifest.artifacts.keys().collect();
+    for (path, _) in artifacts {
+        if !manifest_paths.contains(path) {
+            diags.add(
+                crate::diagnostics::Diagnostic::warning(
+                    crate::error::codes::build::E9003,
+                    format!("Extra artifact not in manifest: {path}"),
+                )
+                .with_source("manifest"),
+            );
+        }
+    }
+
+    diags
+}
+
+/// Profile configuration for build
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildProfile {
+    /// Profile name (e.g., client / server)
+    pub name: String,
+    /// Target generators to run
+    pub targets: Vec<TargetConfig>,
+    /// Human-readable description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Template variables available to targets
+    #[serde(skip_serializing_if = "IndexMap::is_empty", default)]
+    pub variables: IndexMap<String, String>,
+}
+
+/// Target configuration within a profile
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetConfig {
+    /// Output format (json, csv, csharp, etc.)
+    pub format: String,
+    /// Output directory
+    pub output_dir: String,
+    /// File name template, e.g., "{table}.json"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_template: Option<String>,
+    /// Format-specific options
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<IndexMap<String, serde_json::Value>>,
+}
+
+/// Project configuration (cage.toml)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    /// Project identity
+    pub project: ProjectInfo,
+    /// Build profiles by name
+    pub profiles: IndexMap<String, BuildProfile>,
+    /// Logical source name -> path mapping
+    #[serde(skip_serializing_if = "IndexMap::is_empty", default)]
+    pub source_roots: IndexMap<String, String>,
+    /// Directory containing schema files
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_path: Option<String>,
+    /// Whether warnings are escalated to errors
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub warnings_as_errors: bool,
+    /// Default output directory
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_dir: Option<String>,
+}
+
+/// Project identity information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectInfo {
+    /// Project name
+    pub name: String,
+    /// Project version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Human-readable description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Default for ProjectConfig {
+    fn default() -> Self {
+        let mut profiles = IndexMap::new();
+        profiles.insert(
+            "client".to_string(),
+            BuildProfile {
+                name: "client".to_string(),
+                targets: vec![TargetConfig {
+                    format: "json".to_string(),
+                    output_dir: "build/client".to_string(),
+                    file_template: Some("{table}.json".to_string()),
+                    options: None,
+                }],
+                description: Some("Client build profile".to_string()),
+                variables: IndexMap::new(),
+            },
+        );
+        profiles.insert(
+            "server".to_string(),
+            BuildProfile {
+                name: "server".to_string(),
+                targets: vec![TargetConfig {
+                    format: "json".to_string(),
+                    output_dir: "build/server".to_string(),
+                    file_template: Some("{table}.json".to_string()),
+                    options: None,
+                }],
+                description: Some("Server build profile".to_string()),
+                variables: IndexMap::new(),
+            },
+        );
+
+        Self {
+            project: ProjectInfo {
+                name: "game".to_string(),
+                version: Some("0.1.0".to_string()),
+                description: None,
+            },
+            profiles,
+            source_roots: IndexMap::new(),
+            schema_path: Some("schemas".to_string()),
+            warnings_as_errors: false,
+            output_dir: Some("build".to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{FieldSchema, FieldType, Schema, TableSchema};
+    use crate::value::{Document, Row, SourceLocation, Table, TypedValue, Value};
+    use indexmap::IndexMap;
+
+    fn make_test_schema() -> Schema {
+        let mut schema = Schema::new();
+        let mut table = TableSchema {
+            name: "Item".to_string(),
+            description: None,
+            primary_key: vec!["id".to_string()],
+            fields: IndexMap::new(),
+            unique_constraints: vec![],
+            order_by: None,
+            targets: vec![],
+        };
+        table.fields.insert(
+            "id".to_string(),
+            FieldSchema {
+                name: "id".to_string(),
+                field_type: FieldType::UInt32,
+                description: None,
+                required: true,
+                default: None,
+                min: None,
+                max: None,
+                min_length: None,
+                max_length: None,
+                pattern: None,
+                enum_values: None,
+                min_items: None,
+                max_items: None,
+                items: None,
+                properties: None,
+                additional_properties: None,
+                reference: None,
+                targets: vec![],
+                rules: vec![],
+                metadata: IndexMap::new(),
+            },
+        );
+        schema.add_table(table);
+        schema
+    }
+
+    fn make_test_doc() -> Document {
+        let mut doc = Document::new();
+        let mut table = Table {
+            name: "Item".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![],
+            source_file: "items.json".to_string(),
+            sheet: None,
+        };
+        table.rows.push(Row {
+            primary_key: vec![Value::UInt(1)],
+            fields: {
+                let mut f = IndexMap::new();
+                f.insert(
+                    "id".to_string(),
+                    TypedValue::new(Value::UInt(1), SourceLocation::new("items.json")),
+                );
+                f
+            },
+            location: SourceLocation::new("items.json"),
+            index: 0,
+        });
+        doc.add_table(table);
+        doc
+    }
+
+    #[test]
+    fn test_manifest_generation() {
+        let schema = make_test_schema();
+        let doc = make_test_doc();
+        let generator = ManifestGenerator::new(
+            "test-game".to_string(),
+            "client".to_string(),
+            "0.1.0".to_string(),
+        );
+
+        let artifacts = vec![(
+            "build/client/item.json".to_string(),
+            br#"{"id":1}"#.to_vec(),
+            "json".to_string(),
+            Some("Item".to_string()),
+        )];
+
+        let manifest = generator.generate(&schema, &doc, &artifacts);
+
+        assert_eq!(manifest.project, "test-game");
+        assert_eq!(manifest.profile, "client");
+        assert_ne!(manifest.schema_hash, "");
+        assert_ne!(manifest.source_hash, "");
+        assert_ne!(manifest.content_hash, "");
+        assert_eq!(manifest.artifacts.len(), 1);
+    }
+
+    #[test]
+    fn test_deterministic_hashes() {
+        let schema = make_test_schema();
+        let doc = make_test_doc();
+        let generator = ManifestGenerator::new(
+            "test".to_string(),
+            "client".to_string(),
+            "0.1.0".to_string(),
+        );
+
+        let artifacts = vec![
+            (
+                "a.json".to_string(),
+                b"{}".to_vec(),
+                "json".to_string(),
+                None,
+            ),
+            (
+                "b.json".to_string(),
+                b"{}".to_vec(),
+                "json".to_string(),
+                None,
+            ),
+        ];
+
+        let m1 = generator.generate(&schema, &doc, &artifacts);
+        let m2 = generator.generate(&schema, &doc, &artifacts);
+
+        assert_eq!(m1.schema_hash, m2.schema_hash);
+        assert_eq!(m1.source_hash, m2.source_hash);
+        assert_eq!(m1.content_hash, m2.content_hash);
+    }
+
+    #[test]
+    fn test_verify_manifest() {
+        let manifest = BuildManifest {
+            project: "test".to_string(),
+            profile: "client".to_string(),
+            cage_version: "0.1.0".to_string(),
+            schema_hash: "abc".to_string(),
+            source_hash: "def".to_string(),
+            content_hash: "ghi".to_string(),
+            artifacts: {
+                let mut m = IndexMap::new();
+                m.insert(
+                    "out.json".to_string(),
+                    ArtifactInfo {
+                        path: "out.json".to_string(),
+                        hash: blake3::hash(b"{}").to_hex().to_string(),
+                        size: 2,
+                        format: "json".to_string(),
+                        table: None,
+                        encoding: "utf-8".to_string(),
+                    },
+                );
+                m
+            },
+        };
+
+        // Matching artifact
+        let diags = verify_manifest(&manifest, &[("out.json".to_string(), b"{}".to_vec())]);
+        assert!(!diags.has_errors());
+
+        // Mismatched content
+        let diags = verify_manifest(&manifest, &[("out.json".to_string(), b"[]".to_vec())]);
+        assert!(diags.has_errors());
+    }
+}

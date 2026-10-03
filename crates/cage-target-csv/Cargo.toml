@@ -1,0 +1,20 @@
+[package]
+name = "cage-target-csv"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "CSV target generator for Cage"
+
+[dependencies]
+serde_json = { workspace = true }
+base64 = { workspace = true }
+cage-core = { path = "../cage-core" }
+csv = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
