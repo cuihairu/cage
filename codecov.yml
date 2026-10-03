@@ -1,0 +1,36 @@
+# Codecov 配置 —— 覆盖率口径由本文件驱动（CI coverage 腿上传 lcov）。
+# 上传走 tokenless OIDC（codecov-action use_oidc，无仓库 secret）。
+# 覆盖率定位为趋势信号（informational）：只报告，不因全局数字波动挡合入；
+# 提交前的硬门禁仍是本地 fmt / clippy / test 与 CI 全绿（见 .github/workflows/ci.yml）。
+
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  status:
+    # 项目级：相对基线自动比较（首次上传无基线即通过）
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        informational: true
+    # 行级：新增/变更代码的覆盖率（与 project 同口径）
+    patch:
+      default:
+        target: auto
+        threshold: 1%
+        informational: true
+  precision: 2
+  round: down
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
+
+ignore:
+  # 构建产物、测试夹具与文档不入统计
+  - "target/**"
+  - "**/tests/**"
+  - "docs/**"
+  - "*.md"
