@@ -1,0 +1,19 @@
+[package]
+name = "cage-target-cs"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "C# code generator for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+indexmap = { workspace = true }
+serde_yaml = { workspace = true }
+tempfile = { workspace = true }

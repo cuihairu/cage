@@ -83,6 +83,9 @@ enum Commands {
         /// Build profile to generate artifacts for
         #[arg(long, default_value = "client")]
         profile: String,
+        /// Skip rebuilding if hashes match last build's manifest
+        #[arg(long)]
+        incremental: bool,
     },
     /// View Schema and configuration structure
     Inspect {
@@ -119,7 +122,8 @@ fn main() {
             path,
             level,
             profile,
-        } => run_build(&path, &level, &profile),
+            incremental,
+        } => run_build(&path, &level, &profile, incremental),
         Commands::Inspect { path, table } => run_inspect(&path, table.as_deref()),
         Commands::Diff { baseline, target } => run_diff(&baseline, &target),
     };
@@ -353,7 +357,7 @@ fn run_check(path: &Path, level: &str, profile: &str) -> i32 {
     }
 }
 
-fn run_build(path: &Path, level: &str, profile: &str) -> i32 {
+fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 {
     let level = match level.parse::<ValidationLevel>() {
         Ok(l) => l,
         Err(e) => {

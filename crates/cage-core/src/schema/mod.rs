@@ -516,6 +516,11 @@ impl Schema {
     /// Build dependency graph from references
     pub fn build_dependency_graph(&self) -> DependencyGraph {
         let mut graph = DependencyGraph::new();
+        for table_name in self.tables.keys() {
+            // Register every table so isolated tables (no references in or
+            // out) still appear in the topological build order.
+            graph.edges.entry(table_name.clone()).or_default();
+        }
         for (table_name, table) in &self.tables {
             for field in table.fields.values() {
                 if let Some(ref_schema) = &field.reference {

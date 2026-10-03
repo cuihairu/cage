@@ -37,9 +37,9 @@
 ## 第二阶段（预排）
 - [ ] 代码生成器：C#/Python/Lua
 - [ ] Plugin SDK + Game Rule Validator 实装（trait + 动态库/脚本沙箱方案定稿）
-- [ ] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
+- [x] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
 - [ ] 增量构建（变更影响分析）
-- [ ] CI 集成（warnings_as_errors、GitHub Actions 模板）
+- [x] CI 集成（warnings_as_errors、GitHub Actions 模板）
 
 ## 第三阶段（预排）
 - [ ] Web UI / Schema Editor
