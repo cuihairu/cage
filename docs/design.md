@@ -1056,9 +1056,10 @@ Binary
 C#
 Python
 Lua
+TypeScript / JavaScript
 C++
 Go
-TypeScript
+Java
 ```
 
 例如同一份数据：
@@ -1075,7 +1076,55 @@ Canonical Model
       +---- Python
       |
       +---- Lua
+      |
+      +---- TypeScript / JavaScript
+      |
+      +---- C++ / Go / Java
 ```
+
+### 代码生成方式：直接渲染，而非 AST / 模板引擎
+
+Code Target 的生成器不构建目标语言的 AST，也不引入模板引擎，而是
+**plan → render → verify** 三层的直接字符串渲染：
+
+```text
+Schema
+  |
+  v
+plan（mini-IR：一次算完所有决策——标识符、类型、import、默认值字面量）
+  |
+  v
+render（String + writeln 逐行渲染，多处产物共享同一份 plan）
+  |
+  v
+verify（dev-only：tsc / javac / g++ / gofmt 回验产物，不进 CI 依赖）
+```
+
+为什么不是各语言官方 AST 库 + printer：
+
+- **构建依赖**：TypeScript compiler API / javac TreeMaker / go/ast 意味着
+  一个纯 Rust workspace 得背上 Node / JDK / Go 工具链，CI 失去零外部依赖
+- **确定性死穴**：AST printer 跟随版本演进，格式化器升级即输出字节变化，
+  manifest 哈希 / golden 字节比对 / 增量构建跳过全部失效
+- **API 错位**：这些 API 为改写已有代码（重构、rename）设计，从零造声明
+  反而更繁琐（javac JCTree 造一个字段声明远贵于写一行文本）
+
+为什么不是模板引擎（Handlebars/Tera 一类）：声明式绑定的输出面固定
+（约十种语句形状），模板的动态能力用不上，而转义与分支逻辑下沉到模板
+里反而失去 Rust 类型检查；配置中的 `file_template = "{table}.ts"` 只是
+文件名占位符，与代码模板无关。
+
+可靠性的失效模式分析：生成物是纯声明代码（字段、类型、默认值），没有
+控制流——要么编译不过（当场暴露），要么就是对的；不存在「编译通过但
+运行时悄悄出错」的中间态。因此语法正确性由 dev-only 的真编译器回验保证
+（`tsc --strict`、`javac -Xlint:all -Werror`、`g++ -Wall -Wextra -Werror`、
+`gofmt -l`，均在对抗性 schema——关键字字段名、`i64::MIN`、非 ASCII、
+命名冲突——上实测通过），而非由构造层保证。业界同类先例：protoc 的
+Java/C++ 生成器内部同样是字符串拼接。
+
+升级信号：当某个 target 需要生成带逻辑的代码（内联校验函数、复杂
+runtime 支撑码）或改写用户已有代码时，为该 target 单独引入 IR 层——
+插件架构下这是局部决定，不影响其余 target。
 
 ---
 

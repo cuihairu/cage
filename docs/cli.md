@@ -48,7 +48,7 @@ cage build config/ --incremental     # 哈希与上次 manifest 一致时跳过�
 cage gen config/ --profile server
 ```
 
-只生成代码类产物（[C# / Python / Lua](/target#code-targets-与-data-targets-分离)），
+只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java](/target#code-targets-与-data-targets-分离)），
 不跑数据校验：代码生成是 Schema 驱动的，类型与元数据全部来自 Schema，
 不依赖配置行数据。Profile 里的数据类 Target（json/csv）会被跳过——需要
 数据产物时用 `cage build`。产物同样写入 Build Manifest（与 build 同一口
@@ -91,7 +91,7 @@ cage graph
 ```bash
 cage check config/                 # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
-cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua）
+cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
 cage diff build/a build/b          # 比较两个配置版本
 cage inspect Item                  # 查看 Schema 与配置结构
 ```

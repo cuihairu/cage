@@ -250,7 +250,14 @@ cage/
 │   ├── cage-source-yaml/    # YAML 输入源
 │   ├── cage-target-json/    # JSON 产出
 │   ├── cage-target-csv/     # CSV 产出
-│   └── cage-cli/            # cage 命令行（check / build / inspect / diff）
+│   ├── cage-target-cs/      # C# 代码绑定
+│   ├── cage-target-py/      # Python 代码绑定
+│   ├── cage-target-lua/     # Lua 代码绑定
+│   ├── cage-target-ts/      # TypeScript / JavaScript 代码绑定
+│   ├── cage-target-cpp/     # C++ 代码绑定
+│   ├── cage-target-go/      # Go 代码绑定
+│   ├── cage-target-java/    # Java 代码绑定
+│   └── cage-cli/            # cage 命令行（check / build / gen / inspect / diff）
 ├── docs/                    # 本文档站（VitePress）
 └── .github/workflows/       # CI / 每日构建 / 文档部署
 ```

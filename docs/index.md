@@ -32,7 +32,7 @@ features:
   - title: Profile 机制
     details: client / server 配置不同 targets 与字段可见性，一份配置两端复用，不维护两套表。
   - title: Target 插件
-    details: JSON / CSV 起步，扩展 C# / Python / Lua / Protobuf；数据序列化与代码生成分离。
+    details: JSON / CSV 起步，扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf；数据序列化与代码生成分离。
 ---
 
 ## 核心链路
@@ -50,7 +50,7 @@ Cage 解决的不是「Excel 转 JSON」：Excel 只是一种输入源。它建�
 ```bash
 cage check config/                   # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
-cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua）
+cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
 cage diff build/a build/b            # 比较两个配置版本
 cage inspect Item                    # 查看 Schema 与配置结构
 ```
