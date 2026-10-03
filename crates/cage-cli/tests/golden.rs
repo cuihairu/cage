@@ -40,6 +40,26 @@ output_dir = "build/python"
 [[profiles.client.targets]]
 format = "lua"
 output_dir = "build/lua"
+
+[[profiles.client.targets]]
+format = "typescript"
+output_dir = "build/typescript"
+
+[[profiles.client.targets]]
+format = "javascript"
+output_dir = "build/javascript"
+
+[[profiles.client.targets]]
+format = "cpp"
+output_dir = "build/cpp"
+
+[[profiles.client.targets]]
+format = "go"
+output_dir = "build/go"
+
+[[profiles.client.targets]]
+format = "java"
+output_dir = "build/java"
 "#,
     )
     .unwrap();
@@ -118,9 +138,10 @@ fn build_is_byte_deterministic() {
     assert!(status.success());
     let second = snapshot(root);
 
-    // Data + code targets (json/cs/python/lua) all participate in the lock.
+    // Data + code targets (json/cs/python/lua/ts/js/cpp/go/java) all
+    // participate in the lock.
     assert!(
-        first.len() >= 8,
+        first.len() >= 16,
         "expected code+data artifacts, got {}",
         first.len()
     );

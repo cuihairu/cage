@@ -94,7 +94,7 @@ enum Commands {
         /// Table name (lists all tables when omitted)
         table: Option<String>,
     },
-    /// Generate code-target artifacts only (cs/python/lua), no data validation
+    /// Generate code-target artifacts only (cs/python/lua/ts/js/cpp/go/java), no data validation
     Gen {
         /// Configuration project root directory
         path: PathBuf,
@@ -447,7 +447,7 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
     let mut artifacts: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
     for target in &build_profile.targets {
         let generated = match code_target_items(target, &schema, &schema_hash) {
-            // Code targets (cs/python/lua) are schema-driven and infallible.
+            // Code targets (cs/python/lua/ts/…) are schema-driven and infallible.
             Some(items) => Ok(items),
             None => match target.format.as_str() {
                 "json" => cage_target_json::JsonTargetGenerator::from_config(target)
@@ -498,7 +498,8 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
 }
 
 /// `cage gen` — schema-driven code generation only. Writes the code-target
-/// artifacts (cs/python/lua) of a profile without running data validation:
+/// artifacts (cs/python/lua/ts/js/cpp/go/java) of a profile without running
+/// data validation:
 /// types and metadata all come from the Schema, so source rows are not
 /// needed. Data targets (json/csv) in the profile are skipped — run
 /// `cage build` for those. The manifest is written like a build's, so gen
@@ -539,7 +540,9 @@ fn run_gen(path: &Path, profile: &str) -> i32 {
         }
     }
     if artifacts.is_empty() {
-        eprintln!("error: profile '{profile}' has no code targets (cs/python/lua)");
+        eprintln!(
+            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java)"
+        );
         return 2;
     }
 
@@ -568,7 +571,7 @@ fn run_gen(path: &Path, profile: &str) -> i32 {
 }
 
 /// Generate code-target artifacts for one target config; `None` when the
-/// format is a data target (json/csv) rather than a code target. All three
+/// format is a data target (json/csv) rather than a code target. All
 /// generators are schema-driven, deterministic, and infallible; each file
 /// header is stamped with the manifest's schema hash.
 fn code_target_items(
@@ -576,7 +579,8 @@ fn code_target_items(
     schema: &Schema,
     schema_hash: &str,
 ) -> Option<Vec<(String, Vec<u8>)>> {
-    // "csharp"/"python" per docs, "cs"/"py" accepted as short aliases.
+    // "csharp"/"python"/"typescript" per docs; short aliases ("cs"/"py"/
+    // "ts"/"js") and the common alternates ("golang", "c++"/"cxx") accepted.
     match target.format.as_str() {
         "cs" | "csharp" => Some(
             cage_target_cs::CsTargetGenerator::from_config(target)
@@ -588,6 +592,22 @@ fn code_target_items(
         ),
         "lua" => Some(
             cage_target_lua::LuaTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash)),
+        ),
+        "typescript" | "ts" | "javascript" | "js" => Some(
+            cage_target_ts::TsTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash)),
+        ),
+        "cpp" | "c++" | "cxx" => Some(
+            cage_target_cpp::CppTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash)),
+        ),
+        "go" | "golang" => Some(
+            cage_target_go::GoTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash)),
+        ),
+        "java" => Some(
+            cage_target_java::JavaTargetGenerator::from_config(target)
                 .generate(schema, Some(schema_hash)),
         ),
         _ => None,
