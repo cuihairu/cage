@@ -1,5 +1,5 @@
 # Cage 每日构建——每日全量验证（Rust 测试 + release 构建 + 文档构建），
-# 捕捉工具链与依赖漂移；与 CI 门禁同规则但更全（含 release profile）。
+# 捕捉工具链与依赖漂移；与 CI 门禁同规则但更全（含 release profile、API 文档）。
 name: Daily Build
 
 on:
@@ -10,6 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: -D warnings
 
 jobs:
   # 探测是否包含 Rust 工作区（hashFiles 仅 step 级可用）
@@ -38,6 +39,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: API docs
+        run: cargo doc --workspace --no-deps --locked
       - name: Test (all crates)
         run: cargo test --workspace --locked
       - name: Release build
