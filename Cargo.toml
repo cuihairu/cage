@@ -36,6 +36,7 @@ console = "0.15"
 # Source adapters
 calamine = { version = "0.22", features = ["dates"] }
 csv = "1.3"
+toml = "0.8"
 
 # Hashing & deterministic
 blake3 = "1.5"
