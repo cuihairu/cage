@@ -5,14 +5,14 @@
 ## 第一期 MVP
 
 ### T1 工程骨架
-- [ ] T1.1 Cargo workspace 起（cage-core/source-*/target-*/cli 多 crate + CI）
-- [ ] T1.2 Canonical Model（value.rs：Null/Bool/Int/UInt/Float/String/Bytes/Array/Object + Source Location）
-- [ ] T1.3 Diagnostics 框架（错误码表 + 全字段诊断 + 多级 Severity + 文本渲染器）
+- [x] T1.1 Cargo workspace 起（cage-core/source-*/target-*/cli 多 crate + CI）
+- [x] T1.2 Canonical Model（value.rs：Null/Bool/Int/UInt/Float/String/Bytes/Array/Object + Source Location）
+- [x] T1.3 Diagnostics 框架（错误码表 + 全字段诊断 + 多级 Severity + 文本渲染器）
 
 ### T2 Source
-- [ ] T2.1 JSON Source Adapter（serde 读入 → Canonical Model，保留路径定位）
-- [ ] T2.2 YAML Source Adapter（语法错误 E0001 精确到行）
-- [ ] T2.3 CSV Source Adapter（表头/行号定位）
+- [x] T2.1 JSON Source Adapter（serde 读入 → Canonical Model，保留路径定位）
+- [x] T2.2 YAML Source Adapter（语法错误 E0001 精确到行）
+- [x] T2.3 CSV Source Adapter（表头/行号定位）
 - [ ] T2.4 Excel Source Adapter（calamine：sheet/合并单元格/缓存值；错误定位到单元格 G27 式）
 
 ### T3 Schema 与校验
@@ -24,9 +24,9 @@
 - [ ] T3.6 `--level` 分级执行
 
 ### T4 Normalize 与 Target
-- [ ] T4.1 Normalize（数值/布尔归一，确定性 Canonical Representation）
-- [ ] T4.2 JSON Target（稳定键序、确定性字节输出）
-- [ ] T4.3 CSV Target
+- [x] T4.1 Normalize（数值/布尔归一，确定性 Canonical Representation）
+- [x] T4.2 JSON Target（稳定键序、确定性字节输出）
+- [x] T4.3 CSV Target
 - [ ] T4.4 Profile 机制（client/server 配置 + 字段级 targets 可见性过滤）
 
 ### T5 Build 与 CLI
