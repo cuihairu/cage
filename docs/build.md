@@ -104,7 +104,13 @@ Monster
 
 ## 增量构建
 
-有了 Dependency Graph 后，可以支持增量构建（第二阶段）。
+`cage build --incremental` 已实装第一层：哈希比对跳过。构建时把当前
+schema/source 哈希与上一次 `manifest.json` 记录的值比对，同 profile、同
+哈希且产物都在磁盘上时直接跳过重新生成（校验仍然全量执行）；任一输入变
+化或产物缺失则全量重建。注意：target 配置（cage.toml 的 targets）不参与
+哈希，改完请跑一次全量构建。
+
+基于 Dependency Graph 的第二层（变更影响分析，只重建受影响表）仍为第二阶段。
 
 例如 `Item.xlsx` 修改，影响：
 

@@ -250,10 +250,13 @@ impl CsTargetGenerator {
         schema_hash: Option<&str>,
     ) -> String {
         let mut out = String::new();
-        out.push_str(&Self::header(&format!("table:  {}", table.name), schema_hash));
+        out.push_str(&Self::header(
+            &format!("table:  {}", table.name),
+            schema_hash,
+        ));
         out.push_str("\n#nullable enable\n\n");
         out.push_str("using System;\nusing System.Collections.Generic;\n\n");
-        let _ = write!(out, "namespace {}\n{{\n", self.namespace);
+        let _ = writeln!(out, "namespace {}\n{{", self.namespace);
 
         // Class summary: name, primary key, optional description.
         let head = if table.primary_key.is_empty() {
@@ -268,17 +271,17 @@ impl CsTargetGenerator {
         match table.description.as_deref() {
             Some(desc) => {
                 let desc_esc = xml_escape(desc);
-                let _ = write!(
+                let _ = writeln!(
                     out,
-                    "    /// <summary>\n    /// {head}\n    /// <para>{desc_esc}</para>\n    /// </summary>\n"
+                    "    /// <summary>\n    /// {head}\n    /// <para>{desc_esc}</para>\n    /// </summary>"
                 );
             }
             None => {
-                let _ = write!(out, "    /// <summary>{head}</summary>\n");
+                let _ = writeln!(out, "    /// <summary>{head}</summary>");
             }
         }
         let class = cs_ident(&table.name);
-        let _ = write!(out, "    public sealed class {class}\n    {{\n");
+        let _ = writeln!(out, "    public sealed class {class}\n    {{");
 
         let mut used: HashSet<String> = HashSet::new();
         for (i, (field_name, field)) in Self::sorted_fields(table).into_iter().enumerate() {
@@ -286,7 +289,7 @@ impl CsTargetGenerator {
                 out.push('\n');
             }
             if let Some(doc) = field_doc(schema, field) {
-                let _ = write!(out, "        /// <summary>{doc}</summary>\n");
+                let _ = writeln!(out, "        /// <summary>{doc}</summary>");
             }
 
             let default = field
@@ -308,7 +311,7 @@ impl CsTargetGenerator {
             };
 
             let member = unique_ident(cs_ident(field_name), &mut used);
-            let _ = write!(out, "        public {ty} {member} {{ get; init; }}{init}\n");
+            let _ = writeln!(out, "        public {ty} {member} {{ get; init; }}{init}");
         }
 
         out.push_str("    }\n}\n");
@@ -320,7 +323,7 @@ impl CsTargetGenerator {
         out.push_str(&Self::header("enums:  shared definitions", schema_hash));
         out.push_str("\n#nullable enable\n\n");
         out.push_str("using System;\nusing System.Collections.Generic;\n\n");
-        let _ = write!(out, "namespace {}\n{{\n", self.namespace);
+        let _ = writeln!(out, "namespace {}\n{{", self.namespace);
 
         for (i, e) in Self::emitted_enums(schema).iter().enumerate() {
             if i > 0 {
@@ -366,9 +369,9 @@ impl CsTargetGenerator {
                 } else {
                     String::new()
                 };
-                let _ = write!(
+                let _ = writeln!(
                     out,
-                    "    /// <summary>{summary}</summary>\n    public enum {ident}{backing}\n    {{\n"
+                    "    /// <summary>{summary}</summary>\n    public enum {ident}{backing}\n    {{"
                 );
                 for (j, v) in e.values.iter().enumerate() {
                     if j > 0 {
@@ -376,23 +379,23 @@ impl CsTargetGenerator {
                     }
                     if let Some(desc) = &v.description {
                         let desc_esc = xml_escape(desc);
-                        let _ = write!(out, "        /// <summary>{desc_esc}</summary>\n");
+                        let _ = writeln!(out, "        /// <summary>{desc_esc}</summary>");
                     }
                     let member = unique_ident(cs_ident(&v.name), &mut used);
                     match &v.value {
                         Some(serde_json::Value::Number(n)) => {
-                            let _ = write!(out, "        {member} = {n},\n");
+                            let _ = writeln!(out, "        {member} = {n},");
                         }
                         _ => {
-                            let _ = write!(out, "        {member},\n");
+                            let _ = writeln!(out, "        {member},");
                         }
                     }
                 }
                 out.push_str("    }\n");
             } else {
-                let _ = write!(
+                let _ = writeln!(
                     out,
-                    "    /// <summary>{summary}</summary>\n    public static class {ident}\n    {{\n"
+                    "    /// <summary>{summary}</summary>\n    public static class {ident}\n    {{"
                 );
                 for (j, v) in e.values.iter().enumerate() {
                     if j > 0 {
@@ -400,7 +403,7 @@ impl CsTargetGenerator {
                     }
                     if let Some(desc) = &v.description {
                         let desc_esc = xml_escape(desc);
-                        let _ = write!(out, "        /// <summary>{desc_esc}</summary>\n");
+                        let _ = writeln!(out, "        /// <summary>{desc_esc}</summary>");
                     }
                     let member = unique_ident(cs_ident(&v.name), &mut used);
                     let value = match &v.value {
@@ -409,7 +412,7 @@ impl CsTargetGenerator {
                         Some(serde_json::Value::Bool(b)) => cs_string_literal(&b.to_string()),
                         _ => cs_string_literal(&v.name),
                     };
-                    let _ = write!(out, "        public const string {member} = {value};\n");
+                    let _ = writeln!(out, "        public const string {member} = {value};");
                 }
                 out.push_str("    }\n");
             }
@@ -642,10 +645,10 @@ fn field_doc(schema: &Schema, field: &FieldSchema) -> Option<String> {
         parts.push("required".to_string());
     }
     if let Some(min) = field.min {
-        parts.push(format!("min: {}", min.to_string()));
+        parts.push(format!("min: {min}"));
     }
     if let Some(max) = field.max {
-        parts.push(format!("max: {}", max.to_string()));
+        parts.push(format!("max: {max}"));
     }
     if let Some(v) = field.min_length {
         parts.push(format!("min_length: {v}"));
@@ -685,7 +688,7 @@ mod tests {
 
     fn test_schema() -> Schema {
         serde_yaml::from_str(
-            r#"
+            r"
 tables:
   Item:
     name: Item
@@ -721,7 +724,7 @@ enums:
   EmptyEnum:
     name: EmptyEnum
     values: []
-"#,
+",
         )
         .expect("test schema must parse")
     }
@@ -889,7 +892,7 @@ options:
         // Object defaults are not rendered (shared rule across targets).
         assert!(render_default(
             &serde_json::json!({"a": 1}),
-            &FieldType::Object(Default::default()),
+            &FieldType::Object(indexmap::IndexMap::default()),
             &schema
         )
         .is_none());

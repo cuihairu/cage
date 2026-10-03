@@ -134,6 +134,31 @@ Canonical Model
       +---- Lua
 ```
 
+### C# Target（已实装）
+
+Code Target 的第一个落地：从 Schema 生成 C# 类绑定（数据不参与代码生成，
+类型与元数据全部来自 Schema）。每个表一个 `{table}.cs`，共享枚举单独一个
+编译单元；输出确定性排序（表/字段按名序、枚举值保持 Schema 顺序），同
+Schema 必产出字节一致的文件，文件头会锤入 manifest 记录的 schema 哈希。
+
+```toml
+[[profiles.client.targets]]
+format = "csharp"            # 别名 cs
+output_dir = "build/cs"
+file_template = "{table}.cs"
+
+[profiles.client.targets.options]
+namespace = "Game.Config"    # 默认 Cage.Generated
+enums_file = "CageEnums.cs"  # 默认 CageEnums.cs
+```
+
+生成规则要点：
+
+- 整数枚举（每个成员都有整数值）生成 `enum`，按值域自动选 `int`/`long`/`ulong` 底座；字符串/无值枚举生成 `static class` 常量（Cage 枚举按字符串比较）
+- 非必填且无默认值的字段生成可空类型（`string?`）；必填引用类型补空初始化（`= string.Empty;`），保证 `#nullable enable` 下零告警编译
+- Schema default 渲染为初始化字面量（对象/不匹配类型跳过）；未解析枚举回退 `string` 并在 doc 注释标注
+- 保留字加 `@` 前缀，非法标识符字符归一为 `_`，同名成员确定性去重
+
 ## Profile：前端 / 后端
 
 不要把「客户端」和「服务端」写死在 Core。可以定义 Build Profile：

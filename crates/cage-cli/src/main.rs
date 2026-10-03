@@ -410,6 +410,31 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
 
     let normalized = normalize_document(&document);
 
+    let (schema_hash, source_hash) = ManifestGenerator::input_hashes(&schema, &normalized);
+    let output_dir = project.config.output_dir.as_deref().unwrap_or("build");
+    let manifest_dir = path.join(output_dir);
+
+    // Incremental build: skip regeneration when the previous manifest
+    // recorded the same schema/source hashes (same profile) and every
+    // artifact it lists is still on disk. Target config changes are NOT
+    // hashed — re-run a full build after editing cage.toml targets.
+    if incremental {
+        if let Ok(prev) = load_manifest(&manifest_dir) {
+            let unchanged = prev.profile == profile
+                && prev.schema_hash == schema_hash
+                && prev.source_hash == source_hash
+                && prev.artifacts.keys().all(|rel| path.join(rel).is_file());
+            if unchanged {
+                println!(
+                    "cage build: up to date (profile '{profile}', {} artifacts, manifest {})",
+                    prev.artifacts.len(),
+                    manifest_dir.join("manifest.json").display()
+                );
+                return 0;
+            }
+        }
+    }
+
     let mut artifacts: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
     for target in &build_profile.targets {
         let generated = match target.format.as_str() {
@@ -418,6 +443,11 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
             "csv" => {
                 cage_target_csv::CsvTargetGenerator::from_config(target).generate(&normalized, &[])
             }
+            // Code target: schema-driven C# bindings ("csharp" per docs, "cs"
+            // accepted as the short alias). Stamped with the manifest's
+            // schema hash so generated headers stay traceable.
+            "cs" | "csharp" => Ok(cage_target_cs::CsTargetGenerator::from_config(target)
+                .generate(&schema, Some(&schema_hash))),
             other => {
                 eprintln!("error: unsupported target format '{other}'");
                 return 2;
@@ -459,8 +489,6 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
         version,
     )
     .generate(&schema, &normalized, &artifacts);
-    let output_dir = project.config.output_dir.as_deref().unwrap_or("build");
-    let manifest_dir = path.join(output_dir);
     if let Err(e) = std::fs::create_dir_all(&manifest_dir) {
         eprintln!("error: cannot create {}: {e}", manifest_dir.display());
         return 2;

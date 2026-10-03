@@ -32,9 +32,13 @@ cage check --profile client     # 按 Profile 验证
 ```bash
 cage build config/ --profile client
 cage build config/ --profile server
+cage build config/ --incremental     # 哈希与上次 manifest 一致时跳过重新生成
 ```
 
 验证并生成目标产物，同时输出 [Build Manifest](/build#build-manifest)。
+`--incremental` 依据 manifest 里的 schema/source 哈希跳过未变化的重建
+（校验仍全量执行；改了 cage.toml 的 targets 请全量重建，详见
+[增量构建](/build#增量构建)）。
 
 ## inspect
 

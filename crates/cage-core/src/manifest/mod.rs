@@ -95,6 +95,14 @@ impl ManifestGenerator {
         }
     }
 
+    /// Hash the build inputs (schema + source document) exactly as
+    /// [`Self::generate`] does — the pair an incremental build compares
+    /// against the previous manifest to decide whether a rebuild can be
+    /// skipped.
+    pub fn input_hashes(schema: &crate::schema::Schema, document: &Document) -> (String, String) {
+        (Self::hash_schema(schema), Self::hash_source(document))
+    }
+
     fn hash_schema(schema: &crate::schema::Schema) -> String {
         // Deterministic serialization of schema (sorted keys)
         let json = serde_json::to_vec(schema).expect("Schema serialization failed");
@@ -519,6 +527,21 @@ mod tests {
         assert_eq!(m1.schema_hash, m2.schema_hash);
         assert_eq!(m1.source_hash, m2.source_hash);
         assert_eq!(m1.content_hash, m2.content_hash);
+    }
+
+    #[test]
+    fn test_input_hashes_match_generate() {
+        let schema = make_test_schema();
+        let doc = make_test_doc();
+        let generator = ManifestGenerator::new(
+            "test".to_string(),
+            "client".to_string(),
+            "0.1.0".to_string(),
+        );
+        let manifest = generator.generate(&schema, &doc, &[]);
+        let (schema_hash, source_hash) = ManifestGenerator::input_hashes(&schema, &doc);
+        assert_eq!(schema_hash, manifest.schema_hash);
+        assert_eq!(source_hash, manifest.source_hash);
     }
 
     #[test]
