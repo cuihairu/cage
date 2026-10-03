@@ -37,8 +37,9 @@ use cage_core::{
     error::codes::{internal, parse},
     value::{Document, Row, SourceLocation, Table, TypedValue, Value},
 };
-use calamine::{open_workbook_auto, Data, DataType, Reader};
+use calamine::{open_workbook_auto, Data, DataType, Range, Reader, Sheets};
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Excel Source Adapter
@@ -125,28 +126,68 @@ impl ExcelSourceAdapter {
                 continue;
             }
 
+            // The used range may not start at A1 — anchor row numbers, column
+            // letters and merge coordinates to the sheet grid, not to the range.
+            let range_start = range.start().unwrap_or((0, 0));
+
+            // T2.4: merged-cell regions — map every covered cell to its anchor.
+            // calamine exposes merge regions as inherent methods on Xlsx only
+            // (not on `Sheets`/`Reader`), so ODS workbooks skip the fill.
+            let mut merge_anchors: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
+            if let Sheets::Xlsx(xlsx) = &mut workbook {
+                match xlsx.merge_cells_by_sheet_name(sheet_name) {
+                    Ok(dims) => {
+                        for dim in dims {
+                            for row in dim.start.0..=dim.end.0 {
+                                for col in dim.start.1..=dim.end.1 {
+                                    if (row, col) != dim.start {
+                                        merge_anchors.insert((row, col), dim.start);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => diags.add(
+                        Diagnostic::warning(
+                            parse::E0001,
+                            format!("Failed to read merged cells in sheet '{sheet_name}': {e}"),
+                        )
+                        .with_source(file_path.clone()),
+                    ),
+                }
+            }
+
             // Determine table name from sheet name
             let table_name = Self::sanitize_table_name(sheet_name);
 
-            // Extract headers
+            // Extract headers (a covered header cell takes the anchor's text)
             let headers = if self.has_header && range.height() > self.header_row {
                 let header_row = range.rows().nth(self.header_row).unwrap();
                 header_row
                     .iter()
                     .enumerate()
                     .map(|(col_idx, cell)| {
+                        let cell = Self::resolve_cell(
+                            &range,
+                            &merge_anchors,
+                            self.header_row,
+                            col_idx,
+                            cell,
+                        );
                         let val = Self::cell_to_string(cell);
                         if val.trim().is_empty() {
-                            format!("col{col_idx}")
+                            format!("col{}", range_start.1 as usize + col_idx)
                         } else {
                             val.trim().to_string()
                         }
                     })
                     .collect::<Vec<String>>()
             } else {
-                // Generate column names
+                // Generate column names from the absolute column index (col2 ↔ C)
                 let width = range.width();
-                (0..width).map(|i| format!("col{i}")).collect()
+                (0..width)
+                    .map(|i| format!("col{}", range_start.1 as usize + i))
+                    .collect()
             };
 
             let mut table = Table {
@@ -165,8 +206,18 @@ impl ExcelSourceAdapter {
             };
 
             for (row_idx, row) in range.rows().skip(start_row).enumerate() {
-                // Check if row is empty
-                if self.skip_empty_rows && row.iter().all(Data::is_empty) {
+                let rel_row = start_row + row_idx;
+                // 1-indexed sheet row (G27-style: the used range may start at B2)
+                let sheet_row = range_start.0 as usize + rel_row + 1;
+
+                // Check if row is empty — through merges: a row fully covered
+                // by a vertical merge still carries the anchor's value
+                if self.skip_empty_rows
+                    && row.iter().enumerate().all(|(col_idx, cell)| {
+                        Self::resolve_cell(&range, &merge_anchors, rel_row, col_idx, cell)
+                            .is_empty()
+                    })
+                {
                     continue;
                 }
 
@@ -179,14 +230,15 @@ impl ExcelSourceAdapter {
                     }
 
                     let header = &headers[col_idx];
+                    let cell = Self::resolve_cell(&range, &merge_anchors, rel_row, col_idx, cell);
                     let cage_value = Self::cell_to_cage_value(cell);
 
-                    // Excel column letter (A, B, C... AA, AB...)
-                    let col_letter = Self::col_index_to_letter(col_idx);
+                    // Excel column letter (A, B, C... AA, AB...) on the sheet grid
+                    let col_letter = Self::col_index_to_letter(range_start.1 as usize + col_idx);
 
                     let loc = SourceLocation::new(&file_path)
                         .with_sheet(sheet_name.clone())
-                        .with_row(start_row + row_idx + 1) // 1-indexed for user
+                        .with_row(sheet_row)
                         .with_column(col_letter)
                         .with_field(header.clone());
 
@@ -212,7 +264,7 @@ impl ExcelSourceAdapter {
                     fields,
                     location: SourceLocation::new(&file_path)
                         .with_sheet(sheet_name.clone())
-                        .with_row(start_row + row_idx + 1),
+                        .with_row(sheet_row),
                     index: table.rows.len(),
                 });
             }
@@ -267,6 +319,36 @@ impl ExcelSourceAdapter {
             }
             Data::DateTimeIso(s) | Data::DurationIso(s) => Value::String(s.clone()),
         }
+    }
+
+    /// Resolve a cell through merged regions (T2.4): a covered cell takes its
+    /// anchor's value, so a vertical merge reads as the same value on every
+    /// covered row. `rel_row`/`rel_col` are positions within `range` (as
+    /// yielded by `rows()`); merge coordinates are absolute sheet cells.
+    fn resolve_cell<'a>(
+        range: &'a Range<Data>,
+        merge_anchors: &HashMap<(u32, u32), (u32, u32)>,
+        rel_row: usize,
+        rel_col: usize,
+        cell: &'a Data,
+    ) -> &'a Data {
+        let Some((start_row, start_col)) = range.start() else {
+            return cell;
+        };
+        let abs = (start_row + rel_row as u32, start_col + rel_col as u32);
+        let Some(&(anchor_row, anchor_col)) = merge_anchors.get(&abs) else {
+            return cell;
+        };
+        // Anchor outside the used range (merge overhangs the data) — keep the raw cell
+        let (Some(anchor_rel_row), Some(anchor_rel_col)) = (
+            anchor_row.checked_sub(start_row),
+            anchor_col.checked_sub(start_col),
+        ) else {
+            return cell;
+        };
+        range
+            .get((anchor_rel_row as usize, anchor_rel_col as usize))
+            .unwrap_or(cell)
     }
 
     fn cell_to_string(cell: &Data) -> String {
@@ -447,5 +529,87 @@ mod tests {
         let adapter = ExcelSourceAdapter::default();
         assert_eq!(adapter.supported_extensions(), &["xlsx", "xlsm", "ods"]);
         assert_eq!(adapter.format_name(), "Excel");
+    }
+
+    /// T2.4 end-to-end: vertical merge fill + sheet-grid addressing.
+    /// Fixture (`tests/fixtures/gen_merged_cells.py`) has its used range start
+    /// at B2 and merges D3:D4 with no value stored in D4.
+    #[test]
+    fn test_merged_cells_fill_and_sheet_addressing() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/merged_cells.xlsx");
+        let adapter = ExcelSourceAdapter::default();
+        let doc = adapter.parse_file(&path).expect("fixture must parse");
+
+        let table = doc.tables.get("Items").expect("Items table");
+        assert_eq!(table.rows.len(), 3, "all three data rows present");
+
+        // Primary key heuristic picks the id column
+        assert_eq!(table.rows[0].primary_key, vec![Value::Int(1001)]);
+        assert_eq!(table.rows[1].primary_key, vec![Value::Int(1002)]);
+
+        // Vertical merge: D4 carries no value in the file, takes D3's anchor
+        assert_eq!(
+            table.rows[0].fields["type"].value,
+            Value::String("weapon".to_string())
+        );
+        assert_eq!(
+            table.rows[1].fields["type"].value,
+            Value::String("weapon".to_string()),
+            "covered cell D4 must be filled from anchor D3"
+        );
+        assert_eq!(
+            table.rows[2].fields["type"].value,
+            Value::String("material".to_string())
+        );
+
+        // Sheet-grid addressing (G27-style): used range starts at B2, so the
+        // anchor row of the merge is sheet row 3, the covered row is sheet row 4
+        // and the type column is D — not range-relative offsets.
+        let anchor_loc = &table.rows[0].fields["type"].location;
+        assert_eq!(anchor_loc.row, Some(3));
+        assert_eq!(anchor_loc.column.as_deref(), Some("D"));
+        let covered_loc = &table.rows[1].fields["type"].location;
+        assert_eq!(covered_loc.row, Some(4));
+        assert_eq!(covered_loc.column.as_deref(), Some("D"));
+
+        // Empty covered cells elsewhere stay Null; plain cells unaffected
+        assert_eq!(table.rows[1].fields["note"].value, Value::Null);
+        assert_eq!(
+            table.rows[2].fields["note"].value,
+            Value::String("rare".to_string())
+        );
+        assert_eq!(table.rows[1].fields["price"].value, Value::Int(250));
+    }
+
+    /// Horizontal merge: covered cell takes the anchor to its left; anchors,
+    /// uncovered cells and anchors outside the used range stay raw.
+    #[test]
+    fn test_resolve_cell_horizontal_and_out_of_range() {
+        // Sheet rows 3..5, columns B..F — start deliberately not A1
+        let mut range: Range<Data> = Range::new((2, 1), (4, 5));
+        range.set_value((3, 4), Data::String("wide".to_string())); // E4 anchor
+
+        let mut anchors = HashMap::new();
+        anchors.insert((3, 5), (3, 4)); // F4 covered by merge E4:F4
+
+        // F4 (rel 1,4) is covered → E4's value
+        let covered = ExcelSourceAdapter::resolve_cell(&range, &anchors, 1, 4, &Data::Empty);
+        assert_eq!(covered, &Data::String("wide".to_string()));
+
+        // E4 itself is the anchor → raw value kept
+        let anchor_raw = Data::String("wide".to_string());
+        let anchor = ExcelSourceAdapter::resolve_cell(&range, &anchors, 1, 3, &anchor_raw);
+        assert_eq!(anchor, &anchor_raw);
+
+        // B3 not covered → raw value kept
+        let raw = ExcelSourceAdapter::resolve_cell(&range, &anchors, 0, 0, &Data::Int(7));
+        assert_eq!(raw, &Data::Int(7));
+
+        // Merge anchor sits before range.start() → no bogus substitution
+        let mut outside = HashMap::new();
+        outside.insert((3, 5), (1, 0)); // anchor at sheet col A (before B)
+        let kept = ExcelSourceAdapter::resolve_cell(&range, &outside, 1, 4, &Data::Int(9));
+        assert_eq!(kept, &Data::Int(9));
     }
 }
