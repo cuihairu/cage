@@ -312,7 +312,7 @@ rules:
 
 违反断言报 `E1501`，定位到行级。
 
-## L7 Game Rule（业务插件）
+## L7 Game Rule（业务插件，已实装）
 
 复杂的游戏业务逻辑不应该全部塞进 Schema DSL。层次应该是：
 
@@ -322,31 +322,35 @@ Expression
 Code Validator
 ```
 
-业务校验做成插件（Rust trait）：
+业务校验做成插件（Rust trait，进程内注册）：
 
 ```rust
-pub trait Validator {
-    fn validate(
-        &self,
-        context: &ConfigContext,
-        document: &Document,
-        diagnostics: &mut Diagnostics,
-    );
+pub trait GameRuleValidator: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn validate(&self, schema: &Schema, document: &Document) -> Vec<Diagnostic>;
 }
+
+// cage check --level gamerule 运行内建注册表；嵌入方亦可自行组装：
+let mut registry = GameRuleRegistry::with_builtins();
+registry.register(Box::new(DropTableValidator));
+let diagnostics = registry.run(&schema, &document);
 ```
 
-游戏项目可以实现：
+内建样例规则 `power_curve` 端到端可用：任一表同时含 `level`/`attack`
+字段时校验 `attack <= level * 100 + 50`，违者报 `E1601`（行级定位，
+hint 带计算过程）：
 
 ```text
-ItemValidator
-SkillValidator
-MonsterValidator
-QuestValidator
-DropTableValidator
-MapValidator
+ERROR E1601 — Game Rule Validation Failed
+  Source: config/monster.json | Row: 1
+  Table: Monster
+  Message: Game rule violation: power curve
+  Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 ```
 
-这样 Cage Core 不需要理解具体游戏业务。MVP 只预留 trait 接口，插件沙箱化执行是第二阶段课题（见 [架构：安全与隔离](/architecture#安全与隔离)）。
+这样 Cage Core 不需要理解具体游戏业务。执行模型的选型（进程内
+trait → 动态库 → 沙箱）与信任边界见
+[设计文档 §17.1 插件沙箱方案定稿](/design#171-插件沙箱方案定稿)。
 
 ## 分级执行
 

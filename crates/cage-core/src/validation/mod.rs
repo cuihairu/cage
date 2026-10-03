@@ -1,6 +1,8 @@
 //! Validation Pipeline - L0 through L7 validation levels
 //! Each level can be run independently via `--level` flag
 
+pub mod rules;
+
 use crate::diagnostics::{Diagnostic, DiagnosticBuilder, Diagnostics, Severity};
 use crate::error::codes::{parse, reference, schema, semantic, table, type_val, value};
 use crate::schema::{
@@ -811,10 +813,16 @@ fn evaluate_expression(
     true
 }
 
-/// L7: Game Rule validation - plugin validators (stub for MVP)
-fn validate_game_rule(_ctx: &mut ValidationContext) {
-    // MVP: trait interface only, no plugin loading
-    // Phase 2: implement dynamic plugin loading
+/// L7: Game Rule validation - plugin validators (see [`rules`]).
+///
+/// Runs the built-in registry today; the trait + registry are the stable
+/// extension point for embedder-supplied and (phase 2) dynamic-library
+/// validators — see design §17「插件沙箱方案定稿」.
+fn validate_game_rule(ctx: &mut ValidationContext) {
+    let registry = rules::GameRuleRegistry::with_builtins();
+    for diagnostic in registry.run(&ctx.schema.schema, ctx.document) {
+        ctx.diagnostics.add(diagnostic);
+    }
 }
 
 #[cfg(test)]

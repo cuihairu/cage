@@ -36,9 +36,9 @@
 
 ## 第二阶段（预排）
 - [x] 代码生成器：C#/Python/Lua/TypeScript/JavaScript/C++/Go/Java
-- [ ] Plugin SDK + Game Rule Validator 实装（trait + 动态库/脚本沙箱方案定稿）
+- [x] Plugin SDK + Game Rule Validator 实装（沙箱方案定稿于 design §17.1：进程内 trait 现已实装、动态库 C ABI shim 为第三方分发路线、不可信代码不执行；GameRuleValidator trait + GameRuleRegistry + 内建 power_curve 样例端到端，`cage check --level gamerule` 输出 E1601 行级诊断；动态库装载与插件市场不在本期）
 - [x] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
-- [ ] 增量构建（变更影响分析）
+- [x] 增量构建（--incremental 按 manifest 的 schema/source 哈希跳过未变更的整轮重建；按 target 的变更影响传播未做，target 配置变更不参与哈希、需全量）
 - [x] CI 集成（warnings_as_errors、GitHub Actions 模板）
 
 ## 第三阶段（预排）
