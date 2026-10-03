@@ -37,7 +37,7 @@ use cage_core::{
     error::codes::{internal, parse},
     value::{Document, Row, SourceLocation, Table, TypedValue, Value},
 };
-use calamine::{open_workbook_auto, DataType, Reader};
+use calamine::{open_workbook_auto, Data, DataType, Reader};
 use indexmap::IndexMap;
 use std::path::Path;
 
@@ -108,22 +108,12 @@ impl ExcelSourceAdapter {
 
         for sheet_name in &sheet_names {
             let range = match workbook.worksheet_range(sheet_name) {
-                Some(Ok(r)) => r,
-                Some(Err(e)) => {
+                Ok(r) => r,
+                Err(e) => {
                     diags.add(
                         Diagnostic::warning(
                             parse::E0001,
                             format!("Failed to read sheet '{sheet_name}': {e:?}"),
-                        )
-                        .with_source(file_path.clone()),
-                    );
-                    continue;
-                }
-                None => {
-                    diags.add(
-                        Diagnostic::warning(
-                            parse::E0001,
-                            format!("Sheet '{sheet_name}' not found or empty"),
                         )
                         .with_source(file_path.clone()),
                     );
@@ -176,7 +166,7 @@ impl ExcelSourceAdapter {
 
             for (row_idx, row) in range.rows().skip(start_row).enumerate() {
                 // Check if row is empty
-                if self.skip_empty_rows && row.iter().all(calamine::DataType::is_empty) {
+                if self.skip_empty_rows && row.iter().all(Data::is_empty) {
                     continue;
                 }
 
@@ -246,10 +236,10 @@ impl ExcelSourceAdapter {
         }
     }
 
-    fn cell_to_cage_value(cell: &DataType) -> Value {
+    fn cell_to_cage_value(cell: &Data) -> Value {
         match cell {
-            DataType::Empty => Value::Null,
-            DataType::String(s) => {
+            Data::Empty => Value::Null,
+            Data::String(s) => {
                 let trimmed = s.trim();
                 if trimmed.is_empty() {
                     Value::Null
@@ -258,7 +248,7 @@ impl ExcelSourceAdapter {
                     Self::infer_string_type(trimmed)
                 }
             }
-            DataType::Float(f) => {
+            Data::Float(f) => {
                 if f.is_nan() || f.is_infinite() {
                     Value::String(f.to_string())
                 } else if f.fract() == 0.0 {
@@ -268,28 +258,26 @@ impl ExcelSourceAdapter {
                     Value::Float(*f)
                 }
             }
-            DataType::Int(i) => Value::Int(*i),
-            DataType::Bool(b) => Value::Bool(*b),
-            DataType::Error(e) => Value::String(format!("#ERROR: {e:?}")),
-            DataType::DateTime(dt) => {
+            Data::Int(i) => Value::Int(*i),
+            Data::Bool(b) => Value::Bool(*b),
+            Data::Error(e) => Value::String(format!("#ERROR: {e:?}")),
+            Data::DateTime(dt) => {
                 // Excel serial date -> ISO string
                 Value::String(format!("{dt:?}"))
             }
-            DataType::DateTimeIso(s) | DataType::DurationIso(s) => Value::String(s.clone()),
-            DataType::Duration(d) => Value::String(format!("{d:?}")),
+            Data::DateTimeIso(s) | Data::DurationIso(s) => Value::String(s.clone()),
         }
     }
 
-    fn cell_to_string(cell: &DataType) -> String {
+    fn cell_to_string(cell: &Data) -> String {
         match cell {
-            DataType::Empty => String::new(),
-            DataType::String(s) | DataType::DateTimeIso(s) | DataType::DurationIso(s) => s.clone(),
-            DataType::Float(f) => f.to_string(),
-            DataType::Int(i) => i.to_string(),
-            DataType::Bool(b) => b.to_string(),
-            DataType::Error(e) => format!("#ERROR: {e:?}"),
-            DataType::DateTime(dt) => format!("{dt:?}"),
-            DataType::Duration(d) => format!("{d:?}"),
+            Data::Empty => String::new(),
+            Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => s.clone(),
+            Data::Float(f) => f.to_string(),
+            Data::Int(i) => i.to_string(),
+            Data::Bool(b) => b.to_string(),
+            Data::Error(e) => format!("#ERROR: {e:?}"),
+            Data::DateTime(dt) => format!("{dt:?}"),
         }
     }
 
@@ -405,30 +393,30 @@ mod tests {
 
     #[test]
     fn test_cell_to_cage_value() {
-        use calamine::DataType;
+        use calamine::Data;
 
         assert_eq!(
-            ExcelSourceAdapter::cell_to_cage_value(&DataType::Empty),
+            ExcelSourceAdapter::cell_to_cage_value(&Data::Empty),
             Value::Null
         );
         assert_eq!(
-            ExcelSourceAdapter::cell_to_cage_value(&DataType::String("hello".to_string())),
+            ExcelSourceAdapter::cell_to_cage_value(&Data::String("hello".to_string())),
             Value::String("hello".to_string())
         );
         assert_eq!(
-            ExcelSourceAdapter::cell_to_cage_value(&DataType::Int(42)),
+            ExcelSourceAdapter::cell_to_cage_value(&Data::Int(42)),
             Value::Int(42)
         );
         assert_eq!(
-            ExcelSourceAdapter::cell_to_cage_value(&DataType::Float(3.14)),
+            ExcelSourceAdapter::cell_to_cage_value(&Data::Float(3.14)),
             Value::Float(3.14)
         );
         assert_eq!(
-            ExcelSourceAdapter::cell_to_cage_value(&DataType::Float(100.0)),
+            ExcelSourceAdapter::cell_to_cage_value(&Data::Float(100.0)),
             Value::Int(100)
         );
         assert_eq!(
-            ExcelSourceAdapter::cell_to_cage_value(&DataType::Bool(true)),
+            ExcelSourceAdapter::cell_to_cage_value(&Data::Bool(true)),
             Value::Bool(true)
         );
     }
