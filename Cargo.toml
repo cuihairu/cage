@@ -9,6 +9,8 @@ members = [
     "crates/cage-target-json",
     "crates/cage-target-csv",
     "crates/cage-target-cs",
+    "crates/cage-target-py",
+    "crates/cage-target-lua",
     "crates/cage-cli",
 ]
 

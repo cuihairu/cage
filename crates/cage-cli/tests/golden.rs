@@ -28,6 +28,18 @@ name = "client"
 format = "json"
 output_dir = "build/client"
 file_template = "{table}.json"
+
+[[profiles.client.targets]]
+format = "csharp"
+output_dir = "build/cs"
+
+[[profiles.client.targets]]
+format = "python"
+output_dir = "build/python"
+
+[[profiles.client.targets]]
+format = "lua"
+output_dir = "build/lua"
 "#,
     )
     .unwrap();
@@ -42,14 +54,20 @@ file_template = "{table}.json"
       id: { name: id, type: { kind: Int32 }, required: true }
       name: { name: name, type: { kind: String }, required: true }
       price: { name: price, type: { kind: Int32 }, min: 0 }
-enums: {}
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+      - { name: Shield, value: 2 }
 "#,
     )
     .unwrap();
 
     fs::write(
         root.join("config/item.json"),
-        r#"{"Item": [{"id": 1, "name": "Sword", "price": 100}, {"id": 2, "name": "Shield", "price": 50}]}"#,
+        r#"{"Item": [{"id": 1, "name": "Sword", "price": 100, "kind": "Sword"}, {"id": 2, "name": "Shield", "price": 50, "kind": "Shield"}]}"#,
     )
     .unwrap();
 }
@@ -100,6 +118,12 @@ fn build_is_byte_deterministic() {
     assert!(status.success());
     let second = snapshot(root);
 
+    // Data + code targets (json/cs/python/lua) all participate in the lock.
+    assert!(
+        first.len() >= 8,
+        "expected code+data artifacts, got {}",
+        first.len()
+    );
     assert_eq!(first.len(), second.len());
     for ((name_a, bytes_a), (name_b, bytes_b)) in first.iter().zip(second.iter()) {
         assert_eq!(name_a, name_b);

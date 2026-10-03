@@ -40,7 +40,7 @@ use clap::{Parser, Subcommand};
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
 
-use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig};
+use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig, TargetConfig};
 use cage_core::normalize::normalize_document;
 use cage_core::schema::{DependencyGraph, Schema, ValidatedSchema};
 use cage_core::validation::ValidationLevel;
@@ -94,6 +94,14 @@ enum Commands {
         /// Table name (lists all tables when omitted)
         table: Option<String>,
     },
+    /// Generate code-target artifacts only (cs/python/lua), no data validation
+    Gen {
+        /// Configuration project root directory
+        path: PathBuf,
+        /// Build profile to generate code for
+        #[arg(long, default_value = "client")]
+        profile: String,
+    },
     /// Compare artifacts of two configuration builds
     Diff {
         /// Baseline build directory (or manifest.json)
@@ -125,6 +133,7 @@ fn main() {
             incremental,
         } => run_build(&path, &level, &profile, incremental),
         Commands::Inspect { path, table } => run_inspect(&path, table.as_deref()),
+        Commands::Gen { path, profile } => run_gen(&path, &profile),
         Commands::Diff { baseline, target } => run_diff(&baseline, &target),
     };
     std::process::exit(code);
@@ -437,42 +446,25 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
 
     let mut artifacts: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
     for target in &build_profile.targets {
-        let generated = match target.format.as_str() {
-            "json" => cage_target_json::JsonTargetGenerator::from_config(target)
-                .generate(&normalized, &[]),
-            "csv" => {
-                cage_target_csv::CsvTargetGenerator::from_config(target).generate(&normalized, &[])
-            }
-            // Code target: schema-driven C# bindings ("csharp" per docs, "cs"
-            // accepted as the short alias). Stamped with the manifest's
-            // schema hash so generated headers stay traceable.
-            "cs" | "csharp" => Ok(cage_target_cs::CsTargetGenerator::from_config(target)
-                .generate(&schema, Some(&schema_hash))),
-            other => {
-                eprintln!("error: unsupported target format '{other}'");
-                return 2;
-            }
+        let generated = match code_target_items(target, &schema, &schema_hash) {
+            // Code targets (cs/python/lua) are schema-driven and infallible.
+            Some(items) => Ok(items),
+            None => match target.format.as_str() {
+                "json" => cage_target_json::JsonTargetGenerator::from_config(target)
+                    .generate(&normalized, &[]),
+                "csv" => cage_target_csv::CsvTargetGenerator::from_config(target)
+                    .generate(&normalized, &[]),
+                other => {
+                    eprintln!("error: unsupported target format '{other}'");
+                    return 2;
+                }
+            },
         };
         match generated {
             Ok(items) => {
-                for (rel_path, content) in items {
-                    let abs = path.join(&rel_path);
-                    if let Some(parent) = abs.parent() {
-                        if let Err(e) = std::fs::create_dir_all(parent) {
-                            eprintln!("error: cannot create {}: {e}", parent.display());
-                            return 2;
-                        }
-                    }
-                    if let Err(e) = std::fs::write(&abs, &content) {
-                        eprintln!("error: cannot write {}: {e}", abs.display());
-                        return 2;
-                    }
-                    let table = rel_path
-                        .rsplit('/')
-                        .next()
-                        .and_then(|f| f.rsplit_once('.'))
-                        .map(|(stem, _)| stem.to_string());
-                    artifacts.push((rel_path, content, target.format.clone(), table));
+                if let Err(e) = write_artifact_files(path, items, &target.format, &mut artifacts) {
+                    eprintln!("error: {e}");
+                    return 2;
                 }
             }
             Err(diags) => {
@@ -489,23 +481,13 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
         version,
     )
     .generate(&schema, &normalized, &artifacts);
-    if let Err(e) = std::fs::create_dir_all(&manifest_dir) {
-        eprintln!("error: cannot create {}: {e}", manifest_dir.display());
-        return 2;
-    }
-    let manifest_path = manifest_dir.join("manifest.json");
-    match serde_json::to_vec_pretty(&manifest) {
-        Ok(bytes) => {
-            if let Err(e) = std::fs::write(&manifest_path, bytes) {
-                eprintln!("error: cannot write {}: {e}", manifest_path.display());
-                return 2;
-            }
-        }
+    let manifest_path = match write_manifest(&manifest_dir, &manifest) {
+        Ok(p) => p,
         Err(e) => {
-            eprintln!("error: manifest serialization failed: {e}");
+            eprintln!("error: {e}");
             return 2;
         }
-    }
+    };
 
     println!(
         "cage build: OK (profile '{profile}', {} artifacts, manifest {})",
@@ -513,6 +495,142 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
         manifest_path.display()
     );
     0
+}
+
+/// `cage gen` — schema-driven code generation only. Writes the code-target
+/// artifacts (cs/python/lua) of a profile without running data validation:
+/// types and metadata all come from the Schema, so source rows are not
+/// needed. Data targets (json/csv) in the profile are skipped — run
+/// `cage build` for those. The manifest is written like a build's, so gen
+/// and build manifests share the same 口径 (schema/source/content hashes).
+fn run_gen(path: &Path, profile: &str) -> i32 {
+    let project = match load_project(path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let Some(build_profile) = project.config.profiles.get(profile) else {
+        eprintln!(
+            "error: unknown profile '{profile}' (available: {})",
+            project
+                .config
+                .profiles
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return 2;
+    };
+
+    let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
+    let normalized = normalize_document(&document);
+    let (schema_hash, _) = ManifestGenerator::input_hashes(&schema, &normalized);
+
+    let mut artifacts: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
+    for target in &build_profile.targets {
+        if let Some(items) = code_target_items(target, &schema, &schema_hash) {
+            if let Err(e) = write_artifact_files(path, items, &target.format, &mut artifacts) {
+                eprintln!("error: {e}");
+                return 2;
+            }
+        }
+    }
+    if artifacts.is_empty() {
+        eprintln!("error: profile '{profile}' has no code targets (cs/python/lua)");
+        return 2;
+    }
+
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let manifest = ManifestGenerator::new(
+        project.config.project.name.clone(),
+        profile.to_string(),
+        version,
+    )
+    .generate(&schema, &normalized, &artifacts);
+    let output_dir = project.config.output_dir.as_deref().unwrap_or("build");
+    let manifest_path = match write_manifest(&path.join(output_dir), &manifest) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+
+    println!(
+        "cage gen: OK (profile '{profile}', {} artifacts, manifest {})",
+        artifacts.len(),
+        manifest_path.display()
+    );
+    0
+}
+
+/// Generate code-target artifacts for one target config; `None` when the
+/// format is a data target (json/csv) rather than a code target. All three
+/// generators are schema-driven, deterministic, and infallible; each file
+/// header is stamped with the manifest's schema hash.
+fn code_target_items(
+    target: &TargetConfig,
+    schema: &Schema,
+    schema_hash: &str,
+) -> Option<Vec<(String, Vec<u8>)>> {
+    // "csharp"/"python" per docs, "cs"/"py" accepted as short aliases.
+    match target.format.as_str() {
+        "cs" | "csharp" => Some(
+            cage_target_cs::CsTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash)),
+        ),
+        "python" | "py" => Some(
+            cage_target_py::PyTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash)),
+        ),
+        "lua" => Some(
+            cage_target_lua::LuaTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash)),
+        ),
+        _ => None,
+    }
+}
+
+/// Write generated artifacts under `root`, recording manifest entries
+/// (relative path, content, raw format string, table stem when derivable).
+fn write_artifact_files(
+    root: &Path,
+    items: Vec<(String, Vec<u8>)>,
+    format: &str,
+    artifacts: &mut Vec<(String, Vec<u8>, String, Option<String>)>,
+) -> Result<(), String> {
+    for (rel_path, content) in items {
+        let abs = root.join(&rel_path);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&abs, &content)
+            .map_err(|e| format!("cannot write {}: {e}", abs.display()))?;
+        let table = rel_path
+            .rsplit('/')
+            .next()
+            .and_then(|f| f.rsplit_once('.'))
+            .map(|(stem, _)| stem.to_string());
+        artifacts.push((rel_path, content, format.to_string(), table));
+    }
+    Ok(())
+}
+
+/// Persist the build manifest as `manifest.json` under `manifest_dir`,
+/// returning its full path.
+fn write_manifest(manifest_dir: &Path, manifest: &BuildManifest) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(manifest_dir)
+        .map_err(|e| format!("cannot create {}: {e}", manifest_dir.display()))?;
+    let manifest_path = manifest_dir.join("manifest.json");
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|e| format!("manifest serialization failed: {e}"))?;
+    std::fs::write(&manifest_path, bytes)
+        .map_err(|e| format!("cannot write {}: {e}", manifest_path.display()))?;
+    Ok(manifest_path)
 }
 
 fn run_inspect(path: &Path, table: Option<&str>) -> i32 {
@@ -674,5 +792,15 @@ mod tests {
     fn parse_inspect_subcommand() {
         let cli = Cli::try_parse_from(["cage", "inspect", "proj"]).expect("parse inspect");
         assert!(matches!(cli.command, Commands::Inspect { .. }));
+    }
+
+    #[test]
+    fn parse_gen_subcommand() {
+        let cli =
+            Cli::try_parse_from(["cage", "gen", "proj", "--profile", "server"]).expect("parse gen");
+        match cli.command {
+            Commands::Gen { profile, .. } => assert_eq!(profile, "server"),
+            _ => panic!("expected Gen"),
+        }
     }
 }

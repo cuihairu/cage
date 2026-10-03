@@ -22,6 +22,8 @@ cage-source-excel = { path = "../cage-source-excel" }
 cage-target-json = { path = "../cage-target-json" }
 cage-target-csv = { path = "../cage-target-csv" }
 cage-target-cs = { path = "../cage-target-cs" }
+cage-target-py = { path = "../cage-target-py" }
+cage-target-lua = { path = "../cage-target-lua" }
 clap = { workspace = true }
 indexmap = { workspace = true }
 serde_json = { workspace = true }

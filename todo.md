@@ -35,7 +35,7 @@
 - [x] T5.3 golden 测试：同输入两次构建字节级一致
 
 ## 第二阶段（预排）
-- [ ] 代码生成器：C#/Python/Lua
+- [x] 代码生成器：C#/Python/Lua
 - [ ] Plugin SDK + Game Rule Validator 实装（trait + 动态库/脚本沙箱方案定稿）
 - [x] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
 - [ ] 增量构建（变更影响分析）

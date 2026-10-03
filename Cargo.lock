@@ -126,6 +126,8 @@ dependencies = [
  "cage-target-cs",
  "cage-target-csv",
  "cage-target-json",
+ "cage-target-lua",
+ "cage-target-py",
  "clap",
  "indexmap",
  "serde_json",
@@ -218,6 +220,26 @@ dependencies = [
  "indexmap",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "cage-target-lua"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "indexmap",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
+name = "cage-target-py"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "indexmap",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

@@ -1,0 +1,18 @@
+[package]
+name = "cage-target-py"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "Python code generator for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+indexmap = { workspace = true }
+serde_yaml = { workspace = true }

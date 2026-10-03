@@ -39,13 +39,14 @@ Authoring Sources → Source Adapters → Canonical Model
 - **Diagnostics 一等公民**：错误码 + 精确定位（文件/Sheet/单元格/字段/值）+ 修复提示
 - **确定性构建**：相同输入 → 相同产物、哈希与 Manifest（可追踪、可回滚、可增量）
 - **Profile 机制**：client / server 不同 targets 与字段可见性，一份配置两端复用
-- **Target 插件**：JSON / CSV 起步，扩展 C# / Python / Lua / Protobuf 等（数据序列化与代码生成分离）
+- **Target 插件**：JSON / CSV 数据产物起步，已扩展 C# / Python / Lua 代码绑定，后续 Protobuf 等（数据序列化与代码生成分离）
 
 ## 快速开始
 
 ```bash
 cage check config/                 # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
+cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua）
 cage diff build/a build/b          # 比较两个配置版本
 cage inspect Item                  # 查看 Schema 与配置结构
 ```
