@@ -123,7 +123,8 @@ Java
 ```
 
 Code Target 的生成方式（直接渲染，而非 AST / 模板引擎）及其选型理由见
-[设计文档](/design)的 Code Targets 章节。
+仓库设计稿 `docs/design.md` 的 Code Targets 章节（plan → render → verify
+三层、与 AST 库/模板引擎的取舍）。
 
 例如同一份数据：
 

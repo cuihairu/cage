@@ -350,7 +350,8 @@ ERROR E1601 — Game Rule Validation Failed
 
 这样 Cage Core 不需要理解具体游戏业务。执行模型的选型（进程内
 trait → 动态库 → 沙箱）与信任边界见
-[设计文档 §17.1 插件沙箱方案定稿](/design#171-插件沙箱方案定稿)。
+[架构：安全与隔离](/architecture#安全与隔离)；完整对比表与分层决策
+见仓库设计稿 `docs/design.md` §17.1「插件沙箱方案定稿」。
 
 ## 分级执行
 
