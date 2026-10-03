@@ -278,4 +278,50 @@ mod tests {
         assert_eq!(default_severity("E1401"), Severity::Error);
         assert_eq!(default_severity("E9001"), Severity::Error);
     }
+
+    #[test]
+    fn default_severity_prefix_families_and_unknown_fallback() {
+        // every family prefix the function special-cases, including the
+        // E99 internal branch that only runs once E0/E1/E4/E5/E6/E90 miss
+        for code in [
+            "E0001", "E1001", "E4001", "E5001", "E6001", "E9001", "E9901",
+        ] {
+            assert_eq!(default_severity(code), Severity::Error, "family {code}");
+        }
+        // codes outside every known prefix fall through to the same default
+        assert_eq!(default_severity("X0001"), Severity::Error);
+        assert_eq!(default_severity(""), Severity::Error);
+    }
+
+    #[test]
+    fn error_title_resolves_every_code_family() {
+        let samples = [
+            ("E0001", "Syntax Error"),
+            ("E1004", "Invalid Schema Definition"),
+            ("E1101", "Type Mismatch"),
+            ("E1201", "Value Out of Range"),
+            ("E1301", "Duplicate Primary Key"),
+            ("E1401", "Reference Target Not Found"),
+            ("E1501", "Assertion Failed"),
+            ("E1601", "Game Rule Validation Failed"),
+            ("E9001", "Target Generator Not Found"),
+            ("E9901", "Internal Error"),
+        ];
+        for (code, title) in samples {
+            assert_eq!(error_title(code), Some(title), "title of {code}");
+        }
+        // unknown codes have no title (rendered without the em-dash suffix)
+        assert_eq!(error_title("E7777"), None);
+        assert_eq!(error_title(""), None);
+    }
+
+    #[test]
+    fn severity_display_uses_uppercase_label() {
+        assert_eq!(Severity::Info.to_string(), "INFO");
+        assert_eq!(Severity::Warning.to_string(), "WARNING");
+        assert_eq!(Severity::Error.to_string(), "ERROR");
+        assert_eq!(format!("{}", Severity::Info), Severity::Info.as_str());
+        // the default severity is the build-blocking one
+        assert_eq!(Severity::default(), Severity::Error);
+    }
 }

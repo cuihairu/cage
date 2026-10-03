@@ -205,6 +205,61 @@ mod tests {
         assert!(registry.run(&Schema::new(), &doc).is_empty());
     }
 
+    /// Same shape as [`row`] but with caller-chosen value families — used to
+    /// exercise the numeric views the power curve accepts.
+    fn flex_row(index: usize, level: Value, attack: Value) -> Row {
+        let mut fields = indexmap::IndexMap::new();
+        fields.insert(
+            "level".to_string(),
+            TypedValue::new(level, SourceLocation::default()),
+        );
+        fields.insert(
+            "attack".to_string(),
+            TypedValue::new(attack, SourceLocation::default()),
+        );
+        Row {
+            primary_key: vec![],
+            fields,
+            location: SourceLocation::default(),
+            index,
+        }
+    }
+
+    #[test]
+    fn power_curve_checks_uint_and_float_stats() {
+        let registry = GameRuleRegistry::with_builtins();
+        let rows = vec![
+            // level 5 → cap 550; 600 violates.
+            flex_row(0, Value::UInt(5), Value::UInt(600)),
+            // level 1.0 → cap 150; 200.0 violates.
+            flex_row(1, Value::Float(1.0), Value::Float(200.0)),
+        ];
+        let diags = registry.run(&Schema::new(), &monster_doc(rows));
+        assert_eq!(diags.len(), 2);
+        assert!(diags.iter().all(|d| d.code == gamerule::E1601));
+        assert!(diags.iter().any(|d| {
+            d.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("attack 600") && h.contains("level 5"))
+        }));
+    }
+
+    #[test]
+    fn power_curve_skips_rows_with_non_numeric_stats() {
+        let registry = GameRuleRegistry::with_builtins();
+        let rows = vec![
+            flex_row(0, Value::String("high".to_string()), Value::Int(9)),
+            flex_row(1, Value::Int(9), Value::String("max".to_string())),
+            flex_row(2, Value::Null, Value::Null),
+        ];
+        assert!(registry.run(&Schema::new(), &monster_doc(rows)).is_empty());
+    }
+
+    #[test]
+    fn builtin_validator_reports_its_name() {
+        assert_eq!(PowerCurveValidator.name(), "power_curve");
+    }
+
     #[test]
     fn custom_validator_registers_and_runs() {
         struct Marker;
@@ -221,7 +276,9 @@ mod tests {
 
         let mut registry = GameRuleRegistry::new();
         assert!(registry.is_empty());
-        registry.register(Box::new(Marker));
+        let marker = Box::new(Marker);
+        assert_eq!(marker.name(), "marker");
+        registry.register(marker);
         let diags = registry.run(&Schema::new(), &Document::new());
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, "E1601");

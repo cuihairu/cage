@@ -579,4 +579,279 @@ mod tests {
         assert_eq!(diag.severity, Severity::Error);
         assert!(diag.hint.is_some());
     }
+
+    /// A payload that always fails to serialize (builder must skip it).
+    struct Unserializable;
+
+    impl serde::Serialize for Unserializable {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("cannot serialize"))
+        }
+    }
+
+    #[test]
+    fn test_add_info_extend_iter_and_infos() {
+        let mut diags = Diagnostics::new();
+        assert!(diags.is_empty());
+        assert_eq!(diags.len(), 0);
+        assert!(!diags.has_errors());
+        assert!(!diags.has_warnings());
+        assert!(diags.errors().is_empty());
+        assert!(diags.warnings().is_empty());
+        assert!(diags.infos().is_empty());
+
+        let loc = SourceLocation::new("build.yaml").with_line_col(3, 5);
+        diags.add_info("E0001", "informational note", loc);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags.infos().len(), 1);
+        assert_eq!(diags.infos()[0].severity, Severity::Info);
+        assert!(!diags.has_errors());
+
+        let mut other = Diagnostics::new();
+        other.add(Diagnostic::error("E1001", "hard failure"));
+        other.add(Diagnostic::warning("E1201", "suspicious value"));
+        diags.extend(other);
+        assert_eq!(diags.len(), 3);
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.warnings().len(), 1);
+        assert_eq!(diags.infos().len(), 1);
+        assert!(diags.has_errors());
+        assert!(diags.has_warnings());
+
+        // shared iteration: iter() and `for x in &diagnostics`
+        let codes: Vec<&str> = diags.iter().map(|d| d.code.as_str()).collect();
+        assert_eq!(codes, ["E0001", "E1001", "E1201"]);
+        let via_into: Vec<&str> = (&diags).into_iter().map(|d| d.code.as_str()).collect();
+        assert_eq!(via_into, codes);
+    }
+
+    #[test]
+    fn test_iter_mut_escalates_warnings_to_errors() {
+        let mut diags = Diagnostics::new();
+        let loc = SourceLocation::new("a.csv").with_row(4);
+        diags.add_warning("E1201", "deprecated column", loc);
+        assert!(diags.has_warnings());
+        assert!(!diags.has_errors());
+        assert_eq!(diags.warnings().len(), 1);
+
+        // warnings_as_errors: mutable iteration upgrades severities in place
+        // (iter_mut is exercised by the validation pipeline; the shared slice
+        // iterator covers `for x in &mut diagnostics`)
+        for diag in &mut diags {
+            diag.severity = Severity::Error;
+            diag.hint
+                .get_or_insert_with(|| "enable --strict".to_string());
+        }
+        assert!(diags.has_errors());
+        assert!(!diags.has_warnings());
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].hint.as_deref(), Some("enable --strict"));
+    }
+
+    #[test]
+    fn test_empty_diagnostics_render_and_json() {
+        let empty = Diagnostics::new();
+        assert_eq!(empty.render(false), "");
+        assert_eq!(empty.render(true), "");
+        assert_eq!(empty.to_json().unwrap(), "[]");
+    }
+
+    #[test]
+    fn test_diagnostics_render_and_json() {
+        let mut diags = Diagnostics::new();
+        diags.add_error(
+            "E1401",
+            "missing target row",
+            SourceLocation::new("refs.json").with_row(2),
+        );
+        diags.add_warning(
+            "E1201",
+            "value near limit",
+            SourceLocation::new("refs.json"),
+        );
+        diags.add_info(
+            "E0003",
+            "encoding replaced",
+            SourceLocation::new("refs.json"),
+        );
+
+        let rendered = diags.render(false);
+        assert_eq!(rendered.matches("Source: refs.json").count(), 3);
+        assert!(rendered.contains("ERROR E1401 — Reference Target Not Found"));
+        assert!(rendered.contains("WARNING E1201 — Value Out of Range"));
+        assert!(rendered.contains("INFO E0003 — Invalid Encoding"));
+        assert!(rendered.ends_with('\n'));
+
+        let json = diags.to_json().unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0]["code"], "E1401");
+        assert_eq!(parsed[0]["severity"], "error");
+        assert_eq!(parsed[0]["location"]["row"], 2);
+        assert_eq!(parsed[0]["title"], "Reference Target Not Found");
+    }
+
+    #[test]
+    fn test_sort_by_location_ordering_with_missing_locations() {
+        let mut diags = Diagnostics::new();
+        diags.add(Diagnostic::error("E2001", "no location B").with_source("x"));
+        diags.add_error(
+            "E1001",
+            "b line 9",
+            SourceLocation::new("b.txt").with_line_col(9, 1),
+        );
+        diags.add(Diagnostic::warning("E1002", "no location A").with_source("y"));
+        diags.add_error(
+            "E1003",
+            "a line 4 col 2",
+            SourceLocation::new("a.txt").with_line_col(4, 2),
+        );
+        diags.add_error("E1004", "b no line", SourceLocation::new("b.txt"));
+        diags.add_error(
+            "E1005",
+            "a line 4 col 9",
+            SourceLocation::new("a.txt").with_line_col(4, 9),
+        );
+
+        diags.sort_by_location();
+        let order: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        // located before unlocated; file asc; line asc (None sorts as 0); col asc;
+        // unlocated pairs fall back to the code ordering
+        assert_eq!(
+            order,
+            [
+                "a line 4 col 2",
+                "a line 4 col 9",
+                "b no line",
+                "b line 9",
+                "no location A",
+                "no location B",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_full_fields() {
+        let loc = SourceLocation::new("monster.xlsx")
+            .with_sheet("Boss")
+            .with_row(7);
+        let diag = Diagnostic::warning("E1201", "value out of range")
+            .with_location(loc)
+            .with_table("Monster")
+            .with_row("20003")
+            .with_column("HP")
+            .with_field("MaxHP")
+            .with_value(serde_json::json!(32000))
+            .with_hint("lower MaxHP to <= 30000")
+            .with_related(RelatedDiagnostic {
+                code: "E1401".to_string(),
+                message: "referenced row".to_string(),
+                location: SourceLocation::new("item.xlsx").with_row(1),
+            })
+            .with_metadata("rule", serde_json::json!("power_curve"));
+
+        let plain = diag.render(false);
+        assert!(plain.contains("WARNING E1201 — Value Out of Range"));
+        assert!(plain.contains("  Source: monster.xlsx | Sheet: Boss | Row: 7"));
+        assert!(plain.contains("  Table: Monster"));
+        assert!(plain.contains("  Row: 20003"));
+        assert!(plain.contains("  Field: MaxHP"));
+        assert!(plain.contains("  Value: 32000"));
+        assert!(plain.contains("  Message: value out of range"));
+        assert!(plain.contains("  Hint: lower MaxHP to <= 30000"));
+        assert!(plain.contains("  Related: E1401 at item.xlsx | Row: 1"));
+
+        // the column is carried on the diagnostic even though render() omits it
+        assert_eq!(diag.column.as_deref(), Some("HP"));
+        assert_eq!(
+            diag.metadata.get("rule"),
+            Some(&serde_json::json!("power_curve"))
+        );
+    }
+
+    #[test]
+    fn test_render_color_covers_every_severity_and_hint() {
+        let loc = SourceLocation::new("x.yaml").with_line_col(1, 1);
+        let mut diags = Diagnostics::new();
+        diags.add(Diagnostic::error("E1001", "err").with_location(loc.clone()));
+        diags.add(Diagnostic::warning("E1201", "warn").with_location(loc.clone()));
+        diags.add(Diagnostic::info("E0001", "info").with_location(loc));
+
+        let colored = diags.render(true);
+        for token in [
+            "ERROR",
+            "WARNING",
+            "INFO",
+            "E1001",
+            "E1201",
+            "E0001",
+            "Message: err",
+            "Message: warn",
+            "Message: info",
+        ] {
+            assert!(colored.contains(token), "missing {token} in {colored:?}");
+        }
+
+        let hinted = Diagnostic::error("E1001", "m")
+            .with_hint("fix it")
+            .render(true);
+        assert!(hinted.contains("Hint: fix it"));
+    }
+
+    #[test]
+    fn test_render_without_location_and_display_trait() {
+        // no location, non-empty source, no title (unknown code)
+        let diag = Diagnostic::error("E7777", "bespoke code").with_source("cli");
+        assert!(diag.title.is_none());
+        let plain = diag.render(false);
+        assert!(plain.contains("ERROR E7777\n"));
+        assert!(!plain.contains('—'));
+        assert!(plain.contains("  Source: cli\n"));
+        assert!(plain.contains("  Message: bespoke code\n"));
+        assert!(!plain.contains("  Table:"));
+        assert!(!plain.contains("  Hint:"));
+        // Display forwards to render(false)
+        assert_eq!(format!("{diag}"), plain);
+
+        // no location and empty source → no Source line at all
+        let silent = Diagnostic::info("E0001", "quiet").render(false);
+        assert!(!silent.contains("Source:"));
+        assert!(silent.contains("INFO E0001 — Syntax Error"));
+    }
+
+    #[test]
+    fn test_diagnostic_builder_warning_info_location_related_metadata() {
+        let loc = SourceLocation::new("skills.yaml").with_line_col(12, 3);
+        let warn = DiagnosticBuilder::warning("E1201", "near limit")
+            .location(loc)
+            .build();
+        assert_eq!(warn.severity, Severity::Warning);
+        assert!(warn.location.is_some());
+        assert_eq!(warn.source, "skills.yaml");
+
+        let info = DiagnosticBuilder::info("E0001", "fyi")
+            .related(
+                "E1401",
+                "see also",
+                SourceLocation::new("x.json").with_row(9),
+            )
+            .metadata("attempt", 2_u32)
+            .build();
+        assert_eq!(info.severity, Severity::Info);
+        assert_eq!(info.related.len(), 1);
+        assert_eq!(info.related[0].code, "E1401");
+        assert_eq!(info.metadata.get("attempt"), Some(&serde_json::json!(2)));
+        assert!(info
+            .render(false)
+            .contains("  Related: E1401 at x.json | Row: 9"));
+
+        // unserializable payloads are skipped, not fatal
+        let skipped = DiagnosticBuilder::error("E1001", "m")
+            .metadata("bad", Unserializable)
+            .build();
+        assert!(skipped.metadata.is_empty());
+    }
 }

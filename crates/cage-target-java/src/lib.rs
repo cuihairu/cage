@@ -986,6 +986,97 @@ enums:
         JavaTargetGenerator::default()
     }
 
+    /// Edge-case schema shared by the dev-only sample writer and the real
+    /// edge-rendering test: every field kind (incl. Null/Any/Bytes/Object),
+    /// signed/unsigned widening, wrapped u64 enum payloads, keyword and
+    /// restricted-identifier idents, holder/table class collisions, string
+    /// escapes, constraint docs, and empty enums/tables.
+    fn edge_schema() -> Schema {
+        serde_yaml::from_str(
+            r#"
+tables:
+  CageEnums:
+    name: CageEnums
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int64 }, required: true, default: 100 }
+      big: { name: big, type: { kind: UInt64 }, default: 42 }
+      overflow: { name: overflow, type: { kind: UInt64 }, default: 18446744073709551615 }
+      u8: { name: u8, type: { kind: UInt8 }, required: true, default: 200 }
+      u16: { name: u16, type: { kind: UInt16 }, default: 65535 }
+      u32: { name: u32, type: { kind: UInt32 }, default: 4294967295 }
+      i8: { name: i8, type: { kind: Int8 }, default: 127 }
+      i16: { name: i16, type: { kind: Int16 }, default: -32768 }
+      f32: { name: f32, type: { kind: Float32 }, default: 1.5 }
+      f64: { name: f64, type: { kind: Float64 }, default: 100 }
+      flag: { name: flag, type: { kind: Bool }, default: true }
+      nums: { name: nums, type: { kind: Array, value: { kind: Int32 } }, default: [1, 2, 3] }
+      f32s: { name: f32s, type: { kind: Array, value: { kind: Float32 } }, default: [1.5, 2] }
+      flags: { name: flags, type: { kind: Array, value: { kind: Bool } }, default: [true, false] }
+      empty: { name: empty, type: { kind: Array, value: { kind: String } }, default: [] }
+      meta: { name: meta, type: { kind: Object, value: {} } }
+      raw: { name: raw, type: { kind: Null } }
+      blob: { name: blob, type: { kind: Bytes } }
+      anyx: { name: anyx, type: { kind: Any } }
+      qty: { name: qty, type: { kind: Int32 }, required: true, max: 99, description: Stock }
+      code: { name: code, type: { kind: String }, min_length: 1, max_length: 10, pattern: "^[a-z]+$" }
+      desc: { name: desc, type: { kind: String }, default: "a\"b\\c\r\nd\te日" }
+      class: { name: class, type: { kind: String } }
+      record: { name: record, type: { kind: String } }
+      _: { name: _, type: { kind: String } }
+      dead: { name: dead, type: { kind: Enum, value: EmptyEnum } }
+  ItemKind:
+    name: ItemKind
+    primary_key: []
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+  Weird-Name:
+    name: Weird-Name
+    primary_key: []
+    fields: {}
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+  BigKind:
+    name: BigKind
+    description: Values that outgrow a 32-bit payload.
+    values:
+      - { name: Big, value: 18446744073709551615 }
+      - { name: Large, value: 3000000000 }
+      - { name: Neg, value: -5 }
+  MixKind:
+    name: MixKind
+    values:
+      - { name: A, value: 1.5 }
+      - { name: B, value: true }
+      - { name: C, value: "x y" }
+      - { name: D }
+  EmptyEnum:
+    name: EmptyEnum
+    values: []
+"#,
+        )
+        .expect("edge schema must parse")
+    }
+
+    /// Write one schema's artifacts under `dir/cage/generated` — the default
+    /// package directory a manual `javac` run expects.
+    fn write_sample(dir: &Path, schema: &Schema) {
+        let _ = std::fs::remove_dir_all(dir);
+        let pkg_dir = dir.join("cage").join("generated");
+        std::fs::create_dir_all(&pkg_dir).expect("sample dir");
+        for (path, content) in gen().generate(schema, Some("abc123")) {
+            let name = Path::new(&path)
+                .file_name()
+                .expect("artifact has a file name")
+                .to_owned();
+            std::fs::write(pkg_dir.join(name), content).expect("write sample");
+        }
+    }
+
     #[test]
     fn test_generate_artifact_paths() {
         let schema = test_schema();
@@ -1008,99 +1099,211 @@ enums:
     #[test]
     #[ignore = "writes /tmp/cage-java-sample for manual javac runs"]
     fn write_java_sample_for_javac() {
-        let schema = test_schema();
-        let dir = PathBuf::from("/tmp/cage-java-sample");
-        let _ = std::fs::remove_dir_all(&dir);
-        let pkg_dir = dir.join("cage").join("generated");
-        std::fs::create_dir_all(&pkg_dir).expect("sample dir");
-        for (path, content) in gen().generate(&schema, Some("abc123")) {
-            let name = Path::new(&path)
-                .file_name()
-                .expect("artifact has a file name")
-                .to_owned();
-            std::fs::write(pkg_dir.join(name), content).expect("write sample");
-        }
+        write_sample(Path::new("/tmp/cage-java-sample"), &test_schema());
     }
 
-    /// Dev-only: dump an edge-case schema (unsigned widening, wrapped u64
-    /// payloads, keyword idents, class-name collisions, string escaping)
-    /// under `/tmp/cage-java-sample/edge` for a manual `javac` run.
+    /// Dev-only: dump the edge-case schema under `/tmp/cage-java-sample/edge`
+    /// for a manual `javac` run.
     #[test]
     #[ignore = "writes /tmp/cage-java-sample/edge for manual javac runs"]
     fn write_java_edge_sample_for_javac() {
+        write_sample(Path::new("/tmp/cage-java-sample/edge"), &edge_schema());
+    }
+
+    #[test]
+    fn test_write_sample_artifacts() {
+        let dir = std::env::temp_dir().join(format!("cage-java-sample-{}", std::process::id()));
+        write_sample(&dir, &test_schema());
+        let pkg_dir = dir.join("cage").join("generated");
+        for name in ["Drop.java", "Item.java", "CageEnums.java"] {
+            assert!(pkg_dir.join(name).is_file(), "missing {name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_edge_schema_rendering() {
+        let schema = edge_schema();
+        let artifacts = gen().generate(&schema, Some("abc123"));
+        let paths: Vec<&str> = artifacts.iter().map(|(p, _)| p.as_str()).collect();
+        // The holder claims `CageEnums` first: the like-named table becomes
+        // `CageEnums_`; `Weird-Name` follows its class ident in the file stem.
+        assert_eq!(
+            paths,
+            vec![
+                "build/java/CageEnums_.java",
+                "build/java/ItemKind.java",
+                "build/java/Weird_Name.java",
+                "build/java/CageEnums.java",
+            ]
+        );
+
+        // Table 1: every field kind, widening rules and keyword idents.
+        let holder_table = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        assert!(holder_table.contains("public final class CageEnums_ {"));
+        // Imports: List/ArrayList (array defaults) + Map (object field).
+        assert!(holder_table.contains(
+            "import java.util.ArrayList;\nimport java.util.List;\nimport java.util.Map;\n"
+        ));
+        // Unsigned widening keeps the full range; long-typed literals get L.
+        assert!(holder_table.contains("public long id = 100L;"));
+        assert!(holder_table.contains("public long big = 42L;"));
+        // A u64 above i64::MAX has no Java literal → wrapper type, no init.
+        assert!(holder_table.contains("public Long overflow;"));
+        assert!(holder_table.contains("public short u8 = 200;"));
+        assert!(holder_table.contains("public int u16 = 65535;"));
+        assert!(holder_table.contains("public long u32 = 4294967295L;"));
+        assert!(holder_table.contains("public byte i8 = 127;"));
+        assert!(holder_table.contains("public short i16 = -32768;"));
+        assert!(holder_table.contains("public float f32 = 1.5f;"));
+        assert!(holder_table.contains("public double f64 = 100.0;"));
+        assert!(holder_table.contains("public boolean flag = true;"));
+        // Reference types stay plain under the optionality rule.
+        assert!(holder_table.contains("public Map<String, Object> meta;"));
+        assert!(holder_table.contains("public Object raw;"));
+        assert!(holder_table.contains("public Object anyx;"));
+        assert!(holder_table.contains("public byte[] blob;"));
+        assert!(holder_table.contains("public String class_;"));
+        assert!(holder_table.contains("public String record_;"));
+        assert!(holder_table.contains("public String __;"));
+        assert!(holder_table.contains("public String dead;"));
+        assert!(holder_table.contains("public int qty;"));
+        // Array defaults box primitives and re-render each element literal.
+        assert!(
+            holder_table.contains("public List<Integer> nums = new ArrayList<>(List.of(1, 2, 3));")
+        );
+        assert!(holder_table
+            .contains("public List<Float> f32s = new ArrayList<>(List.of(1.5f, 2.0f));"));
+        assert!(holder_table
+            .contains("public List<Boolean> flags = new ArrayList<>(List.of(true, false));"));
+        assert!(holder_table.contains("public List<String> empty = new ArrayList<>(List.of());"));
+        // String escaping: short escapes for \ " CR LF TAB, printable
+        // Unicode passes through.
+        assert!(holder_table.contains(r#"public String desc = "a\"b\\c\r\nd\te日";"#));
+        // Constraint docs: max / min_length / max_length / pattern, plus the
+        // Java-specific UInt64 caveat and the unresolved (empty) enum note.
+        assert!(holder_table.contains("/** Stock, required, max: 99 */"));
+        assert!(holder_table.contains("/** min_length: 1, max_length: 10, pattern: ^[a-z]+$ */"));
+        assert!(holder_table.contains("/** values above Long.MAX_VALUE do not fit Java's long */"));
+        assert!(holder_table.contains("/** unresolved enum: EmptyEnum */"));
+
+        // Table 2: a table class sharing the enum's simple name uses the
+        // qualified `Holder.Enum` form (JLS §7.5.1) and imports nothing; an
+        // empty primary key prints the raw name as the banner head.
+        let item_kind = String::from_utf8(artifacts[1].1.clone()).unwrap();
+        assert!(item_kind.contains("/** ItemKind */"));
+        assert!(item_kind.contains("public CageEnums.ItemKind kind;"));
+        assert!(!item_kind.contains("import "));
+
+        // Table 3: an empty field set closes the class right after the banner.
+        let weird = String::from_utf8(artifacts[2].1.clone()).unwrap();
+        assert!(weird.contains("public final class Weird_Name {\n}\n"));
+
+        // Enums: long backing for values past i32, wrapped-u64 note, enum
+        // description in the declaration Javadoc.
+        let enums = String::from_utf8(artifacts[3].1.clone()).unwrap();
+        assert!(enums.contains("/** BigKind — Values that outgrow a 32-bit payload. */"));
+        assert!(enums.contains("public enum BigKind {"));
+        assert!(enums.contains("public final long value;"));
+        assert!(enums.contains("        Big(-1L), // wrapped from unsigned 18446744073709551615"));
+        assert!(enums.contains("        Large(3000000000L),"));
+        assert!(enums.contains("        Neg(-5L);"));
+        // Int backing for the small enum; string bucket for the mixed one
+        // (Number → decimal string, Bool → "true", String as-is, missing →
+        // member name).
+        assert!(enums.contains("public enum ItemKind {"));
+        assert!(enums.contains("        Sword(1);"));
+        assert!(enums.contains("public final int value;"));
+        assert!(enums.contains("public enum MixKind {"));
+        assert!(enums.contains("        A(\"1.5\"),"));
+        assert!(enums.contains("        B(\"true\"),"));
+        assert!(enums.contains("        C(\"x y\"),"));
+        assert!(enums.contains("        D(\"D\");"));
+        assert!(enums.contains("public final String value;"));
+        assert!(!enums.contains("EmptyEnum"));
+    }
+
+    #[test]
+    fn test_schema_without_enums_emits_no_holder() {
         let schema: Schema = serde_yaml::from_str(
-            r#"
+            r"
 tables:
-  CageEnums:
-    name: CageEnums
+  Solo:
+    name: Solo
     primary_key: [id]
     fields:
-      id: { name: id, type: { kind: Int64 }, required: true, default: 100 }
-      big: { name: big, type: { kind: UInt64 }, default: 42 }
-      overflow: { name: overflow, type: { kind: UInt64 }, default: 18446744073709551615 }
-      u8: { name: u8, type: { kind: UInt8 }, required: true, default: 200 }
-      u16: { name: u16, type: { kind: UInt16 }, default: 65535 }
-      u32: { name: u32, type: { kind: UInt32 }, default: 4294967295 }
-      f32: { name: f32, type: { kind: Float32 }, default: 1.5 }
-      f64: { name: f64, type: { kind: Float64 }, default: 100 }
-      flag: { name: flag, type: { kind: Bool }, default: true }
-      nums: { name: nums, type: { kind: Array, value: { kind: Int32 } }, default: [1, 2, 3] }
-      f32s: { name: f32s, type: { kind: Array, value: { kind: Float32 } }, default: [1.5, 2] }
-      flags: { name: flags, type: { kind: Array, value: { kind: Bool } }, default: [true, false] }
-      empty: { name: empty, type: { kind: Array, value: { kind: String } }, default: [] }
-      meta: { name: meta, type: { kind: Object, value: {} } }
-      blob: { name: blob, type: { kind: Bytes } }
-      anyx: { name: anyx, type: { kind: Any } }
-      desc: { name: desc, type: { kind: String }, default: "a\"b\\c\nd\te\u0001f日" }
-      class: { name: class, type: { kind: String } }
-      record: { name: record, type: { kind: String } }
-      _: { name: _, type: { kind: String } }
-      dead: { name: dead, type: { kind: Enum, value: EmptyEnum } }
-  ItemKind:
-    name: ItemKind
-    primary_key: []
-    fields:
       id: { name: id, type: { kind: Int32 }, required: true }
-      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
-  Weird-Name:
-    name: Weird-Name
-    primary_key: []
-    fields: {}
-enums:
-  ItemKind:
-    name: ItemKind
-    values:
-      - { name: Sword, value: 1 }
-  BigKind:
-    name: BigKind
-    values:
-      - { name: Big, value: 18446744073709551615 }
-      - { name: Large, value: 3000000000 }
-      - { name: Neg, value: -5 }
-  MixKind:
-    name: MixKind
-    values:
-      - { name: A, value: 1.5 }
-      - { name: B, value: true }
-      - { name: C, value: "x y" }
-      - { name: D }
-  EmptyEnum:
-    name: EmptyEnum
-    values: []
-"#,
+enums: {}
+",
         )
-        .expect("edge schema must parse");
-        let dir = PathBuf::from("/tmp/cage-java-sample/edge");
-        let _ = std::fs::remove_dir_all(&dir);
-        let pkg_dir = dir.join("cage").join("generated");
-        std::fs::create_dir_all(&pkg_dir).expect("sample dir");
-        for (path, content) in gen().generate(&schema, Some("abc123")) {
-            let name = Path::new(&path)
-                .file_name()
-                .expect("artifact has a file name")
-                .to_owned();
-            std::fs::write(pkg_dir.join(name), content).expect("write sample");
-        }
+        .expect("schema must parse");
+        let artifacts = gen().generate(&schema, Some("abc123"));
+        let paths: Vec<&str> = artifacts.iter().map(|(p, _)| p.as_str()).collect();
+        // No emitted enums → no shared unit at all; the table renders with
+        // no enums class in scope (and nothing to import).
+        assert_eq!(paths, vec!["build/java/Solo.java"]);
+        let src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        assert!(src.contains("public final class Solo {"));
+        assert!(!src.contains("import "));
+    }
+
+    #[test]
+    fn test_from_config_defaults_without_options() {
+        let config: TargetConfig = serde_yaml::from_str(
+            r"
+format: java
+output_dir: build/j
+",
+        )
+        .expect("target config");
+        let gen = JavaTargetGenerator::from_config(&config);
+        // No `options` block → every generator knob keeps its default.
+        assert_eq!(gen.output_dir, PathBuf::from("build/j"));
+        assert_eq!(gen.file_template, "{table}.java");
+        assert_eq!(gen.enums_file, "CageEnums.java");
+        assert_eq!(gen.package, "cage.generated");
+    }
+
+    #[test]
+    fn test_enums_file_in_subdirectory() {
+        let config: TargetConfig = serde_yaml::from_str(
+            r"
+format: java
+output_dir: build/j
+options:
+  enums_file: shared/CageEnums.java
+",
+        )
+        .expect("target config");
+        let gen = JavaTargetGenerator::from_config(&config);
+        let artifacts = gen.generate(&test_schema(), Some("abc123"));
+        // The enums unit keeps the option's parent directory under the
+        // output dir; the holder class name still comes from the stem.
+        assert_eq!(artifacts[2].0, "build/j/shared/CageEnums.java");
+        let holder = String::from_utf8(artifacts[2].1.clone()).unwrap();
+        assert!(holder.contains("public final class CageEnums {"));
+        // Table imports are built from package + holder class, unchanged.
+        let item = String::from_utf8(artifacts[1].1.clone()).unwrap();
+        assert!(item.contains("import cage.generated.CageEnums.ItemKind;"));
+    }
+
+    #[test]
+    fn test_render_enums_skips_unallocated_idents() {
+        let schema = test_schema();
+        let emitted = JavaTargetGenerator::emitted_enums(&schema);
+        let no_idents: HashMap<String, String> = HashMap::new();
+        // An enum whose allocated ident is missing from the map is skipped
+        // rather than rendered with a broken name.
+        let src = gen().render_enums(&emitted, "CageEnums", &no_idents, Some("abc123"));
+        assert!(src.contains("public final class CageEnums {"));
+        assert!(!src.contains("public enum"));
+    }
+
+    #[test]
+    fn test_push_javadoc_empty_body_writes_nothing() {
+        let mut out = String::new();
+        push_javadoc(&mut out, "    ", &[]);
+        assert_eq!(out, "");
     }
 
     #[test]
@@ -1237,6 +1440,8 @@ options:
         assert_eq!(sanitize_ident("drop-item"), "drop_item");
         assert_eq!(sanitize_ident("1st"), "_1st");
         assert_eq!(sanitize_ident("列"), "_");
+        // Nothing left after sanitizing → a lone underscore.
+        assert_eq!(sanitize_ident(""), "_");
         // Java keywords get a trailing underscore (no verbatim escape);
         // restricted identifiers and literals are covered by the same rule.
         assert_eq!(java_ident("class"), "class_");
@@ -1388,6 +1593,10 @@ enums:
         assert_eq!(java_string_literal("a\u{1}b"), "\"a\\u0001b\"");
         assert_eq!(java_string_literal("a\u{7f}b"), "\"a\\u007fb\"");
         assert_eq!(java_string_literal("n\n"), "\"n\\n\"");
+        assert_eq!(java_string_literal("q\"r\\s"), "\"q\\\"r\\\\s\"");
+        // int_literal accepts only integral kinds — anything else falls in
+        // the same "no safe literal" bucket as an out-of-range value.
+        assert!(int_literal(1, &FieldType::Float32).is_none());
     }
 
     #[test]
@@ -1432,5 +1641,24 @@ enums:
             note.as_deref(),
             Some("wrapped from unsigned 18446744073709551615")
         );
+        // Without the long backing the wrapped value renders bare (int
+        // payloads widen silently).
+        let (lit, note) = integral_literal(&overflows.values[1], false);
+        assert_eq!(lit, "-1");
+        assert_eq!(
+            note.as_deref(),
+            Some("wrapped from unsigned 18446744073709551615")
+        );
+        // A value-less member has no integral payload: the name is the
+        // fallback, and it never fits an int payload.
+        let valueless = value(None, "NoVal");
+        assert!(!value_fits_i32(&valueless));
+        let (lit, note) = integral_literal(&valueless, false);
+        assert_eq!((lit.as_str(), note), ("NoVal", None));
+        // A float-valued member has no i64/u64 spelling either — same name
+        // fallback.
+        let floaty = value(Some(serde_json::json!(1.5)), "Floaty");
+        let (lit, note) = integral_literal(&floaty, true);
+        assert_eq!((lit.as_str(), note), ("Floaty", None));
     }
 }

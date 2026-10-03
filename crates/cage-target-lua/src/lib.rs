@@ -587,6 +587,70 @@ enums:
         .expect("test schema must parse")
     }
 
+    /// Schema exercising paths the main fixture misses: an empty table
+    /// without a primary key, Any/Null/Object/Bytes annotations, both Bool
+    /// default branches, length/pattern constraints, an enum description,
+    /// and a non-integral enum with string/bool members.
+    fn edge_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Ghost:
+    name: Ghost
+    primary_key: []
+    fields: {}
+  Edge:
+    name: Edge
+    primary_key: [key]
+    fields:
+      key: { name: key, type: { kind: String }, required: true }
+      flag: { name: flag, type: { kind: Bool }, default: true }
+      off: { name: off, type: { kind: Bool }, default: false }
+      blob: { name: blob, type: { kind: Bytes } }
+      meta: { name: meta, type: { kind: Object, value: {} } }
+      anything: { name: anything, type: { kind: Any } }
+      nils: { name: nils, type: { kind: Null } }
+      code: { name: code, type: { kind: String }, min_length: 1, max_length: 8, pattern: '^[A-Z]+$' }
+      count: { name: count, type: { kind: Int32 }, max: 100, description: Bounded count }
+      big: { name: big, type: { kind: UInt64 }, default: 18446744073709551615 }
+      frac: { name: frac, type: { kind: Int64 }, default: 1.5 }
+enums:
+  Described:
+    name: Described
+    description: A described enum.
+    values:
+      - { name: First, value: 1, description: First member }
+      - { name: Second, value: 2 }
+  Mixed:
+    name: Mixed
+    values:
+      - { name: one, value: first, description: String member }
+      - { name: two, value: 2.5 }
+      - { name: yes, value: true }
+      - { name: no, value: false }
+      - { name: bare }
+",
+        )
+        .expect("edge schema must parse")
+    }
+
+    /// Schema with no emitted enums at all: `generate()` must skip the shared
+    /// enums module entirely.
+    fn no_enum_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Plain:
+    name: Plain
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+",
+        )
+        .expect("schema must parse")
+    }
+
     fn gen() -> LuaTargetGenerator {
         LuaTargetGenerator::default()
     }
@@ -693,6 +757,115 @@ enums:
     }
 
     #[test]
+    fn test_empty_table_without_primary_key() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        // Name order: Edge, Ghost, then the shared enums module.
+        assert!(artifacts[0].0.ends_with("Edge.lua"));
+        let ghost = String::from_utf8(artifacts[1].1.clone()).unwrap();
+        // No primary key → the M.primary_key line is omitted entirely.
+        assert!(!ghost.contains("M.primary_key"));
+        assert!(ghost.contains("M.name = \"Ghost\""));
+        // No fields → empty metadata and defaults tables.
+        assert!(ghost.contains("M.fields = {\n}"));
+        assert!(ghost.contains("M.defaults = {\n}"));
+    }
+
+    #[test]
+    fn test_type_labels_and_bool_defaults() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let edge = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        assert!(edge.contains("M.primary_key = { \"key\" }"));
+        // Type labels: Any / Null / Bool / Bytes / Object.
+        assert!(edge.contains(
+            "{ name = \"anything\", key = \"anything\", type = \"any\", required = false },"
+        ));
+        assert!(
+            edge.contains("{ name = \"nils\", key = \"nils\", type = \"any\", required = false },")
+        );
+        assert!(edge.contains(
+            "{ name = \"flag\", key = \"flag\", type = \"boolean\", required = false },"
+        ));
+        assert!(edge
+            .contains("{ name = \"blob\", key = \"blob\", type = \"bytes\", required = false },"));
+        assert!(edge
+            .contains("{ name = \"meta\", key = \"meta\", type = \"table\", required = false },"));
+        // Both Bool default branches reach M.defaults.
+        assert!(edge.contains("    flag = true,"));
+        assert!(edge.contains("    off = false,"));
+        // Constraint summaries in the metadata comments.
+        assert!(edge.contains("    -- Bounded count, max: 100"));
+        assert!(edge.contains("    -- min_length: 1, max_length: 8, pattern: ^[A-Z]+$"));
+        // u64 default above i64::MAX renders via the or_else arm; a float
+        // default on an int field renders nothing (no M.defaults entry).
+        assert!(edge
+            .contains("{ name = \"big\", key = \"big\", type = \"integer\", required = false },"));
+        assert!(edge.contains("    big = 18446744073709551615,"));
+        assert!(edge.contains(
+            "{ name = \"frac\", key = \"frac\", type = \"integer\", required = false },"
+        ));
+        assert!(!edge.contains("    frac = "));
+    }
+
+    #[test]
+    fn test_schema_without_enums_emits_no_enums_file() {
+        let artifacts = gen().generate(&no_enum_schema(), Some("abc123"));
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0].0.ends_with("Plain.lua"));
+        let src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        assert!(!src.contains("cage_enums"));
+    }
+
+    #[test]
+    fn test_enum_description_and_mixed_value_arms() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let enums_src = String::from_utf8(artifacts[2].1.clone()).unwrap();
+
+        // Enum-level description comment.
+        assert!(enums_src.contains("-- Described — A described enum."));
+        assert!(enums_src.contains("    First = 1, -- First member"));
+        // String / Number / Bool / value-less member arms.
+        assert!(enums_src.contains("    one = \"first\", -- String member"));
+        assert!(enums_src.contains("    two = 2.5,"));
+        assert!(enums_src.contains("    yes = \"true\","));
+        assert!(enums_src.contains("    no = \"false\","));
+        assert!(enums_src.contains("    bare = \"bare\","));
+    }
+
+    #[test]
+    fn test_from_config_without_enum_options() {
+        // options: None — the option block never opens.
+        let config: TargetConfig =
+            serde_yaml::from_str("format: lua\noutput_dir: build/lua").expect("target config");
+        let gen = LuaTargetGenerator::from_config(&config);
+        assert_eq!(gen.output_dir, PathBuf::from("build/lua"));
+        assert_eq!(gen.file_template, "{table}.lua");
+        assert_eq!(gen.enums_file, "cage_enums.lua");
+
+        // Options present but no enums_file key — the inner arm is skipped.
+        let config: TargetConfig =
+            serde_yaml::from_str("format: lua\noutput_dir: out\noptions:\n  other: 1")
+                .expect("target config");
+        let gen = LuaTargetGenerator::from_config(&config);
+        assert_eq!(gen.enums_file, "cage_enums.lua");
+
+        // Non-string enums_file value — as_str() fails, default kept.
+        let config: TargetConfig =
+            serde_yaml::from_str("format: lua\noutput_dir: out\noptions:\n  enums_file: 42")
+                .expect("target config");
+        let gen = LuaTargetGenerator::from_config(&config);
+        assert_eq!(gen.enums_file, "cage_enums.lua");
+    }
+
+    #[test]
+    fn test_field_collisions_get_unique_members() {
+        let mut used = HashSet::new();
+        assert_eq!(unique_ident("a_b".to_string(), &mut used), "a_b");
+        assert_eq!(unique_ident("a_b".to_string(), &mut used), "a_b_");
+        assert_eq!(unique_ident("a_b".to_string(), &mut used), "a_b__");
+    }
+
+    #[test]
     fn test_deterministic_output() {
         let schema = test_schema();
         let a = gen().generate(&schema, Some("abc123"));
@@ -728,6 +901,7 @@ options:
         assert_eq!(sanitize_ident("drop-item"), "drop_item");
         assert_eq!(sanitize_ident("1st"), "_1st");
         assert_eq!(sanitize_ident("列"), "_");
+        assert_eq!(sanitize_ident(""), "_");
         // Keyword collision gets a trailing underscore (no escape syntax).
         assert_eq!(lua_ident("end"), "end_");
         assert_eq!(lua_ident("function"), "function_");
@@ -763,5 +937,41 @@ options:
         .is_none());
         // Control characters use Lua's \ddd decimal escapes.
         assert_eq!(lua_string_literal("a\u{1}b"), "\"a\\001b\"");
+        // Backslash / quote / newline / CR / tab escapes.
+        assert_eq!(lua_string_literal("a\nb\r\tc"), "\"a\\nb\\r\\tc\"");
+        assert_eq!(lua_string_literal("q\"\\q"), "\"q\\\"\\\\q\"");
+        // Bool defaults render both branches.
+        assert_eq!(
+            render_default(&serde_json::json!(true), &FieldType::Bool, &schema).unwrap(),
+            "true"
+        );
+        assert_eq!(
+            render_default(&serde_json::json!(false), &FieldType::Bool, &schema).unwrap(),
+            "false"
+        );
+        // A non-scalar element type sinks the whole array default.
+        assert!(render_default(
+            &serde_json::json!([{"a": 1}]),
+            &FieldType::Array(Box::new(FieldType::Object(indexmap::IndexMap::default()))),
+            &schema
+        )
+        .is_none());
+        // Scalar element types still render.
+        assert_eq!(
+            render_default(
+                &serde_json::json!([1, 2]),
+                &FieldType::Array(Box::new(FieldType::Int32)),
+                &schema
+            )
+            .unwrap(),
+            "{ 1, 2 }"
+        );
+        // One unrenderable element sinks the whole array (`?` early exit).
+        assert!(render_default(
+            &serde_json::json!([1, "x"]),
+            &FieldType::Array(Box::new(FieldType::Int32)),
+            &schema
+        )
+        .is_none());
     }
 }

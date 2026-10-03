@@ -645,6 +645,93 @@ enums:
         .expect("test schema must parse")
     }
 
+    /// Schema exercising paths the main fixture misses: an empty table,
+    /// Any/Null/Object/Bytes annotations, both Bool default branches,
+    /// length/pattern constraints, an enum description, and a non-integral
+    /// enum with string/number/bool members.
+    fn edge_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Ghost:
+    name: Ghost
+    primary_key: []
+    fields: {}
+  Edge:
+    name: Edge
+    primary_key: [key]
+    fields:
+      key: { name: key, type: { kind: String }, required: true }
+      flag: { name: flag, type: { kind: Bool }, default: true }
+      off: { name: off, type: { kind: Bool }, default: false }
+      blob: { name: blob, type: { kind: Bytes } }
+      meta: { name: meta, type: { kind: Object, value: {} } }
+      wild: { name: wild, type: { kind: Any } }
+      alist: { name: alist, type: { kind: Array, value: { kind: Null } } }
+      code: { name: code, type: { kind: String }, min_length: 1, max_length: 8, pattern: '^[A-Z]+$' }
+      count: { name: count, type: { kind: Int32 }, max: 100, description: Bounded count }
+      kind: { name: kind, type: { kind: Enum, value: Described } }
+      big: { name: big, type: { kind: UInt64 }, default: 18446744073709551615 }
+      frac: { name: frac, type: { kind: Int64 }, default: 1.5 }
+enums:
+  Described:
+    name: Described
+    description: A described enum.
+    values:
+      - { name: First, value: 1, description: First member }
+      - { name: Second, value: 2 }
+  Mixed:
+    name: Mixed
+    values:
+      - { name: one, value: first, description: String member }
+      - { name: two, value: 2.5 }
+      - { name: yes, value: true }
+      - { name: no, value: false }
+      - { name: bare }
+  Huge:
+    name: Huge
+    values:
+      - { name: Max, value: 18446744073709551615 }
+",
+        )
+        .expect("edge schema must parse")
+    }
+
+    /// Schema with no emitted enums at all: `generate()` must skip the shared
+    /// enums module entirely.
+    fn no_enum_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Plain:
+    name: Plain
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+",
+        )
+        .expect("schema must parse")
+    }
+
+    /// Table with only optional fields: the required-first (plain) group is
+    /// empty, so the defaulted group opens the dataclass body.
+    fn optional_only_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Solo:
+    name: Solo
+    primary_key: []
+    fields:
+      note: { name: note, type: { kind: String } }
+      weight: { name: weight, type: { kind: Float64 }, default: 1.5 }
+enums: {}
+",
+        )
+        .expect("schema must parse")
+    }
+
     fn gen() -> PyTargetGenerator {
         PyTargetGenerator::default()
     }
@@ -740,6 +827,117 @@ enums:
     }
 
     #[test]
+    fn test_empty_table_renders_pass_stub() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        // Name order: Edge, Ghost, then the shared enums module.
+        assert!(artifacts[0].0.ends_with("Edge.py"));
+        let ghost = String::from_utf8(artifacts[1].1.clone()).unwrap();
+        // Empty primary key: the banner is just the table name.
+        assert!(ghost.contains("# Ghost\n"));
+        // No fields → the class body is a bare `pass`.
+        assert!(ghost.contains("class Ghost:\n    pass\n"));
+        assert!(!ghost.contains("from typing import Any"));
+    }
+
+    #[test]
+    fn test_any_bytes_object_and_bool_defaults() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let edge = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // An Any-ish annotation anywhere pulls in the typing import.
+        assert!(edge.contains("from typing import Any"));
+        // Type mapping: Any / Bytes / Object / Bool / Array-of-Null.
+        assert!(edge.contains("    wild: Any | None = None"));
+        assert!(edge.contains("    blob: bytes | None = None"));
+        assert!(edge.contains("    meta: dict[str, Any] | None = None"));
+        assert!(edge.contains("    flag: bool = True"));
+        assert!(edge.contains("    off: bool = False"));
+        assert!(edge.contains("    alist: list[Any] | None = None"));
+        // Constraint summaries in the member docs.
+        assert!(edge.contains("    # Bounded count, max: 100"));
+        assert!(edge.contains("    # min_length: 1, max_length: 8, pattern: ^[A-Z]+$"));
+        // Enum import for the referenced shared enum.
+        assert!(edge.contains("from cage_enums import Described"));
+        // u64 default above i64::MAX renders via the or_else arm; a float
+        // default on an int field renders nothing (member falls back to None).
+        assert!(edge.contains("    big: int = 18446744073709551615"));
+        assert!(edge.contains("    frac: int | None = None"));
+        assert!(!edge.contains("    frac: int = "));
+    }
+
+    #[test]
+    fn test_enum_description_and_mixed_string_bucket() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let enums_src = String::from_utf8(artifacts[2].1.clone()).unwrap();
+
+        // Enum-level description comment (integral enum).
+        assert!(enums_src.contains("# Described — A described enum."));
+        assert!(enums_src.contains("class Described(IntEnum):"));
+        assert!(enums_src.contains("    # First member"));
+        assert!(enums_src.contains("    First = 1"));
+
+        // Non-integral enum → plain class; String/Number/Bool member
+        // values stringify through the bucket match.
+        assert!(enums_src.contains("class Mixed:"));
+        assert!(enums_src.contains("    # String member"));
+        assert!(enums_src.contains("    one = \"first\""));
+        assert!(enums_src.contains("    two = \"2.5\""));
+        assert!(enums_src.contains("    yes = \"true\""));
+        assert!(enums_src.contains("    no = \"false\""));
+        assert!(enums_src.contains("    bare = \"bare\""));
+
+        // u64 above i64::MAX stays in the integral (IntEnum) bucket.
+        assert!(enums_src.contains("class Huge(IntEnum):"));
+        assert!(enums_src.contains("    Max = 18446744073709551615"));
+    }
+
+    #[test]
+    fn test_from_config_without_enum_options() {
+        // options: None — the option block never opens.
+        let config: TargetConfig =
+            serde_yaml::from_str("format: python\noutput_dir: build/py").expect("target config");
+        let gen = PyTargetGenerator::from_config(&config);
+        assert_eq!(gen.output_dir, PathBuf::from("build/py"));
+        assert_eq!(gen.file_template, "{table}.py");
+        assert_eq!(gen.enums_file, "cage_enums.py");
+
+        // Options present but no enums_file key — the inner arm is skipped.
+        let config: TargetConfig =
+            serde_yaml::from_str("format: python\noutput_dir: out\noptions:\n  other: 1")
+                .expect("target config");
+        let gen = PyTargetGenerator::from_config(&config);
+        assert_eq!(gen.enums_file, "cage_enums.py");
+
+        // Non-string enums_file value — as_str() fails, default kept.
+        let config: TargetConfig =
+            serde_yaml::from_str("format: python\noutput_dir: out\noptions:\n  enums_file: 42")
+                .expect("target config");
+        let gen = PyTargetGenerator::from_config(&config);
+        assert_eq!(gen.enums_file, "cage_enums.py");
+    }
+
+    #[test]
+    fn test_schema_without_enums_emits_no_enums_file() {
+        let artifacts = gen().generate(&no_enum_schema(), Some("abc123"));
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0].0.ends_with("Plain.py"));
+        let src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        assert!(!src.contains("from cage_enums"));
+    }
+
+    #[test]
+    fn test_optional_only_table_skips_plain_group() {
+        let artifacts = gen().generate(&optional_only_schema(), Some("abc123"));
+        let solo = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        // No required members: the class opens with the defaulted group
+        // (blank line only between members, none before the first).
+        assert!(solo.contains("class Solo:"));
+        assert!(solo.contains("    note: str | None = None"));
+        assert!(solo.contains("    weight: float = 1.5"));
+        assert!(!solo.contains("    id:"));
+    }
+
+    #[test]
     fn test_deterministic_output() {
         let schema = test_schema();
         let a = gen().generate(&schema, Some("abc123"));
@@ -775,6 +973,7 @@ options:
         assert_eq!(sanitize_ident("drop-item"), "drop_item");
         assert_eq!(sanitize_ident("1st"), "_1st");
         assert_eq!(sanitize_ident("列"), "_");
+        assert_eq!(sanitize_ident(""), "_");
         // PEP 8: keyword collision gets a trailing underscore.
         assert_eq!(py_ident("class"), "class_");
         assert_eq!(py_ident("import"), "import_");
@@ -809,5 +1008,44 @@ options:
             &schema
         )
         .is_none());
+        // Bool defaults render both branches.
+        assert_eq!(
+            render_default(&serde_json::json!(true), &FieldType::Bool, &schema).unwrap(),
+            "True"
+        );
+        assert_eq!(
+            render_default(&serde_json::json!(false), &FieldType::Bool, &schema).unwrap(),
+            "False"
+        );
+        // Positive infinity has its own constructor spelling.
+        assert_eq!(py_float_literal(f64::INFINITY), "float(\"inf\")");
+        // A non-scalar element type sinks the whole array default.
+        assert!(render_default(
+            &serde_json::json!([{"a": 1}]),
+            &FieldType::Array(Box::new(FieldType::Object(indexmap::IndexMap::default()))),
+            &schema
+        )
+        .is_none());
+        // Scalar element types still render.
+        assert_eq!(
+            render_default(
+                &serde_json::json!([1, 2]),
+                &FieldType::Array(Box::new(FieldType::Int32)),
+                &schema
+            )
+            .unwrap(),
+            "[1, 2]"
+        );
+        // One unrenderable element sinks the whole array (`?` early exit).
+        assert!(render_default(
+            &serde_json::json!([1, "x"]),
+            &FieldType::Array(Box::new(FieldType::Int32)),
+            &schema
+        )
+        .is_none());
+        // Escapes: control characters, newlines, quote and backslash.
+        assert_eq!(py_string_literal("a\u{1}b"), "\"a\\x01b\"");
+        assert_eq!(py_string_literal("a\nb\r\tc"), "\"a\\nb\\r\\tc\"");
+        assert_eq!(py_string_literal("q\"\\q"), "\"q\\\"\\\\q\"");
     }
 }

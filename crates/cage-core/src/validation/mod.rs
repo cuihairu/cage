@@ -964,6 +964,993 @@ mod tests {
         doc
     }
 
+    /// Field with no constraints; tests override the slots they exercise.
+    fn plain_field(name: &str, field_type: FieldType) -> FieldSchema {
+        FieldSchema {
+            name: name.to_string(),
+            field_type,
+            description: None,
+            required: false,
+            default: None,
+            min: None,
+            max: None,
+            min_length: None,
+            max_length: None,
+            pattern: None,
+            enum_values: None,
+            min_items: None,
+            max_items: None,
+            items: None,
+            properties: None,
+            additional_properties: None,
+            reference: None,
+            targets: vec![],
+            rules: vec![],
+            metadata: IndexMap::new(),
+        }
+    }
+
+    /// Table with no unique constraints / ordering; PK list may be empty.
+    fn plain_table(name: &str, primary_key: &[&str], fields: Vec<FieldSchema>) -> TableSchema {
+        let mut table = TableSchema {
+            name: name.to_string(),
+            description: None,
+            primary_key: primary_key.iter().map(|pk| (*pk).to_string()).collect(),
+            fields: IndexMap::new(),
+            unique_constraints: vec![],
+            order_by: None,
+            targets: vec![],
+        };
+        for field in fields {
+            table.fields.insert(field.name.clone(), field);
+        }
+        table
+    }
+
+    fn validated(schema: Schema) -> ValidatedSchema {
+        ValidatedSchema {
+            schema,
+            dependency_graph: crate::schema::DependencyGraph::default(),
+        }
+    }
+
+    fn str_val(s: &str) -> Value {
+        Value::String(s.to_string())
+    }
+
+    fn row(index: usize, fields: &[(&str, Value)]) -> Row {
+        let mut map = IndexMap::new();
+        for (name, value) in fields {
+            map.insert(
+                name.to_string(),
+                TypedValue::new(
+                    value.clone(),
+                    SourceLocation::new("sheet.json")
+                        .with_row(index + 1)
+                        .with_field(*name),
+                ),
+            );
+        }
+        Row {
+            primary_key: vec![],
+            fields: map,
+            location: SourceLocation::new("sheet.json").with_row(index + 1),
+            index,
+        }
+    }
+
+    fn doc_with_tables(tables: &[(&str, Vec<Row>)]) -> Document {
+        let mut doc = Document::new();
+        for (name, rows) in tables {
+            doc.add_table(Table {
+                name: (*name).to_string(),
+                primary_key_fields: vec![],
+                rows: rows.clone(),
+                source_file: "sheet.json".to_string(),
+                sheet: None,
+            });
+        }
+        doc
+    }
+
+    fn doc_with(name: &str, rows: Vec<Row>) -> Document {
+        doc_with_tables(&[(name, rows)])
+    }
+
+    fn object_val(pairs: &[(&str, Value)]) -> Value {
+        Value::Object(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    fn object_type(pairs: &[(&str, FieldType)]) -> FieldType {
+        FieldType::Object(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    fn array_type(inner: FieldType) -> FieldType {
+        FieldType::Array(Box::new(inner))
+    }
+
+    #[test]
+    fn level_all_lists_pipeline_order_and_as_str_matches() {
+        let names: Vec<&str> = ValidationLevel::all()
+            .iter()
+            .map(ValidationLevel::as_str)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "parse",
+                "schema",
+                "type",
+                "value",
+                "table",
+                "reference",
+                "semantic",
+                "gamerule",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_level_accepts_every_alias_and_rejects_unknown() {
+        for (input, expected) in [
+            ("parse", ValidationLevel::Parse),
+            ("L0", ValidationLevel::Parse),
+            ("0", ValidationLevel::Parse),
+            ("schema", ValidationLevel::Schema),
+            ("l1", ValidationLevel::Schema),
+            ("1", ValidationLevel::Schema),
+            ("type", ValidationLevel::Type),
+            ("l2", ValidationLevel::Type),
+            ("2", ValidationLevel::Type),
+            ("value", ValidationLevel::Value),
+            ("l3", ValidationLevel::Value),
+            ("3", ValidationLevel::Value),
+            ("table", ValidationLevel::Table),
+            ("l4", ValidationLevel::Table),
+            ("4", ValidationLevel::Table),
+            ("reference", ValidationLevel::Reference),
+            ("REF", ValidationLevel::Reference),
+            ("l5", ValidationLevel::Reference),
+            ("5", ValidationLevel::Reference),
+            ("semantic", ValidationLevel::Semantic),
+            ("l6", ValidationLevel::Semantic),
+            ("6", ValidationLevel::Semantic),
+            ("gamerule", ValidationLevel::GameRule),
+            ("game-rule", ValidationLevel::GameRule),
+            ("l7", ValidationLevel::GameRule),
+            ("7", ValidationLevel::GameRule),
+        ] {
+            assert_eq!(
+                ValidationLevel::parse_level(input),
+                Some(expected),
+                "alias {input}"
+            );
+        }
+        assert_eq!(ValidationLevel::parse_level("gamerules"), None);
+        assert_eq!(ValidationLevel::parse_level("l8"), None);
+        assert_eq!(ValidationLevel::parse_level(""), None);
+    }
+
+    #[test]
+    fn from_str_delegates_to_parse_level() {
+        assert_eq!(
+            "ref".parse::<ValidationLevel>(),
+            Ok(ValidationLevel::Reference)
+        );
+        assert_eq!(
+            "nope".parse::<ValidationLevel>(),
+            Err("Unknown validation level: nope".to_string())
+        );
+    }
+
+    #[test]
+    fn reference_cache_indexes_pks_and_reports_misses() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let vs = validated(schema);
+        let mut doc = doc_with(
+            "Item",
+            vec![
+                row(0, &[("id", Value::UInt(7))]),
+                row(1, &[("id", Value::UInt(8))]),
+                row(2, &[]), // row missing its pk field is skipped while indexing
+            ],
+        );
+        // Tables unknown to the schema are not indexed at all.
+        doc.add_table(Table {
+            name: "Orphan".to_string(),
+            primary_key_fields: vec![],
+            rows: vec![row(0, &[("id", Value::UInt(1))])],
+            source_file: "orphan.json".to_string(),
+            sheet: None,
+        });
+
+        let cache = ReferenceCache::build(&doc, &vs);
+        assert_eq!(cache.find_row("Item", "id", "7"), Some(0));
+        assert_eq!(cache.find_row("Item", "id", "8"), Some(1));
+        assert_eq!(cache.find_row("Item", "id", "9"), None);
+        assert_eq!(cache.find_row("Orphan", "id", "1"), None);
+        assert_eq!(cache.find_row("Item", "name", "7"), None);
+    }
+
+    #[test]
+    fn l1_warns_when_required_table_missing_from_document() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![FieldSchema {
+                required: true,
+                ..plain_field("id", FieldType::UInt32)
+            }],
+        ));
+        let vs = validated(schema);
+
+        let diags = validate(&vs, &Document::new(), ValidationLevel::Schema, false);
+        assert!(diags.errors().is_empty());
+        let warnings = diags.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, parse::E0001);
+        assert_eq!(warnings[0].table.as_deref(), Some("Item"));
+        assert!(warnings[0]
+            .message
+            .contains("Expected table 'Item' not found in source"));
+    }
+
+    #[test]
+    fn l1_ignores_missing_table_when_no_field_is_required() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Tag",
+            &[],
+            vec![plain_field("label", FieldType::String)],
+        ));
+        let vs = validated(schema);
+
+        let diags = validate(&vs, &Document::new(), ValidationLevel::Schema, false);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn l1_errors_on_missing_required_field() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                FieldSchema {
+                    required: true,
+                    ..plain_field("id", FieldType::UInt32)
+                },
+                FieldSchema {
+                    required: true,
+                    ..plain_field("name", FieldType::String)
+                },
+            ],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with("Item", vec![row(0, &[("id", Value::UInt(1))])]);
+
+        let diags = validate(&vs, &doc, ValidationLevel::Schema, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, schema::E1001);
+        assert_eq!(errors[0].field.as_deref(), Some("name"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("Add required field 'name'")));
+    }
+
+    #[test]
+    fn l1_warns_on_unknown_field_and_escalation_makes_it_an_error() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![row(0, &[("id", Value::UInt(1)), ("bonus", Value::UInt(5))])],
+        );
+
+        let as_warning = validate(&vs, &doc, ValidationLevel::Schema, false);
+        assert!(as_warning.errors().is_empty());
+        let warnings = as_warning.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, schema::E1002);
+        assert_eq!(warnings[0].field.as_deref(), Some("bonus"));
+        assert_eq!(warnings[0].severity, Severity::Warning);
+
+        let escalated = validate(&vs, &doc, ValidationLevel::Schema, true);
+        assert!(escalated.warnings().is_empty());
+        let errors = escalated.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, schema::E1002);
+        assert_eq!(errors[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn l2_reports_type_mismatch_e1101() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("count", FieldType::Int32),
+            ],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[("id", Value::UInt(1)), ("count", str_val("many"))],
+            )],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, type_val::E1101);
+        assert_eq!(errors[0].field.as_deref(), Some("count"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("Int32") && h.contains("got: string")));
+    }
+
+    #[test]
+    fn value_matches_type_covers_every_family() {
+        // Array: every element must match the declared inner type.
+        assert!(value_matches_type(
+            &Value::Array(vec![Value::Int(1), Value::Int(2)]),
+            &array_type(FieldType::Int64)
+        ));
+        assert!(!value_matches_type(
+            &Value::Array(vec![Value::Int(1), Value::Bool(true)]),
+            &array_type(FieldType::Int64)
+        ));
+        // Object: known keys with matching value types pass; unknown keys and
+        // mismatched value types fall through.
+        let object = object_type(&[("hp", FieldType::Int32)]);
+        assert!(value_matches_type(
+            &object_val(&[("hp", Value::Int(10))]),
+            &object
+        ));
+        assert!(!value_matches_type(
+            &object_val(&[("atk", Value::Int(1))]),
+            &object
+        ));
+        assert!(!value_matches_type(
+            &object_val(&[("hp", str_val("10"))]),
+            &object
+        ));
+        // Enum membership itself is deferred to L3, so strings always pass.
+        assert!(value_matches_type(
+            &str_val("rare"),
+            &FieldType::Enum("Rarity".to_string())
+        ));
+        // Scalar families only check the family; widths land in L3.
+        assert!(value_matches_type(&Value::Null, &FieldType::Null));
+        assert!(value_matches_type(&Value::Bool(true), &FieldType::Bool));
+        assert!(value_matches_type(&Value::Int(1), &FieldType::Int8));
+        assert!(value_matches_type(&Value::UInt(1), &FieldType::UInt64));
+        assert!(value_matches_type(&Value::Float(1.5), &FieldType::Float32));
+        assert!(value_matches_type(&str_val("s"), &FieldType::String));
+        assert!(value_matches_type(
+            &Value::Bytes(vec![1]),
+            &FieldType::Bytes
+        ));
+        assert!(value_matches_type(&str_val("any"), &FieldType::Any));
+        // Family mismatches fall through to false.
+        assert!(!value_matches_type(&str_val("10"), &FieldType::Int32));
+        assert!(!value_matches_type(&Value::Int(10), &FieldType::String));
+        assert!(!value_matches_type(
+            &Value::Array(vec![]),
+            &FieldType::String
+        ));
+    }
+
+    #[test]
+    fn pipeline_skips_unknown_tables_and_fields_across_levels() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let vs = validated(schema);
+        let mut doc = doc_with(
+            "Item",
+            vec![row(0, &[("id", Value::UInt(1)), ("bonus", Value::UInt(9))])],
+        );
+        doc.add_table(Table {
+            name: "Orphan".to_string(),
+            primary_key_fields: vec![],
+            rows: vec![row(0, &[("id", Value::UInt(1))])],
+            source_file: "orphan.json".to_string(),
+            sheet: None,
+        });
+
+        // Runs every level: only L1's unknown-field warning survives; each
+        // later level skips both the orphan table and the unknown field.
+        let diags = validate(&vs, &doc, ValidationLevel::GameRule, false);
+        assert!(diags.errors().is_empty());
+        let warnings = diags.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, schema::E1002);
+        assert_eq!(warnings[0].field.as_deref(), Some("bonus"));
+    }
+
+    #[test]
+    fn l3_enforces_numeric_bounds() {
+        let mut schema = Schema::new();
+        let low = FieldSchema {
+            min: Some(10.0),
+            ..plain_field("low", FieldType::UInt32)
+        };
+        let high = FieldSchema {
+            max: Some(10.0),
+            ..plain_field("high", FieldType::UInt32)
+        };
+        let ratio = FieldSchema {
+            min: Some(0.0),
+            max: Some(1.0),
+            ..plain_field("ratio", FieldType::Any)
+        };
+        schema.add_table(plain_table(
+            "Stat",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), low, high, ratio],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Stat",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    ("low", Value::UInt(5)),   // below min 10
+                    ("high", Value::UInt(50)), // above max 10
+                    ("ratio", Value::Null),    // not coercible → range checks skip
+                ],
+            )],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Value, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|e| e.code == value::E1201));
+        assert!(errors.iter().any(|e| {
+            e.field.as_deref() == Some("low")
+                && e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("Minimum allowed: 10"))
+        }));
+        assert!(errors.iter().any(|e| {
+            e.field.as_deref() == Some("high")
+                && e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("Maximum allowed: 10"))
+        }));
+    }
+
+    #[test]
+    fn l3_enforces_string_length_and_pattern() {
+        let mut schema = Schema::new();
+        let code = FieldSchema {
+            min_length: Some(3),
+            max_length: Some(5),
+            pattern: Some("^[a-z]+$".to_string()),
+            ..plain_field("code", FieldType::String)
+        };
+        let broken = FieldSchema {
+            pattern: Some("[".to_string()), // invalid regex → constraint skipped
+            ..plain_field("broken", FieldType::String)
+        };
+        schema.add_table(plain_table(
+            "Code",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), code, broken],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Code",
+            vec![
+                row(
+                    0,
+                    &[
+                        ("id", Value::UInt(1)),
+                        ("code", str_val("ab")),
+                        ("broken", str_val("x")),
+                    ],
+                ),
+                row(
+                    1,
+                    &[
+                        ("id", Value::UInt(2)),
+                        ("code", str_val("abcdef")),
+                        ("broken", str_val("y")),
+                    ],
+                ),
+                row(
+                    2,
+                    &[
+                        ("id", Value::UInt(3)),
+                        ("code", str_val("ABC1")),
+                        ("broken", str_val("z")),
+                    ],
+                ),
+                row(
+                    3,
+                    &[
+                        ("id", Value::UInt(4)),
+                        ("code", str_val("abc")),
+                        ("broken", str_val("w")),
+                    ],
+                ),
+            ],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Value, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 3);
+        assert!(errors.iter().any(|e| {
+            e.code == value::E1202
+                && e.field.as_deref() == Some("code")
+                && e.message.contains("too short")
+        }));
+        assert!(errors.iter().any(|e| {
+            e.code == value::E1202
+                && e.field.as_deref() == Some("code")
+                && e.message.contains("too long")
+        }));
+        assert!(errors.iter().any(|e| {
+            e.code == value::E1203
+                && e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("Pattern: ^[a-z]+$"))
+        }));
+    }
+
+    #[test]
+    fn l3_enforces_enum_membership() {
+        let mut schema = Schema::new();
+        let rarity = FieldSchema {
+            enum_values: Some(vec!["common".to_string(), "rare".to_string()]),
+            ..plain_field("rarity", FieldType::Any)
+        };
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), rarity],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Drop",
+            vec![
+                row(0, &[("id", Value::UInt(1)), ("rarity", str_val("epic"))]),
+                // Not string-coercible → coerces to "" → also outside the enum.
+                row(
+                    1,
+                    &[("id", Value::UInt(2)), ("rarity", Value::Array(vec![]))],
+                ),
+                row(2, &[("id", Value::UInt(3)), ("rarity", str_val("rare"))]),
+            ],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Value, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|e| e.code == value::E1204));
+        assert!(errors.iter().any(|e| e.row.as_deref() == Some("0")));
+        assert!(errors.iter().any(|e| {
+            e.row.as_deref() == Some("1")
+                && e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("Allowed values: common, rare"))
+        }));
+    }
+
+    #[test]
+    fn l3_enforces_array_length_bounds() {
+        let mut schema = Schema::new();
+        let tags = FieldSchema {
+            min_items: Some(1),
+            max_items: Some(2),
+            ..plain_field("tags", array_type(FieldType::String))
+        };
+        schema.add_table(plain_table(
+            "Unit",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), tags],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Unit",
+            vec![
+                row(0, &[("id", Value::UInt(1)), ("tags", Value::Array(vec![]))]),
+                row(
+                    1,
+                    &[
+                        ("id", Value::UInt(2)),
+                        (
+                            "tags",
+                            Value::Array(vec![str_val("a"), str_val("b"), str_val("c")]),
+                        ),
+                    ],
+                ),
+                row(
+                    2,
+                    &[
+                        ("id", Value::UInt(3)),
+                        ("tags", Value::Array(vec![str_val("a")])),
+                    ],
+                ),
+            ],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Value, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|e| e.code == value::E1205));
+        assert!(errors.iter().any(|e| {
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("Minimum items: 1"))
+        }));
+        assert!(errors.iter().any(|e| {
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("Maximum items: 2"))
+        }));
+    }
+
+    #[test]
+    fn l4_detects_row_ordering_violations() {
+        let mut schema = Schema::new();
+        let mut tier = plain_table(
+            "Tier",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("level", FieldType::Int32),
+            ],
+        );
+        tier.order_by = Some(vec!["level".to_string()]);
+        schema.add_table(tier);
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Tier",
+            vec![
+                row(0, &[("id", Value::UInt(1)), ("level", Value::Int(2))]),
+                row(1, &[("id", Value::UInt(2)), ("level", Value::Int(1))]), // out of order
+                row(2, &[("id", Value::UInt(3)), ("level", Value::Int(3))]),
+            ],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Table, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, table::E1304);
+        assert_eq!(errors[0].row.as_deref(), Some("1"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("Rows must be ordered by: level")));
+    }
+
+    #[test]
+    fn l4_skips_pk_check_when_table_has_no_primary_key() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Tag",
+            &[],
+            vec![plain_field("label", FieldType::String)],
+        ));
+        let vs = validated(schema);
+        // Two identical labels would collide if a PK were enforced.
+        let doc = doc_with(
+            "Tag",
+            vec![
+                row(0, &[("label", str_val("a"))]),
+                row(1, &[("label", str_val("a"))]),
+            ],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Table, false);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn l5_reports_missing_reference_target_e1401() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let item_id = FieldSchema {
+            reference: Some(ReferenceSchema {
+                table: "Item".to_string(),
+                field: "id".to_string(),
+                predicate: None,
+                cardinality: "one".to_string(),
+                compatible_with: None,
+            }),
+            ..plain_field("item_id", FieldType::UInt32)
+        };
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_id],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with_tables(&[
+            (
+                "Item",
+                vec![
+                    row(0, &[("id", Value::UInt(1))]),
+                    row(1, &[("id", Value::UInt(2))]),
+                ],
+            ),
+            (
+                "Drop",
+                vec![
+                    row(0, &[("id", Value::UInt(1)), ("item_id", Value::UInt(99))]),
+                    row(1, &[("id", Value::UInt(2)), ("item_id", Value::UInt(1))]),
+                ],
+            ),
+        ]);
+
+        let diags = validate(&vs, &doc, ValidationLevel::Reference, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, reference::E1401);
+        assert_eq!(errors[0].field.as_deref(), Some("item_id"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("No Item with id=99 found")));
+    }
+
+    #[test]
+    fn l5_predicate_gate_runs_but_placeholder_never_rejects() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let item_id = FieldSchema {
+            reference: Some(ReferenceSchema {
+                table: "Item".to_string(),
+                field: "id".to_string(),
+                predicate: Some(ExpressionRule {
+                    name: "tradable".to_string(),
+                    assert: "tradable == true".to_string(),
+                    message: None,
+                    warning_only: false,
+                }),
+                cardinality: "one".to_string(),
+                compatible_with: None,
+            }),
+            ..plain_field("item_id", FieldType::UInt32)
+        };
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_id],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with_tables(&[
+            ("Item", vec![row(0, &[("id", Value::UInt(1))])]),
+            (
+                "Drop",
+                vec![row(
+                    0,
+                    &[("id", Value::UInt(1)), ("item_id", Value::UInt(1))],
+                )],
+            ),
+        ]);
+
+        // The predicate is evaluated against the resolved target row; the
+        // placeholder engine always accepts, so no E1410 is emitted.
+        let diags = validate(&vs, &doc, ValidationLevel::Reference, false);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn l5_compatible_with_rejects_mismatched_enum_on_target() {
+        let mut schema = Schema::new();
+        let kind = FieldSchema {
+            enum_values: Some(vec!["weapon".to_string(), "armor".to_string()]),
+            ..plain_field("kind", FieldType::String)
+        };
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), kind],
+        ));
+        let item_id = FieldSchema {
+            reference: Some(ReferenceSchema {
+                table: "Item".to_string(),
+                field: "id".to_string(),
+                predicate: None,
+                cardinality: "one".to_string(),
+                compatible_with: Some(vec!["weapon".to_string()]),
+            }),
+            ..plain_field("item_id", FieldType::UInt32)
+        };
+        schema.add_table(plain_table(
+            "Slot",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_id],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with_tables(&[
+            (
+                "Item",
+                vec![
+                    // "legacy" is absent from the Item schema: the compatibility
+                    // scan must skip it while walking the target row.
+                    row(
+                        0,
+                        &[
+                            ("id", Value::UInt(1)),
+                            ("kind", str_val("armor")),
+                            ("legacy", str_val("old")),
+                        ],
+                    ),
+                    row(1, &[("id", Value::UInt(2)), ("kind", str_val("weapon"))]),
+                ],
+            ),
+            (
+                "Slot",
+                vec![
+                    row(0, &[("id", Value::UInt(1)), ("item_id", Value::UInt(1))]),
+                    row(1, &[("id", Value::UInt(2)), ("item_id", Value::UInt(2))]),
+                ],
+            ),
+        ]);
+
+        let diags = validate(&vs, &doc, ValidationLevel::Reference, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, reference::E1411);
+        assert_eq!(errors[0].row.as_deref(), Some("0"));
+        assert!(errors[0].hint.as_deref().is_some_and(|h| {
+            h.contains("Item.kind = 'armor'") && h.contains("allowed: weapon")
+        }));
+        // The stray "legacy" field is only reported by L1's unknown-field check.
+        let warnings = diags.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, schema::E1002);
+        assert_eq!(warnings[0].field.as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    fn l4_detects_duplicate_composite_unique_constraint() {
+        let mut schema = Schema::new();
+        let mut item = plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("slot", FieldType::String),
+            ],
+        );
+        item.unique_constraints = vec![crate::schema::UniqueConstraint {
+            name: "slot_unique".to_string(),
+            fields: vec!["slot".to_string()],
+        }];
+        schema.add_table(item);
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![
+                row(0, &[("id", Value::UInt(1)), ("slot", str_val("a"))]),
+                row(1, &[("id", Value::UInt(2)), ("slot", str_val("a"))]), // duplicate
+                row(2, &[("id", Value::UInt(3)), ("slot", str_val("b"))]),
+            ],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Table, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, table::E1302);
+        assert_eq!(errors[0].row.as_deref(), Some("1"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("Fields: slot, first at row 0")));
+    }
+
+    #[test]
+    fn l7_gamerule_level_surfaces_builtin_e1601_end_to_end() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Monster",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("level", FieldType::UInt32),
+                plain_field("attack", FieldType::UInt32),
+            ],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Monster",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    ("level", Value::UInt(1)),
+                    ("attack", Value::UInt(500)), // level 1 → cap 150
+                ],
+            )],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::GameRule, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, crate::error::codes::gamerule::E1601);
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("power_curve: attack 500")));
+    }
+
+    #[test]
+    fn l6_evaluates_field_rules_with_placeholder_engine() {
+        let mut schema = Schema::new();
+        let price = FieldSchema {
+            rules: vec![ExpressionRule {
+                name: "price_bounds".to_string(),
+                assert: "price <= 10000".to_string(),
+                message: Some("price must stay under 10000".to_string()),
+                warning_only: false,
+            }],
+            ..plain_field("price", FieldType::UInt32)
+        };
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), price],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[("id", Value::UInt(1)), ("price", Value::UInt(20000))],
+            )],
+        );
+
+        // Every field rule is evaluated per row; the placeholder expression
+        // engine accepts everything today, so no E1501 is emitted yet.
+        let diags = validate(&vs, &doc, ValidationLevel::Semantic, false);
+        assert!(diags.is_empty());
+    }
+
     #[test]
     fn test_value_validation_catches_range() {
         let schema = ValidatedSchema {

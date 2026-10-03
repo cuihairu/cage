@@ -729,6 +729,70 @@ enums:
         .expect("test schema must parse")
     }
 
+    /// Schema exercising paths the main fixture misses: an empty table
+    /// without a primary key, every rarely-used scalar type, required
+    /// byte[]/list/dict reference initializers, both Bool default branches,
+    /// length/pattern constraints, integral enums with negative / >i32 / >i64
+    /// backings, an enum description, and a non-integral string-bucket enum.
+    fn edge_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Ghost:
+    name: Ghost
+    primary_key: []
+    fields: {}
+  Edge:
+    name: Edge
+    primary_key: [key]
+    fields:
+      key: { name: key, type: { kind: String }, required: true }
+      flag: { name: flag, type: { kind: Bool }, default: true }
+      off: { name: off, type: { kind: Bool }, default: false }
+      anything: { name: anything, type: { kind: Any } }
+      i8: { name: i8, type: { kind: Int8 } }
+      i16: { name: i16, type: { kind: Int16 } }
+      u8: { name: u8, type: { kind: UInt8 } }
+      u16: { name: u16, type: { kind: UInt16 } }
+      u32: { name: u32, type: { kind: UInt32 } }
+      u64: { name: u64, type: { kind: UInt64 } }
+      f32: { name: f32, type: { kind: Float32 } }
+      blob: { name: blob, type: { kind: Bytes }, required: true }
+      meta: { name: meta, type: { kind: Object, value: {} }, required: true }
+      tags: { name: tags, type: { kind: Array, value: { kind: String } }, required: true }
+      code: { name: code, type: { kind: String }, min_length: 1, max_length: 8, pattern: '^[A-Z]+$' }
+      count: { name: count, type: { kind: Int32 }, max: 100, description: Bounded count }
+      big: { name: big, type: { kind: UInt64 }, default: 18446744073709551615 }
+      frac: { name: frac, type: { kind: Int64 }, default: 1.5 }
+      mix: { name: mix, type: { kind: Array, value: { kind: Int32 } }, default: [1, 'x'] }
+enums:
+  Signed:
+    name: Signed
+    values:
+      - { name: Low, value: -5 }
+      - { name: High, value: 3 }
+  Wide:
+    name: Wide
+    description: Wide-backed enum.
+    values:
+      - { name: Big, value: 4294967296 }
+  Huge:
+    name: Huge
+    values:
+      - { name: Max, value: 18446744073709551615 }
+  Mixed:
+    name: Mixed
+    values:
+      - { name: one, value: first, description: String member }
+      - { name: two, value: 2.5 }
+      - { name: yes, value: true }
+      - { name: no, value: false }
+      - { name: bare }
+",
+        )
+        .expect("edge schema must parse")
+    }
+
     fn gen() -> CsTargetGenerator {
         CsTargetGenerator::default()
     }
@@ -823,6 +887,136 @@ enums:
     }
 
     #[test]
+    fn test_empty_primary_key_summary() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        // Name order: Edge, Ghost, then the shared enums file.
+        assert!(artifacts[0].0.ends_with("Edge.cs"));
+        let ghost = String::from_utf8(artifacts[1].1.clone()).unwrap();
+        // Empty primary key → the summary is just the (escaped) name.
+        assert!(ghost.contains("/// <summary>Ghost</summary>"));
+        assert!(!ghost.contains("primary key"));
+    }
+
+    #[test]
+    fn test_integral_enum_backings() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let enums_src = String::from_utf8(artifacts[2].1.clone()).unwrap();
+
+        // Enum-level description in the summary.
+        assert!(enums_src.contains("/// <summary>Wide — Wide-backed enum.</summary>"));
+        // Backing type selection per value domain.
+        assert!(enums_src.contains("public enum Signed : long")); // negative
+        assert!(enums_src.contains("public enum Wide : long")); // > int.MaxValue
+        assert!(enums_src.contains("public enum Huge : ulong")); // > long.MaxValue
+        assert!(enums_src.contains("        Low = -5,"));
+        assert!(enums_src.contains("        Big = 4294967296,"));
+        assert!(enums_src.contains("        Max = 18446744073709551615,"));
+    }
+
+    #[test]
+    fn test_static_class_string_bucket() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let enums_src = String::from_utf8(artifacts[2].1.clone()).unwrap();
+
+        // Non-integral members → static class of string constants.
+        assert!(enums_src.contains("public static class Mixed"));
+        // Member description lands in its own summary line.
+        assert!(enums_src.contains("/// <summary>String member</summary>"));
+        // String / Number / Bool / value-less arms.
+        assert!(enums_src.contains("public const string one = \"first\";"));
+        assert!(enums_src.contains("public const string two = \"2.5\";"));
+        assert!(enums_src.contains("public const string yes = \"true\";"));
+        assert!(enums_src.contains("public const string no = \"false\";"));
+        assert!(enums_src.contains("public const string bare = \"bare\";"));
+    }
+
+    #[test]
+    fn test_edge_table_types_and_ref_inits() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let edge = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // Type mapping for the rarely-used scalar kinds.
+        assert!(edge.contains("public object? anything { get; init; }"));
+        assert!(edge.contains("public sbyte? i8 { get; init; }"));
+        assert!(edge.contains("public short? i16 { get; init; }"));
+        assert!(edge.contains("public byte? u8 { get; init; }"));
+        assert!(edge.contains("public ushort? u16 { get; init; }"));
+        assert!(edge.contains("public uint? u32 { get; init; }"));
+        assert!(edge.contains("public ulong? u64 { get; init; }"));
+        assert!(edge.contains("public float? f32 { get; init; }"));
+        // Both Bool default branches reach the initializer.
+        assert!(edge.contains("public bool flag { get; init; } = true;"));
+        assert!(edge.contains("public bool off { get; init; } = false;"));
+        // Required reference types with no default get empty initializers.
+        assert!(edge.contains("public byte[] blob { get; init; } = Array.Empty<byte>();"));
+        assert!(edge.contains("public IReadOnlyDictionary<string, object?> meta { get; init; }"));
+        assert!(edge
+            .contains("public IReadOnlyList<string> tags { get; init; } = Array.Empty<string>();"));
+        // Numeric-literal edges: a u64 default above i64::MAX renders via
+        // the or_else arm; a float default on an int field renders nothing
+        // (field stays nullable); an array default with one unrenderable
+        // item is dropped entirely.
+        assert!(edge.contains("public ulong big { get; init; } = 18446744073709551615;"));
+        assert!(edge.contains("public long? frac { get; init; }"));
+        assert!(edge.contains("public IReadOnlyList<int>? mix { get; init; }"));
+        // Constraint summaries in the field docs.
+        assert!(edge.contains("/// <summary>Bounded count, max: 100</summary>"));
+        assert!(
+            edge.contains("/// <summary>min_length: 1, max_length: 8, pattern: ^[A-Z]+$</summary>")
+        );
+    }
+
+    #[test]
+    fn test_from_config_without_enum_options() {
+        // options: None — the option block never opens.
+        let config: TargetConfig =
+            serde_yaml::from_str("format: csharp\noutput_dir: build/cs").expect("target config");
+        let gen = CsTargetGenerator::from_config(&config);
+        let defaults = CsTargetGenerator::default();
+        assert_eq!(gen.output_dir, PathBuf::from("build/cs"));
+        assert_eq!(gen.file_template, "{table}.cs");
+        assert_eq!(gen.namespace, defaults.namespace);
+        assert_eq!(gen.enums_file, defaults.enums_file);
+
+        // Options present but neither key — both inner arms are skipped.
+        let config: TargetConfig =
+            serde_yaml::from_str("format: csharp\noutput_dir: out\noptions:\n  other: 1")
+                .expect("target config");
+        let gen = CsTargetGenerator::from_config(&config);
+        assert_eq!(gen.namespace, defaults.namespace);
+        assert_eq!(gen.enums_file, defaults.enums_file);
+
+        // Non-string option values are ignored (the inner as_str arm fails).
+        let config: TargetConfig = serde_yaml::from_str(
+            "format: csharp\noutput_dir: out\noptions:\n  namespace: 42\n  enums_file: 42",
+        )
+        .expect("target config");
+        let gen = CsTargetGenerator::from_config(&config);
+        assert_eq!(gen.namespace, defaults.namespace);
+        assert_eq!(gen.enums_file, defaults.enums_file);
+    }
+
+    #[test]
+    fn test_schema_without_enums_emits_no_enums_file() {
+        // No (non-empty) enums → the shared enums artifact is skipped.
+        let schema: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Only:
+    name: Only
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+",
+        )
+        .expect("enumless schema must parse");
+        let artifacts = gen().generate(&schema, None);
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0].0.ends_with("Only.cs"));
+    }
+
+    #[test]
     fn test_deterministic_output() {
         let schema = test_schema();
         let a = gen().generate(&schema, Some("abc123"));
@@ -860,6 +1054,7 @@ options:
         assert_eq!(sanitize_ident("drop-item"), "drop_item");
         assert_eq!(sanitize_ident("1st"), "_1st");
         assert_eq!(sanitize_ident("列"), "_");
+        assert_eq!(sanitize_ident(""), "_");
         assert_eq!(cs_ident("class"), "@class");
         assert_eq!(cs_ident("int"), "@int");
         assert_eq!(cs_ident("name"), "name");
@@ -896,5 +1091,46 @@ options:
             &schema
         )
         .is_none());
+        // Bool defaults render both branches.
+        assert_eq!(
+            render_default(&serde_json::json!(true), &FieldType::Bool, &schema).unwrap(),
+            "true"
+        );
+        assert_eq!(
+            render_default(&serde_json::json!(false), &FieldType::Bool, &schema).unwrap(),
+            "false"
+        );
+        // float32 NaN has its own constant spelling.
+        assert_eq!(cs_float_literal(f64::NAN, true), "float.NaN");
+        // Both widths of infinity, both signs.
+        assert_eq!(
+            cs_float_literal(f64::INFINITY, false),
+            "double.PositiveInfinity"
+        );
+        assert_eq!(
+            cs_float_literal(f64::NEG_INFINITY, true),
+            "float.NegativeInfinity"
+        );
+        // A non-scalar element type sinks the whole array default.
+        assert!(render_default(
+            &serde_json::json!([{"a": 1}]),
+            &FieldType::Array(Box::new(FieldType::Object(indexmap::IndexMap::default()))),
+            &schema
+        )
+        .is_none());
+        // Scalar element types still render.
+        assert_eq!(
+            render_default(
+                &serde_json::json!([1, 2]),
+                &FieldType::Array(Box::new(FieldType::Int32)),
+                &schema
+            )
+            .unwrap(),
+            "new int[] { 1, 2 }"
+        );
+        // Escapes: control characters, newlines, quote and backslash.
+        assert_eq!(cs_string_literal("a\u{1}b"), "\"a\\u0001b\"");
+        assert_eq!(cs_string_literal("a\nb\r\tc"), "\"a\\nb\\r\\tc\"");
+        assert_eq!(cs_string_literal("q\"\\q"), "\"q\\\"\\\\q\"");
     }
 }

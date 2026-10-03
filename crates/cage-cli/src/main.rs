@@ -789,38 +789,362 @@ fn load_manifest(path: &Path) -> Result<BuildManifest, String> {
 mod tests {
     use super::*;
 
+    /// Render a parsed subcommand as a canonical string. Every `Commands`
+    /// arm executes when the five `parse_*` tests call it, so the dispatch
+    /// match has no dead arm — unlike `assert!(matches!(...))`, whose
+    /// never-taken false arm leaves an uncovered region on the assert line.
+    fn describe(cmd: &Commands) -> String {
+        match cmd {
+            Commands::Check {
+                path,
+                level,
+                profile,
+            } => {
+                format!("check {} {level} {profile}", path.display())
+            }
+            Commands::Build {
+                path,
+                level,
+                profile,
+                incremental,
+            } => format!("build {} {level} {profile} {incremental}", path.display()),
+            Commands::Inspect { path, table } => format!(
+                "inspect {} {}",
+                path.display(),
+                table.as_deref().unwrap_or("<all>")
+            ),
+            Commands::Gen { path, profile } => format!("gen {} {profile}", path.display()),
+            Commands::Diff { baseline, target } => {
+                format!("diff {} {}", baseline.display(), target.display())
+            }
+        }
+    }
+
     #[test]
     fn parse_check_subcommand() {
         let cli = Cli::try_parse_from(["cage", "check", "proj"]).expect("parse check");
-        assert!(matches!(cli.command, Commands::Check { .. }));
+        assert_eq!(describe(&cli.command), "check proj semantic client");
     }
 
     #[test]
     fn parse_build_subcommand() {
         let cli = Cli::try_parse_from(["cage", "build", "proj", "--level", "table"])
             .expect("parse build");
-        assert!(matches!(cli.command, Commands::Build { .. }));
+        assert_eq!(describe(&cli.command), "build proj table client false");
     }
 
     #[test]
     fn parse_diff_subcommand() {
         let cli = Cli::try_parse_from(["cage", "diff", "a", "b"]).expect("parse diff");
-        assert!(matches!(cli.command, Commands::Diff { .. }));
+        assert_eq!(describe(&cli.command), "diff a b");
     }
 
     #[test]
     fn parse_inspect_subcommand() {
         let cli = Cli::try_parse_from(["cage", "inspect", "proj"]).expect("parse inspect");
-        assert!(matches!(cli.command, Commands::Inspect { .. }));
+        assert_eq!(describe(&cli.command), "inspect proj <all>");
+        // The optional table argument round-trips too.
+        let cli = Cli::try_parse_from(["cage", "inspect", "proj", "Item"]).expect("parse table");
+        assert_eq!(describe(&cli.command), "inspect proj Item");
     }
 
     #[test]
     fn parse_gen_subcommand() {
         let cli =
             Cli::try_parse_from(["cage", "gen", "proj", "--profile", "server"]).expect("parse gen");
-        match cli.command {
-            Commands::Gen { profile, .. } => assert_eq!(profile, "server"),
-            _ => panic!("expected Gen"),
+        assert_eq!(describe(&cli.command), "gen proj server");
+    }
+
+    #[test]
+    fn collect_files_single_file_nested_dirs_and_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // A path that is itself a file is returned as-is.
+        let single = root.join("single.yaml");
+        std::fs::write(&single, "tables: {}\n").expect("write file");
+        let files = collect_files(&single, &["yaml"]).expect("file path");
+        assert_eq!(files, vec![single.clone()]);
+
+        // Directories are walked recursively in deterministic (sorted) order,
+        // keeping only the requested extensions.
+        std::fs::create_dir_all(root.join("nested/deeper")).expect("dirs");
+        std::fs::write(root.join("a.yaml"), "a").expect("a");
+        std::fs::write(root.join("nested/b.yaml"), "b").expect("b");
+        std::fs::write(root.join("nested/deeper/c.yaml"), "c").expect("c");
+        std::fs::write(root.join("nested/skip.json"), "{}").expect("skip");
+        let files = collect_files(root, &["yaml"]).expect("dir walk");
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "a.yaml",
+                "nested/b.yaml",
+                "nested/deeper/c.yaml",
+                "single.yaml"
+            ]
+        );
+
+        // A path that exists neither as file nor directory is an error.
+        let err = collect_files(&root.join("ghost"), &["yaml"]).expect_err("missing");
+        assert!(err.contains("path not found"), "{err}");
+    }
+
+    #[test]
+    fn filter_by_profile_gates_tables_and_fields() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("schemas")).expect("schemas");
+        std::fs::create_dir_all(root.join("config")).expect("config");
+        std::fs::write(
+            root.join("schemas/profile.yaml"),
+            r"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      secret: { name: secret, type: { kind: String }, targets: [server] }
+  ServerOnly:
+    name: ServerOnly
+    primary_key: [id]
+    targets: [server]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+",
+        )
+        .expect("schema");
+        std::fs::write(
+            root.join("config/data.json"),
+            r#"{"Item": [{"id": 1, "secret": "s"}], "ServerOnly": [{"id": 2}], "Orphan": [{"id": 3}]}"#,
+        )
+        .expect("data");
+
+        let schema = load_schema(&root.join("schemas")).expect("load schema");
+        let document = load_sources(&root.join("config")).expect("load sources");
+
+        // client: the server-only table, the server-gated field and the
+        // schema-less doc table all disappear.
+        let (schema_c, doc_c) = filter_by_profile(&schema, &document, "client");
+        assert!(schema_c.tables.contains_key("Item"));
+        assert!(!schema_c.tables.contains_key("ServerOnly"));
+        assert!(schema_c.tables["Item"].fields.contains_key("id"));
+        assert!(!schema_c.tables["Item"].fields.contains_key("secret"));
+        assert!(doc_c.tables.contains_key("Item"));
+        assert!(!doc_c.tables.contains_key("ServerOnly"));
+        assert!(!doc_c.tables.contains_key("Orphan"));
+        let item = &doc_c.tables["Item"];
+        assert!(item.rows[0].fields.contains_key("id"));
+        assert!(!item.rows[0].fields.contains_key("secret"));
+
+        // server: both tables survive and the server-gated field stays.
+        let (schema_s, doc_s) = filter_by_profile(&schema, &document, "server");
+        assert!(schema_s.tables.contains_key("Item"));
+        assert!(schema_s.tables.contains_key("ServerOnly"));
+        assert!(schema_s.tables["Item"].fields.contains_key("secret"));
+        assert!(doc_s.tables.contains_key("Item"));
+        assert!(doc_s.tables.contains_key("ServerOnly"));
+        assert!(doc_s.tables["Item"].rows[0].fields.contains_key("secret"));
+        assert!(!doc_s.tables.contains_key("Orphan"));
+    }
+
+    #[test]
+    fn write_artifact_files_records_entries_and_absolute_path_parent_edge() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut artifacts = Vec::new();
+        let items = vec![("out/Item.json".to_string(), b"{\"id\":1}".to_vec())];
+        write_artifact_files(tmp.path(), items, "json", &mut artifacts).expect("write");
+        assert_eq!(artifacts.len(), 1);
+        let (rel, content, format, table) = &artifacts[0];
+        assert_eq!(rel, "out/Item.json");
+        assert_eq!(content, b"{\"id\":1}");
+        assert_eq!(format, "json");
+        // Manifest entries record the table stem of the artifact path.
+        assert_eq!(table.as_deref(), Some("Item"));
+        assert!(tmp.path().join("out/Item.json").is_file());
+
+        // An absolute artifact path replaces the root on join, so `parent()`
+        // is None: the create_dir_all branch is skipped and the write fails.
+        let err = write_artifact_files(
+            tmp.path(),
+            vec![("/".to_string(), b"x".to_vec())],
+            "json",
+            &mut artifacts,
+        )
+        .expect_err("cannot write /");
+        assert!(err.starts_with("cannot write"), "{err}");
+    }
+
+    #[test]
+    fn manifest_roundtrip_and_error_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = ManifestGenerator::new(
+            "proj".to_string(),
+            "client".to_string(),
+            "0.1.0".to_string(),
+        )
+        .generate(&Schema::new(), &Document::new(), &[]);
+
+        // Save, then load from the directory form and the file form.
+        let out_dir = tmp.path().join("out");
+        let path = write_manifest(&out_dir, &manifest).expect("write manifest");
+        assert!(path.ends_with("manifest.json"));
+        let from_dir = load_manifest(&out_dir).expect("load dir");
+        assert_eq!(from_dir.content_hash, manifest.content_hash);
+        let from_file = load_manifest(&path).expect("load file");
+        assert_eq!(from_file.project, "proj");
+        assert_eq!(from_file.profile, "client");
+
+        // Missing manifest → cannot read.
+        let err = load_manifest(&tmp.path().join("ghost")).expect_err("missing");
+        assert!(err.contains("cannot read"), "{err}");
+        // Malformed manifest → invalid manifest.
+        let bad = tmp.path().join("bad.json");
+        std::fs::write(&bad, "{not json").expect("bad json");
+        let err = load_manifest(&bad).expect_err("invalid");
+        assert!(err.contains("invalid manifest"), "{err}");
+        // Manifest directory blocked by a regular file → cannot create.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "x").expect("blocker");
+        let err = write_manifest(&blocker, &manifest).expect_err("blocked");
+        assert!(err.contains("cannot create"), "{err}");
+    }
+
+    /// The manifest directory exists (so `create_dir_all` succeeds) but
+    /// `manifest.json` inside it is a directory: `fs::write` fails and the
+    /// `cannot write` error path surfaces.
+    #[test]
+    fn write_manifest_fails_when_manifest_json_is_a_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = ManifestGenerator::new(
+            "proj".to_string(),
+            "client".to_string(),
+            "0.1.0".to_string(),
+        )
+        .generate(&Schema::new(), &Document::new(), &[]);
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(out.join("manifest.json")).expect("manifest.json dir");
+        let err = write_manifest(&out, &manifest).expect_err("manifest.json is a directory");
+        assert!(err.contains("cannot write"), "{err}");
+    }
+
+    /// Schema files merge into one document: tables and enums from every
+    /// file, metadata from the first file that carries it — later files take
+    /// the `is_none()` guard's false branch instead of overwriting it.
+    #[test]
+    fn load_schema_merges_tables_enums_and_first_metadata() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let schemas = tmp.path().join("schemas");
+        std::fs::create_dir_all(&schemas).expect("schemas");
+        // collect_files sorts, so a_meta.yaml is read first and its metadata
+        // is the one kept; b_plain.yaml hits the guard's false edge.
+        std::fs::write(
+            schemas.join("a_meta.yaml"),
+            r#"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums:
+  Rarity:
+    name: Rarity
+    description: drop rates
+    values:
+      - { name: Common, value: 0 }
+      - { name: Rare, value: 1 }
+metadata:
+  version: "1.2"
+  description: merged schema metadata
+"#,
+        )
+        .expect("a_meta.yaml");
+        std::fs::write(
+            schemas.join("b_plain.yaml"),
+            r"tables:
+  Extra:
+    name: Extra
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+",
+        )
+        .expect("b_plain.yaml");
+
+        let merged = load_schema(&schemas).expect("load schema");
+        assert_eq!(merged.tables.len(), 2, "both files contribute tables");
+        assert!(merged.enums.contains_key("Rarity"), "enum merged");
+        let meta = merged.metadata.as_ref().expect("first metadata kept");
+        assert_eq!(meta.version, "1.2");
+        assert_eq!(meta.description.as_deref(), Some("merged schema metadata"));
+    }
+
+    /// I/O failures on unreadable paths surface as `failed to read` (config
+    /// and schema files) and `failed to read dir` (source walk). Mode-000
+    /// only denies reads to non-root; the assertions are written so a root
+    /// run short-circuits (`!denied || …`) instead of branching away.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_paths_surface_io_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn deny_read(path: &Path) {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))
+                .expect("chmod 000");
         }
+        fn allow_read(path: &Path, mode: u32) {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+                .expect("chmod restore");
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // 1. load_project_config: read_to_string on cage.toml fails.
+        let config = root.join("cage.toml");
+        std::fs::write(&config, "output_dir = \"build\"\n").expect("write config");
+        deny_read(&config);
+        let denied = std::fs::read_to_string(&config).is_err();
+        assert!(
+            !denied || load_project_config(root).is_err_and(|e| e.contains("failed to read")),
+            "unreadable cage.toml must surface 'failed to read'"
+        );
+        allow_read(&config, 0o644);
+
+        // 2. load_schema: read_to_string on a schema file fails.
+        let schemas = root.join("schemas");
+        std::fs::create_dir_all(&schemas).expect("schemas");
+        let schema_file = schemas.join("a.yaml");
+        std::fs::write(&schema_file, "tables: {}\nenums: {}\n").expect("write schema");
+        deny_read(&schema_file);
+        let denied = std::fs::read_to_string(&schema_file).is_err();
+        assert!(
+            !denied || load_schema(&schemas).is_err_and(|e| e.contains("failed to read")),
+            "unreadable schema file must surface 'failed to read'"
+        );
+        allow_read(&schema_file, 0o644);
+
+        // 3. load_sources → collect_files: read_dir on the source root fails,
+        //    and the error propagates through the `?` in the file loop.
+        let sources = root.join("config");
+        std::fs::create_dir_all(&sources).expect("config");
+        std::fs::write(sources.join("data.json"), "{}").expect("write source");
+        deny_read(&sources);
+        let denied = std::fs::read_dir(&sources).is_err();
+        assert!(
+            !denied || load_sources(&sources).is_err_and(|e| e.contains("failed to read dir")),
+            "unreadable source dir must surface 'failed to read dir'"
+        );
+        allow_read(&sources, 0o755);
     }
 }

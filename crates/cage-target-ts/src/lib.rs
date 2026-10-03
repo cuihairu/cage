@@ -1168,6 +1168,51 @@ enums:
         .expect("test schema must parse")
     }
 
+    /// Schema exercising paths the main fixture misses: an empty table,
+    /// length/pattern constraints, an enum with a description, and an
+    /// enum whose members are not all integral (string bucket).
+    fn edge_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Ghost:
+    name: Ghost
+    primary_key: []
+    fields: {}
+  Limits:
+    name: Limits
+    primary_key: [key]
+    fields:
+      key: { name: key, type: { kind: String }, required: true }
+      count: { name: count, type: { kind: Int32 }, max: 100, description: Bounded count }
+      code: { name: code, type: { kind: String }, min_length: 1, max_length: 8, pattern: '^[A-Z]+$' }
+      kind: { name: kind, type: { kind: Enum, value: Described } }
+      big: { name: big, type: { kind: UInt64 }, default: 18446744073709551615 }
+      frac: { name: frac, type: { kind: Int64 }, default: 1.5 }
+enums:
+  Described:
+    name: Described
+    description: A described enum.
+    values:
+      - { name: First, value: 1, description: First member }
+      - { name: Second, value: 2 }
+  Mixed:
+    name: Mixed
+    values:
+      - { name: one, value: first }
+      - { name: two, value: 2.5 }
+      - { name: yes, value: true }
+      - { name: no, value: false }
+      - { name: bare }
+  Huge:
+    name: Huge
+    values:
+      - { name: Max, value: 18446744073709551615 }
+",
+        )
+        .expect("edge schema must parse")
+    }
+
     fn gen() -> TsTargetGenerator {
         TsTargetGenerator::default()
     }
@@ -1346,6 +1391,72 @@ options:
     }
 
     #[test]
+    fn test_empty_table_renders_bare_interface() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        // Tables in name order: Ghost, Limits, then the enums module.
+        let ghost = src(&artifacts, 0);
+        assert!(ghost.contains("export interface Ghost {}"));
+        assert!(ghost.contains("export const GhostDefaults: Partial<Ghost> = {};"));
+        assert!(ghost.contains("  return { ...init } as Ghost;"));
+        // No JSDoc member docs on the typedef either.
+        assert!(!ghost.contains("@property"));
+
+        // JS mode: typedef with no @property rows + paired empty interface.
+        let artifacts = js_gen("build/js").generate(&edge_schema(), Some("abc123"));
+        let ghost_js = src(&artifacts, 0);
+        assert!(ghost_js.contains(" * @typedef {Object} Ghost"));
+        assert!(!ghost_js.contains("@property"));
+        let ghost_dts = src(&artifacts, 1);
+        assert!(ghost_dts.contains("export interface Ghost {}"));
+        assert!(
+            ghost_dts.contains("export declare function newGhost(init?: Partial<Ghost>): Ghost;")
+        );
+    }
+
+    #[test]
+    fn test_enum_description_and_mixed_value_buckets() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let enums_src = src(&artifacts, 2);
+        // Enum-level description comment.
+        assert!(enums_src.contains("// Described — A described enum."));
+        // Non-integral members stringify through enum_string_value.
+        assert!(enums_src.contains("  one: \"first\","));
+        assert!(enums_src.contains("  two: \"2.5\","));
+        assert!(enums_src.contains("  yes: \"true\","));
+        assert!(enums_src.contains("  no: \"false\","));
+        assert!(enums_src.contains("  bare: \"bare\","));
+        // u64 above i64::MAX stays in the integral bucket.
+        assert!(enums_src.contains("  Max: 18446744073709551615,"));
+
+        // JS mode: same description in the paired enums declaration.
+        let artifacts = js_gen("build/js").generate(&edge_schema(), Some("abc123"));
+        let enums_dts = src(&artifacts, 5);
+        assert!(enums_dts.contains("// Described — A described enum."));
+        assert!(enums_dts.contains(
+            "export declare const Mixed: { readonly one: \"first\"; readonly two: \"2.5\"; \
+             readonly yes: \"true\"; readonly no: \"false\"; readonly bare: \"bare\" };"
+        ));
+        assert!(enums_dts
+            .contains("export declare const Huge: { readonly Max: 18446744073709551615 };"));
+    }
+
+    #[test]
+    fn test_length_pattern_constraints_in_member_docs() {
+        let artifacts = gen().generate(&edge_schema(), Some("abc123"));
+        let limits = src(&artifacts, 1);
+        assert!(limits.contains("/** Bounded count, max: 100 */"));
+        assert!(limits.contains("/** min_length: 1, max_length: 8, pattern: ^[A-Z]+$ */"));
+        // u64 default above i64::MAX renders via the or_else arm; a float
+        // default on an int field renders nothing (member stays optional).
+        assert!(limits.contains("  big: number;"));
+        assert!(limits.contains("  big: 18446744073709551615,"));
+        assert!(limits.contains("  frac?: number;"));
+        assert!(!limits.contains("  frac: "));
+        assert!(limits.contains("  count?: number;"));
+        assert!(limits.contains("  code?: string;"));
+    }
+
+    #[test]
     fn test_deterministic_output() {
         let schema = test_schema();
         for gen in [gen(), js_gen("build/js")] {
@@ -1475,6 +1586,20 @@ options:
         assert_eq!(gen.mode, TsMode::JavaScript);
         assert!(!gen.emit_dts);
 
+        // Options present but no emit_dts key — the inner arm is skipped.
+        let config: TargetConfig = serde_yaml::from_str(
+            r"
+format: javascript
+output_dir: build/game
+options:
+  enums_file: shared_enums.js
+",
+        )
+        .expect("target config");
+        let gen = TsTargetGenerator::from_config(&config);
+        assert_eq!(gen.enums_file, "shared_enums.js");
+        assert!(gen.emit_dts);
+
         // Short alias "js" behaves like "javascript".
         let config: TargetConfig =
             serde_yaml::from_str("format: js\noutput_dir: out").expect("target config");
@@ -1490,6 +1615,7 @@ options:
         assert_eq!(sanitize_ident("drop-item"), "drop_item");
         assert_eq!(sanitize_ident("1st"), "_1st");
         assert_eq!(sanitize_ident("列"), "_");
+        assert_eq!(sanitize_ident(""), "_");
         // Keywords get a trailing underscore — binding positions only.
         assert_eq!(ts_ident("class"), "class_");
         assert_eq!(ts_ident("default"), "default_");
@@ -1673,6 +1799,7 @@ enums:
         .is_none());
         // Control characters use \xHH escapes; printable Unicode passes.
         assert_eq!(ts_string_literal("a\u{1}b"), "\"a\\x01b\"");
+        assert_eq!(ts_string_literal("a\nb\r\tc"), "\"a\\nb\\r\\tc\"");
         assert_eq!(ts_string_literal("naïve — 列"), "\"naïve — 列\"");
         assert_eq!(ts_string_literal("q\"\\q"), "\"q\\\"\\\\q\"");
     }
@@ -1704,6 +1831,16 @@ enums:
         assert!(!jsdoc_desc_safe("1st place"));
         assert!(!jsdoc_desc_safe("0desc"));
         assert!(!jsdoc_desc_safe("0x"));
+        // Hex-prefixed numbers parse as hex: safe when the identifier
+        // stops at the hex digits, unsafe when glued to them.
+        assert!(jsdoc_desc_safe("0xFF bytes"));
+        assert!(jsdoc_desc_safe("0X1f bytes"));
+        assert!(!jsdoc_desc_safe("0xFFxyz"));
+        // Exponent-leading numbers: the exponent must not be glued to
+        // an identifier either.
+        assert!(jsdoc_desc_safe("1e5 seconds"));
+        assert!(jsdoc_desc_safe("1e+5 seconds"));
+        assert!(!jsdoc_desc_safe("1ex seconds"));
         assert!(jsdoc_desc_safe(""));
     }
 

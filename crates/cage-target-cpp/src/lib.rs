@@ -907,9 +907,11 @@ enums:
         CppTargetGenerator::default()
     }
 
-    /// Second schema: extreme integer literals, an octal string escape, a
-    /// string-bucket enum field, and object/null members (every include
-    /// group except <limits>, which non-finite floats would pull in).
+    /// Second schema: extreme integer literals, every remaining field kind
+    /// (incl. Any/Null/Object/Bytes), the string escapes, constraint docs,
+    /// enum descriptions, a mixed string bucket, empty-primary-key and
+    /// include-free tables, and a string default whose text trips the
+    /// <limits> include guard.
     const EXTREMES_SCHEMA: &str = r#"
 tables:
   Edge:
@@ -922,6 +924,32 @@ tables:
       meta: { name: meta, type: { kind: Object, value: {} } }
       raw: { name: raw, type: { kind: Null } }
       tag: { name: tag, type: { kind: String }, default: "x\x01y" }
+      anyx: { name: anyx, type: { kind: Any }, default: 7 }
+      i8: { name: i8, type: { kind: Int8 }, default: -128 }
+      i16: { name: i16, type: { kind: Int16 }, default: -32768 }
+      u8x: { name: u8x, type: { kind: UInt8 }, default: 200 }
+      u16x: { name: u16x, type: { kind: UInt16 }, default: 65535 }
+      u32x: { name: u32x, type: { kind: UInt32 }, default: 4294967295 }
+      u64mid: { name: u64mid, type: { kind: UInt64 }, default: 42 }
+      f32: { name: f32, type: { kind: Float32 }, default: 1.5 }
+      flag: { name: flag, type: { kind: Bool }, default: true }
+      blob: { name: blob, type: { kind: Bytes } }
+      qty: { name: qty, type: { kind: Int32 }, required: true, max: 99, description: Stock }
+      code: { name: code, type: { kind: String }, min_length: 1, max_length: 10, pattern: "^[a-z]+$" }
+      esc: { name: esc, type: { kind: String }, default: "a\nb\rc" }
+      lim: { name: lim, type: { kind: String }, default: "std::numeric_limits<int>::max()" }
+  NoKey:
+    name: NoKey
+    primary_key: []
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+  Plain:
+    name: Plain
+    primary_key: [id]
+    fields:
+      flag: { name: flag, type: { kind: Bool }, required: true }
+      ratio: { name: ratio, type: { kind: Float64 }, default: 1.5 }
+      small: { name: small, type: { kind: Float32 }, default: 1.5 }
 enums:
   EdgeEnum:
     name: EdgeEnum
@@ -932,6 +960,17 @@ enums:
     name: Huge
     values:
       - { name: Top, value: 18446744073709551615 }
+  Labeled:
+    name: Labeled
+    description: Values past the 32-bit range.
+    values:
+      - { name: Large, value: 3000000000 }
+  MixKind:
+    name: MixKind
+    values:
+      - { name: S, value: "x y", description: spaced }
+      - { name: N, value: 42 }
+      - { name: T, value: true }
   Mode:
     name: Mode
     values:
@@ -970,6 +1009,8 @@ int main() {
 "#;
 
     const EXTREMES_MAIN_CPP: &str = r#"#include "Edge.h"
+#include "NoKey.h"
+#include "Plain.h"
 #include "cage_enums.h"
 
 int main() {
@@ -977,19 +1018,49 @@ int main() {
     e.big = -1;
     e.id = 7;
     e.mode = "on";
+    e.anyx = 7;
+    e.i8 = -1;
+    e.i16 = 2;
+    e.u8x = 3;
+    e.u16x = 4;
+    e.u32x = 5;
+    e.u64mid = 6;
+    e.f32 = 0.5f;
+    e.flag = false;
+    e.qty = 1;
+    e.code = "a";
+    e.esc = "x";
+    e.lim = "y";
     (void)e.meta;
     (void)e.raw;
     (void)e.tag;
+    (void)e.blob;
     auto mx = cage::generated::EdgeEnum::Max;
     auto mn = cage::generated::EdgeEnum::Min;
     auto top = cage::generated::Huge::Top;
+    auto lg = cage::generated::Labeled::Large;
+    auto s = cage::generated::MixKind::S;
+    auto n2 = cage::generated::MixKind::N;
+    auto t = cage::generated::MixKind::T;
     auto on = cage::generated::Mode::on;
     auto off = cage::generated::Mode::off;
     (void)mx;
     (void)mn;
     (void)top;
+    (void)lg;
+    (void)s;
+    (void)n2;
+    (void)t;
     (void)on;
     (void)off;
+    cage::generated::NoKey nk{};
+    nk.id = 1;
+    (void)nk;
+    cage::generated::Plain p{};
+    p.flag = true;
+    p.ratio = 1.0;
+    p.small = 0.5f;
+    (void)p;
     return 0;
 }
 "#;
@@ -1195,6 +1266,8 @@ options:
         assert_eq!(sanitize_ident("drop-item"), "drop_item");
         assert_eq!(sanitize_ident("1st"), "_1st");
         assert_eq!(sanitize_ident("列"), "_");
+        // Nothing left after sanitizing → a lone underscore.
+        assert_eq!(sanitize_ident(""), "_");
         // Keyword collision gets a trailing underscore (no escape syntax).
         assert_eq!(cpp_ident("class"), "class_");
         assert_eq!(cpp_ident("and"), "and_");
@@ -1371,28 +1444,195 @@ enums:
             cpp_string_literal("tab\t\"q\"\\z"),
             "\"tab\\t\\\"q\\\"\\\\z\""
         );
+        assert_eq!(cpp_string_literal("n\nr\r"), "\"n\\nr\\r\"");
     }
 
-    /// Dev-only compiler sanity: generate both schemas into
-    /// `/tmp/cage-cpp-sample/` and syntax-check them with g++. Kept
-    /// `#[ignore]`d so the committed suite never requires a toolchain.
+    /// g++ availability probe — the compile test below is a no-op (never a
+    /// failure) on machines without a toolchain.
+    fn gpp_available() -> bool {
+        std::process::Command::new("g++")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    /// Compiler sanity: generate both schemas and syntax-check the headers
+    /// with g++ (`-Wall -Wextra -Werror`). Skipped, not failed, when no g++
+    /// is installed.
     #[test]
-    #[ignore = "requires g++ on PATH; run with `cargo test -p cage-target-cpp -- --ignored`"]
-    fn test_headers_compile_with_gpp() {
-        let root = PathBuf::from("/tmp/cage-cpp-sample");
+    fn test_generated_headers_compile() {
+        if !gpp_available() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("cage-cpp-sample-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-
-        write_headers(&root, &gen().generate(&test_schema(), Some("abc123")));
-        std::fs::write(root.join("main.cpp"), BASIC_MAIN_CPP).unwrap();
-        run_gpp(&root, "main.cpp");
-
+        let basics = root.join("basic");
         let extremes = root.join("extremes");
+        std::fs::create_dir_all(&basics).unwrap();
         std::fs::create_dir_all(&extremes).unwrap();
+
+        write_headers(&basics, &gen().generate(&test_schema(), Some("abc123")));
+        std::fs::write(basics.join("main.cpp"), BASIC_MAIN_CPP).unwrap();
+        run_gpp(&basics, "main.cpp");
+
         let schema: Schema = serde_yaml::from_str(EXTREMES_SCHEMA).expect("extremes schema");
         write_headers(&extremes, &gen().generate(&schema, Some("def456")));
         std::fs::write(extremes.join("main.cpp"), EXTREMES_MAIN_CPP).unwrap();
         run_gpp(&extremes, "main.cpp");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_extremes_schema_rendering() {
+        let schema: Schema = serde_yaml::from_str(EXTREMES_SCHEMA).expect("extremes schema");
+        let artifacts = gen().generate(&schema, Some("def456"));
+        let paths: Vec<&str> = artifacts.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "build/cpp/Edge.h",
+                "build/cpp/NoKey.h",
+                "build/cpp/Plain.h",
+                "build/cpp/cage_enums.h",
+            ]
+        );
+
+        // Edge: every include group at once — <limits> pulled in by a string
+        // default whose text trips the numeric_limits guard — and the full
+        // member set with extreme literals.
+        let edge = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        assert!(edge.contains(
+            "#include <any>\n#include <cstdint>\n#include <limits>\n#include <map>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <vector>\n"
+        ));
+        assert!(edge.contains("#include \"cage_enums.h\""));
+        for expected in [
+            "std::uint64_t id{18446744073709551615ULL};",
+            "std::int64_t big{-9223372036854775807 - 1};",
+            "std::optional<std::string_view> mode;",
+            "std::optional<std::map<std::string, std::any>> meta;",
+            "std::optional<std::any> raw;",
+            "std::optional<std::any> anyx;",
+            "std::int8_t i8{-128};",
+            "std::int16_t i16{-32768};",
+            "std::uint8_t u8x{200};",
+            "std::uint16_t u16x{65535};",
+            "std::uint32_t u32x{4294967295};",
+            "std::uint64_t u64mid{42};",
+            "float f32{1.5};",
+            "bool flag{true};",
+            "std::optional<std::vector<std::uint8_t>> blob;",
+            "std::int32_t qty{};",
+            "std::optional<std::string> code;",
+            "std::string esc{\"a\\nb\\rc\"};",
+            "std::string lim{\"std::numeric_limits<int>::max()\"};",
+        ] {
+            assert!(edge.contains(expected), "missing: {expected}");
+        }
+        assert!(edge.contains("    // Stock, required, max: 99"));
+        assert!(edge.contains("    // min_length: 1, max_length: 10, pattern: ^[a-z]+$"));
+
+        // Empty primary key: the banner is the bare struct name.
+        let nokey = String::from_utf8(artifacts[1].1.clone()).unwrap();
+        assert!(nokey.contains("// NoKey\n"));
+        assert!(!nokey.contains("primary key"));
+        assert!(nokey.contains("std::int32_t id{};"));
+
+        // Only bool/float members: no system include is needed at all.
+        let plain = String::from_utf8(artifacts[2].1.clone()).unwrap();
+        assert!(!plain.contains("#include"));
+        assert!(plain.contains("// Plain — primary key: id"));
+
+        // Enums: description banners, range-selected backings (int64/uint64),
+        // i64::MIN spelling, ULL suffix, and the mixed string bucket with a
+        // trailing comment on the described member.
+        let enums = String::from_utf8(artifacts[3].1.clone()).unwrap();
+        assert!(enums.contains("#include <cstdint>\n#include <string_view>\n"));
+        assert!(enums.contains("// Labeled — Values past the 32-bit range."));
+        assert!(enums.contains("enum class Labeled : std::int64_t {"));
+        assert!(enums.contains("    Large = 3000000000,"));
+        assert!(enums.contains("enum class EdgeEnum : std::int64_t {"));
+        assert!(enums.contains("    Max = 9223372036854775807,"));
+        assert!(enums.contains("    Min = -9223372036854775807 - 1,"));
+        assert!(enums.contains("enum class Huge : std::uint64_t {"));
+        assert!(enums.contains("    Top = 18446744073709551615ULL,"));
+        assert!(enums.contains("namespace MixKind {"));
+        assert!(enums.contains("inline constexpr std::string_view S{\"x y\"};  // spaced"));
+        assert!(enums.contains("inline constexpr std::string_view N{\"42\"};"));
+        assert!(enums.contains("inline constexpr std::string_view T{\"true\"};"));
+    }
+
+    #[test]
+    fn test_write_headers_writes_relative_paths() {
+        let root = std::env::temp_dir().join(format!("cage-cpp-headers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_headers(&root, &gen().generate(&test_schema(), Some("abc123")));
+        // The `build/cpp` prefix is stripped; file names land at the root.
+        for name in ["Drop.h", "Item.h", "cage_enums.h"] {
+            assert!(root.join(name).is_file(), "missing {name}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_from_config_defaults_without_options() {
+        let config: TargetConfig = serde_yaml::from_str(
+            r"
+format: cpp
+output_dir: build/game
+",
+        )
+        .expect("target config");
+        let gen = CppTargetGenerator::from_config(&config);
+        // No `options` block → every generator knob keeps its default.
+        assert_eq!(gen.output_dir, PathBuf::from("build/game"));
+        assert_eq!(gen.file_template, "{table}.h");
+        assert_eq!(gen.enums_file, "cage_enums.h");
+        assert_eq!(gen.namespace, "cage::generated");
+    }
+
+    #[test]
+    fn test_render_enums_with_empty_slice() {
+        // Defensive boundary: an empty enum set renders the namespace shell
+        // with no include block at all (generate never calls it this way).
+        let src = gen().render_enums(Some("abc123"), &[]);
+        assert!(src.contains("namespace cage::generated {"));
+        assert!(src.contains("}  // namespace cage::generated"));
+        assert!(!src.contains("#include <"));
+        assert!(!src.contains("enum class"));
+    }
+
+    #[test]
+    fn test_cpp_uint_literal_small_values_stay_plain() {
+        // u64 values that fit a signed type keep the plain decimal spelling;
+        // only values above i64::MAX need the ULL suffix (schema defaults
+        // reach the u64 branch only above i64::MAX, so the small side is
+        // pinned directly).
+        assert_eq!(cpp_uint_literal(42), "42");
+        assert_eq!(cpp_uint_literal(i64::MAX as u64), "9223372036854775807");
+        assert_eq!(cpp_uint_literal(u64::MAX), "18446744073709551615ULL");
+    }
+
+    #[test]
+    fn test_integral_value_literal_fallbacks() {
+        let member = |v: Option<serde_json::Value>| EnumValue {
+            name: "Only".to_string(),
+            value: v,
+            description: None,
+        };
+        // A float payload keeps its decimal spelling; a value-less member
+        // falls back to a string literal (both are kept out of the numeric
+        // bucket by is_integral_enum, so the arms are pinned directly).
+        assert_eq!(
+            integral_value_literal(&member(Some(serde_json::json!(1.5)))),
+            "1.5"
+        );
+        assert_eq!(integral_value_literal(&member(None)), "\"Only\"");
+        assert_eq!(
+            integral_value_literal(&member(Some(serde_json::json!(7)))),
+            "7"
+        );
     }
 
     fn write_headers(root: &Path, artifacts: &[(String, Vec<u8>)]) {

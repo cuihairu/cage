@@ -478,4 +478,323 @@ mod tests {
         assert_eq!(gen.format_name(), "CSV");
         assert_eq!(gen.file_extension(), "csv");
     }
+
+    /// Build a `TargetConfig` directly — this crate has no `serde_yaml`
+    /// dev-dependency, and the struct is plain data.
+    fn config(
+        output_dir: &str,
+        file_template: Option<&str>,
+        options: Option<IndexMap<String, serde_json::Value>>,
+    ) -> TargetConfig {
+        TargetConfig {
+            format: "csv".to_string(),
+            output_dir: output_dir.to_string(),
+            file_template: file_template.map(str::to_string),
+            options,
+        }
+    }
+
+    fn opts(pairs: &[(&str, serde_json::Value)]) -> IndexMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn test_from_config_defaults() {
+        let gen = CsvTargetGenerator::from_config(&config("build/tab", None, None));
+        assert_eq!(gen.output_dir, PathBuf::from("build/tab"));
+        assert_eq!(gen.file_template, "{table}.csv");
+        assert_eq!(gen.delimiter, b',');
+        assert!(gen.write_header);
+        assert_eq!(format!("{:?}", gen.quote_style), "Necessary");
+    }
+
+    #[test]
+    fn test_from_config_option_overrides() {
+        // Custom template + single-char delimiter + header off + quote style.
+        let gen = CsvTargetGenerator::from_config(&config(
+            "build/tab",
+            Some("{table}_gen.csv"),
+            Some(opts(&[
+                ("delimiter", serde_json::json!("\t")),
+                ("write_header", serde_json::json!(false)),
+                ("quote_style", serde_json::json!("always")),
+            ])),
+        ));
+        assert_eq!(gen.file_template, "{table}_gen.csv");
+        assert_eq!(gen.delimiter, b'\t');
+        assert!(!gen.write_header);
+        assert_eq!(format!("{:?}", gen.quote_style), "Always");
+
+        // Every named quote style maps to its csv::QuoteStyle.
+        for (style, expected) in [
+            ("never", csv::QuoteStyle::Never),
+            ("non_numeric", csv::QuoteStyle::NonNumeric),
+            ("anything_else", csv::QuoteStyle::Necessary),
+        ] {
+            let gen = CsvTargetGenerator::from_config(&config(
+                "out",
+                None,
+                Some(opts(&[("quote_style", serde_json::json!(style))])),
+            ));
+            assert_eq!(
+                format!("{:?}", gen.quote_style),
+                format!("{expected:?}"),
+                "style: {style}"
+            );
+        }
+
+        // Invalid shapes are ignored: multi-char delimiter stays `,`,
+        // a non-bool write_header falls back to true, a non-string
+        // delimiter stays `,`.
+        let gen = CsvTargetGenerator::from_config(&config(
+            "out",
+            None,
+            Some(opts(&[
+                ("delimiter", serde_json::json!("ab")),
+                ("write_header", serde_json::json!("yes")),
+            ])),
+        ));
+        assert_eq!(gen.delimiter, b',');
+        assert!(gen.write_header);
+        assert_eq!(format!("{:?}", gen.quote_style), "Necessary");
+
+        let gen = CsvTargetGenerator::from_config(&config(
+            "out",
+            None,
+            Some(opts(&[("delimiter", serde_json::json!(42))])),
+        ));
+        assert_eq!(gen.delimiter, b',');
+        // Non-string quote_style: ignored, keeps the default style.
+        let gen = CsvTargetGenerator::from_config(&config(
+            "out",
+            None,
+            Some(opts(&[("quote_style", serde_json::json!(42))])),
+        ));
+        assert_eq!(format!("{:?}", gen.quote_style), "Necessary");
+    }
+
+    #[test]
+    fn test_from_config_quote_style_always_renders() {
+        // The parsed option must reach the writer, not just the struct.
+        let doc = make_test_doc();
+        let gen = CsvTargetGenerator::from_config(&config(
+            "build/tab",
+            None,
+            Some(opts(&[("quote_style", serde_json::json!("always"))])),
+        ));
+        let artifacts = gen.generate(&doc, &[]).unwrap();
+        let content = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        assert_eq!(
+            content,
+            "\"id\",\"name\",\"price\"\n\"1\",\"Sword\",\"100\"\n\"2\",\"Shield\",\"200\"\n"
+        );
+    }
+
+    #[test]
+    fn test_profile_target_filtering() {
+        let doc = make_test_doc();
+        let gen = CsvTargetGenerator::default();
+        // Exact table name.
+        let matched = gen.generate(&doc, &["Item".to_string()]).unwrap();
+        assert_eq!(matched.len(), 1);
+        assert!(matched[0].0.ends_with("Item.csv"));
+        // Wildcard selects everything.
+        let all = gen.generate(&doc, &["*".to_string()]).unwrap();
+        assert_eq!(all.len(), 1);
+        // No match → empty artifact list, no diagnostics.
+        let none = gen.generate(&doc, &["Ghost".to_string()]).unwrap();
+        assert_eq!(none.len(), 0);
+    }
+
+    #[test]
+    fn test_empty_table_falls_back_to_primary_key_headers() {
+        let mut doc = Document::new();
+        doc.add_table(Table {
+            name: "Empty".to_string(),
+            primary_key_fields: vec!["id".to_string(), "name".to_string()],
+            rows: vec![],
+            source_file: "empty.csv".to_string(),
+            sheet: None,
+        });
+        let gen = CsvTargetGenerator::default();
+        let artifacts = gen.generate(&doc, &[]).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(
+            String::from_utf8(artifacts[0].1.clone()).unwrap(),
+            "id,name\n"
+        );
+    }
+
+    #[test]
+    fn test_cage_value_to_string_edge_values() {
+        // Integral floats keep one decimal place (deterministic format).
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_string(Value::Float(100.0)),
+            "100.0"
+        );
+        // Fractional floats: ten decimals with trailing zeros trimmed.
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_string(Value::Float(2.5)),
+            "2.5"
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_string(Value::Float(1.0 / 3.0)),
+            "0.3333333333"
+        );
+        // Integer extremes round-trip as decimal text.
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_string(Value::Int(i64::MIN)),
+            "-9223372036854775808"
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_string(Value::UInt(u64::MAX)),
+            "18446744073709551615"
+        );
+        // Bytes → base64.
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_string(Value::Bytes(b"Hello".to_vec())),
+            "SGVsbG8="
+        );
+        // Arrays / objects → compact JSON strings (commas force quoting
+        // when written into a record).
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_string(Value::Array(vec![
+                Value::Int(1),
+                Value::Null,
+                Value::String("a".to_string()),
+            ])),
+            "[1,null,\"a\"]"
+        );
+        let mut obj = IndexMap::new();
+        obj.insert("k".to_string(), Value::UInt(2));
+        obj.insert("nested".to_string(), Value::Array(vec![Value::Null]));
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_string(Value::Object(obj)),
+            "{\"k\":2,\"nested\":[null]}"
+        );
+    }
+
+    #[test]
+    fn test_cage_value_to_json_all_variants() {
+        // Scalar arms.
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::Null),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::Bool(false)),
+            serde_json::Value::Bool(false)
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::Int(-5)),
+            serde_json::json!(-5)
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::UInt(u64::MAX)),
+            serde_json::json!(u64::MAX)
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::Float(2.5)),
+            serde_json::json!(2.5)
+        );
+        // Non-finite floats have no JSON number → Null.
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::Float(f64::NAN)),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::Float(f64::INFINITY)),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::String("s".to_string())),
+            serde_json::json!("s")
+        );
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::Bytes(b"Hello".to_vec())),
+            serde_json::json!("SGVsbG8=")
+        );
+        // Composite arms recurse.
+        assert_eq!(
+            CsvTargetGenerator::cage_value_to_json(&Value::Array(vec![
+                Value::Int(1),
+                Value::Bool(true),
+            ])),
+            serde_json::json!([1, true])
+        );
+        let mut obj = IndexMap::new();
+        obj.insert("k".to_string(), Value::Object(IndexMap::new()));
+        obj.insert("nil".to_string(), Value::Null);
+        let json = CsvTargetGenerator::cage_value_to_json(&Value::Object(obj));
+        assert_eq!(json["k"], serde_json::json!({}));
+        assert_eq!(json["nil"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_generate_row_with_all_value_kinds() {
+        // Every Value variant through the real generate() pipeline:
+        // normalization (string trim, -0.0 canonicalization), header order
+        // by first appearance, quoting of embedded delimiters/quotes.
+        let mut doc = Document::new();
+        let mut table = Table {
+            name: "Rich".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![],
+            source_file: "rich.csv".to_string(),
+            sheet: None,
+        };
+        let mut fields = IndexMap::new();
+        let mut add = |name: &str, value: Value| {
+            fields.insert(
+                name.to_string(),
+                TypedValue::new(value, SourceLocation::new("rich.csv")),
+            );
+        };
+        add("id", Value::UInt(u64::MAX));
+        add("nil", Value::Null);
+        add("flag", Value::Bool(true));
+        add("delta", Value::Int(i64::MIN));
+        add("ratio", Value::Float(-0.0)); // normalize → 0.0 → "0.0"
+        add("text", Value::String("  padded  ".to_string())); // normalize trims
+        add("uni", Value::String("列 ⚔".to_string()));
+        add("blob", Value::Bytes(b"Hello".to_vec()));
+        add("list", Value::Array(vec![Value::Int(1), Value::Null]));
+        add("map", {
+            let mut m = IndexMap::new();
+            m.insert("k".to_string(), Value::Int(2));
+            Value::Object(m)
+        });
+        table.rows.push(Row {
+            primary_key: vec![Value::UInt(u64::MAX)],
+            fields,
+            location: SourceLocation::new("rich.csv"),
+            index: 0,
+        });
+        doc.add_table(table);
+
+        let gen = CsvTargetGenerator::default();
+        let artifacts = gen.generate(&doc, &[]).unwrap();
+        let content = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        assert_eq!(
+            content,
+            "id,nil,flag,delta,ratio,text,uni,blob,list,map\n\
+             18446744073709551615,,true,-9223372036854775808,0.0,padded,列 ⚔,\
+             SGVsbG8=,\"[1,null]\",\"{\"\"k\"\":2}\"\n"
+        );
+        // Byte-for-byte deterministic across runs.
+        let again = gen.generate(&doc, &[]).unwrap();
+        assert_eq!(artifacts[0].1, again[0].1);
+    }
+
+    #[test]
+    fn test_target_generator_trait_dispatch() {
+        let doc = make_test_doc();
+        let gen = CsvTargetGenerator::default();
+        let artifacts = TargetGenerator::generate(&gen, &doc, &[]).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0].0.ends_with("Item.csv"));
+    }
 }

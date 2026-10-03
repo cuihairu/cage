@@ -515,4 +515,218 @@ monsters:
         assert_eq!(adapter.supported_extensions(), &["yaml", "yml"]);
         assert_eq!(adapter.format_name(), "YAML");
     }
+
+    /// A path that cannot be read reports E9902 with the source path attached.
+    #[test]
+    fn test_parse_file_missing_reports_io_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("no_such_file.yaml");
+
+        let diags = YamlSourceAdapter::parse_file(&missing).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, internal::E9902);
+        assert!(diags.errors()[0].message.contains("Failed to read file"));
+        assert!(diags.errors()[0].source.contains("no_such_file.yaml"));
+    }
+
+    /// A multi-document stream has no position mark, so the diagnostic keeps
+    /// a source-only location (no line/column to anchor to).
+    #[test]
+    fn test_multi_document_error_has_no_line_location() {
+        let diags =
+            YamlSourceAdapter::parse_str("a: 1\n---\nb: 2\n", Path::new("multi.yaml")).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, parse::E0001);
+        let message = &diags.errors()[0].message;
+        assert!(message.contains("YAML syntax error"));
+        assert!(message.contains("more than one document"));
+        let location = diags.errors()[0].location.as_ref().unwrap();
+        assert!(location.line.is_none());
+        assert!(location.col.is_none());
+    }
+
+    /// A scalar `<<` merge value is rejected by `apply_merge` with a hint.
+    #[test]
+    fn test_scalar_merge_key_rejected() {
+        let diags =
+            YamlSourceAdapter::parse_str("a: 1\n<<: 5\n", Path::new("merge.yaml")).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, parse::E0001);
+        assert!(diags.errors()[0].message.contains("YAML merge key error"));
+        assert!(diags.errors()[0].source.contains("merge.yaml"));
+        let hint = diags.errors()[0].hint.as_ref().unwrap();
+        assert!(hint.contains("merge key"));
+    }
+
+    /// A scalar root document is rejected with E0004.
+    #[test]
+    fn test_root_scalar_rejected() {
+        let diags = YamlSourceAdapter::parse_str("42", Path::new("scalar.yaml")).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, parse::E0004);
+        assert!(diags.errors()[0]
+            .message
+            .contains("YAML root must be a mapping or sequence"));
+    }
+
+    /// An empty top-level sequence yields no tables and no error.
+    #[test]
+    fn test_empty_top_level_sequence_yields_no_table() {
+        let doc = YamlSourceAdapter::parse_str("[]", Path::new("empty.yaml")).unwrap();
+
+        assert!(doc.tables.is_empty());
+        assert_eq!(doc.metadata.format, "yaml");
+    }
+
+    /// A top-level sequence of scalars: each row warns and is skipped, the
+    /// table collapses to `None`, and the document ends up table-less.
+    #[test]
+    fn test_sequence_of_scalars_dropped() {
+        let doc = YamlSourceAdapter::parse_str("- 1\n- 2\n", Path::new("scalars.yaml")).unwrap();
+
+        assert!(doc.tables.is_empty());
+    }
+
+    /// In multi-table documents only sequences (of mappings) and mappings
+    /// become tables; scalar values are skipped.
+    #[test]
+    fn test_multi_table_scalar_value_skipped() {
+        let yaml = "\
+Item:
+  - id: 1
+    name: Sword
+meta: hello
+";
+        let doc = YamlSourceAdapter::parse_str(yaml, Path::new("multi.yaml")).unwrap();
+
+        assert_eq!(doc.tables.len(), 1);
+        assert!(doc.tables.contains_key("Item"));
+        assert!(!doc.tables.contains_key("meta"));
+    }
+
+    /// `sheet_index > 0` names the sheet. Production call sites pass 0, but
+    /// the helpers' contract covers the indexed case (same pattern as the
+    /// Excel adapter's sheet naming).
+    #[test]
+    fn test_helpers_name_sheet_for_nonzero_index() {
+        let mut diags = Diagnostics::new();
+
+        let row: serde_yaml::Value = serde_yaml::from_str("id: 1").unwrap();
+        let rows = vec![row];
+        let table = YamlSourceAdapter::sequence_to_table("Rows", rows, "f.yaml", 1, &mut diags)
+            .expect("non-empty rows");
+        assert_eq!(table.sheet.as_deref(), Some("Sheet1"));
+
+        let value: serde_yaml::Value = serde_yaml::from_str("id: 1").unwrap();
+        let map = value.as_mapping().unwrap();
+        let table = YamlSourceAdapter::mapping_to_table("Obj", map, "f.yaml", 1, &mut diags);
+        assert_eq!(table.sheet.as_deref(), Some("Sheet1"));
+
+        assert!(!diags.has_errors());
+    }
+
+    /// Value and key type matrix: null/bool/uint/float/nested/tagged values
+    /// plus non-string keys (number, bool, null, sequence, mapping, tagged).
+    #[test]
+    fn test_value_and_key_type_matrix() {
+        let yaml = "\
+1: int-key
+true: bool-key
+null: null-key
+? [seq]
+: seq-key
+? {map: 1}
+: map-key
+? !mytag tag-key
+: tagged-key
+z: null
+b: true
+n: 18446744073709551615
+f: 3.5
+m:
+  x: 1
+t: !mytag tagged
+";
+
+        let doc = YamlSourceAdapter::parse_str(yaml, Path::new("matrix.yaml")).unwrap();
+
+        let table = doc.tables.get("Root").unwrap();
+        let fields = &table.rows[0].fields;
+
+        // Non-string keys are stringified into field names
+        assert_eq!(fields["1"].value, Value::String("int-key".to_string()));
+        assert_eq!(fields["true"].value, Value::String("bool-key".to_string()));
+        assert_eq!(fields["null"].value, Value::String("null-key".to_string()));
+        assert_eq!(
+            fields["[sequence]"].value,
+            Value::String("seq-key".to_string())
+        );
+        assert_eq!(
+            fields["{mapping}"].value,
+            Value::String("map-key".to_string())
+        );
+        assert_eq!(
+            fields["tag-key"].value,
+            Value::String("tagged-key".to_string())
+        );
+
+        // Value conversions
+        assert_eq!(fields["z"].value, Value::Null);
+        assert_eq!(fields["b"].value, Value::Bool(true));
+        assert_eq!(fields["n"].value, Value::UInt(u64::MAX));
+        assert_eq!(fields["f"].value, Value::Float(3.5));
+        let mut expected = IndexMap::new();
+        expected.insert("x".to_string(), Value::Int(1));
+        assert_eq!(fields["m"].value, Value::Object(expected));
+        assert_eq!(fields["t"].value, Value::String("tagged".to_string()));
+    }
+
+    /// The `SourceAdapter` trait forwards to the inherent parse entry points.
+    #[test]
+    fn test_source_adapter_trait_parse_delegation() {
+        let adapter = YamlSourceAdapter;
+        let yaml = "id: 1\nname: Sword\n";
+
+        let doc = SourceAdapter::parse_str(&adapter, yaml, Path::new("inline.yaml")).unwrap();
+        assert_eq!(doc.tables.get("Root").unwrap().rows.len(), 1);
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(yaml.as_bytes()).unwrap();
+        let doc = SourceAdapter::parse_file(&adapter, file.path()).unwrap();
+        assert!(doc.tables.contains_key("Root"));
+    }
+
+    /// In multi-table documents a sequence of scalars (e.g. a `tags:` field)
+    /// does not signal a row table — it is skipped, not turned into one.
+    #[test]
+    fn test_multi_table_scalar_sequence_skipped() {
+        let yaml = "\
+Item:
+  - id: 1
+    name: Sword
+tags:
+  - weapon
+  - rare
+";
+        let doc = YamlSourceAdapter::parse_str(yaml, Path::new("tags.yaml")).unwrap();
+
+        assert_eq!(doc.tables.len(), 1);
+        assert!(doc.tables.contains_key("Item"));
+        assert!(!doc.tables.contains_key("tags"));
+    }
+
+    /// An empty mapping still yields a (field-less) single-row Root table.
+    #[test]
+    fn test_empty_mapping_yields_fieldless_row() {
+        let doc = YamlSourceAdapter::parse_str("{}", Path::new("empty_map.yaml")).unwrap();
+
+        let table = doc.tables.get("Root").unwrap();
+        assert_eq!(table.rows.len(), 1);
+        assert!(table.rows[0].fields.is_empty());
+        assert_eq!(table.rows[0].primary_key, Vec::<Value>::new());
+    }
 }

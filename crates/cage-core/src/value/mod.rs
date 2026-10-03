@@ -423,4 +423,274 @@ mod tests {
         assert!(display.contains("Col: G"));
         assert!(display.contains("Field: DropItemID"));
     }
+
+    #[test]
+    fn source_location_line_col_byte_offset_and_fmt() {
+        let loc = SourceLocation::new("skills.json")
+            .with_byte_offset(42)
+            .with_line_col(12, 4);
+        assert_eq!(loc.byte_offset, Some(42));
+        assert_eq!(loc.line, Some(12));
+        assert_eq!(loc.col, Some(4));
+        let shown = loc.display();
+        assert!(shown.contains("Line: 12"));
+        assert_eq!(shown, "skills.json | Line: 12");
+        assert_eq!(format!("{loc}"), shown);
+
+        // a location with only a file renders as just the path
+        let bare = SourceLocation::new("a.csv");
+        assert_eq!(bare.display(), "a.csv");
+        assert_eq!(SourceLocation::default().file, "<unknown>");
+    }
+
+    #[test]
+    fn value_type_name_for_every_variant() {
+        assert_eq!(Value::Null.type_name(), "null");
+        assert_eq!(Value::Bool(true).type_name(), "bool");
+        assert_eq!(Value::Int(-1).type_name(), "int");
+        assert_eq!(Value::UInt(1).type_name(), "uint");
+        assert_eq!(Value::Float(0.5).type_name(), "float");
+        assert_eq!(Value::String("s".to_string()).type_name(), "string");
+        assert_eq!(Value::Bytes(vec![0]).type_name(), "bytes");
+        assert_eq!(Value::Array(Vec::new()).type_name(), "array");
+        assert_eq!(Value::Object(IndexMap::new()).type_name(), "object");
+    }
+
+    #[test]
+    fn value_is_empty_classification() {
+        assert!(Value::Null.is_empty());
+        assert!(Value::String(String::new()).is_empty());
+        assert!(!Value::String("x".to_string()).is_empty());
+        assert!(Value::Array(Vec::new()).is_empty());
+        assert!(!Value::Array(vec![Value::Int(0)]).is_empty());
+        assert!(Value::Object(IndexMap::new()).is_empty());
+        assert!(!Value::Object(IndexMap::from([("k".to_string(), Value::Int(0))])).is_empty());
+        assert!(Value::Bytes(Vec::new()).is_empty());
+        assert!(!Value::Bytes(vec![1]).is_empty());
+        // scalar types are never "empty", even at their zero values
+        assert!(!Value::Bool(false).is_empty());
+        assert!(!Value::Int(0).is_empty());
+        assert!(!Value::UInt(0).is_empty());
+        assert!(!Value::Float(0.0).is_empty());
+    }
+
+    #[test]
+    fn coerce_to_int_edge_paths() {
+        assert_eq!(Value::Int(42).coerce_to_int(), Some(42));
+        assert_eq!(Value::UInt(7).coerce_to_int(), Some(7));
+        assert_eq!(Value::UInt(u64::MAX).coerce_to_int(), None); // overflow
+        assert_eq!(Value::Float(100.0).coerce_to_int(), Some(100));
+        assert_eq!(Value::Float(100.5).coerce_to_int(), None); // fractional
+        assert_eq!(Value::Float(f64::MAX).coerce_to_int(), None); // out of range
+        assert_eq!(Value::Bool(true).coerce_to_int(), Some(1));
+        assert_eq!(Value::Bool(false).coerce_to_int(), Some(0));
+        assert_eq!(Value::String("42".to_string()).coerce_to_int(), Some(42));
+        assert_eq!(Value::String("abc".to_string()).coerce_to_int(), None);
+        assert_eq!(Value::Null.coerce_to_int(), None);
+        assert_eq!(Value::Bytes(vec![1]).coerce_to_int(), None);
+        assert_eq!(Value::Array(Vec::new()).coerce_to_int(), None);
+    }
+
+    #[test]
+    fn coerce_to_uint_edge_paths() {
+        assert_eq!(Value::UInt(9).coerce_to_uint(), Some(9));
+        assert_eq!(Value::Int(5).coerce_to_uint(), Some(5));
+        assert_eq!(Value::Int(-1).coerce_to_uint(), None); // negative
+        assert_eq!(Value::Float(100.0).coerce_to_uint(), Some(100));
+        assert_eq!(Value::Float(-1.0).coerce_to_uint(), None); // negative
+        assert_eq!(Value::Float(100.5).coerce_to_uint(), None); // fractional
+        assert_eq!(Value::Bool(true).coerce_to_uint(), Some(1));
+        assert_eq!(Value::String("7".to_string()).coerce_to_uint(), Some(7));
+        assert_eq!(Value::String("x".to_string()).coerce_to_uint(), None);
+        assert_eq!(Value::Null.coerce_to_uint(), None);
+        assert_eq!(Value::Bytes(vec![1]).coerce_to_uint(), None);
+    }
+
+    #[test]
+    fn coerce_to_float_edge_paths() {
+        assert_eq!(Value::Float(1.5).coerce_to_float(), Some(1.5));
+        assert_eq!(Value::Int(-3).coerce_to_float(), Some(-3.0));
+        assert_eq!(Value::UInt(8).coerce_to_float(), Some(8.0));
+        assert_eq!(Value::Bool(true).coerce_to_float(), Some(1.0));
+        assert_eq!(Value::Bool(false).coerce_to_float(), Some(0.0));
+        assert_eq!(
+            Value::String("2.5".to_string()).coerce_to_float(),
+            Some(2.5)
+        );
+        assert_eq!(Value::String("nope".to_string()).coerce_to_float(), None);
+        assert_eq!(Value::Null.coerce_to_float(), None);
+        assert_eq!(Value::Bytes(vec![1]).coerce_to_float(), None);
+        assert_eq!(Value::Array(Vec::new()).coerce_to_float(), None);
+    }
+
+    #[test]
+    fn coerce_to_bool_edge_paths() {
+        assert_eq!(Value::Bool(true).coerce_to_bool(), Some(true));
+        assert_eq!(Value::Bool(false).coerce_to_bool(), Some(false));
+        assert_eq!(Value::Int(1).coerce_to_bool(), Some(true));
+        assert_eq!(Value::Int(0).coerce_to_bool(), Some(false));
+        assert_eq!(Value::UInt(2).coerce_to_bool(), Some(true));
+        assert_eq!(Value::UInt(0).coerce_to_bool(), Some(false));
+        assert_eq!(Value::Float(0.5).coerce_to_bool(), Some(true));
+        assert_eq!(Value::Float(0.0).coerce_to_bool(), Some(false));
+        assert_eq!(
+            Value::String("true".to_string()).coerce_to_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            Value::String(" YES ".to_string()).coerce_to_bool(),
+            Some(true)
+        );
+        assert_eq!(Value::String("1".to_string()).coerce_to_bool(), Some(true));
+        assert_eq!(
+            Value::String("off".to_string()).coerce_to_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            Value::String("no".to_string()).coerce_to_bool(),
+            Some(false)
+        );
+        assert_eq!(Value::String("garbage".to_string()).coerce_to_bool(), None);
+        assert_eq!(Value::Null.coerce_to_bool(), None);
+        assert_eq!(Value::Array(Vec::new()).coerce_to_bool(), None);
+    }
+
+    #[test]
+    fn coerce_to_string_edge_paths() {
+        assert_eq!(
+            Value::String("s".to_string()).coerce_to_string(),
+            Some("s".to_string())
+        );
+        assert_eq!(Value::Int(-2).coerce_to_string(), Some("-2".to_string()));
+        assert_eq!(Value::UInt(6).coerce_to_string(), Some("6".to_string()));
+        assert_eq!(
+            Value::Float(1.5).coerce_to_string(),
+            Some("1.5".to_string())
+        );
+        assert_eq!(
+            Value::Bool(false).coerce_to_string(),
+            Some("false".to_string())
+        );
+        assert_eq!(
+            Value::Bytes(b"cage".to_vec()).coerce_to_string(),
+            Some("cage".to_string())
+        );
+        assert_eq!(Value::Bytes(vec![0xFF]).coerce_to_string(), None); // not utf-8
+        assert_eq!(Value::Null.coerce_to_string(), None);
+        assert_eq!(Value::Array(Vec::new()).coerce_to_string(), None);
+        assert_eq!(Value::Object(IndexMap::new()).coerce_to_string(), None);
+    }
+
+    #[test]
+    fn value_display_for_every_variant() {
+        assert_eq!(Value::Null.to_string(), "null");
+        assert_eq!(Value::Bool(true).to_string(), "true");
+        assert_eq!(Value::Int(-5).to_string(), "-5");
+        assert_eq!(Value::UInt(7).to_string(), "7");
+        assert_eq!(Value::Float(1.5).to_string(), "1.5");
+        assert_eq!(Value::String("hi".to_string()).to_string(), "\"hi\"");
+        assert_eq!(Value::Bytes(vec![1, 2, 3]).to_string(), "bytes[3]");
+
+        let list = Value::Array(vec![
+            Value::Int(1),
+            Value::String("a".to_string()),
+            Value::Null,
+        ]);
+        assert_eq!(list.to_string(), "[1, \"a\", null]");
+
+        let obj = Value::Object(IndexMap::from([
+            ("a".to_string(), Value::Int(1)),
+            ("b".to_string(), Value::Bool(false)),
+        ]));
+        assert_eq!(obj.to_string(), "{a: 1, b: false}");
+
+        // nested containers format recursively
+        let nested = Value::Array(vec![Value::Array(vec![Value::UInt(2)])]);
+        assert_eq!(nested.to_string(), "[[2]]");
+    }
+
+    #[test]
+    fn value_serde_roundtrip_and_tag_shape() {
+        let original = Value::Object(IndexMap::from([
+            ("null".to_string(), Value::Null),
+            ("flag".to_string(), Value::Bool(true)),
+            ("count".to_string(), Value::Int(-3)),
+            ("big".to_string(), Value::UInt(u64::MAX)),
+            ("ratio".to_string(), Value::Float(1.5)),
+            ("name".to_string(), Value::String("sword".to_string())),
+            ("blob".to_string(), Value::Bytes(vec![1, 2, 3])),
+            (
+                "list".to_string(),
+                Value::Array(vec![Value::Int(1), Value::Null]),
+            ),
+        ]));
+        let json = serde_json::to_string(&original).expect("serialize value");
+        let back: Value = serde_json::from_str(&json).expect("deserialize value");
+        assert_eq!(back, original);
+
+        // adjacent tag/content shape is part of the on-disk contract
+        assert_eq!(
+            serde_json::to_string(&Value::Null).expect("null"),
+            "{\"type\":\"Null\"}"
+        );
+        assert_eq!(
+            serde_json::to_string(&Value::Int(7)).expect("int"),
+            "{\"type\":\"Int\",\"value\":7}"
+        );
+        // distinct variants never compare equal
+        assert_ne!(Value::Int(1), Value::UInt(1));
+        assert_ne!(Value::Int(1), Value::Float(1.0));
+    }
+
+    #[test]
+    fn typed_value_schema_type_attachment() {
+        let tv = TypedValue::new(Value::Int(5), SourceLocation::new("a.csv").with_row(2));
+        assert!(tv.schema_type.is_none());
+        assert_eq!(tv.value, Value::Int(5));
+        assert_eq!(tv.location.row, Some(2));
+
+        let tv = tv.with_schema_type("int32");
+        assert_eq!(tv.schema_type.as_deref(), Some("int32"));
+    }
+
+    #[test]
+    fn document_table_construction_and_lookup() {
+        let mut doc = Document::default();
+        assert!(doc.tables.is_empty());
+        assert_eq!(doc.source_files, [] as [String; 0]);
+
+        let table = Table {
+            name: "Item".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![Row {
+                primary_key: vec![Value::UInt(1)],
+                fields: IndexMap::new(),
+                location: SourceLocation::new("items.csv"),
+                index: 0,
+            }],
+            source_file: "items.csv".to_string(),
+            sheet: None,
+        };
+        doc.add_table(table);
+        assert_eq!(doc.source_files, ["items.csv"]);
+
+        let item = doc.get_table("Item").expect("Item exists");
+        assert_eq!(item.rows.len(), 1);
+        assert!(doc.get_table("Ghost").is_none());
+
+        let item = doc.get_table_mut("Item").expect("mutable Item");
+        item.rows.push(Row {
+            primary_key: vec![Value::UInt(2)],
+            fields: IndexMap::new(),
+            location: SourceLocation::new("items.csv").with_row(2),
+            index: 1,
+        });
+
+        let item = doc.get_table("Item").expect("Item exists");
+        assert_eq!(item.rows.len(), 2);
+        assert_eq!(item.primary_key_fields, ["id"]);
+        assert_eq!(item.rows[0].index, 0);
+        assert_eq!(item.rows[1].index, 1);
+        assert_eq!(item.rows[1].location.row, Some(2));
+    }
 }

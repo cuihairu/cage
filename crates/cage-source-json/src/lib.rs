@@ -426,4 +426,148 @@ mod tests {
         assert_eq!(adapter.supported_extensions(), &["json"]);
         assert_eq!(adapter.format_name(), "JSON");
     }
+
+    /// A path that cannot be read reports E9902 with the source path attached.
+    #[test]
+    fn test_parse_file_missing_reports_io_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("no_such_file.json");
+
+        let diags = JsonSourceAdapter::parse_file(&missing).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, internal::E9902);
+        assert!(diags.errors()[0].message.contains("Failed to read file"));
+        assert!(diags.errors()[0].source.contains("no_such_file.json"));
+    }
+
+    /// A scalar root is rejected with E0004 through the conversion dispatch.
+    #[test]
+    fn test_root_scalar_rejected() {
+        let diags = JsonSourceAdapter::parse_str("42", Path::new("scalar.json")).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, parse::E0004);
+        assert!(diags.errors()[0]
+            .message
+            .contains("JSON root must be an object or array"));
+    }
+
+    /// Null entries and empty arrays in a multi-table document are skipped,
+    /// not tabulated.
+    #[test]
+    fn test_multi_table_null_and_empty_array_skipped() {
+        let json = r#"{"Item": [{"id": 1, "name": "Sword"}], "meta": null, "empty": []}"#;
+
+        let doc = JsonSourceAdapter::parse_str(json, Path::new("multi.json")).unwrap();
+
+        assert_eq!(doc.tables.len(), 1);
+        assert!(doc.tables.contains_key("Item"));
+        assert!(!doc.tables.contains_key("meta"));
+        assert!(!doc.tables.contains_key("empty"));
+    }
+
+    /// An empty object still yields a (field-less) single-row table.
+    #[test]
+    fn test_empty_object_yields_fieldless_row() {
+        let doc = JsonSourceAdapter::parse_str("{}", Path::new("empty_obj.json")).unwrap();
+
+        let table = doc.tables.get("Root").unwrap();
+        assert_eq!(table.rows.len(), 1);
+        assert!(table.rows[0].fields.is_empty());
+        assert_eq!(table.rows[0].primary_key, Vec::<Value>::new());
+    }
+
+    /// An empty top-level array yields no tables and no error.
+    #[test]
+    fn test_empty_top_level_array_yields_no_table() {
+        let doc = JsonSourceAdapter::parse_str("[]", Path::new("empty.json")).unwrap();
+
+        assert!(doc.tables.is_empty());
+        assert_eq!(doc.metadata.format, "json");
+    }
+
+    /// Non-object rows are dropped (each with a warning); with all rows bad
+    /// the table collapses to `None` and the document ends up table-less.
+    #[test]
+    fn test_top_level_array_non_object_rows_dropped() {
+        let doc = JsonSourceAdapter::parse_str("[1, 2]", Path::new("scalars.json")).unwrap();
+
+        // Warnings only surface through the error path — here the parse
+        // succeeds with nothing to table.
+        assert!(doc.tables.is_empty());
+    }
+
+    /// Without an `id` key the first (sorted) field becomes the primary key.
+    #[test]
+    fn test_object_without_id_falls_back_to_first_field() {
+        let json = r#"{"qty": 3, "name": "Sword"}"#;
+
+        let doc = JsonSourceAdapter::parse_str(json, Path::new("noid.json")).unwrap();
+
+        let table = doc.tables.get("Root").unwrap();
+        // sorted keys: "name" < "qty" → the fallback picks "Sword"
+        assert_eq!(
+            table.rows[0].primary_key,
+            vec![Value::String("Sword".to_string())]
+        );
+    }
+
+    /// Value conversion edges: null, bool, u64 past `i64::MAX`, float,
+    /// and a nested object becoming `Value::Object`.
+    #[test]
+    fn test_json_value_conversion_edges() {
+        let json = r#"{
+            "nil": null,
+            "flag": true,
+            "big": 18446744073709551615,
+            "ratio": 3.5,
+            "cfg": {"depth": 2}
+        }"#;
+
+        let doc = JsonSourceAdapter::parse_str(json, Path::new("edges.json")).unwrap();
+
+        let row = &doc.tables.get("Root").unwrap().rows[0];
+        assert_eq!(row.fields["nil"].value, Value::Null);
+        assert_eq!(row.fields["flag"].value, Value::Bool(true));
+        assert_eq!(row.fields["big"].value, Value::UInt(u64::MAX));
+        assert_eq!(row.fields["ratio"].value, Value::Float(3.5));
+        let mut expected = IndexMap::new();
+        expected.insert("depth".to_string(), Value::Int(2));
+        assert_eq!(row.fields["cfg"].value, Value::Object(expected));
+    }
+
+    /// `sheet_index > 0` names the sheet. Production call sites pass 0, but
+    /// the helpers' contract covers the indexed case (same pattern as the
+    /// Excel adapter's sheet naming).
+    #[test]
+    fn test_helpers_name_sheet_for_nonzero_index() {
+        let mut diags = Diagnostics::new();
+
+        let rows = serde_json::json!([{"id": 1}]).as_array().unwrap().clone();
+        let table = JsonSourceAdapter::array_to_table("Rows", rows, "f.json", 1, &mut diags)
+            .expect("non-empty rows");
+        assert_eq!(table.sheet.as_deref(), Some("Sheet1"));
+
+        let obj = serde_json::json!({"id": 1}).as_object().unwrap().clone();
+        let table = JsonSourceAdapter::object_to_table("Obj", &obj, "f.json", 1, &mut diags);
+        assert_eq!(table.sheet.as_deref(), Some("Sheet1"));
+
+        assert!(!diags.has_errors());
+    }
+
+    /// The `SourceAdapter` trait forwards to the inherent parse entry points.
+    #[test]
+    fn test_source_adapter_trait_parse_delegation() {
+        let adapter = JsonSourceAdapter;
+        let json = r#"{"id": 1, "name": "Sword"}"#;
+
+        let doc = SourceAdapter::parse_str(&adapter, json, Path::new("inline.json")).unwrap();
+        assert_eq!(doc.tables.get("Root").unwrap().rows.len(), 1);
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+        let doc = SourceAdapter::parse_file(&adapter, file.path()).unwrap();
+        assert!(doc.tables.contains_key("Root"));
+    }
 }

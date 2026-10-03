@@ -560,4 +560,229 @@ mod tests {
         assert_eq!(adapter.supported_extensions(), &["csv", "tsv"]);
         assert_eq!(adapter.format_name(), "CSV");
     }
+
+    /// Opening a path the reader cannot read reports E9902 with the file path.
+    #[test]
+    fn test_parse_file_open_failure() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("no_such_file.csv");
+
+        let adapter = CsvSourceAdapter::default();
+        let diags = adapter.parse_file(&missing).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, internal::E9902);
+        assert!(diags.errors()[0].message.contains("Failed to open CSV"));
+        assert!(diags.errors()[0].source.contains("no_such_file.csv"));
+    }
+
+    /// `trim: false` keeps field padding: header cells and lookup keys are raw.
+    #[test]
+    fn test_parse_file_trim_disabled_keeps_field_padding() {
+        let csv = " id , name \n 1 , Sword \n";
+        let (_dir, file) = write_temp_file(csv, "notrim.csv");
+
+        let adapter = CsvSourceAdapter {
+            trim: false,
+            ..Default::default()
+        };
+        let doc = adapter.parse_file(&file).unwrap();
+
+        let table = doc.tables.get("notrim").unwrap();
+        assert!(table.rows[0].fields.contains_key(" id "));
+        // Value inference trims before type detection
+        assert_eq!(
+            table.rows[0].fields[" name "].value,
+            Value::String("Sword".to_string())
+        );
+        // The padded header never equals "id", so the first field is the key
+        assert_eq!(table.rows[0].primary_key, vec![Value::Int(1)]);
+    }
+
+    /// A header row that is not valid UTF-8 makes `headers()` fail (E0001)
+    /// even when the data rows themselves decode.
+    #[test]
+    fn test_parse_file_invalid_utf8_header() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("bad_header.csv");
+        std::fs::write(&path, b"id,\xffname\n1,Sword\n").unwrap();
+
+        let adapter = CsvSourceAdapter::default();
+        let diags = adapter.parse_file(&path).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, parse::E0001);
+        assert!(diags.errors()[0]
+            .message
+            .contains("Failed to read CSV headers"));
+    }
+
+    /// A row whose field count differs from the header (flexible=false) is a
+    /// csv reader error → row-level E0001, and the document is rejected.
+    #[test]
+    fn test_parse_file_ragged_row_reports_row_error() {
+        let csv = "id,name\n1,Sword\n2\n";
+        let (_dir, file) = write_temp_file(csv, "ragged.csv");
+
+        let adapter = CsvSourceAdapter::default();
+        let diags = adapter.parse_file(&file).unwrap_err();
+
+        assert!(diags.has_errors());
+        assert_eq!(diags.errors().len(), 1);
+        let err = diags.errors()[0];
+        assert_eq!(err.code, parse::E0001);
+        assert!(err.message.contains("CSV parse error at row 2"));
+        assert_eq!(err.row.as_deref(), Some("2"));
+        assert_eq!(err.table.as_deref(), Some("ragged"));
+    }
+
+    /// Header-only input: no data rows, the empty-table branch still builds a
+    /// document (schema validation later sees an empty table, not an error).
+    #[test]
+    fn test_parse_file_header_only_yields_empty_table() {
+        let csv = "id,name,price\n";
+        let (_dir, file) = write_temp_file(csv, "header_only.csv");
+
+        let adapter = CsvSourceAdapter::default();
+        let doc = adapter.parse_file(&file).unwrap();
+
+        let table = doc.tables.get("header_only").unwrap();
+        assert!(table.rows.is_empty());
+        assert_eq!(doc.metadata.format, "csv");
+        assert!(doc
+            .source_files
+            .iter()
+            .any(|f| f.ends_with("header_only.csv")));
+    }
+
+    /// Headerless file whose first row cannot be decoded: the generated column
+    /// names collapse to zero, so the first decodable row is flagged against
+    /// "expected 0" fields while the undecodable row is a row-level error.
+    #[test]
+    fn test_parse_file_headerless_undecodable_first_row() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("undecodable.csv");
+        std::fs::write(&path, b"\xff\xfe,2\n1,Sword\n").unwrap();
+
+        let adapter = CsvSourceAdapter::no_header();
+        let diags = adapter.parse_file(&path).unwrap_err();
+
+        assert!(diags.has_errors());
+        assert_eq!(diags.errors().len(), 1);
+        assert!(diags.errors()[0]
+            .message
+            .contains("CSV parse error at row 1"));
+
+        let warnings = diags.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].message, "Row 2 has 2 fields, expected 0");
+    }
+
+    /// Inference boundaries: u64 beyond i64, negative i64, exponent floats,
+    /// boolean spellings and blank → Null.
+    #[test]
+    fn test_infer_and_parse_value_boundaries() {
+        assert_eq!(
+            CsvSourceAdapter::infer_and_parse_value("18446744073709551615"),
+            Value::UInt(u64::MAX)
+        );
+        assert_eq!(
+            CsvSourceAdapter::infer_and_parse_value("-9223372036854775808"),
+            Value::Int(i64::MIN)
+        );
+        assert_eq!(
+            CsvSourceAdapter::infer_and_parse_value("1e3"),
+            Value::Float(1e3)
+        );
+        assert_eq!(
+            CsvSourceAdapter::infer_and_parse_value("YES"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            CsvSourceAdapter::infer_and_parse_value("Off"),
+            Value::Bool(false)
+        );
+        assert_eq!(CsvSourceAdapter::infer_and_parse_value("   "), Value::Null);
+        assert_eq!(
+            CsvSourceAdapter::infer_and_parse_value("  spaced  "),
+            Value::String("spaced".to_string())
+        );
+    }
+
+    /// `parse_str` with trim disabled keeps the raw header cells as keys.
+    #[test]
+    fn test_parse_str_trim_disabled_keeps_field_padding() {
+        let csv = " id , name \n 1 , Sword \n";
+        let adapter = CsvSourceAdapter {
+            trim: false,
+            ..Default::default()
+        };
+        let doc = adapter.parse_str(csv, Path::new("notrim.csv")).unwrap();
+
+        let table = doc.tables.get("notrim").unwrap();
+        assert!(table.rows[0].fields.contains_key(" id "));
+        assert_eq!(
+            table.rows[0].fields[" name "].value,
+            Value::String("Sword".to_string())
+        );
+    }
+
+    /// `parse_str` + no header: column names are generated from the first row.
+    #[test]
+    fn test_parse_str_no_header_generates_column_names() {
+        let csv = "1,Sword,100\n2,Shield,200\n";
+        let adapter = CsvSourceAdapter::no_header();
+        let doc = adapter.parse_str(csv, Path::new("nohdr.csv")).unwrap();
+
+        let table = doc.tables.get("nohdr").unwrap();
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0].fields["col0"].value, Value::Int(1));
+        assert_eq!(
+            table.rows[1].fields["col1"].value,
+            Value::String("Shield".to_string())
+        );
+        assert_eq!(table.rows[0].fields["col2"].value, Value::Int(100));
+    }
+
+    /// `parse_str` surfaces the same ragged-row error path as `parse_file`.
+    #[test]
+    fn test_parse_str_ragged_row_reports_error() {
+        let csv = "id,name\n1,Sword\n2\n";
+        let adapter = CsvSourceAdapter::default();
+        let diags = adapter.parse_str(csv, Path::new("ragged.csv")).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, parse::E0001);
+        assert!(diags.errors()[0]
+            .message
+            .contains("CSV parse error at row 2"));
+    }
+
+    /// Without an `id` column the first field becomes the primary key.
+    #[test]
+    fn test_parse_str_primary_key_falls_back_to_first_field() {
+        let csv = "name,qty\nSword,3\n";
+        let adapter = CsvSourceAdapter::default();
+        let doc = adapter.parse_str(csv, Path::new("weapons.csv")).unwrap();
+
+        let table = doc.tables.get("weapons").unwrap();
+        assert_eq!(
+            table.rows[0].primary_key,
+            vec![Value::String("Sword".to_string())]
+        );
+    }
+
+    /// The `SourceAdapter` trait forwards to the inherent parse entry points.
+    #[test]
+    fn test_source_adapter_trait_parse_delegation() {
+        let adapter = CsvSourceAdapter::default();
+        let csv = "id,name\n1,Sword\n";
+        let (_dir, file) = write_temp_file(csv, "trait.csv");
+
+        let doc = SourceAdapter::parse_file(&adapter, &file).unwrap();
+        assert_eq!(doc.tables.get("trait").unwrap().rows.len(), 1);
+
+        let doc = SourceAdapter::parse_str(&adapter, csv, Path::new("inline.csv")).unwrap();
+        assert_eq!(doc.tables.get("inline").unwrap().rows.len(), 1);
+    }
 }

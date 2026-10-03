@@ -1317,6 +1317,23 @@ enums:
     }
 
     #[test]
+    fn test_from_config_defaults_without_options() {
+        let config: TargetConfig = serde_yaml::from_str(
+            r"
+format: go
+output_dir: build/game
+",
+        )
+        .expect("target config");
+        let gen = GoTargetGenerator::from_config(&config);
+        // No `options` block → every generator knob keeps its default.
+        assert_eq!(gen.output_dir, PathBuf::from("build/game"));
+        assert_eq!(gen.file_template, "{table}.go");
+        assert_eq!(gen.enums_file, "cage_enums.go");
+        assert_eq!(gen.package, "config");
+    }
+
+    #[test]
     fn test_from_config_options() {
         let config: TargetConfig = serde_yaml::from_str(
             r#"
@@ -1345,6 +1362,7 @@ options:
         // Non-letter start gets an X prefix; nothing left becomes X.
         assert_eq!(go_ident("1st"), "X1st");
         assert_eq!(go_ident("列"), "X");
+        assert_eq!(go_ident(""), "X");
         // Package clause escapes Go keywords (exported idents never need to).
         assert_eq!(package_ident("func"), "func_");
         assert_eq!(package_ident("config"), "config");
@@ -1439,6 +1457,18 @@ enums:
         // Control characters use Go's \xHH escapes (two hex digits).
         assert_eq!(go_string_literal("a\u{1}b"), "\"a\\x01b\"");
         assert_eq!(go_string_literal("a\u{7f}b"), "\"a\\x7fb\"");
+        // The five short escapes pass through verbatim.
+        assert_eq!(
+            go_string_literal("q\"r\\s\n\t\rz"),
+            "\"q\\\"r\\\\s\\n\\t\\rz\""
+        );
+        // Nested array defaults are not scalar — skipped (shared rule).
+        assert!(render_default(
+            &serde_json::json!([[1]]),
+            &FieldType::Array(Box::new(FieldType::Array(Box::new(FieldType::Int32)))),
+            &enums
+        )
+        .is_none());
     }
 
     /// Empty-map helper matching `generate`'s enum type resolution.
@@ -1454,10 +1484,82 @@ enums:
     }
 
     #[test]
-    #[ignore = "dev-only: dumps sample output for gofmt / go build / go vet checks"]
-    fn dump_sample_output() {
-        let schema: Schema = serde_yaml::from_str(
-            r"
+    fn test_enum_type_map_allocates_unique_idents() {
+        let schema = test_schema();
+        let map = enum_type_map(&schema);
+        assert_eq!(map.get("ItemKind").map(String::as_str), Some("ItemKind"));
+        assert_eq!(map.get("Rarity").map(String::as_str), Some("Rarity"));
+        // Empty enums never resolve to a type.
+        assert!(!map.contains_key("EmptyEnum"));
+    }
+
+    #[test]
+    fn test_doc_finish_flushes_open_section() {
+        let mut doc = Doc::new();
+        doc.line(vec![
+            Cell::new("a".to_string(), Term::Vtab),
+            Cell::new("b".to_string(), Term::Nl),
+        ]);
+        // No terminating formfeed: finish() must still flush the open
+        // section (a two-cell line pads column 0 to its block width + 1).
+        assert_eq!(doc.finish(), "a b\n");
+    }
+
+    #[test]
+    fn test_literal_break_terms_oversize_pairs_count_as_zero() {
+        let member = |ident: &str, expr: &str| Member {
+            field_name: ident.to_string(),
+            ident: ident.to_string(),
+            ty: "int32".to_string(),
+            doc: None,
+            default_expr: Some(expr.to_string()),
+        };
+        // A `Key: Value` pair beyond go/printer's 1 MB cutoff counts as key
+        // size 0: it never joins the geometric-mean comparison (the false
+        // side of `prev_size > 0 && size > 0`) and the break stays a section
+        // split either way.
+        let huge = member("k", &"x".repeat(1_000_001));
+        let small = member("b", "1");
+        let terms = literal_break_terms(&[&huge, &small]);
+        assert!(terms == vec![Term::Ff, Term::Ff]);
+    }
+
+    #[test]
+    fn test_frexp_edges() {
+        // Zero and non-finite inputs pass through untouched.
+        assert_eq!(frexp(0.0), (0.0, 0));
+        let (f, e) = frexp(f64::NAN);
+        assert!(f.is_nan() && e == 0);
+        // Values below 0.5 scale up in the second loop; powers of two stay
+        // exact through both loops.
+        assert_eq!(frexp(0.25), (0.5, -1));
+        assert_eq!(frexp(1.0), (0.5, 1));
+        assert_eq!(frexp(6.0), (0.75, 3));
+    }
+
+    #[test]
+    fn test_enum_value_literal_numeric_fallback_uses_name() {
+        // Defensive: a value-less member inside a numeric enum renders its
+        // name (generate feeds the numeric bucket only all-integral enums,
+        // so this arm is otherwise unreachable).
+        let v = cage_core::schema::EnumValue {
+            name: "Only".to_string(),
+            value: None,
+            description: None,
+        };
+        assert_eq!(enum_value_literal(&v, "int64"), "Only");
+        assert_eq!(enum_value_literal(&v, "string"), "\"Only\"");
+    }
+
+    /// Sample schema shared by the dev-only dump and the edge rendering
+    /// test: every field kind (incl. Null/Any/Bytes/Object), unsigned
+    /// widths, string escapes, constraint docs, empty and no-primary-key
+    /// tables, a single-field table, int64/uint64 and string-bucket enums,
+    /// and a defaulted 44-char ident (the go/printer geometric-mean path
+    /// that splits constructor alignment into sections).
+    fn sample_schema() -> Schema {
+        serde_yaml::from_str(
+            r#"
 tables:
   Item:
     name: Item
@@ -1473,6 +1575,22 @@ tables:
       kind: { name: kind, type: { kind: Enum, value: ItemKind } }
       rarity: { name: rarity, type: { kind: String }, enum_values: [common, rare] }
       owner: { name: owner, type: { kind: String }, reference: { table: Player, field: id } }
+      flag: { name: flag, type: { kind: Bool }, default: true }
+      i8: { name: i8, type: { kind: Int8 }, required: true }
+      i16: { name: i16, type: { kind: Int16 }, default: 1000 }
+      u8: { name: u8, type: { kind: UInt8 }, default: 200 }
+      u16: { name: u16, type: { kind: UInt16 }, default: 65535 }
+      u32: { name: u32, type: { kind: UInt32 }, required: true }
+      u64: { name: u64, type: { kind: UInt64 }, default: 42 }
+      f32: { name: f32, type: { kind: Float32 }, default: 1.5 }
+      raw: { name: raw, type: { kind: Null } }
+      anyx: { name: anyx, type: { kind: Any } }
+      blob: { name: blob, type: { kind: Bytes } }
+      meta: { name: meta, type: { kind: Object, value: {} } }
+      qty: { name: qty, type: { kind: Int32 }, required: true, max: 99, description: Stock }
+      code: { name: code, type: { kind: String }, min_length: 1, max_length: 10, pattern: "^[a-z]+$" }
+      desc: { name: desc, type: { kind: String }, default: "q\"r\\s\n\t\rz" }
+      unreasonably_long_field_name_exceeding_forty_chars: { name: unreasonably_long_field_name_exceeding_forty_chars, type: { kind: Int32 }, default: 1 }
   Drop:
     name: Drop
     primary_key: [id]
@@ -1483,11 +1601,16 @@ tables:
     name: Empty
     primary_key: [id]
     fields: {}
+  NoKey:
+    name: NoKey
+    primary_key: []
+    fields: {}
   Solo:
     name: Solo
     primary_key: [id]
     fields:
       only: { name: only, type: { kind: Enum, value: SoloKind }, required: true }
+      note: { name: note, type: { kind: String }, default: hi }
 enums:
   ItemKind:
     name: ItemKind
@@ -1503,21 +1626,147 @@ enums:
     name: SoloKind
     values:
       - { name: Only, value: 7, description: The one }
+  BigKind:
+    name: BigKind
+    description: Values past the 32-bit range.
+    values:
+      - { name: Large, value: 3000000000 }
+  HugeKind:
+    name: HugeKind
+    values:
+      - { name: Top, value: 18446744073709551615 }
+  MixKind:
+    name: MixKind
+    values:
+      - { name: S, value: "x y" }
+      - { name: N, value: 42 }
+      - { name: T, value: true }
+      - { name: F, value: false }
+      - { name: M }
   EmptyEnum:
     name: EmptyEnum
     values: []
-",
+"#,
         )
-        .expect("sample schema must parse");
-        let artifacts = gen().generate(&schema, Some("abc123"));
-        let dir = std::path::Path::new("/tmp/cage-go-sample");
+        .expect("sample schema must parse")
+    }
+
+    fn write_artifacts(dir: &std::path::Path, artifacts: &[(String, Vec<u8>)]) {
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir).expect("create sample dir");
-        for (p, content) in &artifacts {
+        for (p, content) in artifacts {
             let name = std::path::Path::new(p)
                 .file_name()
                 .expect("artifact file name");
             std::fs::write(dir.join(name), content).expect("write sample artifact");
         }
+    }
+
+    #[test]
+    fn test_sample_schema_rendering() {
+        let schema = sample_schema();
+        let artifacts = gen().generate(&schema, Some("abc123"));
+        let paths: Vec<&str> = artifacts.iter().map(|(p, _)| p.as_str()).collect();
+        // Tables in name order (Drop, Empty, Item, NoKey, Solo), shared
+        // enums file last.
+        assert_eq!(
+            paths,
+            vec![
+                "build/go/Drop.go",
+                "build/go/Empty.go",
+                "build/go/Item.go",
+                "build/go/NoKey.go",
+                "build/go/Solo.go",
+                "build/go/cage_enums.go",
+            ]
+        );
+
+        // Every remaining field kind + optionality pointers; no math import.
+        let item = String::from_utf8(artifacts[2].1.clone()).unwrap();
+        assert!(!item.contains("import \"math\""));
+        let lines = normalized(&item);
+        for expected in [
+            "Flag bool `json:\"flag\"`",
+            "I8 int8 `json:\"i8\"`",
+            "I16 int16 `json:\"i16\"`",
+            "U8 uint8 `json:\"u8\"`",
+            "U16 uint16 `json:\"u16\"`",
+            "U32 uint32 `json:\"u32\"`",
+            "U64 uint64 `json:\"u64\"`",
+            "F32 float32 `json:\"f32\"`",
+            "Raw any `json:\"raw\"`",
+            "Anyx any `json:\"anyx\"`",
+            "Blob []byte `json:\"blob\"`",
+            "Meta map[string]any `json:\"meta\"`",
+            "Qty int32 `json:\"qty\"`",
+            "Code *string `json:\"code\"`",
+        ] {
+            assert!(lines.contains(&expected.to_string()), "missing: {expected}");
+        }
+        // Constraint docs: description+required+max, and the string
+        // length/pattern trio.
+        assert!(lines.contains(&"// Stock, required, max: 99".to_string()));
+        assert!(lines.contains(&"// min_length: 1, max_length: 10, pattern: ^[a-z]+$".to_string()));
+        // Constructor: bool default, all five short string escapes, and the
+        // 44-char ident whose break splits the alignment sections.
+        assert!(lines.contains(&"Flag: true,".to_string()));
+        assert!(lines.contains(&"Desc: \"q\\\"r\\\\s\\n\\t\\rz\",".to_string()));
+        assert!(lines.contains(&"UnreasonablyLongFieldNameExceedingFortyChars: 1,".to_string()));
+        assert!(lines.contains(&"return Item{".to_string()));
+
+        // Empty field set: gofmt's one-liner struct.
+        let empty = String::from_utf8(artifacts[1].1.clone()).unwrap();
+        let empty_lines = normalized(&empty);
+        assert!(empty_lines.contains(&"// Empty — primary key: id".to_string()));
+        assert!(empty_lines.contains(&"type Empty struct{}".to_string()));
+        assert!(empty_lines.contains(&"return Empty{}".to_string()));
+
+        // Empty primary key: the raw name is the whole banner head.
+        let nokey = normalized(&String::from_utf8(artifacts[3].1.clone()).unwrap());
+        assert!(nokey.contains(&"// NoKey".to_string()));
+        assert!(nokey.contains(&"type NoKey struct{}".to_string()));
+
+        // A table with exactly one defaulted field renders that constructor
+        // entry as a single blank-separated line.
+        let solo = normalized(&String::from_utf8(artifacts[4].1.clone()).unwrap());
+        assert!(solo.contains(&"Only SoloKind `json:\"only\"`".to_string()));
+        assert!(solo.contains(&"Note string `json:\"note\"`".to_string()));
+        assert!(solo.contains(&"Note: \"hi\",".to_string()));
+
+        // Enums: description banner, int64/uint64 backing, the single-spec
+        // trailing comment, string-bucket values from String/Number/Bool
+        // and the name fallback.
+        let enums = normalized(&String::from_utf8(artifacts[5].1.clone()).unwrap());
+        assert!(enums.contains(&"// BigKind — Values past the 32-bit range.".to_string()));
+        assert!(enums.contains(&"type BigKind int64".to_string()));
+        assert!(enums.contains(&"BigKindLarge BigKind = 3000000000".to_string()));
+        assert!(enums.contains(&"type HugeKind uint64".to_string()));
+        assert!(enums.contains(&"HugeKindTop HugeKind = 18446744073709551615".to_string()));
+        assert!(enums.contains(&"SoloKindOnly SoloKind = 7 // The one".to_string()));
+        assert!(enums.contains(&"MixKindS MixKind = \"x y\"".to_string()));
+        assert!(enums.contains(&"MixKindN MixKind = \"42\"".to_string()));
+        assert!(enums.contains(&"MixKindT MixKind = \"true\"".to_string()));
+        assert!(enums.contains(&"MixKindF MixKind = \"false\"".to_string()));
+        assert!(enums.contains(&"MixKindM MixKind = \"M\"".to_string()));
+        assert!(!enums.contains(&"EmptyEnum".to_string()));
+    }
+
+    #[test]
+    fn test_write_artifacts() {
+        let dir = std::env::temp_dir().join(format!("cage-go-sample-{}", std::process::id()));
+        write_artifacts(&dir, &gen().generate(&test_schema(), Some("abc123")));
+        for name in ["Drop.go", "Item.go", "cage_enums.go"] {
+            assert!(dir.join(name).is_file(), "missing {name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Dev-only: dump the sample schema output under `/tmp/cage-go-sample`
+    /// for a manual gofmt / go build / go vet run.
+    #[test]
+    #[ignore = "dev-only: dumps sample output for gofmt / go build / go vet checks"]
+    fn dump_sample_output() {
+        let artifacts = gen().generate(&sample_schema(), Some("abc123"));
+        write_artifacts(std::path::Path::new("/tmp/cage-go-sample"), &artifacts);
     }
 }

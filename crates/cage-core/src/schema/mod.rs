@@ -700,4 +700,402 @@ mod tests {
         assert_eq!(order[0], "Item");
         assert_eq!(order[1], "Monster");
     }
+
+    #[test]
+    fn field_type_classification_helpers() {
+        for t in [
+            FieldType::Int8,
+            FieldType::Int16,
+            FieldType::Int32,
+            FieldType::Int64,
+            FieldType::UInt8,
+            FieldType::UInt16,
+            FieldType::UInt32,
+            FieldType::UInt64,
+            FieldType::Float32,
+            FieldType::Float64,
+        ] {
+            assert!(t.is_numeric());
+        }
+        for t in [
+            FieldType::Int8,
+            FieldType::Int16,
+            FieldType::Int32,
+            FieldType::Int64,
+            FieldType::UInt8,
+            FieldType::UInt16,
+            FieldType::UInt32,
+            FieldType::UInt64,
+        ] {
+            assert!(t.is_integer());
+            assert!(!t.is_float());
+        }
+        assert!(FieldType::Float32.is_float());
+        assert!(FieldType::Float64.is_float());
+        assert!(FieldType::Float32.is_numeric());
+        assert!(FieldType::Float64.is_numeric());
+        assert!(!FieldType::Float32.is_integer());
+        assert!(!FieldType::Float64.is_integer());
+        for t in [
+            FieldType::Null,
+            FieldType::Bool,
+            FieldType::String,
+            FieldType::Bytes,
+            FieldType::Any,
+            FieldType::Enum("E".to_string()),
+            FieldType::Array(Box::new(FieldType::Int32)),
+            FieldType::Object(IndexMap::new()),
+        ] {
+            assert!(!t.is_numeric());
+            assert!(!t.is_integer());
+            assert!(!t.is_float());
+        }
+    }
+
+    #[test]
+    fn rust_type_names_for_every_variant() {
+        assert_eq!(FieldType::Null.rust_type(), "()");
+        assert_eq!(FieldType::Bool.rust_type(), "bool");
+        assert_eq!(FieldType::Int8.rust_type(), "i8");
+        assert_eq!(FieldType::Int16.rust_type(), "i16");
+        assert_eq!(FieldType::Int32.rust_type(), "i32");
+        assert_eq!(FieldType::Int64.rust_type(), "i64");
+        assert_eq!(FieldType::UInt8.rust_type(), "u8");
+        assert_eq!(FieldType::UInt16.rust_type(), "u16");
+        assert_eq!(FieldType::UInt32.rust_type(), "u32");
+        assert_eq!(FieldType::UInt64.rust_type(), "u64");
+        assert_eq!(FieldType::Float32.rust_type(), "f32");
+        assert_eq!(FieldType::Float64.rust_type(), "f64");
+        assert_eq!(FieldType::String.rust_type(), "String");
+        assert_eq!(FieldType::Bytes.rust_type(), "Vec<u8>");
+        assert_eq!(
+            FieldType::Array(Box::new(FieldType::Int32)).rust_type(),
+            "Vec<_>"
+        );
+        assert_eq!(
+            FieldType::Object(IndexMap::new()).rust_type(),
+            "IndexMap<String, _>"
+        );
+        assert_eq!(FieldType::Enum("Rarity".to_string()).rust_type(), "Enum");
+        assert_eq!(FieldType::Any.rust_type(), "serde_json::Value");
+    }
+
+    #[test]
+    fn field_type_yaml_parsing_all_kinds_and_edges() {
+        let cases = [
+            ("{ kind: Null }", FieldType::Null),
+            ("{ kind: Bool }", FieldType::Bool),
+            ("{ kind: Int8 }", FieldType::Int8),
+            ("{ kind: Int16 }", FieldType::Int16),
+            ("{ kind: Int32 }", FieldType::Int32),
+            ("{ kind: Int64 }", FieldType::Int64),
+            ("{ kind: UInt8 }", FieldType::UInt8),
+            ("{ kind: UInt16 }", FieldType::UInt16),
+            ("{ kind: UInt32 }", FieldType::UInt32),
+            ("{ kind: UInt64 }", FieldType::UInt64),
+            ("{ kind: Float32 }", FieldType::Float32),
+            ("{ kind: Float64 }", FieldType::Float64),
+            ("{ kind: String }", FieldType::String),
+            ("{ kind: Bytes }", FieldType::Bytes),
+            ("{ kind: Any }", FieldType::Any),
+            (
+                "{ kind: Array, value: { kind: Int32 } }",
+                FieldType::Array(Box::new(FieldType::Int32)),
+            ),
+            (
+                "{ kind: Enum, value: Rarity }",
+                FieldType::Enum("Rarity".to_string()),
+            ),
+        ];
+        for (yaml, expected) in cases {
+            let parsed: FieldType =
+                serde_yaml::from_str(yaml).unwrap_or_else(|e| panic!("parse {yaml}: {e}"));
+            assert_eq!(parsed, expected, "yaml: {yaml}");
+            // serializing and re-parsing keeps the same shape
+            let emitted = serde_yaml::to_string(&parsed).expect("serialize kind");
+            let back: FieldType = serde_yaml::from_str(&emitted).expect("re-parse kind");
+            assert_eq!(back, expected, "roundtrip: {emitted}");
+        }
+
+        let obj: FieldType = serde_yaml::from_str(
+            "{ kind: Object, value: { hp: { kind: Int32 }, tag: { kind: String } } }",
+        )
+        .expect("object type");
+        let expected_obj = FieldType::Object(IndexMap::from([
+            ("hp".to_string(), FieldType::Int32),
+            ("tag".to_string(), FieldType::String),
+        ]));
+        assert_eq!(obj, expected_obj);
+
+        // unknown kind, missing content for data variants, missing tag, not a map
+        assert!(serde_yaml::from_str::<FieldType>("{ kind: Quadruple }").is_err());
+        assert!(serde_yaml::from_str::<FieldType>("{ kind: Array }").is_err());
+        assert!(serde_yaml::from_str::<FieldType>("{ kind: Enum }").is_err());
+        assert!(serde_yaml::from_str::<FieldType>("{}").is_err());
+        assert!(serde_yaml::from_str::<FieldType>("just-a-string").is_err());
+    }
+
+    #[test]
+    fn field_schema_yaml_parsing_rules_constraints_and_metadata() {
+        let yaml = r#"
+name: level
+type: { kind: Int32 }
+description: skill level
+required: true
+default: 1
+min: 1
+max: 100
+targets: [server]
+rules:
+  - name: level_bounds
+    assert: "`level` >= 1"
+    message: level must be positive
+    warning_only: true
+  - name: no_message
+    assert: "`level` <= 100"
+custom_note: keep
+"#;
+        let field: FieldSchema = serde_yaml::from_str(yaml).expect("field parses");
+        assert_eq!(field.name, "level");
+        assert_eq!(field.field_type, FieldType::Int32);
+        assert_eq!(field.description.as_deref(), Some("skill level"));
+        assert!(field.required);
+        assert_eq!(field.default, Some(serde_json::json!(1)));
+        assert_eq!(field.min, Some(1.0));
+        assert_eq!(field.max, Some(100.0));
+        assert_eq!(field.targets, ["server"]);
+        assert_eq!(field.rules.len(), 2);
+        assert_eq!(field.rules[0].name, "level_bounds");
+        assert_eq!(field.rules[0].assert, "`level` >= 1");
+        assert_eq!(
+            field.rules[0].message.as_deref(),
+            Some("level must be positive")
+        );
+        assert!(field.rules[0].warning_only);
+        // message absent and warning_only defaults to false
+        assert_eq!(field.rules[1].message, None);
+        assert!(!field.rules[1].warning_only);
+        // unknown keys flatten into the metadata bag
+        assert_eq!(
+            field.metadata.get("custom_note"),
+            Some(&serde_json::json!("keep"))
+        );
+        assert!(field.min_length.is_none());
+        assert!(field.max_length.is_none());
+        assert!(field.pattern.is_none());
+
+        // required keys: `name` and `type` must both be present
+        assert!(serde_yaml::from_str::<FieldSchema>("type: { kind: String }\n").is_err());
+        assert!(serde_yaml::from_str::<FieldSchema>("name: x\n").is_err());
+        // an expression rule requires its `assert`
+        assert!(serde_yaml::from_str::<ExpressionRule>("name: r\n").is_err());
+        let bare: ExpressionRule =
+            serde_yaml::from_str("name: r\nassert: 'true'\n").expect("minimal rule parses");
+        assert!(!bare.warning_only);
+        assert!(bare.message.is_none());
+    }
+
+    #[test]
+    fn table_schema_yaml_parsing_primary_key_unique_and_order() {
+        let yaml = r"
+name: Item
+description: an item
+primary_key: [id, version]
+fields:
+  id: { name: id, type: { kind: UInt32 } }
+  version: { name: version, type: { kind: UInt16 } }
+unique_constraints:
+  - { name: uniq_pair, fields: [id, version] }
+order_by: [id]
+targets: [server, client]
+";
+        let table: TableSchema = serde_yaml::from_str(yaml).expect("table parses");
+        assert_eq!(table.name, "Item");
+        assert_eq!(table.description.as_deref(), Some("an item"));
+        assert_eq!(table.primary_key, ["id", "version"]);
+        assert_eq!(table.fields.len(), 2);
+        assert_eq!(table.unique_constraints.len(), 1);
+        assert_eq!(table.unique_constraints[0].name, "uniq_pair");
+        assert_eq!(table.unique_constraints[0].fields, ["id", "version"]);
+        assert_eq!(table.order_by, Some(vec!["id".to_string()]));
+        assert_eq!(table.targets, ["server", "client"]);
+
+        // primary_key has no default → required
+        assert!(
+            serde_yaml::from_str::<TableSchema>("name: T\nfields: {}\n").is_err(),
+            "missing primary_key must fail"
+        );
+        // a unique constraint must name its fields
+        assert!(serde_yaml::from_str::<TableSchema>(
+            "name: T\nprimary_key: [a]\nfields: {}\nunique_constraints: [{ name: c }]\n"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn reference_schema_cardinality_serde_edges() {
+        let bare: ReferenceSchema =
+            serde_yaml::from_str("table: Item\nfield: id\n").expect("minimal reference");
+        assert_eq!(bare.cardinality, "one");
+        assert!(bare.predicate.is_none());
+        assert!(bare.compatible_with.is_none());
+        // cardinality "one" is the default and is skipped when serializing
+        let emitted = serde_yaml::to_string(&bare).expect("serialize reference");
+        assert!(!emitted.contains("cardinality"));
+
+        let many: ReferenceSchema = serde_yaml::from_str(
+            "table: Item\nfield: id\ncardinality: many\ncompatible_with: [server]\n",
+        )
+        .expect("many reference");
+        assert_eq!(many.cardinality, "many");
+        assert_eq!(many.compatible_with, Some(vec!["server".to_string()]));
+        let emitted = serde_yaml::to_string(&many).expect("serialize many");
+        assert!(emitted.contains("cardinality"));
+        let back: ReferenceSchema = serde_yaml::from_str(&emitted).expect("re-parse reference");
+        assert_eq!(back.cardinality, "many");
+
+        // required keys: table and field
+        assert!(serde_yaml::from_str::<ReferenceSchema>("table: Item\n").is_err());
+        assert!(serde_yaml::from_str::<ReferenceSchema>("field: id\n").is_err());
+    }
+
+    #[test]
+    fn schema_default_and_enum_registration() {
+        let mut schema = Schema::default();
+        assert!(schema.tables.is_empty());
+        assert!(schema.enums.is_empty());
+        assert!(schema.metadata.is_none());
+        assert!(schema.get_table("Item").is_none());
+
+        schema.add_enum(EnumSchema {
+            name: "Rarity".to_string(),
+            values: vec![EnumValue {
+                name: "Common".to_string(),
+                value: None,
+                description: None,
+            }],
+            description: None,
+        });
+        assert!(schema.enums.contains_key("Rarity"));
+        // adding the same name replaces the previous definition
+        schema.add_enum(EnumSchema {
+            name: "Rarity".to_string(),
+            values: vec![],
+            description: None,
+        });
+        assert!(schema.enums["Rarity"].values.is_empty());
+    }
+
+    #[test]
+    fn schema_lookup_helpers_hit_and_miss() {
+        let schema: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: UInt32 } }
+enums:
+  Rarity:
+    name: Rarity
+    values:
+      - { name: Common }
+",
+        )
+        .expect("schema parses");
+
+        let item = schema.get_table("Item").expect("Item exists");
+        assert_eq!(item.primary_key, ["id"]);
+        assert!(schema.get_table("Ghost").is_none());
+
+        let id = schema.get_field("Item", "id").expect("id exists");
+        assert_eq!(id.field_type, FieldType::UInt32);
+        assert!(schema.get_field("Item", "ghost").is_none());
+        assert!(schema.get_field("Ghost", "id").is_none());
+    }
+
+    #[test]
+    fn schema_validate_reports_every_error_kind() {
+        let schema: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [missing_pk]
+    fields:
+      id: { name: id, type: { kind: UInt32 } }
+      rarity: { name: rarity, type: { kind: Enum, value: Rarity } }
+      element: { name: element, type: { kind: Enum, value: Present } }
+      drop: { name: drop, type: { kind: UInt32 }, reference: { table: Ghost, field: id } }
+      sub: { name: sub, type: { kind: UInt32 }, reference: { table: Item, field: nope } }
+    unique_constraints:
+      - { name: uc_missing, fields: [ghost_field] }
+enums:
+  Present:
+    name: Present
+    values:
+      - { name: A }
+",
+        )
+        .expect("schema parses");
+
+        let diags = schema.validate();
+        assert!(diags.has_errors());
+        let messages: Vec<String> = diags.errors().iter().map(|d| d.message.clone()).collect();
+        assert_eq!(messages.len(), 5, "messages: {messages:?}");
+        let expect = |needle: &str| {
+            assert!(
+                messages.iter().any(|m| m.contains(needle)),
+                "no message contains {needle:?} in {messages:?}"
+            );
+        };
+        expect("Primary key 'missing_pk' not found in table 'Item' fields");
+        expect("Unique constraint 'uc_missing' references unknown field 'ghost_field'");
+        expect("Field 'rarity' in table 'Item' references unknown enum 'Rarity'");
+        expect("Field 'drop' in table 'Item' references unknown table 'Ghost'");
+        expect("Field 'sub' in table 'Item' references unknown field 'nope' in table 'Item'");
+        for d in &diags {
+            assert_eq!(d.code, "E1004");
+            assert_eq!(d.source, "schema");
+        }
+        // a schema with only resolvable references validates cleanly
+        let clean: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: UInt32 } }
+enums: {}
+",
+        )
+        .expect("clean schema parses");
+        assert!(!clean.validate().has_errors());
+    }
+
+    #[test]
+    fn dependency_graph_sort_handles_revisits_and_cycles() {
+        // A → B → C: C is pulled in as a dependency before the loop reaches B,
+        // so the second visit of B skips the recursive call entirely.
+        let mut graph = DependencyGraph::new();
+        graph.add_dependency("A", "B");
+        graph.add_dependency("B", "C");
+        assert_eq!(graph.dependencies_of("A"), ["B"]);
+        assert_eq!(graph.dependencies_of("B"), ["C"]);
+        assert_eq!(graph.dependencies_of("C"), [] as [&String; 0]);
+        let order = graph.topological_sort().expect("acyclic");
+        assert_eq!(order, ["C", "B", "A"]);
+
+        // circular dependencies are reported instead of looping forever
+        let mut cyclic = DependencyGraph::new();
+        cyclic.add_dependency("X", "Y");
+        cyclic.add_dependency("Y", "X");
+        let err = cyclic.topological_sort().expect_err("cycle detected");
+        assert!(
+            err.contains("Circular dependency detected involving:"),
+            "unexpected error: {err}"
+        );
+    }
 }

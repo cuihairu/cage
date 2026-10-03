@@ -447,6 +447,7 @@ impl SourceAdapter for ExcelSourceAdapter {
 mod tests {
     use super::*;
     use cage_core::value::Value;
+    use std::path::PathBuf;
 
     #[test]
     fn test_col_index_to_letter() {
@@ -611,5 +612,447 @@ mod tests {
         outside.insert((3, 5), (1, 0)); // anchor at sheet col A (before B)
         let kept = ExcelSourceAdapter::resolve_cell(&range, &outside, 1, 4, &Data::Int(9));
         assert_eq!(kept, &Data::Int(9));
+    }
+
+    // ---- Hand-built minimal .xlsx fixtures ---------------------------------
+    //
+    // calamine opens a workbook from four zip members: `_rels/.rels`,
+    // `xl/workbook.xml`, `xl/_rels/workbook.xml.rels` and the sheet XML
+    // (sharedStrings/styles/[Content_Types] are optional). The builders below
+    // assemble a STORED zip — no compression, hand-rolled CRC-32 — so the
+    // sheet-read error paths can be exercised with inline bytes.
+
+    /// CRC-32 (IEEE, reflected) of `data`; zip readers verify it even for
+    /// STORED entries.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFF_u32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    /// Assemble a STORED (uncompressed) zip archive from name/content pairs.
+    fn build_stored_zip(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for &(name, contents) in entries {
+            let data = contents.as_bytes();
+            let crc = crc32(data).to_le_bytes();
+            let size = (data.len() as u32).to_le_bytes();
+            let name_len = (name.len() as u16).to_le_bytes();
+            let offset = (out.len() as u32).to_le_bytes();
+
+            // Local file header
+            out.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
+            out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            out.extend_from_slice(&[0; 2]); // flags
+            out.extend_from_slice(&[0; 2]); // method: stored
+            out.extend_from_slice(&[0; 2]); // mod time
+            out.extend_from_slice(&0x21u16.to_le_bytes()); // mod date (1980-01-01)
+            out.extend_from_slice(&crc);
+            out.extend_from_slice(&size); // compressed size
+            out.extend_from_slice(&size); // uncompressed size
+            out.extend_from_slice(&name_len);
+            out.extend_from_slice(&[0; 2]); // extra len
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(data);
+
+            // Central directory record
+            central.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]);
+            central.extend_from_slice(&20u16.to_le_bytes()); // version made by
+            central.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            central.extend_from_slice(&[0; 2]); // flags
+            central.extend_from_slice(&[0; 2]); // method
+            central.extend_from_slice(&[0; 2]); // mod time
+            central.extend_from_slice(&0x21u16.to_le_bytes()); // mod date
+            central.extend_from_slice(&crc);
+            central.extend_from_slice(&size);
+            central.extend_from_slice(&size);
+            central.extend_from_slice(&name_len);
+            central.extend_from_slice(&[0; 2]); // extra len
+            central.extend_from_slice(&[0; 2]); // comment len
+            central.extend_from_slice(&[0; 2]); // disk number
+            central.extend_from_slice(&[0; 2]); // internal attrs
+            central.extend_from_slice(&[0; 4]); // external attrs
+            central.extend_from_slice(&offset);
+            central.extend_from_slice(name.as_bytes());
+        }
+
+        let cd_offset = (out.len() as u32).to_le_bytes();
+        let cd_size = (central.len() as u32).to_le_bytes();
+        out.extend_from_slice(&central);
+        // End of central directory
+        out.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+        out.extend_from_slice(&[0; 2]); // disk number
+        out.extend_from_slice(&[0; 2]); // cd start disk
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&cd_size);
+        out.extend_from_slice(&cd_offset);
+        out.extend_from_slice(&[0; 2]); // comment len
+        out
+    }
+
+    /// One-sheet workbook ("Data"); `sheet_xml: None` omits the sheet part
+    /// from the zip (sheet referenced but not shipped).
+    fn minimal_xlsx(sheet_xml: Option<&str>) -> Vec<u8> {
+        let package_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
+        let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+        let workbook_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+
+        let mut entries = vec![
+            ("_rels/.rels", package_rels),
+            ("xl/workbook.xml", workbook),
+            ("xl/_rels/workbook.xml.rels", workbook_rels),
+        ];
+        if let Some(xml) = sheet_xml {
+            entries.push(("xl/worksheets/sheet1.xml", xml));
+        }
+        build_stored_zip(&entries)
+    }
+
+    /// A file in the system temp dir, removed on drop (the crate has no
+    /// tempfile dev-dependency).
+    struct TempWorkbook(PathBuf);
+
+    impl TempWorkbook {
+        fn new(bytes: &[u8], file_name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "cage_excel_{}_{}",
+                std::process::id(),
+                file_name
+            ));
+            std::fs::write(&path, bytes).expect("temp workbook write");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempWorkbook {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// A non-Excel extension (or none at all) is rejected with E0001 before
+    /// any file is opened.
+    #[test]
+    fn test_unsupported_extension_rejected_before_open() {
+        let adapter = ExcelSourceAdapter::default();
+
+        for name in ["book.xls", "book"] {
+            let diags = adapter.parse_file(Path::new(name)).unwrap_err();
+            assert_eq!(diags.errors().len(), 1);
+            assert_eq!(diags.errors()[0].code, parse::E0001);
+            assert!(diags.errors()[0]
+                .message
+                .contains("Unsupported Excel format"));
+            assert!(diags.errors()[0].source.contains(name));
+        }
+    }
+
+    /// Bytes that are not a zip at all fail workbook opening with E9902.
+    #[test]
+    fn test_open_failure_reports_io_error() {
+        let wb = TempWorkbook::new(b"definitely not a zip", "corrupt.xlsx");
+
+        let adapter = ExcelSourceAdapter::default();
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+
+        assert_eq!(diags.errors().len(), 1);
+        assert_eq!(diags.errors()[0].code, internal::E9902);
+        assert!(diags.errors()[0]
+            .message
+            .contains("Failed to open workbook"));
+        assert!(diags.errors()[0].source.contains("corrupt.xlsx"));
+    }
+
+    /// Gaps in the used range: a missing header cell (B1) is named `col1` by
+    /// its absolute grid column, and an entirely absent middle row is skipped
+    /// by `skip_empty_rows` — leaving a sheet-row gap between data rows.
+    #[test]
+    fn test_handbuilt_xlsx_empty_header_cell_and_blank_row() {
+        let sheet = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+            r#"<dimension ref="A1:C4"/>"#,
+            "<sheetData>",
+            r#"<row r="1"><c r="A1" t="inlineStr"><is><t>id</t></is></c><c r="C1" t="inlineStr"><is><t>name</t></is></c></row>"#,
+            r#"<row r="2"><c r="A2"><v>1001</v></c><c r="C2" t="inlineStr"><is><t>Sword</t></is></c></row>"#,
+            r#"<row r="4"><c r="A4"><v>1002</v></c><c r="C4" t="inlineStr"><is><t>Shield</t></is></c></row>"#,
+            "</sheetData></worksheet>"
+        );
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(sheet)), "gaps.xlsx");
+
+        let adapter = ExcelSourceAdapter::default();
+        let doc = adapter.parse_file(wb.path()).expect("workbook parses");
+
+        let table = doc.tables.get("Data").expect("Data table");
+        assert_eq!(table.rows.len(), 2, "blank sheet row 3 is skipped");
+
+        // Header row: A1 "id", missing B1 → generated col1, C1 "name"
+        let names: Vec<&str> = table.rows[0].fields.keys().map(String::as_str).collect();
+        assert_eq!(names, ["id", "col1", "name"]);
+        assert_eq!(table.rows[0].fields["id"].value, Value::Int(1001));
+        assert_eq!(table.rows[0].fields["col1"].value, Value::Null);
+        assert_eq!(
+            table.rows[0].fields["name"].value,
+            Value::String("Sword".to_string())
+        );
+
+        // col1 addresses sheet column B; the id column drives the primary key
+        assert_eq!(
+            table.rows[0].fields["col1"].location.column.as_deref(),
+            Some("B")
+        );
+        assert_eq!(table.rows[0].fields["col1"].location.row, Some(2));
+        assert_eq!(table.rows[0].primary_key, vec![Value::Int(1001)]);
+
+        // The skipped blank row leaves a sheet-row gap before the next datum
+        assert_eq!(table.rows[1].fields["id"].value, Value::Int(1002));
+        assert_eq!(table.rows[1].location.row, Some(4));
+    }
+
+    /// A malformed `<mergeCell ref>` warns but does not abort the sheet: the
+    /// merge-fill map stays empty and the data is still tabulated.
+    #[test]
+    fn test_handbuilt_xlsx_bad_merge_ref_still_parses() {
+        let sheet = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+            r#"<dimension ref="A1:B2"/>"#,
+            "<sheetData>",
+            r#"<row r="1"><c r="A1" t="inlineStr"><is><t>id</t></is></c><c r="B1" t="inlineStr"><is><t>name</t></is></c></row>"#,
+            r#"<row r="2"><c r="A2"><v>1</v></c><c r="B2" t="inlineStr"><is><t>Sword</t></is></c></row>"#,
+            "</sheetData>",
+            r#"<mergeCells count="1"><mergeCell ref="not-a-ref"></mergeCell></mergeCells>"#,
+            "</worksheet>"
+        );
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(sheet)), "badmerge.xlsx");
+
+        let adapter = ExcelSourceAdapter::default();
+        let doc = adapter
+            .parse_file(wb.path())
+            .expect("merge-table failure is a warning");
+
+        let table = doc.tables.get("Data").unwrap();
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0].fields["id"].value, Value::Int(1));
+    }
+
+    /// A sheet with no cells yields an empty range: the sheet contributes no
+    /// table and the document ends up table-less (with a warning, not an error).
+    #[test]
+    fn test_handbuilt_xlsx_empty_sheet_yields_no_tables() {
+        let sheet = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+            "<sheetData></sheetData></worksheet>"
+        );
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(sheet)), "emptysheet.xlsx");
+
+        let adapter = ExcelSourceAdapter::default();
+        let doc = adapter
+            .parse_file(wb.path())
+            .expect("empty sheet is not an error");
+
+        assert!(doc.tables.is_empty());
+    }
+
+    /// A workbook whose sheet part is missing from the zip: reading the sheet
+    /// fails, the sheet is skipped and no table is produced.
+    #[test]
+    fn test_handbuilt_xlsx_missing_sheet_part_skips_sheet() {
+        let wb = TempWorkbook::new(&minimal_xlsx(None), "nosheet.xlsx");
+
+        let adapter = ExcelSourceAdapter::default();
+        let doc = adapter
+            .parse_file(wb.path())
+            .expect("missing sheet part is a warning");
+
+        assert!(doc.tables.is_empty());
+    }
+
+    /// An ODS workbook takes the non-Xlsx arm: sheet data is still read, but
+    /// the merged-cell fill (an Xlsx-only calamine API) is skipped.
+    #[test]
+    fn test_handbuilt_ods_workbook_parses_without_merge_fill() {
+        // Rows must contain nothing but cell elements: any stray text node
+        // inside a row is a parse error for the ODS reader.
+        let content = concat!(
+            r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0""#,
+            r#" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0""#,
+            r#" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">"#,
+            "<office:body><office:spreadsheet>",
+            r#"<table:table table:name="Data">"#,
+            r#"<table:table-row><table:table-cell office:value-type="string"><text:p>id</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>name</text:p></table:table-cell></table:table-row>"#,
+            r#"<table:table-row><table:table-cell office:value="1001"></table:table-cell><table:table-cell office:value-type="string"><text:p>Sword</text:p></table:table-cell></table:table-row>"#,
+            "</table:table></office:spreadsheet></office:body></office:document-content>"
+        );
+        let ods = build_stored_zip(&[
+            ("mimetype", "application/vnd.oasis.opendocument.spreadsheet"),
+            ("META-INF/manifest.xml", "<manifest:manifest/>"),
+            ("content.xml", content),
+        ]);
+        let wb = TempWorkbook::new(&ods, "sheet.ods");
+
+        let adapter = ExcelSourceAdapter::default();
+        let doc = adapter.parse_file(wb.path()).expect("ods workbook parses");
+
+        let table = doc.tables.get("Data").expect("Data table");
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0].fields["id"].value, Value::Int(1001));
+        assert_eq!(
+            table.rows[0].fields["name"].value,
+            Value::String("Sword".to_string())
+        );
+    }
+
+    /// `has_header: false` names columns from the absolute grid position and
+    /// treats every used row (including the former header row) as data; with
+    /// no `id` header each row's primary key falls back to its first field.
+    #[test]
+    fn test_has_header_false_generates_column_names() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/merged_cells.xlsx");
+        let adapter = ExcelSourceAdapter {
+            has_header: false,
+            ..Default::default()
+        };
+        let doc = adapter.parse_file(&path).expect("fixture must parse");
+
+        let table = doc.tables.get("Items").unwrap();
+        assert_eq!(table.rows.len(), 4, "header row is now a data row");
+
+        // Used range starts at B → generated names are col1..col5
+        let names: Vec<&str> = table.rows[0].fields.keys().map(String::as_str).collect();
+        assert_eq!(names, ["col1", "col2", "col3", "col4", "col5"]);
+
+        // No id header → primary key falls back to the first field
+        assert_eq!(
+            table.rows[0].primary_key,
+            vec![Value::String("id".to_string())]
+        );
+        assert_eq!(table.rows[1].primary_key, vec![Value::Int(1001)]);
+
+        // Locations keep sheet-grid columns (B..F) and rows (2..)
+        assert_eq!(
+            table.rows[0].fields["col1"].location.column.as_deref(),
+            Some("B")
+        );
+        assert_eq!(
+            table.rows[0].fields["col5"].location.column.as_deref(),
+            Some("F")
+        );
+        assert_eq!(table.rows[0].location.row, Some(2));
+    }
+
+    /// Exotic cell conversions: whitespace-only strings, trimmed numeric
+    /// strings, non-finite floats, error cells, date and duration passthroughs.
+    #[test]
+    fn test_cell_to_cage_value_exotic() {
+        use calamine::{CellErrorType, ExcelDateTime, ExcelDateTimeType};
+
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::String("  ".to_string())),
+            Value::Null
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::String(" 42 ".to_string())),
+            Value::Int(42)
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::Float(f64::NAN)),
+            Value::String("NaN".to_string())
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::Float(f64::INFINITY)),
+            Value::String("inf".to_string())
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::Error(CellErrorType::Div0)),
+            Value::String("#ERROR: Div0".to_string())
+        );
+        let dt = ExcelDateTime::new(44_927.0, ExcelDateTimeType::DateTime, false);
+        let converted = ExcelSourceAdapter::cell_to_cage_value(&Data::DateTime(dt));
+        assert!(
+            matches!(converted, Value::String(ref s) if s.contains("44927")),
+            "serial date renders as its Debug form: {converted:?}"
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::DateTimeIso(
+                "2024-01-02T03:04:05Z".to_string()
+            )),
+            Value::String("2024-01-02T03:04:05Z".to_string())
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::DurationIso("PT1H".to_string())),
+            Value::String("PT1H".to_string())
+        );
+    }
+
+    /// `cell_to_string` renders every cell kind for header extraction.
+    #[test]
+    fn test_cell_to_string_matrix() {
+        use calamine::{CellErrorType, ExcelDateTime, ExcelDateTimeType};
+
+        assert_eq!(ExcelSourceAdapter::cell_to_string(&Data::Empty), "");
+        assert_eq!(ExcelSourceAdapter::cell_to_string(&Data::Float(3.5)), "3.5");
+        assert_eq!(ExcelSourceAdapter::cell_to_string(&Data::Int(7)), "7");
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_string(&Data::Bool(true)),
+            "true"
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_string(&Data::Error(CellErrorType::NA)),
+            "#ERROR: NA"
+        );
+        let dt = ExcelDateTime::new(0.5, ExcelDateTimeType::TimeDelta, false);
+        let rendered = ExcelSourceAdapter::cell_to_string(&Data::DateTime(dt));
+        assert!(rendered.contains("0.5"), "got: {rendered}");
+    }
+
+    /// Unsigned integers past `i64::MAX` keep their width in string inference.
+    #[test]
+    fn test_infer_string_type_unsigned() {
+        assert_eq!(
+            ExcelSourceAdapter::infer_string_type("18446744073709551615"),
+            Value::UInt(u64::MAX)
+        );
+        assert_eq!(
+            ExcelSourceAdapter::infer_string_type("-9223372036854775808"),
+            Value::Int(i64::MIN)
+        );
+    }
+
+    /// An empty used range has no anchor cell: `resolve_cell` must return the
+    /// cell it was handed instead of indexing into the range.
+    #[test]
+    fn test_resolve_cell_empty_range_keeps_raw_cell() {
+        let range = Range::<Data>::empty();
+        let raw = Data::Int(5);
+
+        let resolved = ExcelSourceAdapter::resolve_cell(&range, &HashMap::new(), 0, 0, &raw);
+
+        assert_eq!(resolved, &raw);
+    }
+
+    /// The `SourceAdapter` trait forwards `parse_file` to the inherent method.
+    #[test]
+    fn test_source_adapter_trait_parse_delegation() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/merged_cells.xlsx");
+
+        let adapter = ExcelSourceAdapter::default();
+        let doc = SourceAdapter::parse_file(&adapter, &path).expect("fixture must parse");
+        assert!(doc.tables.contains_key("Items"));
     }
 }
