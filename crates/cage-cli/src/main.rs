@@ -50,6 +50,8 @@ use cage_core::value::Document;
 use cage_core::Diagnostics;
 use cage_core::DocumentMetadata;
 
+mod web;
+
 /// Game configuration compilation and validation framework
 #[derive(Parser)]
 #[command(
@@ -124,6 +126,14 @@ enum Commands {
         #[arg(long)]
         verify: bool,
     },
+    /// Serve the local HTTP API for the Schema editor (third phase W2)
+    Web {
+        /// Configuration project root directory
+        path: PathBuf,
+        /// TCP port to listen on (binds 127.0.0.1 only)
+        #[arg(long, default_value_t = 8765)]
+        port: u16,
+    },
 }
 
 /// A loaded Cage project: config + merged schema + merged document.
@@ -161,6 +171,13 @@ fn main() {
                 run_snapshot(&path, &profile)
             }
         }
+        Commands::Web { path, port } => match web::run_web(&path, port) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("cage web: {e}");
+                2
+            }
+        },
     };
     std::process::exit(code);
 }
@@ -197,7 +214,7 @@ fn load_project(root: &Path) -> Result<Project, String> {
     })
 }
 
-fn load_project_config(root: &Path) -> Result<ProjectConfig, String> {
+pub(crate) fn load_project_config(root: &Path) -> Result<ProjectConfig, String> {
     for name in ["cage.toml", "cage.yaml", "cage.yml", "cage.json"] {
         let path = root.join(name);
         if path.is_file() {
@@ -222,7 +239,7 @@ fn load_project_config(root: &Path) -> Result<ProjectConfig, String> {
     ))
 }
 
-fn load_schema(path: &Path) -> Result<Schema, String> {
+pub(crate) fn load_schema(path: &Path) -> Result<Schema, String> {
     let mut merged = Schema::new();
     for file in collect_files(path, &["yaml", "yml", "json"])? {
         let content = std::fs::read_to_string(&file)
@@ -1169,6 +1186,7 @@ mod tests {
                 profile,
                 verify,
             } => format!("snapshot {} {profile} {verify}", path.display()),
+            Commands::Web { path, port } => format!("web {} {port}", path.display()),
         }
     }
 

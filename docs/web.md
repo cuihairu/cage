@@ -60,13 +60,31 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       `E1701` 入错误码表（crates/cage-core/src/error/codes.rs
       `editor` 族 + 校验文档）
 
+### W2 已实装：`cage web` 本地 HTTP 服务（cage-cli/src/web.rs）
+
+- [x] 项目装载复用 CLI 加载链（`load_project_config` / `load_schema`），
+      只绑定 `127.0.0.1`，无鉴权（本地工具）
+- [x] `GET /api/schema`——合并 Schema 的编辑器文档 + 项目事实
+      （project / schema_path / profile_names / warnings_as_errors）；
+      每请求重载，保存后立即可见
+- [x] `POST /api/validate`——编辑态校验：E1701（文档无法反序列化，
+      JSON 路径定位）→ L1 一致性（E1004 族）；诊断以裸数组输出
+      （`Diagnostics` serde 的 `{"items": [...]}` 壳在 API 层摊平）
+- [x] `POST /api/schema`——canonical YAML 写回：单文件 `schema_path`
+      直接覆盖；目录（多文件 schema）→ 409 拒写（编辑器不重写
+      作者侧拆分）；未配置 → 写 `schema.yaml` + note 提醒接线
+      cage.toml（服务器绝不改配置文件）
+- [x] 集成测试（crates/cage-cli/tests/web.rs）：真实子进程 + 原始
+      TCP 请求，覆盖文档伺服 / E1701+E1004 校验 / 保存后重载与
+      `cage check` 复跑 / 目录拒写 / 空 schema 起始
+
 ## 路线图
 
-- [ ] **W2** `cage web` 本地 HTTP 服务：项目装载（复用 cli 加载链）、
-      GET /api/schema（编辑器 JSON）、POST /api/validate（编辑态跑
-      L1-L4 校验）、POST /api/schema（canonical YAML 写回）；本地工具
-      不鉴权
-- [ ] **W3** Schema 编辑器前端（docs/public 静态单页）：表/枚举树、
+- [ ] **W3** Schema 编辑器前端（docs/public 静态单页，无 node 构建链）：
+      表/枚举树、19 字段类型、约束编辑、E 码诊断面板、保存
+      （API 契约已定稿，前端纯消费）
+- [ ] **W4** 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑 → 校验 →
+      保存 → `cage build` 复现）、CI 集成
       19 字段类型、约束编辑、E 码诊断面板、保存
 - [ ] **W4** 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑 → 校验 →
       保存 → `cage build` 复现）、CI 集成

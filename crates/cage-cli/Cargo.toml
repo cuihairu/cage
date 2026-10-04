@@ -29,6 +29,7 @@ cage-target-cpp = { path = "../cage-target-cpp" }
 cage-target-go = { path = "../cage-target-go" }
 cage-target-java = { path = "../cage-target-java" }
 clap = { workspace = true }
+tiny_http = { workspace = true }
 indexmap = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

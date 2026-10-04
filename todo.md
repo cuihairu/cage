@@ -50,7 +50,7 @@
       （to_canonical_yaml/from_canonical_yaml，同 Schema 同字节、
       回环幂等）；round-trip 与 E1701 路径测试；与 snapshot
       schema.json 同一形状；错误码表入 validation.md
-- [ ] W2 `cage web` 本地服务（HTTP API）：项目装载（复用 cli 加载链）、
+- [x] W2 `cage web` 本地服务（HTTP API）：项目装载（复用 cli 加载链）、
       GET /api/schema（编辑器 JSON）、POST /api/validate（编辑态校验）、
       POST /api/schema（canonical YAML 写回）；本地工具不鉴权；
       集成测试 + README 入口

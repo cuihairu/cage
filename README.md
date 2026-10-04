@@ -57,6 +57,7 @@ cage snapshot config/ --profile client  # 构建 + 打包自校验快照；快�
 cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
 cage diff build/a build/b          # 比较两个配置版本
 cage inspect Item                  # 查看 Schema 与配置结构
+cage web ./                        # 启动 Schema 编辑器本地服务（只绑 127.0.0.1）
 ```
 
 ## 每日构建

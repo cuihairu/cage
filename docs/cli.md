@@ -10,10 +10,12 @@ cage inspect
 cage diff
 cage verify
 cage graph
+cage web
 ```
 
 MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`gen` / `graph` 为
-第二阶段（均已实装），`verify` 仍为第二阶段。
+第二阶段（均已实装），`verify` 仍为第二阶段，`web` 为第三阶段
+（Schema 编辑器本地服务）。
 
 ## check
 
@@ -85,6 +87,24 @@ cage graph
 ```
 
 输出[配置依赖图](/build#配置依赖图)（第二阶段）。
+
+## web
+
+```bash
+cage web ./ --port 8765
+```
+
+启动 Schema 编辑器本地服务（第三阶段），只绑定 `127.0.0.1`、无需鉴权。
+编辑器单页（W3 实装）与 HTTP API 共用一份交换文档，API 契约见
+[Web UI](/web)：
+
+```text
+GET  /api/schema      → 合并 Schema 的编辑器文档（每请求重载，保存后立即可见）
+POST /api/validate    → 编辑态校验（E1701 / E1004 诊断）
+POST /api/schema      → 保存回环 canonical YAML（单文件 schema_path 才可写）
+```
+
+Ctrl+C 停止服务。`--port` 默认 8765。
 
 ## 快速开始
 
