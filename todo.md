@@ -62,9 +62,48 @@
       + ci.yml web-smoke job + docs/web.md 定稿）
 
 ### 其余（预排）
-- [ ] Registry（远程配置仓库 + 版本）
+- [ ] Registry（远程配置仓库 + 版本）——已开工，拆解为下方「R 系列：
+      Configuration Registry」（2026-10）；Remote Source 与 Artifact 分发
+      仍留待后续独立立项
 - [ ] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）
 - [ ] Artifact 分发与迁移
+
+### R 系列：Configuration Registry（2026-10 开工，design §29）
+
+形态定稿：注册表根 `<registry>/<包>/<版本>/` 为**自校验 snapshot 入口**
+（manifest/schema.json/data/generated/HASHES 逐文件 blake3 账本，与
+`cage snapshot` 同一格式、同一次打包产物即同一字节），包目录另附
+确定性 `index.json`（包名 + 版本序列表：版本/build_id/content_hash/文件数）。
+发布与解析都先过账本校验——「未经校验不入册、未经校验不载入」。
+版本序：点分数字序（1.9 < 1.10）；包/版本名只许 `[A-Za-z0-9._-]`，
+路径穿越类输入直接拒绝。源解析语法 `registry:<包>[@<版本>]`
+（省略版本 = 最高序），消费方在 cage.toml `[registry].path` 声明
+注册表根（相对项目根）；解析成功 = 校验通过 + 解出条目 data/ 目录
+作为源根。注册表字节全路径确定性：同输入 → 同条目 → 同 index。
+
+- [x] R1 本地注册表 + 源解析：
+      `cage-core::registry`（publish/resolve + 确定性 index.json +
+      点分版本序 + 包/版本名合法性校验）；`cage registry publish`
+      （全量构建 → 快照打包 → 账本自校验 → 入册；package 默认
+      project.name、version 默认 project.version；同版本同字节重发
+      幂等 OK，同版本异字节 E1801 版本冲突拒写）；`cage registry
+      list`（包/版本/build_id/content_hash/文件数，确定性序）；
+      source_roots 支持 `registry:` 前缀解析（未接 `[registry].path`
+      、包不存在、版本不存在 → E1802 无法解析；账本校验不过 →
+      E1803 条目校验失败；条目 data/ 按最高保真格式载入 json >
+      yaml > csv > excel，表名以条目 manifest artifact 记录为准）；
+      schema_path 本轮只走文件系统；E1801/E1802/E1803 入错误码表。
+      验收达成：9 core 单测 + 3 CLI 集成测试（发布→列表→latest/
+      pin 解析→构建复现→确定性字节→篡改 E1803→冲突 E1801→错误
+      路径）全绿 + 文档（cli.md/validation.md/architecture.md/
+      design.md §29/index.md）+ 本勾选
+- [ ] R2 Schema 解析与依赖声明：`schema_path: registry:<包>[@<版本>]`
+      的 schema 侧解析（消费方 Schema 直接来自条目 schema.json），
+      `[dependencies]` 风格多包 pin + 版本区间
+- [ ] R3 远程 Registry 只读解析：HTTP(S) 注册表根（resolve 走网络，
+      发布仍限本地；需鉴权/协议版本设计先行）
+- [ ] R4 回滚与清理：多版本共存下的 GC 策略、`cage registry verify`
+      全册校验工具、条目移除/重新发布纪律
 
 ## 第四阶段（核心模型边界定稿，2026-10 评审驱动）
 

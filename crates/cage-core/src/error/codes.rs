@@ -118,6 +118,20 @@ pub mod editor {
     pub const E1701: &str = "E1701";
 }
 
+/// Registry errors (Configuration Registry, third phase)
+pub mod registry {
+    /// E1801 - Registry publish version conflict (same version republished
+    /// with different bytes) or invalid package/version name; nothing is
+    /// written on any of these paths
+    pub const E1801: &str = "E1801";
+    /// E1802 - Registry reference cannot be resolved (invalid spec, package
+    /// or version not found, corrupt or missing index)
+    pub const E1802: &str = "E1802";
+    /// E1803 - Registry entry failed ledger verification (tampered /
+    /// missing files) — refused at publish and at resolve
+    pub const E1803: &str = "E1803";
+}
+
 /// Build/Transform errors (Target generation)
 pub mod build {
     /// E9001 - Target generator not found for format
@@ -194,6 +208,10 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         gamerule::E1603 => Some("Validator Plugin Execution Failed"),
         // Editor
         editor::E1701 => Some("Editor Interchange Invalid"),
+        // Registry
+        registry::E1801 => Some("Registry Publish Conflict"),
+        registry::E1802 => Some("Registry Reference Unresolved"),
+        registry::E1803 => Some("Registry Entry Verification Failed"),
         // Build
         build::E9001 => Some("Target Generator Not Found"),
         build::E9002 => Some("Target Generation Failed"),
@@ -314,6 +332,8 @@ mod tests {
             ("E1401", "Reference Target Not Found"),
             ("E1501", "Assertion Failed"),
             ("E1601", "Game Rule Validation Failed"),
+            ("E1701", "Editor Interchange Invalid"),
+            ("E1802", "Registry Reference Unresolved"),
             ("E9001", "Target Generator Not Found"),
             ("E9901", "Internal Error"),
         ];

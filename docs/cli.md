@@ -11,11 +11,13 @@ cage diff
 cage verify
 cage graph
 cage web
+cage registry
 ```
 
 MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`gen` / `graph` 为
 第二阶段（均已实装），`verify` 仍为第二阶段，`web` 为第三阶段
-（Schema 编辑器本地服务）。
+（Schema 编辑器本地服务），`registry` 为第三阶段 R 系列
+（本地 Configuration Registry 发布/列表）。
 
 ## check
 
@@ -105,6 +107,35 @@ POST /api/schema      → 保存回环 canonical YAML（单文件 schema_path �
 ```
 
 Ctrl+C 停止服务。`--port` 默认 8765。
+
+## registry
+
+```bash
+cage registry publish <project> --registry <dir> [--package name] [--version 1.0.0] [--profile client]
+cage registry list    --registry <dir>
+```
+
+本地 Configuration Registry（第三阶段 R 系列，[design §29](/design#29-configuration-registry)）。
+`publish` 全量构建 → 打包[自校验快照](/build#configuration-snapshot) → 账本
+校验通过后入册 `<registry>/<包>/<版本>/`（包默认 `project.name`、版本默认
+`project.version`）；同版本同字节重发是幂等 no-op，同版本异字节报
+`E1801` 版本冲突——注册表不改写历史。`list` 按确定性序列出包/版本/
+build_id/content_hash/文件数。
+
+消费方在 cage.toml 里声明注册表根并引用包作为源根（R1 源解析）：
+
+```toml
+[registry]
+path = "../registry"          # 相对项目根
+
+[source_roots]
+main = "registry:common@1.0.0"   # 省略 @版本 = 最高点分序版本
+```
+
+解析在载入前先过条目账本校验（篡改/增删文件 → `E1803` 拒载；包/版本
+不存在或未接 `[registry].path` → `E1802`）。条目的 `data/` 按最高保真
+格式载入（json > yaml > csv > excel），表名以条目 manifest.json 的
+artifact 记录为准。
 
 ## 快速开始
 

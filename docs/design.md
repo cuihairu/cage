@@ -1385,6 +1385,15 @@ game-config/
 
 但 Registry 不应该进入 MVP。
 
+**实装（第三阶段 R 系列）**：R1 本地注册表已落地——`<registry>/<包>/<版本>/`
+即一枚自校验 Configuration Snapshot（与 `cage snapshot` 同一打包产物、
+同一 blake3 账本），包目录附确定性 `index.json`；`cage registry publish`
+发布（同版本同字节幂等、异字节 E1801 冲突）、`cage registry list` 列表、
+消费方 `source_roots: registry:<包>[@<版本>]` 解析（载入前账本校验，
+E1802 未解析 / E1803 校验失败）。远程 Registry（只读解析）、Schema 侧
+解析与依赖 pin、回滚/GC 见 todo.md R2–R4。红线不变：Registry 不执行
+上传的 Validator（§35）。
+
 ---
 
 # 30. CLI

@@ -414,6 +414,18 @@ pub struct ProjectConfig {
     /// Default output directory
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_dir: Option<String>,
+    /// Local Configuration Registry root (R-series): consumers that resolve
+    /// `registry:<package>[@<version>]` source roots must declare it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistryConfig>,
+}
+
+/// Local Configuration Registry declaration (`[registry]` in cage.toml)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryConfig {
+    /// Registry root directory. A relative path is resolved against the
+    /// project root — the consumer project pins which registry it reads.
+    pub path: String,
 }
 
 /// Project identity information
@@ -477,6 +489,7 @@ impl Default for ProjectConfig {
             schema_path: Some("schemas".to_string()),
             warnings_as_errors: false,
             output_dir: Some("build".to_string()),
+            registry: None,
         }
     }
 }
@@ -894,6 +907,7 @@ mod tests {
             schema_path: Some("schema".to_string()),
             warnings_as_errors: true,
             output_dir: Some("build".to_string()),
+            registry: None,
         };
 
         let json = serde_json::to_string(&cfg).expect("serialize");
@@ -938,6 +952,7 @@ mod tests {
             schema_path: None,
             warnings_as_errors: false,
             output_dir: None,
+            registry: None,
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();

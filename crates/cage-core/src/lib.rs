@@ -44,6 +44,7 @@ pub mod error;
 pub mod manifest;
 pub mod normalize;
 pub mod reference;
+pub mod registry;
 pub mod schema;
 pub mod snapshot;
 pub mod validation;
@@ -58,7 +59,7 @@ pub use error::codes::{
 };
 pub use manifest::{
     verify_manifest, ArtifactInfo, BuildManifest, BuildProfile, ManifestGenerator, ProjectConfig,
-    ProjectInfo, TargetConfig,
+    ProjectInfo, RegistryConfig, TargetConfig,
 };
 pub use normalize::{coerce_to_type, normalize_document, normalize_typed_value, normalize_value};
 pub use reference::{

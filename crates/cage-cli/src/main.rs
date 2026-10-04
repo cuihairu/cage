@@ -41,6 +41,7 @@ use indexmap::IndexMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use cage_core::error::codes::registry::E1802;
 use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig, TargetConfig};
 use cage_core::normalize::normalize_document;
 use cage_core::reference::{DependencyGraph, IncrementalPlanner};
@@ -134,6 +135,41 @@ enum Commands {
         #[arg(long, default_value_t = 8765)]
         port: u16,
     },
+    /// Publish or list configuration packages in a local Configuration Registry
+    Registry {
+        #[command(subcommand)]
+        cmd: RegistryCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryCmd {
+    /// Build a profile and publish its self-verifying snapshot into the
+    /// local registry as <package>/<version> (re-publishing byte-identical
+    /// content is an idempotent no-op; different bytes for the same version
+    /// are an E1801 conflict)
+    Publish {
+        /// Configuration project root directory
+        path: PathBuf,
+        /// Build profile to publish
+        #[arg(long, default_value = "client")]
+        profile: String,
+        /// Package name (defaults to project.name)
+        #[arg(long)]
+        package: Option<String>,
+        /// Version to publish (defaults to project.version)
+        #[arg(long)]
+        version: Option<String>,
+        /// Registry root directory (overrides cage.toml [registry].path)
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
+    /// List packages and versions recorded in the registry
+    List {
+        /// Registry root directory (overrides cage.toml [registry].path)
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
 }
 
 /// A loaded Cage project: config + merged schema + merged document.
@@ -178,6 +214,22 @@ fn main() {
                 2
             }
         },
+        Commands::Registry { cmd } => match cmd {
+            RegistryCmd::Publish {
+                path,
+                profile,
+                package,
+                version,
+                registry,
+            } => run_registry_publish(
+                &path,
+                &profile,
+                package.as_deref(),
+                version.as_deref(),
+                registry.as_deref(),
+            ),
+            RegistryCmd::List { registry } => run_registry_list(registry.as_deref()),
+        },
     };
     std::process::exit(code);
 }
@@ -198,7 +250,24 @@ fn load_project(root: &Path) -> Result<Project, String> {
         metadata: DocumentMetadata::default(),
     };
     for rel in config.source_roots.values() {
-        let doc = load_sources(&root.join(rel))?;
+        // `registry:<package>[@<version>]` source roots (R1) resolve to a
+        // published entry's data/ directory; the entry's ledger is verified
+        // by `cage_core::registry::resolve` before anything is read.
+        let doc = if let Some(_spec) = rel.strip_prefix("registry:") {
+            let (package, version) = cage_core::registry::parse_spec(rel)?;
+            let reg_root = match &config.registry {
+                Some(reg) => root.join(&reg.path),
+                None => {
+                    return Err(format!(
+                        "{E1802} source root '{rel}' requires '[registry] path' in cage.toml"
+                    ))
+                }
+            };
+            let entry = cage_core::registry::resolve(&reg_root, &package, version.as_deref())?;
+            load_sources_from_entry(&entry)?
+        } else {
+            load_sources(&root.join(rel))?
+        };
         for (name, table) in doc.tables {
             document.tables.insert(name, table);
         }
@@ -264,22 +333,30 @@ pub(crate) fn load_schema(path: &Path) -> Result<Schema, String> {
 }
 
 fn load_sources(root: &Path) -> Result<Document, String> {
+    parse_source_files(&collect_files(
+        root,
+        &["json", "yaml", "yml", "csv", "xlsx", "xls"],
+    )?)
+}
+
+/// Parse the given source files into one merged document, in list order.
+fn parse_source_files(files: &[PathBuf]) -> Result<Document, String> {
     let mut merged = Document {
         tables: IndexMap::new(),
         source_files: Vec::new(),
         metadata: DocumentMetadata::default(),
     };
-    for file in collect_files(root, &["json", "yaml", "yml", "csv", "xlsx", "xls"])? {
+    for file in files {
         let ext = file
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
         let result = match ext.as_str() {
-            "json" => cage_source_json::JsonSourceAdapter::parse_file(&file),
-            "yaml" | "yml" => cage_source_yaml::YamlSourceAdapter::parse_file(&file),
-            "csv" => cage_source_csv::CsvSourceAdapter::default().parse_file(&file),
-            "xlsx" | "xls" => cage_source_excel::ExcelSourceAdapter::default().parse_file(&file),
+            "json" => cage_source_json::JsonSourceAdapter::parse_file(file),
+            "yaml" | "yml" => cage_source_yaml::YamlSourceAdapter::parse_file(file),
+            "csv" => cage_source_csv::CsvSourceAdapter::default().parse_file(file),
+            "xlsx" | "xls" => cage_source_excel::ExcelSourceAdapter::default().parse_file(file),
             _ => continue,
         };
         match result {
@@ -294,6 +371,110 @@ fn load_sources(root: &Path) -> Result<Document, String> {
                 return Err(format!("failed to parse {}", file.display()));
             }
         }
+    }
+    Ok(merged)
+}
+
+/// Data-target format fidelity for re-consumption: a snapshot entry packs
+/// every data target of one profile view — `json/` and `csv/` siblings
+/// serializing the SAME canonical tables with different fidelity (csv
+/// flattens nested values to strings and absent optionals to empty cells).
+/// Resolution therefore loads the single highest-fidelity format present.
+fn format_fidelity(ext: &str) -> u8 {
+    match ext {
+        "json" => 4,
+        "yaml" | "yml" => 3,
+        "csv" => 2,
+        _ => 1, // xlsx / xls
+    }
+}
+
+/// Load a resolved registry entry (R1): the entry's `data/` directory, at
+/// the highest-fidelity data-target format present (json > yaml > csv >
+/// excel). Table identity comes from the entry's manifest.json — the
+/// authoritative artifact→table record — because target-format files don't
+/// carry it (a JSON target file is a bare row array, a CSV only has the
+/// file stem). A published profile whose top format is csv re-validates
+/// only while its tables stay flat — publish a json/yaml data target when
+/// consumers need nested types.
+fn load_sources_from_entry(entry_dir: &Path) -> Result<Document, String> {
+    let data_dir = entry_dir.join("data");
+    let files = collect_files(&data_dir, &["json", "yaml", "yml", "csv", "xlsx", "xls"])?;
+    if files.is_empty() {
+        return Err(format!(
+            "{E1802} registry entry has no data artifacts under {}",
+            data_dir.display()
+        ));
+    }
+    let ext_of = |f: &Path| {
+        f.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+    };
+    let top = files
+        .iter()
+        .map(|f| format_fidelity(&ext_of(f)))
+        .max()
+        .expect("non-empty file list");
+    let picked: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|f| format_fidelity(&ext_of(f)) == top)
+        .collect();
+
+    // The manifest's artifact records are the table-name authority: target
+    // files don't carry table identity, and the snapshot packing stripped
+    // each artifact's `output_dir` prefix. An entry-relative data path may
+    // therefore suffix-match several artifact keys (nested output subtrees);
+    // the snapshot carries the LAST one packed, which is what resolution
+    // maps back to.
+    let manifest_raw = std::fs::read_to_string(entry_dir.join("manifest.json"))
+        .map_err(|e| format!("{E1802} cannot read entry manifest: {e}"))?;
+    let manifest: BuildManifest = serde_json::from_str(&manifest_raw)
+        .map_err(|e| format!("{E1802} corrupt entry manifest.json: {e}"))?;
+    let table_for_rel = |rel: &str| -> Option<String> {
+        let suffix = format!("/{rel}");
+        let mut found: Option<String> = None;
+        for (key, art) in &manifest.artifacts {
+            if art.table.is_some() && (key.as_str() == rel || key.ends_with(&suffix)) {
+                found.clone_from(&art.table);
+            }
+        }
+        found
+    };
+
+    let mut merged = Document {
+        tables: IndexMap::new(),
+        source_files: Vec::new(),
+        metadata: DocumentMetadata::default(),
+    };
+    for file in picked {
+        let mut doc = parse_source_files(std::slice::from_ref(&file))?;
+        let rel = file
+            .strip_prefix(&data_dir)
+            .expect("file under data dir")
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        if doc.tables.len() == 1 {
+            if let (Some(expected), Some(actual)) =
+                (table_for_rel(&rel), doc.tables.keys().next().cloned())
+            {
+                if expected != actual {
+                    // Target formats parse under a placeholder name ("Data"
+                    // for bare arrays) — restore the manifest's table name
+                    // on both the map key and the Table itself (the map key
+                    // drives schema matching, the struct name drives
+                    // artifact file templates).
+                    let (_, mut table) = doc.tables.swap_remove_entry(&actual).expect("one table");
+                    table.name.clone_from(&expected);
+                    doc.tables.insert(expected, table);
+                }
+            }
+        }
+        for (name, table) in doc.tables {
+            merged.tables.insert(name, table);
+        }
+        merged.source_files.extend(doc.source_files);
     }
     Ok(merged)
 }
@@ -710,68 +891,62 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
     }
 }
 
+/// Pack a finished build into its self-verifying snapshot directory
+/// (`<output_dir>/snapshot/<profile>-<build_id[..12]>`) and self-verify it
+/// clean before handing it out. Shared by `cage snapshot` and
+/// `cage registry publish` — the packing format is core's
+/// (`cage_core::snapshot`), the deterministic directory name is the
+/// fingerprint, not a date.
+fn pack_snapshot(path: &Path, out: &BuildOutput) -> Result<(PathBuf, usize), String> {
+    let schema_json =
+        serde_json::to_vec_pretty(&out.schema).map_err(|e| format!("schema serialization: {e}"))?;
+    let manifest_json = std::fs::read(&out.manifest_path)
+        .map_err(|e| format!("{}: {e}", out.manifest_path.display()))?;
+    let files = cage_core::snapshot::snapshot_files(
+        &manifest_json,
+        &schema_json,
+        &out.artifacts,
+        &out.output_dir,
+        &out.manifest.build_id,
+        &out.manifest.content_hash,
+    );
+    let snap_dir = path.join(&out.output_dir).join("snapshot").join(format!(
+        "{}-{}",
+        out.profile,
+        &out.manifest.build_id[..12]
+    ));
+    write_snapshot_files(&snap_dir, &files)?;
+    // Self-check: the just-written snapshot must verify clean.
+    let report = cage_core::snapshot::verify_snapshot(&snap_dir)?;
+    debug_assert!(
+        report.ok,
+        "self-verification mismatch: {:?}",
+        report.mismatches
+    );
+    Ok((snap_dir, files.len()))
+}
+
 /// `cage snapshot` — build the profile, then package the build into a
 /// self-verifying Configuration Snapshot under
-/// `<output_dir>/snapshot/<profile>-<build_id[..12]>`. The directory name is
-/// a deterministic fingerprint, not a date: identical inputs → identical
-/// snapshot bytes (the determinism contract). Packing lives in
-/// `cage_core::snapshot` (the format is core's, not the cli's).
+/// `<output_dir>/snapshot/<profile>-<build_id[..12]>`. Identical inputs →
+/// identical snapshot bytes (the determinism contract).
 fn run_snapshot(path: &Path, profile: &str) -> i32 {
     // A snapshot packages a fresh full build — no incremental carry-over.
     match build_project(path, "gamerule", profile, false) {
-        Ok(out) => {
-            let schema_json = match serde_json::to_vec_pretty(&out.schema) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("error: schema serialization: {e}");
-                    return 2;
-                }
-            };
-            let manifest_json = match std::fs::read(&out.manifest_path) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    eprintln!("error: {}: {e}", out.manifest_path.display());
-                    return 2;
-                }
-            };
-            let files = cage_core::snapshot::snapshot_files(
-                &manifest_json,
-                &schema_json,
-                &out.artifacts,
-                &out.output_dir,
-                &out.manifest.build_id,
-                &out.manifest.content_hash,
-            );
-            let snap_dir = path.join(&out.output_dir).join("snapshot").join(format!(
-                "{}-{}",
-                profile,
-                &out.manifest.build_id[..12]
-            ));
-            if let Err(e) = write_snapshot_files(&snap_dir, &files) {
-                eprintln!("error: {e}");
-                return 2;
+        Ok(out) => match pack_snapshot(path, &out) {
+            Ok((snap_dir, files)) => {
+                println!(
+                    "cage snapshot: OK (profile '{profile}', {files} files, {} artifacts, verified, {})",
+                    out.artifacts.len(),
+                    snap_dir.display()
+                );
+                0
             }
-            // Self-check: the just-written snapshot must verify clean.
-            let report = match cage_core::snapshot::verify_snapshot(&snap_dir) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("error: snapshot self-verification: {e}");
-                    return 2;
-                }
-            };
-            println!(
-                "cage snapshot: OK (profile '{profile}', {} files, {} artifacts, verified, {})",
-                files.len(),
-                out.artifacts.len(),
-                snap_dir.display()
-            );
-            debug_assert!(
-                report.ok,
-                "self-verification mismatch: {:?}",
-                report.mismatches
-            );
-            0
-        }
+            Err(e) => {
+                eprintln!("error: {e}");
+                2
+            }
+        },
         Err(BuildFailure::Validation(diags)) => {
             println!("{}", diags.render(false));
             println!(
@@ -834,6 +1009,151 @@ fn write_snapshot_files(dir: &Path, files: &IndexMap<String, Vec<u8>>) -> Result
         std::fs::write(&abs, bytes).map_err(|e| format!("cannot write {}: {e}", abs.display()))?;
     }
     Ok(())
+}
+
+/// Resolve the registry root for publish/list: the `--registry` flag wins,
+/// else the project's `[registry].path` (relative to the project root).
+fn registry_root(
+    path: &Path,
+    config: &ProjectConfig,
+    flag: Option<&Path>,
+) -> Result<PathBuf, String> {
+    match flag {
+        Some(r) => Ok(r.to_path_buf()),
+        None => match &config.registry {
+            Some(reg) => Ok(path.join(&reg.path)),
+            None => Err(format!(
+                "{E1802} no registry root (pass --registry or set '[registry] path' in cage.toml)"
+            )),
+        },
+    }
+}
+
+/// `cage registry publish` — build the profile, pack its self-verifying
+/// snapshot and enter it into the local registry as
+/// `<package>/<version>`. Package defaults to `project.name`, version to
+/// `project.version`. Only a ledger-verified snapshot is written; a
+/// byte-identical re-publish is a no-op, different bytes for the same
+/// version are an E1801 conflict (the registry never rewrites history).
+fn run_registry_publish(
+    path: &Path,
+    profile: &str,
+    package: Option<&str>,
+    version: Option<&str>,
+    registry_flag: Option<&Path>,
+) -> i32 {
+    let config = match load_project_config(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let package = package.map_or_else(|| config.project.name.clone(), str::to_string);
+    let version = if let Some(v) = version {
+        v.to_string()
+    } else if let Some(v) = &config.project.version {
+        v.clone()
+    } else {
+        eprintln!(
+            "error: no version to publish (pass --version or set project.version in cage.toml)"
+        );
+        return 2;
+    };
+    let reg_root = match registry_root(path, &config, registry_flag) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+
+    // A publish is a fresh full build — no incremental carry-over.
+    match build_project(path, "gamerule", profile, false) {
+        Ok(out) => match pack_snapshot(path, &out) {
+            Ok((snap_dir, files)) => {
+                match cage_core::registry::publish(&reg_root, &package, &version, &snap_dir) {
+                    Ok(report) => {
+                        println!(
+                            "cage registry: published {package}/{version} (profile '{profile}', {files} files, build_id {}, content_hash {}){}",
+                            &out.manifest.build_id[..12],
+                            &out.manifest.content_hash[..12],
+                            if report.already_identical {
+                                " — identical, no-op"
+                            } else {
+                                ""
+                            }
+                        );
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        1
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                2
+            }
+        },
+        Err(BuildFailure::Validation(diags)) => {
+            println!("{}", diags.render(false));
+            println!(
+                "cage registry: FAILED validation ({} errors)",
+                diags.errors().len()
+            );
+            1
+        }
+        Err(BuildFailure::Io(msg)) => {
+            eprintln!("error: {msg}");
+            2
+        }
+        Err(BuildFailure::UpToDate { .. }) => {
+            // incremental is false for registry publishes — unreachable.
+            eprintln!("error: internal: registry publish build did not rebuild");
+            2
+        }
+    }
+}
+
+/// `cage registry list` — every package with its recorded versions, in
+/// deterministic (name, dotted-numeric version) order.
+fn run_registry_list(registry_flag: Option<&Path>) -> i32 {
+    let Some(reg_root) = registry_flag else {
+        eprintln!("error: no registry root (pass --registry)");
+        return 2;
+    };
+    match cage_core::registry::packages(reg_root) {
+        Ok(indexes) => {
+            if indexes.is_empty() {
+                println!("cage registry: empty ({})", reg_root.display());
+                return 0;
+            }
+            println!(
+                "cage registry: {} package(s) in {}",
+                indexes.len(),
+                reg_root.display()
+            );
+            for index in indexes {
+                println!("{}", index.package);
+                for entry in &index.entries {
+                    println!(
+                        "  {:<12} build {}  content {}  {} files",
+                        entry.version,
+                        &entry.build_id[..entry.build_id.len().min(12)],
+                        &entry.content_hash[..entry.content_hash.len().min(12)],
+                        entry.files
+                    );
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
 }
 
 /// `cage gen` — schema-driven code generation only. Writes the code-target
@@ -1187,6 +1507,29 @@ mod tests {
                 verify,
             } => format!("snapshot {} {profile} {verify}", path.display()),
             Commands::Web { path, port } => format!("web {} {port}", path.display()),
+            Commands::Registry { cmd } => match cmd {
+                RegistryCmd::Publish {
+                    path,
+                    profile,
+                    package,
+                    version,
+                    registry,
+                } => format!(
+                    "registry publish {} {profile} {} {} {}",
+                    path.display(),
+                    package.as_deref().unwrap_or("<project.name>"),
+                    version.as_deref().unwrap_or("<project.version>"),
+                    registry
+                        .as_deref()
+                        .map_or_else(|| Path::new("<cage.toml>").display(), Path::display)
+                ),
+                RegistryCmd::List { registry } => format!(
+                    "registry list {}",
+                    registry
+                        .as_deref()
+                        .map_or_else(|| Path::new("<flag required>").display(), Path::display)
+                ),
+            },
         }
     }
 
