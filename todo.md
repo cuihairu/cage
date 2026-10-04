@@ -46,3 +46,22 @@
 - [ ] Registry（远程配置仓库 + 版本）
 - [ ] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）
 - [ ] Artifact 分发与迁移
+
+## 第四阶段（核心模型边界定稿，2026-10 评审驱动）
+
+方向共识：不堆功能，先把「Schema / Canonical Model / IR / Validation
+Context / Dependency Graph / Profile / Snapshot / Manifest」八个概念的边界
+收敛；边界定义（含 IR 不拆独立类型的决策与逐概念现状·差距核对）落
+docs/architecture.md「编译器核心：八个概念的边界」、清单落 docs/build.md。
+
+- [x] D1 边界定稿（架构文档 v0.3 概念表 + 差距核对 + 评审对照修正；build.md
+      Manifest 字段表 / 依赖图现状 / 增量分层 / Snapshot 规划）
+- [ ] D2 Dependency Graph 接线：L5 校验产出真实依赖图（替换 cli 构造
+      ValidatedSchema 时的空占位），增量第二层按依赖传播只重建受影响表；
+      manifest 落 `dependencies` 账
+- [ ] D3 Profile 语义化：E9006 字段可见性冲突实装（server-only 字段进入
+      client 视图/产物时报冲突码而非静默过滤）；profile 感知校验上下文
+- [ ] D4 Manifest 强化：`build_id`（时间戳 + 短哈希，唯一构建标识）落地，
+      generator_version 独立于 cage_version
+- [ ] D5 Configuration Snapshot：snapshot 构建（manifest + schema + 数据 +
+      生成物 + 校验清单）、服务器启动加载校验入口

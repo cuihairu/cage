@@ -207,6 +207,70 @@ Column: DropItemID
 
 在错误信息中精确定位。
 
+## 编译器核心：八个概念的边界（v0.3 定稿）
+
+共识：Cage 最大的风险不是功能不够，而是编译器核心模型的边界模糊——
+`Schema / Canonical Model / IR / Validation Context / Dependency Graph /
+Profile / Snapshot / Manifest` 八个概念一旦稳定，Excel/CSV/JSON/YAML 与
+C#/Lua/C++/Python/Protobuf 都只是插件。本章把每个概念的归属与死线写死，
+下面的插件模型与全部 Target 都在这张表之上工作。
+
+### 概念边界表
+
+| 概念 | 定义 | 承载类型 | 生产 → 消费 | 边界禁令 |
+| --- | --- | --- | --- | --- |
+| Schema | 配置的结构与约束定义（编译期输入） | `Schema` / `ValidatedSchema`（cage-core::schema） | 用户书写 → Validation、Target 消费 | 不读数据文件；不携带运行时值 |
+| Canonical Model | 数据在 Cage 世界的语义模型 | `Value` / `TypedValue` / `Document`（cage-core::value，含 SourceLocation） | Source 生产 → Validation / Normalize / Target 消费 | 不直接等同任何文件格式；Source 只把它读懂，Target 只读它 |
+| IR | 归一化后的 Canonical。v0.3 定界：与 Canonical 同构，不设独立类型 | 即 Canonical（归一化 `Document` + `Schema`） | Normalize 生产 → Target 消费 | Target 不得回读 Source 文件；IR 阶段不重新验证 |
+| Validation Context | 验证执行期的游标与现场 | `ValidationContext`（current_table / current_row / current_field / schema…） | Validation 生产 → Diagnostics 消费 | 验证不产出产物、不修改数据；Target 不重复验证 |
+| Dependency Graph | 表间引用的拓扑与增量规划 | `DependencyGraph` / `IncrementalPlanner`（cage-core::reference） | Reference（L5）生产 → 增量构建消费 | 图是编译结果不是运行时数据；未接线前不参与构建决策 |
+| Profile | 面向消费端的裁剪视图 | `BuildProfile`（cage-core::manifest）+ profile 过滤 | 用户配置 → 裁剪 Schema + Document → Validation / Target | 过滤是起点不是终点：语义落地面见差距表 |
+| Manifest | 构建产物的账本与输入指纹 | `BuildManifest` / `ArtifactInfo`（cage-core::manifest） | ManifestGenerator 生产 → verify / 增量 / 部署 / 回滚消费 | 只记账不生成；与产物一同落盘、随产物验证 |
+| Snapshot | 可独立加载的配置快照（规划中） | —（未实装，见差距表） | 构建生产 → 服务器 / 客户端启动加载校验 | 快照自带校验信息，不依赖构建机现场 |
+
+### 为什么 IR 不拆独立类型（v0.3 决策）
+
+评审原型设想 IR ≈ `CompiledItemTable { schema_id, table_id, fields, values,
+references, normalized_types, visibility, dependencies }`。对照现状：
+
+- normalize（cage-core/src/normalize/mod.rs：`normalize_document` /
+  `normalize_typed_value` / `normalize_value`）是 Canonical → Canonical 的纯
+  变换，产出仍是 Document / TypedValue / Value 类型；
+- 全部 10 个 target 的入口要么是 `(Schema, Document)`（数据 target），要么是
+  `(Schema, schema_hash)`（代码 target——类型与元数据全来自 Schema，数据不参与
+  代码生成）。target 面已经按 IR 视角消费，且结构性满足「不得读 Source」。
+
+现阶段拆独立 IR 类型只会引入双份形状与无谓的转换/测试面。定界：IR 与
+Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**：当校验面与
+产物面形状开始分歧（per-profile 裁剪固化、visibility 折叠、产物需要编译期
+预计算的派生形状）时，再以 Compiled IR 收敛——拆分点已预留，不做先行设计。
+
+### 现状与差距（逐概念核对，2026-10）
+
+| 概念 | 现状 | 差距 / 下一步 |
+| --- | --- | --- |
+| Schema | 已实装：19 种字段类型（含 Map）、引用、唯一约束、字段级 `targets` 可见性、19 错误码族 | 字段可见性冲突语义（E9006）仅码表、无调用点 |
+| Canonical Model | 已实装：value.rs 全类型 + SourceLocation | — |
+| IR | 定界完成（见上） | 派生形状需求出现时拆 Compiled IR |
+| Validation Context | 已实装：schema/mod.rs（schema / current_table / current_row / current_field …） | — |
+| Dependency Graph | 核心已实装：reference/mod.rs `DependencyGraph`（环检测 / 拓扑）+ `IncrementalPlanner`，测试先行 | **构建路径未接线**：cli 构造 ValidatedSchema 时 `dependency_graph` 恒 `DependencyGraph::default()` 占位；增量第二层（按依赖传播只重建受影响表）依赖此接线 |
+| Profile | 已实装第一层：表 + 字段双层面板过滤（同时裁剪 Schema 与 Document，validation 前执行） | profile 不感知校验 / 安全语义：server-only 字段只有过滤落盘、无泄漏拦截；E9006 待实装 |
+| Manifest | 已实装：7 顶层字段（project / profile / cage_version / schema_hash / source_hash / content_hash / artifacts）+ artifact 级 6 字段 | 缺 build_id / dependencies / generator_version（现以 cage_version 兼任）；ir_hash 随 IR 定界省略 |
+| Snapshot | 未实装 | 规划：snapshot/ = manifest + schema + 数据 + 生成物 + 校验清单，服务器启动加载即校 |
+
+### 评审对照修正（2026-10 外部评审）
+
+| 评审项 | 评审评级 | 代码核对结论 |
+| --- | --- | --- |
+| IR | ⭐⭐⭐ | 定界后归入 Canonical，见「为什么 IR 不拆独立类型」 |
+| Dependency Graph | ⭐⭐ | 核心已实装（环检测 / 拓扑 / 增量规划），差构建路径接线——应读作核心 4/5、接线 0/5 |
+| Incremental Build | ⭐⭐ | 第一层（整轮哈希跳过）已实装；第二层（按依赖传播）待 DG 接线 |
+| Snapshot | ⭐⭐ | 未实装（规划中） |
+| Profile | ⭐⭐⭐⭐ | 过滤已实装；校验 / 安全 / 可见性冲突语义为下一步 |
+| Manifest | — | 字段基本齐，差 build_id / dependencies 两个账本字段 |
+| Diagnostics | ⭐⭐⭐⭐⭐ | 确认：L0-L7 全错误码族、行级定位 + hint、E1601 端到端 |
+| Deterministic Build | ⭐⭐⭐⭐⭐ | 确认：同输入字节一致由 golden 测试锁定 |
+
 ## 插件模型
 
 Cage 的核心应该尽量稳定：
