@@ -100,27 +100,30 @@ SQLite
 Data Targets（数据序列化）：
 
 ```text
-JSON
-CSV
-YAML
-MessagePack
-Protobuf
-FlatBuffers
-Binary
+JSON            ← 已实装
+CSV             ← 已实装
+YAML            ← 规划
+MessagePack     ← 规划
+Protobuf        ← 规划
+FlatBuffers     ← 规划
+Binary          ← 规划
 ```
 
 Code Targets（代码生成）：
 
 ```text
-C#
-Python
-Lua
-TypeScript
-JavaScript
-C++
-Go
-Java
+C#              ← 已实装
+Python          ← 已实装
+Lua             ← 已实装
+TypeScript      ← 已实装
+JavaScript      ← 已实装
+C++             ← 已实装
+Go              ← 已实装
+Java            ← 已实装
 ```
+
+（「规划」项不在 `format =` 支持范围内，构建报
+`unsupported target format '<fmt>'` 并以退出码 2 失败。）
 
 Code Target 的生成方式（直接渲染，而非 AST / 模板引擎）及其选型理由见
 仓库设计稿 `docs/design.md` 的 Code Targets 章节（plan → render → verify
@@ -224,12 +227,12 @@ enums_file = "cage_enums.lua" # 默认 cage_enums.lua
 
 每个表模块导出：
 
-- `M.name` / `M.description` / `M.primary_key` —— 元信息
-- `M.fields` —— 字段元数据列表（名序：`name` 原 schema 名、`key` 归一后的
+- `M.name` / `M.description` / `M.primary_key`：元信息
+- `M.fields`：字段元数据列表（名序：`name` 原 schema 名、`key` 归一后的
   Lua 键、`type` 类型标签、`required`），约束摘要以注释形式保留
-- `M.defaults` —— 可渲染的 Schema 默认值表（对象/不匹配类型/非有限浮点
+- `M.defaults`：可渲染的 Schema 默认值表（对象/不匹配类型/非有限浮点
   无 Lua 字面量，跳过）
-- `M.new(t)` —— 行构造器：调用方字段优先，缺失字段回退 `M.defaults`
+- `M.new(t)`：行构造器，调用方字段优先，缺失字段回退 `M.defaults`
   （数组默认值复制填充，行与行不共享状态）
 
 生成规则要点：
@@ -403,27 +406,28 @@ enums_file = "CageEnums.java"  # 默认 CageEnums.java
 
 ## Profile：前端 / 后端
 
-不要把「客户端」和「服务端」写死在 Core。可以定义 Build Profile：
+不要把「客户端」和「服务端」写死在 Core。可以定义 Build Profile（真实
+句法见 [CLI: build](/cli#build)，工程配置 `cage.toml`）：
 
-```yaml
-profile: client
+```toml
+[profiles.client]
+name = "client"
 
-targets:
-  - json
-  - csv
-  - csharp
-```
+[[profiles.client.targets]]    # JSON + CSV 数据产物
+format = "json"
+output_dir = "build/client/json"
 
-服务端：
+[[profiles.client.targets]]    # C# 代码绑定
+format = "csharp"
+output_dir = "build/cs"
+file_template = "{table}.cs"
 
-```yaml
-profile: server
+[profiles.server]
+name = "server"
 
-targets:
-  - json
-  - csv
-  - python
-  - lua
+[[profiles.server.targets]]    # 服务端语言组合
+format = "python"
+output_dir = "build/python"
 ```
 
 然后：

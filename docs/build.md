@@ -45,9 +45,13 @@ Build(A) == Build(A)
   "project": "game",
   "profile": "client",
   "cage_version": "0.1.0",
+  "generator_version": "1.0.0",
+  "build_id": "...",
   "schema_hash": "...",
   "source_hash": "...",
   "content_hash": "...",
+  "dependencies": { "Monster": ["DropTable"], "DropTable": ["Item"] },
+  "table_hashes": { "Item": "...", "DropTable": "...", "Monster": "..." },
   "artifacts": {
     "item.json": { "path": "item.json", "hash": "...", "size": 123, "format": "json", "table": "Item", "encoding": "utf-8" }
   }
@@ -66,7 +70,8 @@ Build(A) == Build(A)
 | `source_hash` | 已实装 | Blake3，覆盖全部源内容 |
 | `content_hash` | 已实装 | Blake3，覆盖全部产物字节 |
 | `artifacts` | 已实装 | 每产物 path / hash / size / format / table / encoding |
-| `dependencies` | 待补 | 表间依赖清单（依赖图接线后由 ManifestGenerator 落账） |
+| `dependencies` | 已实装 | 表间引用账：`表 -> 引用表名有序列表`（L5 依赖图接线后由 ManifestGenerator 落账，D2；旧 manifest 缺字段经 serde(default) 兼容） |
+| `table_hashes` | 已实装 | 每表行级指纹（增量第二层变更检测） |
 | `ir_hash` | 随 IR 定界省略 | IR 与 Canonical 同构（见架构文档），以 schema_hash + source_hash 覆盖 |
 
 用途：
@@ -179,8 +184,9 @@ Dependency Graph 传播 → 受影响表
 
 ## Configuration Snapshot（v0.3 实装）
 
-Cage 的最终产物不只是零散的 JSON 文件，而是可独立加载、自带校验的
-**Configuration Snapshot**（八个概念 #7，格式定义在 cage_core::snapshot）：
+构建产物不止零散 JSON：`cage snapshot` 把 profile 视图打包成可独立
+加载、自带校验的 **Configuration Snapshot**（八个概念 #7，格式定义在
+cage_core::snapshot）：
 
 ```text
 build/snapshot/<profile>-<build_id[..12]>/
@@ -219,39 +225,29 @@ load configuration
 `content_hash` 已涵盖产物整体指纹，作为账本中的交叉字段带上。整目录的
 值传递：篡改任一文件、增删任一文件都会在校验时暴露。
 
-快照自带校验信息、不依赖构建机现场——与 runtime 配置体系（见
-[Configuration Registry](#configuration-registry)）互为正反两面：前者是产物
-形态，后者是运行时遥测与发布面。
+快照自带校验信息、不依赖构建机现场。它与 runtime 侧的
+[Configuration Registry](#configuration-registry) 分工明确：前者管产物
+形态，后者管多版本分发与回滚。
 
-## Configuration Registry
+## Configuration Registry（R1–R4 已实装，design §29）
 
-后期可以增加远程配置仓库（第三阶段）：
+注册表把上面的可独立加载快照升级为**多版本配置仓库**：同一包可共存多
+个版本的[自校验快照](/cli#registry)（`<registry>/<包>/<版本>/` 即一枚
+Snapshot，逐文件 blake3 账本），包目录附确定性 `index.json`（版本序 / 
+build_id / content_hash / 文件数），消费方经 `registry:<包>[@<版本>]`
+载入条目——「未经校验不入册、未经校验不载入」。
 
-```text
-Cage Registry
-```
+首签 R1 本地发布/解析后，R 系列持续推进：
 
-存储：
+- R2 `[dependencies]` 版本 pin（比较符区间 / `^` / `~`）与
+  `schema_path: registry:` 解析；
+- R3 远程 http(s) 根只读解析（匿名 GET 三资源 + 项目内
+  `.cage-cache` 缓存、离线复用）；
+- R4 全册 `verify` 审计、滚动窗口 `gc`、显式 `remove` 与同字节重发。
 
-```text
-Schema
-Source Metadata
-Build Manifest
-Artifacts
-Hash
-Version
-```
-
-例如：
-
-```text
-game-config/
-    v1.0.0/
-    v1.1.0/
-    v1.2.0/
-```
-
-Registry 不进入 MVP。
+命令、配置句法与回滚纪律见 [CLI：registry](/cli#registry)；
+协议与错误码见 [design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry) 与
+[validation.md E180x](/validation#registry配置仓库第三阶段-r-系列)。
 
 ## CI/CD
 
@@ -288,4 +284,4 @@ cage build --profile client
 cage build --profile server
 ```
 
-任何配置错误都在进入游戏之前失败。本仓库自身由 CI 门禁（全测试绿）与每日构建守护，`warnings_as_errors` 策略见 [Validation：Warning Policy](/validation#warning-policy)。
+配置错误在 CI 里先失败，不带进游戏。本仓库自身由 CI 门禁（全测试绿）与每日构建守护，`warnings_as_errors` 策略见 [Validation：Warning Policy](/validation#warning-policy)。

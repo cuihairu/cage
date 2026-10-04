@@ -43,6 +43,9 @@ Authoring Sources
              ...
 ```
 
+图中 Protobuf 为规划项；当前已实装 JSON / CSV 数据产物与 C# / Python /
+Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定。
+
 ## 为什么需要 Cage
 
 游戏项目中的配置通常同时服务于：
@@ -226,7 +229,7 @@ C#/Lua/C++/Python/Protobuf 都只是插件。本章把每个概念的归属与�
 | Dependency Graph | 表间引用的拓扑与增量规划 | `DependencyGraph` / `IncrementalPlanner`（cage-core::reference） | Reference（L5）生产 → 增量构建消费 | 图是编译结果不是运行时数据；未接线前不参与构建决策 |
 | Profile | 面向消费端的裁剪视图 | `BuildProfile`（cage-core::manifest）+ profile 过滤 | 用户配置 → 裁剪 Schema + Document → Validation / Target | 过滤是起点不是终点：语义落地面见差距表 |
 | Manifest | 构建产物的账本与输入指纹 | `BuildManifest` / `ArtifactInfo`（cage-core::manifest） | ManifestGenerator 生产 → verify / 增量 / 部署 / 回滚消费 | 只记账不生成；与产物一同落盘、随产物验证 |
-| Snapshot | 可独立加载的配置快照（规划中） | —（未实装，见差距表） | 构建生产 → 服务器 / 客户端启动加载校验 | 快照自带校验信息，不依赖构建机现场 |
+| Snapshot | 可独立加载的配置快照（D5 已实装） | `snapshot_files` / `verify_snapshot` / `load`（cage-core::snapshot） | 构建生产 → 服务器 / 客户端启动加载校验 | 快照自带校验信息，不依赖构建机现场 |
 
 ### 为什么 IR 不拆独立类型（v0.3 决策）
 
@@ -260,16 +263,16 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 
 ### 评审对照修正（2026-10 外部评审）
 
-| 评审项 | 评审评级 | 代码核对结论 |
+| 评审项 | 评审评级（5 分制） | 代码核对结论 |
 | --- | --- | --- |
-| IR | ⭐⭐⭐ | 定界后归入 Canonical，见「为什么 IR 不拆独立类型」 |
-| Dependency Graph | ⭐⭐ | 已闭合（D2）：核心 + 构建接线 + 增量第二层 + manifest 账本（依赖/表哈希） |
-| Incremental Build | ⭐⭐ | 已闭合（D2）：第一层整轮跳过 + 第二层依赖传播只重建受影响表（携带字节与全量一致、manifest 收敛）；删除表回退全量 |
-| Snapshot | ⭐⭐ | 已闭合（D5）：`cage snapshot` 打包 + `--verify` 校验 + core verify/load 服务器入口；确定性目录名（build_id 指纹，弃日期命名） |
-| Profile | ⭐⭐⭐⭐ | 已闭合（D3）：过滤 + E9006 冲突语义 + profile 感知校验上下文；校验全库、profile 只裁剪产物视图 |
+| IR | 3 | 定界后归入 Canonical，见「为什么 IR 不拆独立类型」 |
+| Dependency Graph | 2 | 已闭合（D2）：核心 + 构建接线 + 增量第二层 + manifest 账本（依赖/表哈希） |
+| Incremental Build | 2 | 已闭合（D2）：第一层整轮跳过 + 第二层依赖传播只重建受影响表（携带字节与全量一致、manifest 收敛）；删除表回退全量 |
+| Snapshot | 2 | 已闭合（D5）：`cage snapshot` 打包 + `--verify` 校验 + core verify/load 服务器入口；确定性目录名（build_id 指纹，弃日期命名） |
+| Profile | 4 | 已闭合（D3）：过滤 + E9006 冲突语义 + profile 感知校验上下文；校验全库、profile 只裁剪产物视图 |
 | Manifest | — | 建议评级（D4）：build_id / generator_version / dependencies / table_hashes 已落，前 24 位 blake3 确定性指纹替代时间戳 |
-| Diagnostics | ⭐⭐⭐⭐⭐ | 确认：L0-L7 全错误码族、行级定位 + hint、E1601 端到端 |
-| Deterministic Build | ⭐⭐⭐⭐⭐ | 确认：同输入字节一致由 golden 测试锁定 |
+| Diagnostics | 5 | 确认：L0-L7 全错误码族、行级定位 + hint、E1601 端到端 |
+| Deterministic Build | 5 | 确认：同输入字节一致由 golden 测试锁定 |
 
 ## 插件模型
 
@@ -304,10 +307,14 @@ cage/
 │   │       ├── value/           # Canonical Model（Value + Source Location）
 │   │       ├── schema/          # Schema 定义与解析
 │   │       ├── diagnostics/     # 诊断框架（错误码 / 定位 / 渲染）
+│   │       ├── error/           # 错误码全表（E0xxx~E99xx 分族常量）
 │   │       ├── validation/      # L0-L7 验证流水线
-│   │       ├── reference/       # 跨配置引用
+│   │       ├── reference/       # 跨配置引用 + DependencyGraph / IncrementalPlanner
 │   │       ├── normalize/       # 归一化
-│   │       └── manifest/        # Build Manifest
+│   │       ├── manifest/        # Build Manifest
+│   │       ├── snapshot/        # Configuration Snapshot（打包 / 校验 / 加载）
+│   │       ├── edit/            # Schema ↔ 编辑器交换模型（W1）
+│   │       └── registry.rs      # Configuration Registry（发布 / 解析 / 审计，R1-R4）
 │   ├── cage-source-excel/   # Excel 输入源（calamine）
 │   ├── cage-source-csv/     # CSV 输入源
 │   ├── cage-source-json/    # JSON 输入源
@@ -321,7 +328,8 @@ cage/
 │   ├── cage-target-cpp/     # C++ 代码绑定
 │   ├── cage-target-go/      # Go 代码绑定
 │   ├── cage-target-java/    # Java 代码绑定
-│   └── cage-cli/            # cage 命令行（check / build / gen / inspect / diff）
+│   └── cage-cli/            # cage 命令行（check / build / gen / inspect / diff /
+│                            #   snapshot / web / registry，含远程注册表解析）
 ├── docs/                    # 本文档站（VitePress）
 └── .github/workflows/       # CI / 每日构建 / 文档部署
 ```
@@ -413,9 +421,7 @@ Validated Model
   +--> ...
 ```
 
-所以 Cage 的价值不是「转换」，而是：
-
-> **建立一条可靠的配置编译链。**
+转换之外，Cage 建立的是一条配置编译链：校验、跨配置引用、规范化与确定性构建都在这条链上完成。
 
 ## 命名：Casino Cage 隐喻
 
@@ -455,9 +461,7 @@ Cage
 Runtime Assets
 ```
 
-所以它不是「Excel 转换器」，而更像：
-
-> **配置进入运行时世界之前的兑换与清算边界。**
+所以它更像配置进入运行时世界之前的兑换与清算边界：
 
 赌场里的 Cage 不关心你最后玩 Poker、Blackjack 还是 Baccarat；同样，Cage 不应该关心配置最终服务 Unity、Cocos、Unreal、Game Server 还是工具。它只负责：
 
@@ -554,15 +558,18 @@ Excel CSV JSON YAML               |                 Client       Server
                          Manifest / Hash / CI
 ```
 
-## 结论
+图中 Protobuf / MsgPack / Binary 分支为规划项，不在当前 `format =` 支持
+范围内（构建会以 `unsupported target format` 退出码 2 拒绝）。
 
-Cage 最应该建立的抽象不是：
+## Source 与 Target 之外的 Core
+
+Cage 的核心抽象不是某一对格式之间的转换：
 
 ```text
 Excel -> JSON
 ```
 
-而是：
+而是中间这条链：
 
 ```text
                  Any Source
@@ -580,7 +587,8 @@ Excel -> JSON
                Any Target
 ```
 
-**Excel、CSV、YAML、JSON 只是 Source；JSON、CSV、C#、Python、Lua、Protobuf 等只是 Target。**
+Excel、CSV、YAML、JSON 只是 Source；JSON、CSV、C#、Python、Lua 只是
+已实装的 Target，Protobuf 等为规划项。
 
 真正属于 Cage Core 的，是中间这部分：
 

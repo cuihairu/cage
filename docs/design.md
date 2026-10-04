@@ -1135,10 +1135,10 @@ verify（dev-only：tsc / javac / g++ / gofmt 回验产物，不进 CI 依赖）
 为什么不是各语言官方 AST 库 + printer：
 
 - **构建依赖**：TypeScript compiler API / javac TreeMaker / go/ast 意味着
-  一个纯 Rust workspace 得背上 Node / JDK / Go 工具链，CI 失去零外部依赖
+  一个纯 Rust workspace 得背上 Node / JDK / Go 工具链
 - **确定性死穴**：AST printer 跟随版本演进，格式化器升级即输出字节变化，
   manifest 哈希 / golden 字节比对 / 增量构建跳过全部失效
-- **API 错位**：这些 API 为改写已有代码（重构、rename）设计，从零造声明
+- **API 错位**：这些 API 为改写已有代码（重构、rename）设计，手工拼声明
   反而更繁琐（javac JCTree 造一个字段声明远贵于写一行文本）
 
 为什么不是模板引擎（Handlebars/Tera 一类）：声明式绑定的输出面固定
@@ -1511,7 +1511,7 @@ cage build --profile client
 cage build --profile server
 ```
 
-任何配置错误都在进入游戏之前失败。
+配置错误在 CI 里先失败，不带进游戏。
 
 ---
 
@@ -1755,23 +1755,23 @@ Artifact Distribution
 
 Cage 不应该变成：
 
-### ❌ Excel 编辑器
+### Excel 编辑器
 
 Excel 本身已经是成熟的 Authoring Tool。
 
-### ❌ 游戏数据库
+### 游戏数据库
 
 Cage 构建配置，不负责成为游戏运行时数据库。
 
-### ❌ Secret Manager
+### Secret Manager
 
 密码、Token、Key 不属于普通游戏配置。
 
-### ❌ 游戏逻辑框架
+### 游戏逻辑框架
 
 Cage 可以验证业务规则，但不应该成为游戏服务器逻辑框架。
 
-### ❌ 强绑定某一个游戏引擎
+### 强绑定某一个游戏引擎
 
 不绑定：
 

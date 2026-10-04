@@ -8,16 +8,17 @@ cage build
 cage gen
 cage inspect
 cage diff
-cage verify
-cage graph
+cage snapshot
 cage web
 cage registry
 ```
 
-MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`gen` / `graph` 为
-第二阶段（均已实装），`verify` 仍为第二阶段，`web` 为第三阶段
-（Schema 编辑器本地服务），`registry` 为第三阶段 R 系列
-（本地 Configuration Registry 发布/列表）。
+MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`gen` / `snapshot`
+为第二阶段（均已实装），`web` 为第三阶段（Schema 编辑器本地服务），
+`registry` 为第三阶段 R 系列（本地 Configuration Registry 发布/列表，
+R1–R4 均已实装）。`cage verify runtime/`（验证已生成产物）与
+`cage graph`（读依赖图）在 [design §30](https://github.com/cuihairu/cage/blob/main/docs/design.md#30-cli) 是规划命令，
+尚未实装：配置依赖图经 `cage build --incremental` 实时参与构建决策。
 
 ## check
 
@@ -54,7 +55,7 @@ cage gen config/ --profile server
 
 只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java](/target#code-targets-与-data-targets-分离)），
 不跑数据校验：代码生成是 Schema 驱动的，类型与元数据全部来自 Schema，
-不依赖配置行数据。Profile 里的数据类 Target（json/csv）会被跳过——需要
+不依赖配置行数据。Profile 里的数据类 Target（json/csv）会被跳过，需要
 数据产物时用 `cage build`。产物同样写入 Build Manifest（与 build 同一口
 径），后写者胜。
 
@@ -74,21 +75,38 @@ cage diff build/a build/b
 
 比较两个配置版本。
 
-## verify
+## snapshot
+
+```bash
+cage snapshot <project> --profile client    # 构建 + 打包自校验快照
+cage snapshot <snapshot-dir> --verify       # 载入前校验（服务器入口）
+```
+
+打包[Configuration Snapshot](/build#configuration-snapshot)：把 profile
+构建产物打成可独立加载、自带 blake3 账本的目录
+`<output_dir>/snapshot/<profile>-<build_id[..12]>`（manifest.json /
+schema.json / data/ / generated/ / HASHES.json），构建后自校验。`--verify` 对既有快照
+目录载入前校验：逐文件重哈希比对，篡改/增删文件逐条列出并以退出码 1
+失败。`--profile` 默认 `client`。
+
+## verify（规划中）
 
 ```bash
 cage verify runtime/
 ```
 
-验证已经生成的 Artifact（第二阶段）。
+验证已经生成的 Artifact。尚未实装，已生成产物的校验由
+[`cage snapshot <dir> --verify`](#snapshot) 承担。
 
-## graph
+## graph（规划中）
 
 ```bash
 cage graph
 ```
 
-输出[配置依赖图](/build#配置依赖图)（第二阶段）。
+输出[配置依赖图](/build#配置依赖图)。尚未实装独立命令，依赖图
+（环检测 / 拓扑序）由 `cage build --incremental` 消费，见
+[增量构建](/build#增量构建)。
 
 ## web
 
@@ -118,11 +136,11 @@ cage registry gc      --registry <dir> [--keep 3] [--dry-run]
 cage registry remove  <package> <version> --registry <dir> [--dry-run]
 ```
 
-本地 Configuration Registry（第三阶段 R 系列，[design §29](/design#29-configuration-registry)）。
+本地 Configuration Registry（第三阶段 R 系列，[design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)）。
 `publish` 全量构建 → 打包[自校验快照](/build#configuration-snapshot) → 账本
 校验通过后入册 `<registry>/<包>/<版本>/`（包默认 `project.name`、版本默认
 `project.version`）；同版本同字节重发是幂等 no-op，同版本异字节报
-`E1801` 版本冲突——注册表不改写历史。`list` 按确定性序列出包/版本/
+`E1801` 版本冲突：注册表不改写历史。`list` 按确定性序列出包/版本/
 build_id/content_hash/文件数。
 
 消费方在 cage.toml 里声明注册表根并引用包作为源根（R1 源解析）：
@@ -142,12 +160,12 @@ artifact 记录为准。
 
 Schema 侧同样可取自条目（R2）：`schema_path = "registry:common"` 读条目
 `schema.json`（发布时打包的 profile 投影 schema）。此时 schema 归发布方
-所有，`cage web` 的 POST /api/schema 对这类工程返回 409——改 schema 请在
+所有，`cage web` 的 POST /api/schema 对这类工程返回 409；改 schema 请在
 发布方工程改并重新 publish。
 
 ### 远程注册表（R3，只读）
 
-`[registry].path` 也可以是 HTTP(S) 根——解析走网络、发布仍限本地：
+`[registry].path` 也可以是 HTTP(S) 根：解析走网络、发布仍限本地。
 
 ```toml
 [registry]
@@ -159,7 +177,7 @@ path = "https://registry.example.com/config"   # http(s):// 前缀 = 远程根
 字节不可变。解析流程：取 index → 按 pin 选版本（规则与本地相同）→ 按
 账本逐文件下载并逐一校验 blake3（不符 → `E1803`）→ 落项目内缓存
 `.cage-cache/registry/<url 指纹>/` → 过 `verify_snapshot` 信任门才交付。
-缓存再校验干净则直接复用——首次在线拉取后**离线构建可用**（index 也有
+缓存再校验干净则直接复用，首次在线拉取后**离线构建可用**（index 也有
 本地副本兜底）；不可达且无缓存 → `E1802`。
 
 远程根只读：`cage registry publish` 与 `cage registry list` 对远程根报错
@@ -189,24 +207,22 @@ stages  = "1.2.3"        # 精确等于（裸版本 = 精确匹配）
 blake3 复核），并交叉核对 index.json 记录与条目账本的
 build_id/content_hash 一致（漂移 → `E1803`）；磁盘上有条目目录而
 index 无记录（中断的 remove/gc、手工改动）同样报 `E1803`。审计只读，
-发现问题逐条列出并以退出码 2 失败——「未经校验不入册」的对偶：
-**入册之后也可随时复审**。
+发现问题逐条列出并以退出码 2 失败。
 
-`cage registry gc` 落实多版本共存的 GC 策略：**滚动窗口**——每包保留
-最新 `--keep N`（默认 3，下限 1：注册表永不丢光历史）个版本，窗口外
-旧版删除并从 index 摘除，孤儿目录一并清扫。窗口即回滚面：消费方 pin
-住 `@1.0.0` 这类旧版本时仍能解析构建，gc 后被窗口挤出的版本则对消费
-方 `E1802`——收窄窗口前先确认没有消费方还 pin 在将被移除的版本上。
-`--dry-run` 报告完全相同的移除清单而不触碰注册表。
+`cage registry gc` 落实多版本共存的 GC 策略：**滚动窗口**，每包保留
+最新 `--keep N`（默认 3，下限 1，任何一次 GC 都给每包留下至少一个版本）
+个版本，窗口外旧版删除并从 index 摘除，孤儿目录一并清扫。窗口即回滚
+面：消费方 pin 住 `@1.0.0` 这类旧版本时仍能解析构建，gc 后被窗口挤出
+的版本则对消费方 `E1802`。收窄窗口前先确认没有消费方还 pin 在将被
+移除的版本上。`--dry-run` 报告完全相同的移除清单而不触碰注册表。
 
-条目移除/重新发布纪律：**移除必须是显式行政操作**
-（`cage registry remove <包> <版本>`），注册表自身绝不隐式改写历史
-（同版本异字节永远是 `E1801`）。remove 连版本目录带 index 记录一并
-删除（`--dry-run` 只校验存在性与名字合法性），包的 index 保留（即便
-变空）——显式移除后的版本槽位可用同字节快照重新 publish 干净入册，
-重发不是冲突；除此之外的同版本重发仍按版本冲突拒绝。verify / gc /
-remove 同 publish / list 一样只对本地注册表生效，远程根报 read-only
-错误退出。
+条目移除是显式行政操作（`cage registry remove <包> <版本>`），注册表
+自身不改写历史（同版本异字节一律 `E1801`）。remove 连版本目录带
+index 记录一并删除（`--dry-run` 只校验存在性与名字合法性），包的
+index 保留（即便变空）；显式移除后的版本槽位可用同字节快照重新
+publish 干净入册，重发不是冲突；除此之外的同版本重发仍按版本冲突拒绝。
+verify / gc / remove 同 publish / list 一样只对本地注册表生效，远程根
+报 read-only 错误退出。
 
 ## 快速开始
 

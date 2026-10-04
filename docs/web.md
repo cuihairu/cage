@@ -1,6 +1,6 @@
 # Web UI / Schema Editor（第三阶段）
 
-第三阶段第一项：为策划与程序提供 Schema 的 Web 编辑入口。红线不变——
+第三阶段第一项：为策划与程序提供 Schema 的 Web 编辑入口。红线不变：
 不做 Excel 编辑器、不做游戏逻辑框架；Web UI 只做 Schema 的门面，不做
 数据运行库。
 
@@ -15,7 +15,7 @@ Cage 的 CLI 是编译链事实接口；Web UI 是**同一核心的另一个门�
 
 ### 交换模型 = 现有 serde Canonical 形状
 
-编辑器文档就是 `Schema` 的 serde 形状——与 Configuration Snapshot 里
+编辑器文档就是 `Schema` 的 serde 形状，与 Configuration Snapshot 里
 的 `schema.json`、HTTP API 同一文档，一份文档三处消费：
 
 ```text
@@ -28,11 +28,11 @@ snapshot/schema.json  ≡  cage-core::edit::to_editor_json  ≡  HTTP GET /api/s
 ### 保存 = 规范化 YAML 单文件写回
 
 编辑器面向**合并后的规范 Schema**（cli 装载时把 schemas/ 下多文件合并
-成一张 `Schema`——编辑器即增值这一形态），保存写回为单文件 canonical
+成一张 `Schema`，编辑器即增值这一形态），保存写回为单文件 canonical
 YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行），
 经 `from_canonical_yaml` 回环幂等。多文件拆分是作者侧的持久化选择，
 编辑器不产生拆分产物。确定性契约：编辑器保存的 YAML 经 `cage build`
-得到的产物，与手写同一 Schema 构建的产物逐字节一致——生成器只见过
+得到的产物，与手写同一 Schema 构建的产物逐字节一致。生成器只见过
 `Schema` 值，编辑回环只要保值的即满足。
 
 ### E1701 编辑态错误族
@@ -40,20 +40,20 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 编辑文档无法反序列化为 `Schema`（语法/形状/未知 kind）报 **E1701**，
 铺 JSON 路径（`tables.Item.fields.id.type`）定位到具体输入（前端的
 高亮锚点）；schema 内部一致性（主键缺失、引用悬空）仍走 L1 的
-`E1004`——两类错误分开，编辑器与校验器各自汇报职责清晰。
+`E1004`。两类错误分开，编辑器与校验器各自汇报。
 
 ### 无 node 前端工具链
 
 前端是 `docs/public` 下静态单页（vanilla ES 模块），`cage web` 直接
-伺服——仓库不引入 Node/npm 构建链，cargo 一键即得编辑器。
+伺服。仓库不引入 Node/npm 构建链，cargo 一键即得编辑器。
 
 ## 现状
 
 ### W1 已实装：编辑器交换模型（cage-core::edit）
 
-- [x] `to_editor_json` / `from_editor_json`——Schema ↔ 编辑器 JSON；
+- [x] `to_editor_json` / `from_editor_json`：Schema ↔ 编辑器 JSON；
       解析失败 → `E1701`（JSON 路径定位，根级错误归一为无路径）
-- [x] `to_canonical_yaml` / `from_canonical_yaml`——确定性保存写回与回读
+- [x] `to_canonical_yaml` / `from_canonical_yaml`：确定性保存写回与回读
 - [x] 测试：编辑器 JSON round-trip 确定性、canonical YAML 幂等
       （再渲染字节不变）、E1701 路径定位（含未知 kind / 缺必填成员 /
       根级错误 / YAML 语法错误）、与 snapshot schema.json 形状一致；
@@ -64,13 +64,13 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 
 - [x] 项目装载复用 CLI 加载链（`load_project_config` / `load_schema`），
       只绑定 `127.0.0.1`，无鉴权（本地工具）
-- [x] `GET /api/schema`——合并 Schema 的编辑器文档 + 项目事实
+- [x] `GET /api/schema`：合并 Schema 的编辑器文档 + 项目事实
       （project / schema_path / profile_names / warnings_as_errors）；
       每请求重载，保存后立即可见
-- [x] `POST /api/validate`——编辑态校验：E1701（文档无法反序列化，
+- [x] `POST /api/validate`：编辑态校验。E1701（文档无法反序列化，
       JSON 路径定位）→ L1 一致性（E1004 族）；诊断以裸数组输出
       （`Diagnostics` serde 的 `{"items": [...]}` 壳在 API 层摊平）
-- [x] `POST /api/schema`——canonical YAML 写回：单文件 `schema_path`
+- [x] `POST /api/schema`：canonical YAML 写回。单文件 `schema_path`
       直接覆盖；目录（多文件 schema）→ 409 拒写（编辑器不重写
       作者侧拆分）；未配置 → 写 `schema.yaml` + note 提醒接线
       cage.toml（服务器绝不改配置文件）
@@ -101,7 +101,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       beforeunload 拦截；409（目录 schema_path）/ 未接线 note /
       500 均以错误 toast 呈现
 - [x] 外科手术式文档编辑：未知/遗留键（如 fuzzyField 的 items/properties
-      旧字段）原样保留，只改可控键——与「编辑器 JSON ≡ canonical 形状」的
+      旧字段）原样保留，只改可控键，与「编辑器 JSON ≡ canonical 形状」的
       交换契约一致；保存全程不经前端渲染 YAML
 - [x] 集成测试：GET / 返回嵌入编辑器页（含模块/样式引用）、/app.js、
       /app.css 伺服与 404；测试原始客户端补 chunked 解码
@@ -111,7 +111,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 
 - [x] `examples/web-demo/`：单文件 schema 冒烟工程（schema_path 指向
       schema.yaml；`[source_roots] main = "config"` 让示例表立即可
-      check/build）——「浏览器打开 → 编辑 → 校验 → 保存 → `cage build`
+      check/build）。「浏览器打开 → 编辑 → 校验 → 保存 → `cage build`
       复现」整条路径的最小闭环
 - [x] `examples/web-smoke.sh`：端到端冒烟脚本，在临时拷贝上运行（不脏
       仓库），真实命令逐条回显；任一步失败即 exit 非零。六步：基线

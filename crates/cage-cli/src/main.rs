@@ -146,7 +146,7 @@ enum Commands {
 #[derive(Subcommand)]
 enum RegistryCmd {
     /// Build a profile and publish its self-verifying snapshot into the
-    /// local registry as <package>/<version> (re-publishing byte-identical
+    /// local registry as `<package>/<version>` (re-publishing byte-identical
     /// content is an idempotent no-op; different bytes for the same version
     /// are an E1801 conflict)
     Publish {
@@ -161,13 +161,13 @@ enum RegistryCmd {
         /// Version to publish (defaults to project.version)
         #[arg(long)]
         version: Option<String>,
-        /// Registry root directory (overrides cage.toml [registry].path)
+        /// Registry root directory (overrides cage.toml `[registry].path`)
         #[arg(long)]
         registry: Option<PathBuf>,
     },
     /// List packages and versions recorded in the registry
     List {
-        /// Registry root directory (overrides cage.toml [registry].path)
+        /// Registry root directory (overrides cage.toml `[registry].path`)
         #[arg(long)]
         registry: Option<PathBuf>,
     },
@@ -176,7 +176,7 @@ enum RegistryCmd {
     /// matching the ledger), and no entry directory may sit on disk
     /// without an index record — findings are E1803
     Verify {
-        /// Registry root directory (overrides cage.toml [registry].path)
+        /// Registry root directory (overrides cage.toml `[registry].path`)
         #[arg(long)]
         registry: Option<PathBuf>,
     },
@@ -191,7 +191,7 @@ enum RegistryCmd {
         /// Report what would be removed without touching the registry
         #[arg(long)]
         dry_run: bool,
-        /// Registry root directory (overrides cage.toml [registry].path)
+        /// Registry root directory (overrides cage.toml `[registry].path`)
         #[arg(long)]
         registry: Option<PathBuf>,
     },
@@ -206,7 +206,7 @@ enum RegistryCmd {
         /// Report what would be removed without touching the registry
         #[arg(long)]
         dry_run: bool,
-        /// Registry root directory (overrides cage.toml [registry].path)
+        /// Registry root directory (overrides cage.toml `[registry].path`)
         #[arg(long)]
         registry: Option<PathBuf>,
     },
