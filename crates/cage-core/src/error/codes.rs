@@ -110,6 +110,14 @@ pub mod gamerule {
     pub const E1603: &str = "E1603";
 }
 
+/// Editor interchange errors (Web UI / Schema Editor, third phase)
+pub mod editor {
+    /// E1701 - Editor document does not parse into a Schema (malformed
+    /// editor JSON / canonical YAML; the editor interchange contract lives
+    /// in `cage_core::edit`)
+    pub const E1701: &str = "E1701";
+}
+
 /// Build/Transform errors (Target generation)
 pub mod build {
     /// E9001 - Target generator not found for format
@@ -184,6 +192,8 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         gamerule::E1601 => Some("Game Rule Validation Failed"),
         gamerule::E1602 => Some("Validator Plugin Not Found"),
         gamerule::E1603 => Some("Validator Plugin Execution Failed"),
+        // Editor
+        editor::E1701 => Some("Editor Interchange Invalid"),
         // Build
         build::E9001 => Some("Target Generator Not Found"),
         build::E9002 => Some("Target Generation Failed"),

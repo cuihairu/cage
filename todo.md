@@ -42,7 +42,24 @@
 - [x] CI 集成（warnings_as_errors、GitHub Actions 模板）
 
 ## 第三阶段（预排）
-- [ ] Web UI / Schema Editor
+
+### W 系列：Web UI / Schema Editor（2026-10 开工，预排落 docs/web.md）
+- [x] W1 编辑器交换模型（core）：`cage-core::edit`——Schema ↔ 编辑器
+      JSON（to_editor_json/from_editor_json，解析失败报 E1701 并铺
+      JSON 路径定位）与确定性 canonical YAML 保存写回/回读
+      （to_canonical_yaml/from_canonical_yaml，同 Schema 同字节、
+      回环幂等）；round-trip 与 E1701 路径测试；与 snapshot
+      schema.json 同一形状；错误码表入 validation.md
+- [ ] W2 `cage web` 本地服务（HTTP API）：项目装载（复用 cli 加载链）、
+      GET /api/schema（编辑器 JSON）、POST /api/validate（编辑态校验）、
+      POST /api/schema（canonical YAML 写回）；本地工具不鉴权；
+      集成测试 + README 入口
+- [ ] W3 Schema 编辑器前端（docs/public 静态单页，无 node 构建链）：
+      表/枚举树、19 字段类型、约束编辑、E 码诊断面板、保存
+- [ ] W4 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑→校验→
+      保存→cage build 复现）、CI 集成
+
+### 其余（预排）
 - [ ] Registry（远程配置仓库 + 版本）
 - [ ] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）
 - [ ] Artifact 分发与迁移

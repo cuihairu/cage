@@ -39,6 +39,7 @@
 )]
 
 pub mod diagnostics;
+pub mod edit;
 pub mod error;
 pub mod manifest;
 pub mod normalize;
