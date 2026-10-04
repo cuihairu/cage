@@ -9,11 +9,16 @@
 //! GET  /api/schema      → editor document of the merged schema (+ project)
 //! POST /api/validate    → E1701 / E1004 diagnostics for an edited document
 //! POST /api/schema      → save the canonical YAML (single-file schema only)
-//! GET  /                → landing page (W3 ships the real editor)
+//! GET  /                → the Schema editor page (W3, embedded below)
+//! GET  /app.js, /app.css→ editor assets
 //! ```
 //!
 //! The frontend never parses or renders YAML — `cage_core::edit` does the
 //! YAML↔JSON mapping, the server only moves bytes.
+//!
+//! The editor page is compiled into the binary from the `docs/public/editor/`
+//! sources (the single authoring copy; the docs site serves them too), so
+//! the shipped `cage` binary carries its editor — no Node toolchain.
 
 use crate::load_project_config;
 use crate::load_schema;
@@ -22,6 +27,12 @@ use cage_core::edit::{from_editor_json, to_canonical_yaml, to_editor_json};
 use cage_core::manifest::ProjectConfig;
 use cage_core::schema::Schema;
 use std::path::{Path, PathBuf};
+
+/// W3 editor page and assets, embedded at compile time from the docs-site
+/// copy of the sources (include! resolves relative to this file).
+const EDITOR_INDEX: &str = include_str!("../../../docs/public/editor/index.html");
+const EDITOR_APP_JS: &str = include_str!("../../../docs/public/editor/app.js");
+const EDITOR_APP_CSS: &str = include_str!("../../../docs/public/editor/app.css");
 
 /// Serve the editor API for a project root until killed (Ctrl+C).
 pub fn run_web(root: &Path, port: u16) -> Result<(), String> {
@@ -74,7 +85,17 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
             let (status, value) = api_save(ctx, &body);
             json_response(status, &value)
         }
-        (tiny_http::Method::Get, "") => html_response(200, landing_page()),
+        (tiny_http::Method::Get, "" | "/index.html") => {
+            text_response(200, "text/html; charset=utf-8", EDITOR_INDEX.to_string())
+        }
+        (tiny_http::Method::Get, "/app.js") => text_response(
+            200,
+            "text/javascript; charset=utf-8",
+            EDITOR_APP_JS.to_string(),
+        ),
+        (tiny_http::Method::Get, "/app.css") => {
+            text_response(200, "text/css; charset=utf-8", EDITOR_APP_CSS.to_string())
+        }
         (tiny_http::Method::Get, "/favicon.ico") => html_response(404, "not found".to_string()),
         _ => json_response(404, &serde_json::json!({"ok": false, "error": "not found"})),
     };
@@ -98,13 +119,22 @@ fn json_response(
         )
 }
 
-fn html_response(status: u16, html: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-    tiny_http::Response::from_string(html)
+/// Text response with an explicit content type (editor page and assets).
+fn text_response(
+    status: u16,
+    mime: &str,
+    text: String,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    tiny_http::Response::from_string(text)
         .with_status_code(status)
         .with_header(
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes())
                 .expect("static header"),
         )
+}
+
+fn html_response(status: u16, html: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    text_response(status, "text/html; charset=utf-8", html)
 }
 
 /// GET /api/schema — merged schema as the editor document plus the project
@@ -213,23 +243,6 @@ fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
         );
     }
     (200, payload)
-}
-
-/// Landing page — the W3 editor replaces this; the API contract is
-/// already final.
-fn landing_page() -> String {
-    r#"<!DOCTYPE html>
-<html lang="zh">
-<head><meta charset="utf-8"><title>cage web</title></head>
-<body>
-<h1>cage web</h1>
-<p>Schema 编辑器 API 服务已启动（W3 将在此提供编辑器界面）。</p>
-<pre>GET  /api/schema    → 合并 Schema 的编辑器文档
-POST /api/validate  → 编辑态校验（E1701 / E1004 诊断）
-POST /api/schema    → 保存回环 canonical YAML</pre>
-</body>
-</html>"#
-        .to_string()
 }
 
 fn json(v: &serde_json::Value) -> String {

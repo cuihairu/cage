@@ -60,4 +60,4 @@ cage inspect Item                    # 查看 Schema 与配置结构
 - [架构](/architecture)——定位、核心概念、插件模型与工程结构
 - [Source](/source) / [Schema](/schema) / [Validation](/validation) / [Target](/target)——数据管线四阶段
 - [CLI](/cli) / [Build](/build)——命令行与确定性构建
-- [Web UI](/web)——第三阶段：Schema 编辑器（交换模型 W1、本地服务 W2 已实装）
+- [Web UI](/web)——第三阶段：Schema 编辑器（交换模型 W1、本地服务 W2、编辑器界面 W3 已实装）

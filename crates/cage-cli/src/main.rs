@@ -126,7 +126,7 @@ enum Commands {
         #[arg(long)]
         verify: bool,
     },
-    /// Serve the local HTTP API for the Schema editor (third phase W2)
+    /// Serve the local Schema editor (third phase W3): editor page + HTTP API
     Web {
         /// Configuration project root directory
         path: PathBuf,

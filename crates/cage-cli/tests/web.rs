@@ -68,7 +68,10 @@ fn start_server(root: &Path) -> Server {
     panic!("cage web did not come up on port {port}");
 }
 
-/// One raw HTTP exchange against the loopback server.
+/// One raw HTTP exchange against the loopback server. Reads the response as
+/// bytes and decodes chunked transfer encoding — tiny_http switches to
+/// chunked for larger bodies (like the embedded editor bundle), and a
+/// chunk boundary can land inside a multi-byte UTF-8 sequence.
 fn request(port: u16, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     let len = body.map(str::len).unwrap_or(0);
@@ -81,19 +84,56 @@ fn request(port: u16, method: &str, path: &str, body: Option<&str>) -> (u16, Str
         stream.write_all(b.as_bytes()).expect("write body");
     }
     stream.shutdown(Shutdown::Write).expect("shutdown");
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).expect("read response");
-    let status: u16 = raw
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).expect("read response");
+
+    let head_end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(raw.len());
+    let head = String::from_utf8_lossy(&raw[..head_end]);
+    let status: u16 = head
         .split_whitespace()
         .nth(1)
         .expect("status line")
         .parse()
         .expect("numeric status");
-    let body = raw
-        .split_once("\r\n\r\n")
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_default();
+    let mut payload = &raw[head_end + 4..];
+    let chunked;
+    if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        chunked = decode_chunked(payload);
+        payload = &chunked;
+    }
+    let body = String::from_utf8(payload.to_vec()).expect("utf-8 body");
     (status, body)
+}
+
+/// Strip one chunked-encoding framing block (`<hex-size>\r\n<data>\r\n...`,
+/// terminated by a zero-size chunk), returning the payload bytes.
+fn decode_chunked(raw: &[u8]) -> Vec<u8> {
+    let mut rest = raw;
+    let mut out = Vec::new();
+    loop {
+        let nl = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .expect("chunk size line");
+        let size = usize::from_str_radix(
+            std::str::from_utf8(&rest[..nl]).expect("chunk size is ascii"),
+            16,
+        )
+        .expect("chunk size is hex");
+        rest = &rest[nl + 2..];
+        if size == 0 {
+            break;
+        }
+        out.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..]; // per-chunk trailing CRLF
+    }
+    out
 }
 
 fn json(body: &str) -> serde_json::Value {
@@ -198,15 +238,49 @@ fn web_serves_editor_document() {
         serde_json::json!(["id"])
     );
 
-    // Landing page answers too.
-    let (status, body) = request(server.port, "GET", "/", None);
-    assert_eq!(status, 200);
-    assert!(body.contains("cage web"), "body: {body}");
-
     // Unknown routes are 404 JSON.
     let (status, body) = request(server.port, "GET", "/api/nope", None);
     assert_eq!(status, 404);
     assert_eq!(json(&body)["ok"], false);
+}
+
+#[test]
+fn web_serves_editor_page_and_assets() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let server = start_server(tmp.path());
+
+    // GET / serves the embedded editor page (W3) — the single-page app the
+    // browser loads at the server root, same origin as the API (no CORS).
+    let (status, body) = request(server.port, "GET", "/", None);
+    assert_eq!(status, 200, "editor page must serve at the root");
+    assert!(body.contains("Schema 编辑器"), "body: {body}");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains(r#"src="./app.js""#),
+        "the page must load its module: {body}"
+    );
+    assert!(
+        body.contains(r#"href="./app.css""#),
+        "the page must load its stylesheet: {body}"
+    );
+
+    // Assets are embedded and served with the right media types.
+    let (status, body) = request(server.port, "GET", "/app.js", None);
+    assert_eq!(status, 200, "editor module must be served");
+    assert!(
+        body.contains("/api/schema"),
+        "module must call the API: {body}"
+    );
+    assert!(body.contains("cage"), "module content sanity: {body}");
+
+    let (status, body) = request(server.port, "GET", "/app.css", None);
+    assert_eq!(status, 200, "editor stylesheet must be served");
+    assert!(body.contains("--accent"), "stylesheet sanity: {body}");
+
+    // Unknown static routes stay 404.
+    let (status, _) = request(server.port, "GET", "/nope.js", None);
+    assert_eq!(status, 404);
 }
 
 #[test]

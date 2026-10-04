@@ -78,13 +78,36 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       TCP 请求，覆盖文档伺服 / E1701+E1004 校验 / 保存后重载与
       `cage check` 复跑 / 目录拒写 / 空 schema 起始
 
+### W3 已实装：Schema 编辑器前端（docs/public/editor/，编译期嵌入）
+
+- [x] 静态单页（vanilla ES module，零依赖、无 node 构建链）：三栏——
+      左表/枚举树、中实体表单、右诊断面板；`cage web` 编译期把
+      index.html / app.js / app.css 嵌入二进制直接伺服（docs/public 是
+      唯一作者副本，文档站亦以 /editor/ 发布），单文件 cage 自带编辑器
+- [x] 表/枚举编辑：增删、保序重命名（fields/tables/enums 键随改）、
+      主键/排序/targets/唯一约束、枚举取值（名称/字面值/描述）
+- [x] 19 字段类型：递归类型编辑器（Array 元素 / Map key_type+值 /
+      Object 属性 / Enum 引用 datalist）；类型切换重建载荷
+      （Array/Object/Map 保留兼容内层）；嵌套深度上限 5
+- [x] 约束编辑按类型显示：数值 min/max、字符串 min_length/max_length/
+      pattern/白名单、数组 min_items/max_items、默认值（JSON 字面量）、
+      required、引用（目标表/字段/基数 one|many|optional/兼容 profile）、
+      表达式规则（name/assert/message/warning_only）、自定义元数据
+      （flatten 额外键，JSON 对象编辑，预留键拒绝覆盖）
+- [x] E 码诊断面板：校验按钮 / Ctrl+Enter → `POST /api/validate`；按
+      严重级配色计数；点诊断 → 定位字段（`data-path` 精确锚点 +
+      滚动高亮）；保存被拒（E1701）诊断同样入面板
+- [x] 保存：Ctrl/Cmd+S 或保存按钮 → `POST /api/schema`；未保存标记 +
+      beforeunload 拦截；409（目录 schema_path）/ 未接线 note /
+      500 均以错误 toast 呈现
+- [x] 外科手术式文档编辑：未知/遗留键（如 fuzzyField 的 items/properties
+      旧字段）原样保留，只改可控键——与「编辑器 JSON ≡ canonical 形状」的
+      交换契约一致；保存全程不经前端渲染 YAML
+- [x] 集成测试：GET / 返回嵌入编辑器页（含模块/样式引用）、/app.js、
+      /app.css 伺服与 404；测试原始客户端补 chunked 解码
+      （tiny_http 大响应走 chunked，分块边界可切开 UTF-8 序列）
+
 ## 路线图
 
-- [ ] **W3** Schema 编辑器前端（docs/public 静态单页，无 node 构建链）：
-      表/枚举树、19 字段类型、约束编辑、E 码诊断面板、保存
-      （API 契约已定稿，前端纯消费）
-- [ ] **W4** 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑 → 校验 →
-      保存 → `cage build` 复现）、CI 集成
-      19 字段类型、约束编辑、E 码诊断面板、保存
 - [ ] **W4** 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑 → 校验 →
       保存 → `cage build` 复现）、CI 集成

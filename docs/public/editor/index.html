@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cage · Schema 编辑器</title>
+<link rel="stylesheet" href="./app.css">
+</head>
+<body>
+<header id="topbar">
+  <h1>cage <span>Schema 编辑器</span></h1>
+  <div id="project-meta">
+    <span id="meta-project">–</span>
+    <span class="divider">|</span>
+    <span id="meta-path">–</span>
+    <span class="divider">|</span>
+    <span id="meta-profiles">–</span>
+    <span id="meta-wae" hidden>| warnings 视为错误</span>
+  </div>
+  <div id="topbar-actions">
+    <span id="dirty-flag" hidden>● 未保存</span>
+    <button id="save-btn" type="button" class="primary" title="Ctrl/Cmd+S">保存</button>
+    <button id="validate-btn" type="button" title="Ctrl/Cmd+Enter">校验</button>
+  </div>
+</header>
+<div id="layout">
+  <aside id="tree">
+    <div class="tree-head">
+      <h2>表</h2>
+      <button id="add-table" type="button" title="新增表" aria-label="新增表">＋</button>
+    </div>
+    <ul id="table-list"></ul>
+    <div class="tree-head">
+      <h2>枚举</h2>
+      <button id="add-enum" type="button" title="新增枚举" aria-label="新增枚举">＋</button>
+    </div>
+    <ul id="enum-list"></ul>
+  </aside>
+  <main id="editor">
+    <div id="fatal-error" hidden></div>
+    <div id="empty-hint">选择左侧的表或枚举开始编辑；编辑后「校验」看 E 码诊断，「保存」写回 canonical YAML。</div>
+    <div id="entity" hidden></div>
+  </main>
+  <aside id="diags">
+    <div class="diags-head">
+      <h2>诊断</h2>
+      <span id="diag-count"></span>
+    </div>
+    <ul id="diag-list"></ul>
+    <div class="diags-foot">
+      校验 = 编辑态检查：E1701（文档无法解析，JSON 路径定位）+ L1 一致性（E1004 族）。
+      完整 L2-L7 校验请用 <code>cage check</code>。
+    </div>
+  </aside>
+</div>
+<div id="toast" hidden></div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

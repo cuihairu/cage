@@ -54,8 +54,9 @@
       GET /api/schema（编辑器 JSON）、POST /api/validate（编辑态校验）、
       POST /api/schema（canonical YAML 写回）；本地工具不鉴权；
       集成测试 + README 入口
-- [ ] W3 Schema 编辑器前端（docs/public 静态单页，无 node 构建链）：
-      表/枚举树、19 字段类型、约束编辑、E 码诊断面板、保存
+- [x] W3 Schema 编辑器前端（docs/public/editor 静态单页，无 node 构建链，
+      编译期嵌入 cage 二进制）：表/枚举树、19 字段类型（Array/Object/
+      Map/Enum 递归）、约束编辑、E 码诊断面板（点诊断定位字段）、保存
 - [ ] W4 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑→校验→
       保存→cage build 复现）、CI 集成
 

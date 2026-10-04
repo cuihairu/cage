@@ -95,8 +95,8 @@ cage web ./ --port 8765
 ```
 
 启动 Schema 编辑器本地服务（第三阶段），只绑定 `127.0.0.1`、无需鉴权。
-编辑器单页（W3 实装）与 HTTP API 共用一份交换文档，API 契约见
-[Web UI](/web)：
+浏览器打开打印的地址即是编辑器单页（编译期嵌入二进制），与 HTTP API
+共用一份交换文档，API 契约见 [Web UI](/web)：
 
 ```text
 GET  /api/schema      → 合并 Schema 的编辑器文档（每请求重载，保存后立即可见）
