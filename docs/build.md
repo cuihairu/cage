@@ -177,31 +177,47 @@ Dependency Graph 传播 → 受影响表
 表，当前 schema 若少了任何表（删除场景），第二层整体回退全量重建，避免
 把过期产物错误携带。
 
-## Configuration Snapshot（规划）
+## Configuration Snapshot（v0.3 实装）
 
-Cage 的最终产物不只是零散的 JSON 文件，而应是可独立加载的
-**Configuration Snapshot**（未实装，见架构文档「八个概念的边界」）：
+Cage 的最终产物不只是零散的 JSON 文件，而是可独立加载、自带校验的
+**Configuration Snapshot**（八个概念 #7，格式定义在 cage_core::snapshot）：
 
 ```text
-snapshot-2026-10-04-001/
-├── manifest.json      # 构建账本（profile / schema_hash / source_hash / artifacts）
-├── schema/            # 导出 schema 副本
-├── data/              # 数据类产物（json / csv）
-├── generated/         # 代码类产物
-└── hashes/            # 逐文件校验清单
+build/snapshot/<profile>-<build_id[..12]>/
+├── manifest.json      # 构建账本（profile / hashes / artifacts，与 build 逐字节一致）
+├── schema.json        # profile 视图的规范 schema（构建所依据的形态）
+├── data/…             # 数据类产物（json / csv）
+├── generated/…        # 代码类产物
+└── HASHES.json        # 逐文件 blake3 账本（trust root，不自我哈希）+ build_id/content_hash
 ```
 
-服务器启动流程：
+与规划草稿的差异：目录名用 **profile + build_id 指纹**而非日期——时间戳
+命名会破坏确定性构建契约（同输入 → 同快照字节、同名目录，重建即覆盖）。
+数据/代码产物按 target format 分区，路径剥掉 `output_dir` 前缀、保留目标
+子目录（`build/client/Item.json` → `data/client/Item.json`）。
+
+使用：
+
+```text
+cage snapshot <project> --profile <p>   # 构建 + 打包 + 自校验
+cage snapshot <snapshot-dir> --verify   # 载入前校验（内核入口同服务器）
+```
+
+服务器启动流程（cage_core::snapshot::{verify_snapshot, load}）：
 
 ```text
 server
    ↓
-load snapshot
+verify HASHES.json（逐文件重哈希比对，缺/错/多文件均报）
    ↓
-verify manifest（hash 与清单逐项比对）
+load（manifest + schema + data/generated 产物的惰性映射）
    ↓
 load configuration
 ```
+
+严格性说明：逐文件账本比对的是「文件即账本、账本即文件」的完整一致性；
+`content_hash` 已涵盖产物整体指纹，作为账本中的交叉字段带上。整目录的
+值传递：篡改任一文件、增删任一文件都会在校验时暴露。
 
 快照自带校验信息、不依赖构建机现场——与 runtime 配置体系（见
 [Configuration Registry](#configuration-registry)）互为正反两面：前者是产物

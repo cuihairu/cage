@@ -70,5 +70,8 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       前 24 位——时间戳方案会破坏确定性构建契约，弃）与
       `generator_version`（"1.0.0"，布局演进自增）落地；旧 manifest
       缺字段经 serde(default) 兼容反序列化；确定性/轮换/兼容三测试
-- [ ] D5 Configuration Snapshot：snapshot 构建（manifest + schema + 数据 +
-      生成物 + 校验清单）、服务器启动加载校验入口
+- [x] D5 Configuration Snapshot：`cage snapshot` 打包（manifest/schema.json/
+      data/generated/HASHES 逐文件 blake3 账本）至确定性目录
+      `snapshot/<profile>-<build_id[..12]>`（弃日期命名——破坏确定性契约），
+      构建后自校验；`cage snapshot <dir> --verify` 载入前校验；core 提供
+      verify_snapshot/load 服务器入口（篡改/增删文件均暴露）

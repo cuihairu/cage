@@ -255,19 +255,19 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 | Validation Context | 已实装：validation/mod.rs（schema / document / diagnostics / max_level / profile / reference_cache） | — |
 | Dependency Graph | 已实装并接线：reference/mod.rs `DependencyGraph`（环检测 / 拓扑）+ `IncrementalPlanner`；cli 构建真实接线，增量第二层按表哈希 + 依赖传播只重建受影响表，manifest 落 `dependencies`/`table_hashes` 账（D2） | 增量删除表回退全量（不沿边传播删除语义）；target 配置变更仍不参与哈希 |
 | Profile | 已实装（D3 语义化）：表 + 字段双层面板过滤裁剪 Schema 与 Document 产物视图；校验在**完整** schema/document 上执行（profile 只裁剪产物视图、不豁免数据校验）；ValidationContext 携带 profile，结构不可缺字段（required 无默认 / 主键 / 唯一约束 / 引用目标）被 profile 隐藏报 E9006 冲突而非静默过滤 | 可选字段裁剪保持合法视图语义；整表剔除是表级可见性语义 |
-| Manifest | 已实装：7 顶层字段（project / profile / cage_version / schema_hash / source_hash / content_hash / artifacts）+ artifact 级 6 字段 | 缺 build_id / dependencies / generator_version（现以 cage_version 兼任）；ir_hash 随 IR 定界省略 |
-| Snapshot | 未实装 | 规划：snapshot/ = manifest + schema + 数据 + 生成物 + 校验清单，服务器启动加载即校 |
+| Manifest | 已实装（D4）：11 顶层字段（project / profile / cage_version / generator_version / build_id / schema_hash / source_hash / content_hash / dependencies / table_hashes / artifacts） | — |
+| Snapshot | 已实装（D5）：`cage snapshot` 打包 profile 视图 + `--verify` 校验；`snapshot/<profile>-<build_id[..12]>` 确定性目录（manifest / schema.json / data / generated / HASHES 逐文件账本），core 提供 verify/load 服务器入口 | 删除/回滚策略（多快照共存管理）见 Registry 阶段 |
 
 ### 评审对照修正（2026-10 外部评审）
 
 | 评审项 | 评审评级 | 代码核对结论 |
 | --- | --- | --- |
 | IR | ⭐⭐⭐ | 定界后归入 Canonical，见「为什么 IR 不拆独立类型」 |
-| Dependency Graph | ⭐⭐ | 核心已实装（环检测 / 拓扑 / 增量规划），差构建路径接线——应读作核心 4/5、接线 0/5 |
-| Incremental Build | ⭐⭐ | 第一层（整轮哈希跳过）已实装；第二层（按依赖传播）待 DG 接线 |
-| Snapshot | ⭐⭐ | 未实装（规划中） |
-| Profile | ⭐⭐⭐⭐ | 过滤已实装；校验 / 安全 / 可见性冲突语义为下一步 |
-| Manifest | — | 字段基本齐，差 build_id / dependencies 两个账本字段 |
+| Dependency Graph | ⭐⭐ | 已闭合（D2）：核心 + 构建接线 + 增量第二层 + manifest 账本（依赖/表哈希） |
+| Incremental Build | ⭐⭐ | 已闭合（D2）：第一层整轮跳过 + 第二层依赖传播只重建受影响表（携带字节与全量一致、manifest 收敛）；删除表回退全量 |
+| Snapshot | ⭐⭐ | 已闭合（D5）：`cage snapshot` 打包 + `--verify` 校验 + core verify/load 服务器入口；确定性目录名（build_id 指纹，弃日期命名） |
+| Profile | ⭐⭐⭐⭐ | 已闭合（D3）：过滤 + E9006 冲突语义 + profile 感知校验上下文；校验全库、profile 只裁剪产物视图 |
+| Manifest | — | 建议评级（D4）：build_id / generator_version / dependencies / table_hashes 已落，前 24 位 blake3 确定性指纹替代时间戳 |
 | Diagnostics | ⭐⭐⭐⭐⭐ | 确认：L0-L7 全错误码族、行级定位 + hint、E1601 端到端 |
 | Deterministic Build | ⭐⭐⭐⭐⭐ | 确认：同输入字节一致由 golden 测试锁定 |
 

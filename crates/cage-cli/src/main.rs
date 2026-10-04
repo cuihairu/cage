@@ -47,6 +47,7 @@ use cage_core::reference::{DependencyGraph, IncrementalPlanner};
 use cage_core::schema::{Schema, ValidatedSchema};
 use cage_core::validation::ValidationLevel;
 use cage_core::value::Document;
+use cage_core::Diagnostics;
 use cage_core::DocumentMetadata;
 
 /// Game configuration compilation and validation framework
@@ -111,6 +112,18 @@ enum Commands {
         /// Target build directory (or manifest.json)
         target: PathBuf,
     },
+    /// Build and package a self-verifying Configuration Snapshot, or verify
+    /// an existing snapshot directory without rebuilding
+    Snapshot {
+        /// Project root directory (or snapshot directory with --verify)
+        path: PathBuf,
+        /// Build profile to snapshot
+        #[arg(long, default_value = "client")]
+        profile: String,
+        /// Verify an existing snapshot directory instead of building
+        #[arg(long)]
+        verify: bool,
+    },
 }
 
 /// A loaded Cage project: config + merged schema + merged document.
@@ -137,6 +150,17 @@ fn main() {
         Commands::Inspect { path, table } => run_inspect(&path, table.as_deref()),
         Commands::Gen { path, profile } => run_gen(&path, &profile),
         Commands::Diff { baseline, target } => run_diff(&baseline, &target),
+        Commands::Snapshot {
+            path,
+            profile,
+            verify,
+        } => {
+            if verify {
+                run_snapshot_verify(&path)
+            } else {
+                run_snapshot(&path, &profile)
+            }
+        }
     };
     std::process::exit(code);
 }
@@ -375,24 +399,56 @@ fn run_check(path: &Path, level: &str, profile: &str) -> i32 {
     }
 }
 
-fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 {
+/// Everything `build_project` produced — shared by `cage build` and
+/// `cage snapshot`.
+struct BuildOutput {
+    /// Active profile
+    profile: String,
+    /// Profile (filtered) schema — the view the artifacts were built from
+    schema: Schema,
+    /// Artifact records: (project-relative path, bytes, format, owning table)
+    artifacts: Vec<(String, Vec<u8>, String, Option<String>)>,
+    /// Project-relative build root (config `output_dir`)
+    output_dir: String,
+    /// Whether layer-2 incremental engaged (report says regenerated/carried)
+    layer2: bool,
+    /// Number of artifacts carried over from disk when layer 2 engaged
+    carried_count: usize,
+    /// Generated build manifest
+    manifest: BuildManifest,
+    /// Written manifest location
+    manifest_path: PathBuf,
+}
+
+/// Build failures mapped to exit codes by the callers (1 = validation,
+/// 2 = usage/I/O).
+enum BuildFailure {
+    /// Validation produced errors (rendered before reporting)
+    Validation(Diagnostics),
+    /// Usage or I/O errors (printed as `error: {msg}`)
+    Io(String),
+    /// Layer-1 incremental skip: the last build's inputs are unchanged and
+    /// every artifact is intact
+    UpToDate { artifacts: usize, manifest: PathBuf },
+}
+
+fn build_project(
+    path: &Path,
+    level: &str,
+    profile: &str,
+    incremental: bool,
+) -> Result<BuildOutput, BuildFailure> {
     let level = match level.parse::<ValidationLevel>() {
         Ok(l) => l,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 2;
-        }
+        Err(e) => return Err(BuildFailure::Io(e)),
     };
     let project = match load_project(path) {
         Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 2;
-        }
+        Err(e) => return Err(BuildFailure::Io(e)),
     };
     let Some(build_profile) = project.config.profiles.get(profile) else {
-        eprintln!(
-            "error: unknown profile '{profile}' (available: {})",
+        let msg = format!(
+            "unknown profile '{profile}' (available: {})",
             project
                 .config
                 .profiles
@@ -401,7 +457,7 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        return 2;
+        return Err(BuildFailure::Io(msg));
     };
 
     let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
@@ -423,11 +479,7 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
         println!("{}", diagnostics.render(false));
     }
     if diagnostics.has_errors() {
-        println!(
-            "cage build: FAILED validation ({} errors)",
-            diagnostics.errors().len()
-        );
-        return 1;
+        return Err(BuildFailure::Validation(diagnostics));
     }
 
     let normalized = normalize_document(&document);
@@ -460,12 +512,10 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
                 && prev.source_hash == source_hash
                 && prev.artifacts.keys().all(|rel| path.join(rel).is_file());
             if unchanged {
-                println!(
-                    "cage build: up to date (profile '{profile}', {} artifacts, manifest {})",
-                    prev.artifacts.len(),
-                    manifest_dir.join("manifest.json").display()
-                );
-                return 0;
+                return Err(BuildFailure::UpToDate {
+                    artifacts: prev.artifacts.len(),
+                    manifest: manifest_dir.join("manifest.json"),
+                });
             }
             let layer2_ok = prev.profile == profile
                 && prev.schema_hash == schema_hash
@@ -552,22 +602,18 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
                     cage_target_csv::CsvTargetGenerator::from_config(target).generate(&gen_doc, &[])
                 }
                 other => {
-                    eprintln!("error: unsupported target format '{other}'");
-                    return 2;
+                    return Err(BuildFailure::Io(format!(
+                        "unsupported target format '{other}'"
+                    )));
                 }
             },
         };
         match generated {
             Ok(items) => {
-                if let Err(e) = write_artifact_files(path, items, &target.format, &mut artifacts) {
-                    eprintln!("error: {e}");
-                    return 2;
-                }
+                write_artifact_files(path, items, &target.format, &mut artifacts)
+                    .map_err(BuildFailure::Io)?;
             }
-            Err(diags) => {
-                println!("{}", diags.render(false));
-                return 1;
-            }
+            Err(diags) => return Err(BuildFailure::Validation(diags)),
         }
     }
     // Canonical artifact order (path-sorted) so a layer-2 incremental run and
@@ -584,29 +630,193 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
     .generate(&schema, &normalized, &artifacts);
     let manifest_path = match write_manifest(&manifest_dir, &manifest) {
         Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 2;
-        }
+        Err(e) => return Err(BuildFailure::Io(e)),
     };
 
-    if affected.is_some() {
-        println!(
-            "cage build: OK (profile '{profile}', {} artifacts — {} regenerated, \
-             {} unchanged via dependency graph, manifest {})",
-            artifacts.len(),
-            artifacts.len() - carried_len,
-            carried_len,
-            manifest_path.display()
-        );
-    } else {
-        println!(
-            "cage build: OK (profile '{profile}', {} artifacts, manifest {})",
-            artifacts.len(),
-            manifest_path.display()
-        );
+    Ok(BuildOutput {
+        profile: profile.to_string(),
+        schema,
+        artifacts,
+        output_dir: output_dir.to_string(),
+        layer2: affected.is_some(),
+        carried_count: carried_len,
+        manifest,
+        manifest_path,
+    })
+}
+
+fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 {
+    match build_project(path, level, profile, incremental) {
+        Ok(out) => {
+            if out.layer2 {
+                println!(
+                    "cage build: OK (profile '{}', {} artifacts — {} regenerated, \
+                     {} unchanged via dependency graph, manifest {})",
+                    out.profile,
+                    out.artifacts.len(),
+                    out.artifacts.len() - out.carried_count,
+                    out.carried_count,
+                    out.manifest_path.display()
+                );
+            } else {
+                println!(
+                    "cage build: OK (profile '{}', {} artifacts, manifest {})",
+                    out.profile,
+                    out.artifacts.len(),
+                    out.manifest_path.display()
+                );
+            }
+            0
+        }
+        Err(BuildFailure::Validation(diags)) => {
+            println!("{}", diags.render(false));
+            println!(
+                "cage build: FAILED validation ({} errors)",
+                diags.errors().len()
+            );
+            1
+        }
+        Err(BuildFailure::Io(msg)) => {
+            eprintln!("error: {msg}");
+            2
+        }
+        Err(BuildFailure::UpToDate {
+            artifacts,
+            manifest,
+        }) => {
+            println!(
+                "cage build: up to date (profile '{profile}', {artifacts} artifacts, manifest {})",
+                manifest.display()
+            );
+            0
+        }
     }
-    0
+}
+
+/// `cage snapshot` — build the profile, then package the build into a
+/// self-verifying Configuration Snapshot under
+/// `<output_dir>/snapshot/<profile>-<build_id[..12]>`. The directory name is
+/// a deterministic fingerprint, not a date: identical inputs → identical
+/// snapshot bytes (the determinism contract). Packing lives in
+/// `cage_core::snapshot` (the format is core's, not the cli's).
+fn run_snapshot(path: &Path, profile: &str) -> i32 {
+    // A snapshot packages a fresh full build — no incremental carry-over.
+    match build_project(path, "gamerule", profile, false) {
+        Ok(out) => {
+            let schema_json = match serde_json::to_vec_pretty(&out.schema) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: schema serialization: {e}");
+                    return 2;
+                }
+            };
+            let manifest_json = match std::fs::read(&out.manifest_path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!("error: {}: {e}", out.manifest_path.display());
+                    return 2;
+                }
+            };
+            let files = cage_core::snapshot::snapshot_files(
+                &manifest_json,
+                &schema_json,
+                &out.artifacts,
+                &out.output_dir,
+                &out.manifest.build_id,
+                &out.manifest.content_hash,
+            );
+            let snap_dir = path.join(&out.output_dir).join("snapshot").join(format!(
+                "{}-{}",
+                profile,
+                &out.manifest.build_id[..12]
+            ));
+            if let Err(e) = write_snapshot_files(&snap_dir, &files) {
+                eprintln!("error: {e}");
+                return 2;
+            }
+            // Self-check: the just-written snapshot must verify clean.
+            let report = match cage_core::snapshot::verify_snapshot(&snap_dir) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: snapshot self-verification: {e}");
+                    return 2;
+                }
+            };
+            println!(
+                "cage snapshot: OK (profile '{profile}', {} files, {} artifacts, verified, {})",
+                files.len(),
+                out.artifacts.len(),
+                snap_dir.display()
+            );
+            debug_assert!(
+                report.ok,
+                "self-verification mismatch: {:?}",
+                report.mismatches
+            );
+            0
+        }
+        Err(BuildFailure::Validation(diags)) => {
+            println!("{}", diags.render(false));
+            println!(
+                "cage snapshot: FAILED validation ({} errors)",
+                diags.errors().len()
+            );
+            1
+        }
+        Err(BuildFailure::Io(msg)) => {
+            eprintln!("error: {msg}");
+            2
+        }
+        Err(BuildFailure::UpToDate { .. }) => {
+            // incremental is false for snapshots — unreachable.
+            eprintln!("error: internal: snapshot build did not rebuild");
+            2
+        }
+    }
+}
+
+/// `cage snapshot --verify <dir>` — the load-time check the server would run
+/// (same core entry: `cage_core::snapshot::verify_snapshot` / `load`).
+fn run_snapshot_verify(dir: &Path) -> i32 {
+    match cage_core::snapshot::verify_snapshot(dir) {
+        Ok(report) => {
+            if report.ok {
+                println!(
+                    "cage snapshot: verified ({} — {} files checked)",
+                    dir.display(),
+                    report.files_checked
+                );
+                0
+            } else {
+                for m in &report.mismatches {
+                    println!("mismatch: {m}");
+                }
+                println!(
+                    "cage snapshot: VERIFICATION FAILED ({} problem(s))",
+                    report.mismatches.len()
+                );
+                1
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
+/// Write a snapshot file map under `dir`, creating parents as needed.
+fn write_snapshot_files(dir: &Path, files: &IndexMap<String, Vec<u8>>) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    for (rel, bytes) in files {
+        let abs = dir.join(rel);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&abs, bytes).map_err(|e| format!("cannot write {}: {e}", abs.display()))?;
+    }
+    Ok(())
 }
 
 /// `cage gen` — schema-driven code generation only. Writes the code-target
@@ -954,6 +1164,11 @@ mod tests {
             Commands::Diff { baseline, target } => {
                 format!("diff {} {}", baseline.display(), target.display())
             }
+            Commands::Snapshot {
+                path,
+                profile,
+                verify,
+            } => format!("snapshot {} {profile} {verify}", path.display()),
         }
     }
 

@@ -1125,3 +1125,116 @@ enums: {}
     let artifact = fs::read_to_string(root.join("build/client/Account.json")).unwrap();
     assert!(!artifact.contains("secret"), "leak: {artifact}");
 }
+
+/// `cage snapshot`: packages a self-verifying Configuration Snapshot whose
+/// directory name derives from profile + build_id (deterministic, not a
+/// date), verifies on rebuild, and detects tampering on `--verify`.
+#[test]
+fn snapshot_builds_verifies_and_detects_tampering() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(
+        root.join("cage.toml"),
+        r#"output_dir = "build"
+schema_path = "schemas"
+
+[project]
+name = "snapshot"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client"
+file_template = "{table}.json"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("schemas/item.yaml"),
+        r#"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+enums: {}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("config/Item.json"),
+        r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+    )
+    .unwrap();
+
+    let out = run_cage(&["snapshot", root.to_str().unwrap(), "--profile", "client"]);
+    assert_code(&out, 0, "snapshot build");
+    assert!(
+        stdout(&out).contains("verified"),
+        "snapshot must self-verify: {}",
+        stdout(&out)
+    );
+    let dirs: Vec<_> = fs::read_dir(root.join("build/snapshot"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(dirs.len(), 1, "one deterministic snapshot dir");
+    let snap_dir = dirs[0].clone();
+    let snap_before: Vec<_> = {
+        let mut files: Vec<_> = fs::read_dir(&snap_dir)
+            .unwrap()
+            .filter_map(|e| {
+                let p = e.unwrap().path();
+                p.is_file().then(|| (p.clone(), fs::read(&p).unwrap()))
+            })
+            .collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, bytes) in &files {
+            fs::write(path, bytes.clone()).unwrap();
+        }
+        // Ledger covers manifest + schema + artifact; HASHES.json is the
+        // trust root and is never self-hashed.
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(snap_dir.join("HASHES.json")).unwrap()).unwrap();
+        assert_eq!(ledger["files"].as_object().unwrap().len(), 3);
+        assert!(snap_dir.join("data/client/Item.json").is_file());
+        assert!(snap_dir.join("schema.json").is_file());
+        files
+    };
+
+    // Identical inputs → identical snapshot directory and bytes.
+    let out = run_cage(&["snapshot", root.to_str().unwrap(), "--profile", "client"]);
+    assert_code(&out, 0, "snapshot rebuild");
+    let dirs: Vec<_> = fs::read_dir(root.join("build/snapshot"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(dirs.len(), 1, "rebuild must reuse the deterministic dir");
+    let snap_after = &dirs[0];
+    for (path, bytes) in &snap_before {
+        let rel = path.strip_prefix(&snap_dir).unwrap();
+        let after = fs::read(snap_after.join(rel)).unwrap();
+        assert_eq!(&after, bytes, "deterministic byte match for {rel:?}");
+    }
+
+    // Clean verify exits 0; tampering is flagged with exit 1.
+    let out = run_cage(&["snapshot", snap_after.to_str().unwrap(), "--verify"]);
+    assert_code(&out, 0, "clean verify");
+    fs::write(snap_after.join("data/client/Item.json"), br#"{"id":9}"#).unwrap();
+    let out = run_cage(&["snapshot", snap_after.to_str().unwrap(), "--verify"]);
+    assert_code(&out, 1, "tampered verify");
+    assert!(
+        stdout(&out).contains("hash mismatch"),
+        "expected mismatch report: {}",
+        stdout(&out)
+    );
+}
