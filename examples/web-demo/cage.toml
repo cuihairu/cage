@@ -1,0 +1,23 @@
+# web-demo —— cage web 冒烟工程（W4）：
+# 单文件 schema（schema.yaml、schema_path 指向文件），供 examples/web-smoke.sh
+# 走「编辑 → 校验 → 保存 → cage build 复现」完整闭环。
+# 多文件拆分形态（schemas/ 目录）的工程编辑器会以 409 拒写——那是作者侧
+# 组织，编辑器不重写；冒烟脚本对 examples/game-config 断言了这条路径。
+output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "web-demo"
+version = "0.1.0"
+description = "cage web 编辑器冒烟专用：单文件 schema"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{table}.json"

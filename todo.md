@@ -57,8 +57,9 @@
 - [x] W3 Schema 编辑器前端（docs/public/editor 静态单页，无 node 构建链，
       编译期嵌入 cage 二进制）：表/枚举树、19 字段类型（Array/Object/
       Map/Enum 递归）、约束编辑、E 码诊断面板（点诊断定位字段）、保存
-- [ ] W4 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑→校验→
-      保存→cage build 复现）、CI 集成
+- [x] W4 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑→校验→
+      保存→cage build 复现）、CI 集成（examples/web-demo + web-smoke.sh
+      + ci.yml web-smoke job + docs/web.md 定稿）
 
 ### 其余（预排）
 - [ ] Registry（远程配置仓库 + 版本）

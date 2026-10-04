@@ -107,7 +107,25 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       /app.css 伺服与 404；测试原始客户端补 chunked 解码
       （tiny_http 大响应走 chunked，分块边界可切开 UTF-8 序列）
 
+### W4 已实装：编辑流程定稿 + 示例工程冒烟 + CI
+
+- [x] `examples/web-demo/`：单文件 schema 冒烟工程（schema_path 指向
+      schema.yaml；`[source_roots] main = "config"` 让示例表立即可
+      check/build）——「浏览器打开 → 编辑 → 校验 → 保存 → `cage build`
+      复现」整条路径的最小闭环
+- [x] `examples/web-smoke.sh`：端到端冒烟脚本，在临时拷贝上运行（不脏
+      仓库），真实命令逐条回显；任一步失败即 exit 非零。六步：基线
+      check；编辑器会话（GET 文档 → 加 `stack_size` 字段（UInt8 /
+      min 1 / default 1）→ `/api/validate` 零诊断 → `/api/schema` 保存）；
+      断言 schema.yaml 落盘 canonical YAML 且含新字段；`cage check` +
+      `cage build` 全链路复现；同一 schema 两次重建产物树哈希逐字节
+      一致（确定性契约）；对 `examples/game-config`（schemas/ 目录）
+      断言 `POST /api/schema` 得 409 拒写（多文件是作者侧组织，编辑器
+      不重写）
+- [x] CI 集成：`web-smoke` job 镜像 example job（checkout + toolchain +
+      rust-cache + `bash examples/web-smoke.sh`）
+
 ## 路线图
 
-- [ ] **W4** 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑 → 校验 →
-      保存 → `cage build` 复现）、CI 集成
+第三阶段 W 系列至此全部完成（W1 交换模型 → W2 本地服务 → W3 编辑器
+前端 → W4 文档与示例）。示例入口：`examples/web-smoke.sh`（CI 同款）。

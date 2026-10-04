@@ -88,6 +88,18 @@ jobs:
       - name: Run end-to-end example
         run: bash examples/run.sh
 
+  web-smoke:
+    name: Web editor smoke
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run web editor smoke (edit → validate → save → build)
+        run: bash examples/web-smoke.sh
+
   # 覆盖率：llvm-cov 出 lcov 上传 Codecov。tokenless 走 OIDC
   # （codecov-action use_oidc，无需仓库 secret；受保护分支下裸
   # tokenless 上传会被 Codecov 以 "Token required" 拒绝）。

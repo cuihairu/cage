@@ -1,0 +1,6 @@
+{
+  "Item": [
+    { "id": 1, "name": "Sword" },
+    { "id": 2, "name": "Potion" }
+  ]
+}

@@ -1,0 +1,15 @@
+tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    fields:
+      id:
+        name: id
+        type: { kind: Int32 }
+        required: true
+      name:
+        name: name
+        type: { kind: String }
+        required: true
+enums: {}

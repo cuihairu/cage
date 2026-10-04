@@ -37,6 +37,7 @@ game-config/
 | 保留字字段自动转义（`class`） | `Character.class` |
 | Map<K,V> 字段（含嵌套，空 map 合法） | `Stage.drop_table: map<string, Array<Int32>>` |
 | L7 Game Rule：好数据通过 / 坏数据 E1601 | `run.sh` 第 2、5 步 |
+| Web 编辑器拒写目录 schema（409） | `examples/web-smoke.sh` 第 6 步
 
 ## 手动执行
 
