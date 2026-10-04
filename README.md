@@ -57,6 +57,10 @@ cage diff build/a build/b          # 比较两个配置版本
 cage inspect Item                  # 查看 Schema 与配置结构
 ```
 
+## 每日构建
+
+不装 Rust 工具链可直接取二进制：[Nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly) 每日随 main 滚动更新（Linux x86_64 正式腿，macOS / Windows 试运行腿），压缩包内即 `cage` 单文件，附 `SHA256SUMS` 校验单。
+
 ## 文档
 
 完整设计与使用文档：**https://cuihairu.github.io/cage/**

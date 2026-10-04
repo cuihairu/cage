@@ -1,0 +1,163 @@
+# Cage 每日构建分发面：release profile 产出 cage 二进制，发布固定 tag
+# `nightly` 的滚动 Release（资产清旧传新，notes 带 commit SHA 与构建时间）。
+# daily.yml 是全量验证面（测试 + 文档）；本文件是产物交付面——Release
+# 资产是硬交付，Actions artifacts 只是 run 页临时下载（14 天过期）。
+#
+# 矩阵（三腿）：linux x86_64 正式腿（CI 全量验证同平台，构建失败即红）；
+# darwin arm64 / windows x86_64 试运行腿（luna 同款 continue-on-error：
+# 平台首飞问题不拖垮夜间绿，构建过得去资产就上 Release，缺哪条腿
+# Release 资产表如实可见）。生产代码零平台分支（唯一 #[cfg(unix)] 在
+# 测试），纯 cargo build，runner 预装工具链即可。
+#
+# 发布机制（chirp 同款）：tag 固定 `nightly` 不动，每次发布删旧资产再传
+# 新；--prerelease --latest=false 保证滚动构建永不冒充正式版；资产附
+# SHA256SUMS 全量校验单。
+
+name: Nightly Build
+
+on:
+  schedule:
+    # UTC 02:51 = 北京时间 10:51，排在 daily.yml 验证面（02:37）之后
+    - cron: '51 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: cage-nightly-linux-x86_64
+            experimental: false
+          - os: macos-latest
+            artifact: cage-nightly-macos-aarch64
+            experimental: true
+          - os: windows-latest
+            artifact: cage-nightly-windows-x86_64
+            experimental: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (release)
+        run: cargo build --release --locked -p cage-cli
+      - name: Smoke
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN=target/release/cage.exe; else BIN=target/release/cage; fi
+          "$BIN" --version
+      - name: Pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact='${{ matrix.artifact }}'
+          mkdir stage
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp target/release/cage.exe stage/cage.exe
+            # windows 镜像预装 7-Zip（Git Bash 的 GNU tar 造不了 zip）
+            (cd stage && 7z a "../${artifact}.zip" cage.exe >/dev/null)
+          else
+            cp target/release/cage stage/cage
+            (cd stage && tar czf "../${artifact}.tar.gz" cage)
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish nightly release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: cage-nightly-*
+          merge-multiple: true
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum --tag * > SHA256SUMS
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          stamp="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          {
+            echo "滚动每日构建（rolling nightly）。tag 固定 \`nightly\`，资产随最新 main 清旧传新——本页永远对应当前主干。"
+            echo
+            echo "- 构建时间：${stamp}"
+            echo "- Commit：\`${GITHUB_SHA}\`"
+            echo "- 二进制版本：\`cage ${version}\`（workspace version）"
+            echo "- 工作流：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "## 资产"
+            echo
+            echo "| 资产 | 大小 | 说明 |"
+            echo "| --- | --- | --- |"
+            for f in $(find dist -type f | sort); do
+              b="$(basename "$f")"
+              sz="$(du -h "$f" | cut -f1)"
+              case "$b" in
+              SHA256SUMS) note="全部资产 sha256 清单" ;;
+              *linux-x86_64*) note="Linux x86_64（正式腿，CI 全量验证同平台）" ;;
+              *macos-aarch64*) note="macOS arm64（试运行腿）" ;;
+              *windows-x86_64*) note="Windows x86_64（试运行腿）" ;;
+              *) note="" ;;
+              esac
+              echo "| \`${b}\` | ${sz} | ${note} |"
+            done
+            echo
+            echo "## 校验"
+            echo
+            echo "资产与 \`SHA256SUMS\` 放同一目录后："
+            echo
+            echo "    sha256sum -c SHA256SUMS              # Linux"
+            echo "    shasum -a 256 -c SHA256SUMS          # macOS"
+            echo "    # Windows(PowerShell)："
+            echo "    Get-FileHash cage-nightly-windows-x86_64.zip -Algorithm SHA256  # 与 SHA256SUMS 逐行比对"
+            echo
+            echo "## 说明"
+            echo
+            echo "- 包内即 \`cage\` 单二进制（Windows 为 \`cage.exe\`），解包后可直接运行 \`cage --help\`。"
+            echo "- 试运行腿（macOS / Windows）构建失败时当日 Release 缺该平台资产；连续多日缺失见工作流日志。"
+            echo "- 产物未签名；每日构建只证明可构建 + 冒烟通过（\`--version\`），完整质量门禁以仓库 CI（daily.yml 验证面）为准。"
+          } > notes.md
+          TAG=nightly
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "Nightly · 每日构建" \
+              --notes "初始化" --prerelease --latest=false
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | while read -r a; do
+            if [ -n "$a" ]; then
+              gh release delete-asset "$TAG" "$a" \
+                --repo "$GITHUB_REPOSITORY" --yes
+            fi
+          done
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+            $(find dist -type f | sort)
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "Nightly · 每日构建 ${stamp}" \
+            --notes-file notes.md --prerelease --latest=false
+          echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
