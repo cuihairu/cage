@@ -171,6 +171,45 @@ enum RegistryCmd {
         #[arg(long)]
         registry: Option<PathBuf>,
     },
+    /// Verify a full registry: every recorded entry must exist and
+    /// self-verify (bytes re-hashed against its ledger, index record
+    /// matching the ledger), and no entry directory may sit on disk
+    /// without an index record — findings are E1803
+    Verify {
+        /// Registry root directory (overrides cage.toml [registry].path)
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
+    /// Garbage-collect a registry: per package keep the newest `keep`
+    /// versions (the rollback window consumers pin @versions into, never
+    /// fewer than one), delete the older entries and sweep orphaned
+    /// directories
+    Gc {
+        /// Versions to keep per package (minimum 1)
+        #[arg(long, default_value_t = 3)]
+        keep: usize,
+        /// Report what would be removed without touching the registry
+        #[arg(long)]
+        dry_run: bool,
+        /// Registry root directory (overrides cage.toml [registry].path)
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
+    /// Remove one entry — version directory and index record — explicitly;
+    /// the package index stays, so the same snapshot can be re-published
+    /// afterwards (removal is explicit history editing)
+    Remove {
+        /// Package name
+        package: String,
+        /// Version to remove
+        version: String,
+        /// Report what would be removed without touching the registry
+        #[arg(long)]
+        dry_run: bool,
+        /// Registry root directory (overrides cage.toml [registry].path)
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
 }
 
 /// A loaded Cage project: config + merged schema + merged document.
@@ -230,6 +269,18 @@ fn main() {
                 registry.as_deref(),
             ),
             RegistryCmd::List { registry } => run_registry_list(registry.as_deref()),
+            RegistryCmd::Verify { registry } => run_registry_verify(registry.as_deref()),
+            RegistryCmd::Gc {
+                keep,
+                dry_run,
+                registry,
+            } => run_registry_gc(keep, dry_run, registry.as_deref()),
+            RegistryCmd::Remove {
+                package,
+                version,
+                dry_run,
+                registry,
+            } => run_registry_remove(&package, &version, dry_run, registry.as_deref()),
         },
     };
     std::process::exit(code);
@@ -1250,6 +1301,147 @@ fn run_registry_list(registry_flag: Option<&Path>) -> i32 {
     }
 }
 
+/// `cage registry verify` — the full-registry audit (R4): every recorded
+/// entry exists and self-verifies (its bytes re-hashed against its ledger,
+/// the index record matching the ledger's `build_id`/`content_hash`), and no
+/// entry directory sits on disk without an index record. Read-only; a
+/// finding is an E1803 and fails the command.
+fn run_registry_verify(registry_flag: Option<&Path>) -> i32 {
+    let Some(reg_root) = registry_flag else {
+        eprintln!("error: no registry root (pass --registry)");
+        return 2;
+    };
+    if let Some(spec) = reg_root.to_str() {
+        if remote::is_remote_root(spec) {
+            eprintln!(
+                "error: registry root '{spec}' is remote — registry roots are read-only over \
+                 the network; verify requires a local registry path"
+            );
+            return 2;
+        }
+    }
+    match cage_core::registry::verify_registry(reg_root) {
+        Ok(report) => {
+            if report.ok() {
+                println!(
+                    "cage registry: OK — {} package(s), {} entry/ies verified in {}",
+                    report.packages,
+                    report.entries_checked,
+                    reg_root.display()
+                );
+                0
+            } else {
+                println!(
+                    "cage registry: {} problem(s) across {} package(s) in {}",
+                    report.problems.len(),
+                    report.packages,
+                    reg_root.display()
+                );
+                for problem in &report.problems {
+                    println!("  {problem}");
+                }
+                2
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
+/// `cage registry gc [--keep N] [--dry-run]` — per package keep the newest
+/// `keep` versions (the rollback window; consumers pin old @versions and
+/// keep resolving), delete the older entries plus orphaned directories,
+/// rewrite the touched indexes. --dry-run reports the identical removal
+/// list without touching anything.
+fn run_registry_gc(keep: usize, dry_run: bool, registry_flag: Option<&Path>) -> i32 {
+    let Some(reg_root) = registry_flag else {
+        eprintln!("error: no registry root (pass --registry)");
+        return 2;
+    };
+    if let Some(spec) = reg_root.to_str() {
+        if remote::is_remote_root(spec) {
+            eprintln!(
+                "error: registry root '{spec}' is remote — registry roots are read-only over \
+                 the network; gc requires a local registry path"
+            );
+            return 2;
+        }
+    }
+    match cage_core::registry::gc_registry(reg_root, keep, dry_run) {
+        Ok(report) => {
+            if report.removed.is_empty() {
+                println!("cage registry: nothing to collect (keep {keep})");
+            } else {
+                println!(
+                    "cage registry: {} to remove, {} index(es) rewritten{}",
+                    report.removed.len(),
+                    report.rewritten,
+                    if dry_run {
+                        " (dry run — nothing touched)"
+                    } else {
+                        ""
+                    }
+                );
+                for removed in &report.removed {
+                    println!("  {removed}");
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
+/// `cage registry remove <package> <version> [--dry-run]` — explicitly
+/// remove one entry (version directory + index record). The package index
+/// stays even when empty, so the same snapshot can be re-published
+/// afterwards; removing an unrecorded version is E1802.
+fn run_registry_remove(
+    package: &str,
+    version: &str,
+    dry_run: bool,
+    registry_flag: Option<&Path>,
+) -> i32 {
+    let Some(reg_root) = registry_flag else {
+        eprintln!("error: no registry root (pass --registry)");
+        return 2;
+    };
+    if let Some(spec) = reg_root.to_str() {
+        if remote::is_remote_root(spec) {
+            eprintln!(
+                "error: registry root '{spec}' is remote — registry roots are read-only over \
+                 the network; remove requires a local registry path"
+            );
+            return 2;
+        }
+    }
+    match cage_core::registry::remove_entry(reg_root, package, version, dry_run) {
+        Ok(()) => {
+            if dry_run {
+                println!(
+                    "cage registry: would remove {package}/{version} from {}",
+                    reg_root.display()
+                );
+            } else {
+                println!(
+                    "cage registry: removed {package}/{version} (registry {})",
+                    reg_root.display()
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
 /// `cage gen` — schema-driven code generation only. Writes the code-target
 /// artifacts (cs/python/lua/ts/js/cpp/go/java) of a profile without running
 /// data validation:
@@ -1619,6 +1811,33 @@ mod tests {
                 ),
                 RegistryCmd::List { registry } => format!(
                     "registry list {}",
+                    registry
+                        .as_deref()
+                        .map_or_else(|| Path::new("<flag required>").display(), Path::display)
+                ),
+                RegistryCmd::Verify { registry } => format!(
+                    "registry verify {}",
+                    registry
+                        .as_deref()
+                        .map_or_else(|| Path::new("<flag required>").display(), Path::display)
+                ),
+                RegistryCmd::Gc {
+                    keep,
+                    dry_run,
+                    registry,
+                } => format!(
+                    "registry gc {keep} {dry_run} {}",
+                    registry
+                        .as_deref()
+                        .map_or_else(|| Path::new("<flag required>").display(), Path::display)
+                ),
+                RegistryCmd::Remove {
+                    package,
+                    version,
+                    dry_run,
+                    registry,
+                } => format!(
+                    "registry remove {package} {version} {dry_run} {}",
                     registry
                         .as_deref()
                         .map_or_else(|| Path::new("<flag required>").display(), Path::display)

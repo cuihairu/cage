@@ -125,8 +125,24 @@
       版本/无解 pin E1802、篡改字节 E1803、死根 E1802、publish/list
       只读拒绝）全绿 + 文档（cli.md 远程章节/design.md §29 协议/
       validation.md/architecture.md/index.md）+ 本勾选
-- [ ] R4 回滚与清理：多版本共存下的 GC 策略、`cage registry verify`
-      全册校验工具、条目移除/重新发布纪律
+- [x] R4 回滚与清理：多版本共存下的 GC 策略、`cage registry verify`
+      全册校验工具、条目移除/重新发布纪律——`verify_registry`
+      （逐条目重过账本校验 + index 记录与条目账本 build_id/
+      content_hash 交叉核对 + 无 index 记录的孤儿目录报告，E1803
+      逐条列出、只读）；`gc_registry` 滚动窗口（每包保留最新
+      `--keep N` 个版本、下限 1——窗口即回滚面，pin 旧版本的消费方
+      仍解析、被挤出版本 E1802；孤儿一并清扫、有变化才重写 index、
+      dry-run 同一清单不落笔）；`remove_entry` 显式行政移除（版本
+      目录带 index 记录一并删、包 index 保留，同字节重新 publish
+      干净入册，注册表自身绝不隐式改写历史）；`cage registry
+      verify/gc/remove` 子命令（--dry-run，远程根 read-only 拒绝）。
+      验收达成：1 新 core 单测（篡改/账本漂移/孤儿 + gc 窗口与
+      dry-run/keep 下限/移除重发闭环）+ 2 新 CLI 集成测试（verify
+      干净→篡改 E1803→index/账本漂移 E1803→孤儿；gc dry-run 不落
+      笔→默认窗口→keep 1→挤出版本消费方 E1802→remove dry-run/
+      实删/verify 空册/missing E1802→同字节重发入册）+ 远程只读
+      拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
+      validation.md/architecture.md/index.md）+ 本勾选
 
 ## 第四阶段（核心模型边界定稿，2026-10 评审驱动）
 

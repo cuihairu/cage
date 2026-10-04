@@ -568,3 +568,207 @@ fn registry_dependencies_pin_and_schema_from_entry() {
         stderr(&out)
     );
 }
+
+#[test]
+fn registry_verify_detects_tamper_ledger_drift_and_orphans() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_publisher(root);
+    let reg = root.join("reg").to_str().unwrap().to_string();
+    let pub_root = root.join("pub").to_str().unwrap().to_string();
+    for (v, marker) in [("1.0.0", "Sword"), ("1.9.0", "Shield"), ("2.0.0", "Lance")] {
+        write(&root.join("pub/config/item.json"), &item_rows(marker));
+        let out = run_cage(&[
+            "registry",
+            "publish",
+            &pub_root,
+            "--registry",
+            &reg,
+            "--version",
+            v,
+        ]);
+        assert_code(&out, 0, v);
+    }
+
+    // A fresh registry audits clean: every recorded entry re-hashed.
+    let out = run_cage(&["registry", "verify", "--registry", &reg]);
+    assert_code(&out, 0, "clean verify");
+    assert!(stdout(&out).contains("OK"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("3 entry"), "{}", stdout(&out));
+
+    // A hand-edit inside an entry breaks its byte hashes → E1803 finding.
+    fs::write(
+        root.join("reg/common/1.0.0/data/client/json/Item.json"),
+        r#"[{"id": 1, "name": "Forged"}]"#,
+    )
+    .unwrap();
+    let out = run_cage(&["registry", "verify", "--registry", &reg]);
+    assert_code(&out, 2, "tampered entry");
+    assert!(
+        stdout(&out).contains("E1803") && stdout(&out).contains("common/1.0.0"),
+        "{}",
+        stdout(&out)
+    );
+
+    // Restore the bytes, then drift the ledger away from the index record:
+    // verify_snapshot alone would pass (files match the ledger), the
+    // registry audit cross-checks the index record against it.
+    write(&root.join("pub/config/item.json"), &item_rows("Sword"));
+    let out = run_cage(&[
+        "registry",
+        "publish",
+        &pub_root,
+        "--registry",
+        &reg,
+        "--version",
+        "1.0.0",
+    ]);
+    assert_code(&out, 0, "restore 1.0.0");
+    let ledger_path = root.join("reg/common/1.9.0/HASHES.json");
+    let mut ledger: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&ledger_path).unwrap()).unwrap();
+    ledger["build_id"] = serde_json::Value::String("forged000000000000000".to_string());
+    fs::write(&ledger_path, serde_json::to_string_pretty(&ledger).unwrap()).unwrap();
+    let out = run_cage(&["registry", "verify", "--registry", &reg]);
+    assert_code(&out, 2, "ledger/index drift");
+    assert!(
+        stdout(&out).contains("does not match ledger") && stdout(&out).contains("common/1.9.0"),
+        "{}",
+        stdout(&out)
+    );
+
+    // An entry directory with no index record (interrupted remove, hand
+    // edit) is reported — and gc will sweep it.
+    fs::create_dir_all(root.join("reg/common/0.5.0")).unwrap();
+    let out = run_cage(&["registry", "verify", "--registry", &reg]);
+    assert_code(&out, 2, "orphan directory");
+    assert!(
+        stdout(&out).contains("without index record") && stdout(&out).contains("0.5.0"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn registry_gc_keeps_window_and_remove_republish() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_publisher(root);
+    let reg = root.join("reg").to_str().unwrap().to_string();
+    let pub_root = root.join("pub").to_str().unwrap().to_string();
+    for (v, marker) in [
+        ("1.0.0", "Sword"),
+        ("1.1.0", "Shield"),
+        ("1.2.0", "Bow"),
+        ("2.0.0", "Lance"),
+    ] {
+        write(&root.join("pub/config/item.json"), &item_rows(marker));
+        let out = run_cage(&[
+            "registry",
+            "publish",
+            &pub_root,
+            "--registry",
+            &reg,
+            "--version",
+            v,
+        ]);
+        assert_code(&out, 0, v);
+    }
+
+    // A consumer pinned to the oldest version resolves fine before gc —
+    // this is exactly the rollback surface the keep window protects.
+    write_consumer_full(root, "oldpin", "registry:common@1.0.0", None, "schema.yaml");
+    let oldpin = root.join("oldpin").to_str().unwrap().to_string();
+    let out = run_cage(&["build", &oldpin, "--profile", "client"]);
+    assert_code(&out, 0, "old pin pre-gc");
+
+    // Dry run: the removal plan is reported, the registry is untouched.
+    let before = tree_fingerprint(&root.join("reg"));
+    let out = run_cage(&["registry", "gc", "--registry", &reg, "--dry-run"]);
+    assert_code(&out, 0, "gc dry run");
+    assert!(stdout(&out).contains("dry run"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("common/1.0.0"), "{}", stdout(&out));
+    assert_eq!(
+        tree_fingerprint(&root.join("reg")),
+        before,
+        "dry run must not touch the registry"
+    );
+
+    // Real gc (default keep 3): only 1.0.0 falls out of the window.
+    let out = run_cage(&["registry", "gc", "--registry", &reg]);
+    assert_code(&out, 0, "gc default window");
+    assert!(stdout(&out).contains("common/1.0.0"), "{}", stdout(&out));
+    assert!(!root.join("reg/common/1.0.0").exists());
+    assert!(root.join("reg/common/1.1.0").is_dir());
+    // The list reflects the rewritten index.
+    let out = run_cage(&["registry", "list", "--registry", &reg]);
+    assert_code(&out, 0, "list after gc");
+    assert!(
+        !stdout(&out).contains("1.0.0") && stdout(&out).contains("1.1.0"),
+        "{}",
+        stdout(&out)
+    );
+    // The window survives a consumer rebuild (rollback surface intact).
+    write_consumer_full(
+        root,
+        "shiftpin",
+        "registry:common@1.1.0",
+        None,
+        "schema.yaml",
+    );
+    let shiftpin = root.join("shiftpin").to_str().unwrap().to_string();
+    let out = run_cage(&["build", &shiftpin, "--profile", "client"]);
+    assert_code(&out, 0, "kept version builds");
+
+    // keep is a floor of one: --keep 1 leaves the newest only, and the
+    // windowed-out version stops resolving for consumers (E1802).
+    let out = run_cage(&["registry", "gc", "--registry", &reg, "--keep", "1"]);
+    assert_code(&out, 0, "gc keep 1");
+    assert!(root.join("reg/common/2.0.0").is_dir());
+    assert!(!root.join("reg/common/1.1.0").exists());
+    let out = run_cage(&["check", &shiftpin]);
+    assert_code(&out, 2, "windowed-out version gone");
+    assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
+
+    // Explicit remove: dry run first, then the real removal; the empty
+    // package index stays behind and the registry still audits clean.
+    let out = run_cage(&[
+        "registry",
+        "remove",
+        "common",
+        "2.0.0",
+        "--registry",
+        &reg,
+        "--dry-run",
+    ]);
+    assert_code(&out, 0, "remove dry run");
+    assert!(stdout(&out).contains("would remove"), "{}", stdout(&out));
+    assert!(root.join("reg/common/2.0.0").is_dir());
+    let out = run_cage(&["registry", "remove", "common", "2.0.0", "--registry", &reg]);
+    assert_code(&out, 0, "remove 2.0.0");
+    assert!(!root.join("reg/common/2.0.0").exists());
+    let out = run_cage(&["registry", "verify", "--registry", &reg]);
+    assert_code(&out, 0, "verify after remove");
+    let out = run_cage(&["registry", "remove", "common", "9.9.9", "--registry", &reg]);
+    assert_code(&out, 2, "remove missing");
+    assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
+
+    // Removal is explicit history editing: the exact same snapshot
+    // re-publishes cleanly into the emptied version slot.
+    write(&root.join("pub/config/item.json"), &item_rows("Lance"));
+    let out = run_cage(&[
+        "registry",
+        "publish",
+        &pub_root,
+        "--registry",
+        &reg,
+        "--version",
+        "2.0.0",
+    ]);
+    assert_code(&out, 0, "republish after remove");
+    assert!(!stderr(&out).contains("E1801"), "{}", stderr(&out));
+    write_consumer_full(root, "newpin", "registry:common@2.0.0", None, "schema.yaml");
+    let newpin = root.join("newpin").to_str().unwrap().to_string();
+    let out = run_cage(&["build", &newpin, "--profile", "client"]);
+    assert_code(&out, 0, "republished version builds");
+}

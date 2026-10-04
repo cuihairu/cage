@@ -408,6 +408,38 @@ fn remote_errors_and_readonly_commands() {
     assert_code(&out, 2, "remote list refusal");
     assert!(stderr(&out).contains("read-only"), "{}", stderr(&out));
 
+    // The R4 administration commands (verify/gc/remove) refuse remote roots
+    // the same way — the read-only protocol serves resolution only.
+    for (args, what) in [
+        (
+            vec!["registry", "verify", "--registry", url.as_str()],
+            "remote verify refusal",
+        ),
+        (
+            vec!["registry", "gc", "--registry", url.as_str()],
+            "remote gc refusal",
+        ),
+        (
+            vec![
+                "registry",
+                "remove",
+                "common",
+                "1.0.0",
+                "--registry",
+                url.as_str(),
+            ],
+            "remote remove refusal",
+        ),
+    ] {
+        let out = run_cage(&args);
+        assert_code(&out, 2, what);
+        assert!(
+            stderr(&out).contains("read-only"),
+            "{what}: {}",
+            stderr(&out)
+        );
+    }
+
     // Tampered server-side bytes → E1803: the download hash gate rejects
     // them before they can enter the cache.
     fs::write(

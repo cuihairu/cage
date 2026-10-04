@@ -61,4 +61,4 @@ cage inspect Item                    # 查看 Schema 与配置结构
 - [Source](/source) / [Schema](/schema) / [Validation](/validation) / [Target](/target)——数据管线四阶段
 - [CLI](/cli) / [Build](/build)——命令行与确定性构建
 - [Web UI](/web)——第三阶段：Schema 编辑器（交换模型 W1、本地服务 W2、编辑器界面 W3 已实装）
-- [Registry](/cli#registry)——第三阶段 R 系列：配置仓库（本地发布/列表 + `registry:` 源与 Schema 解析 + `[dependencies]` 版本 pin + 远程只读解析，R1–R3 已实装）
+- [Registry](/cli#registry)——第三阶段 R 系列：配置仓库（本地发布/列表 + `registry:` 源与 Schema 解析 + `[dependencies]` 版本 pin + 远程只读解析 + verify 全册审计 / gc 滚动窗口 / remove 显式移除，R1–R4 已实装）

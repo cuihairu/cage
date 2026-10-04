@@ -113,6 +113,9 @@ Ctrl+C 停止服务。`--port` 默认 8765。
 ```bash
 cage registry publish <project> --registry <dir> [--package name] [--version 1.0.0] [--profile client]
 cage registry list    --registry <dir>
+cage registry verify  --registry <dir>
+cage registry gc      --registry <dir> [--keep 3] [--dry-run]
+cage registry remove  <package> <version> --registry <dir> [--dry-run]
 ```
 
 本地 Configuration Registry（第三阶段 R 系列，[design §29](/design#29-configuration-registry)）。
@@ -179,6 +182,31 @@ stages  = "1.2.3"        # 精确等于（裸版本 = 精确匹配）
 比较符支持 `=` `>` `>=` `<` `<=`，逗号分隔为 AND；`^` caret 与 `~` tilde
 展开为下闭区间；比较按点分数字序逐分量补零（`>=1.2` 不排除 `1.2.0`）。
 区间内无已发布版本满足 → `E1802`（错误信息附已发布版本列表）。
+
+### 校验、回滚与清理（R4）
+
+`cage registry verify` 是全册审计：逐包逐条目重过账本校验（字节对
+blake3 复核），并交叉核对 index.json 记录与条目账本的
+build_id/content_hash 一致（漂移 → `E1803`）；磁盘上有条目目录而
+index 无记录（中断的 remove/gc、手工改动）同样报 `E1803`。审计只读，
+发现问题逐条列出并以退出码 2 失败——「未经校验不入册」的对偶：
+**入册之后也可随时复审**。
+
+`cage registry gc` 落实多版本共存的 GC 策略：**滚动窗口**——每包保留
+最新 `--keep N`（默认 3，下限 1：注册表永不丢光历史）个版本，窗口外
+旧版删除并从 index 摘除，孤儿目录一并清扫。窗口即回滚面：消费方 pin
+住 `@1.0.0` 这类旧版本时仍能解析构建，gc 后被窗口挤出的版本则对消费
+方 `E1802`——收窄窗口前先确认没有消费方还 pin 在将被移除的版本上。
+`--dry-run` 报告完全相同的移除清单而不触碰注册表。
+
+条目移除/重新发布纪律：**移除必须是显式行政操作**
+（`cage registry remove <包> <版本>`），注册表自身绝不隐式改写历史
+（同版本异字节永远是 `E1801`）。remove 连版本目录带 index 记录一并
+删除（`--dry-run` 只校验存在性与名字合法性），包的 index 保留（即便
+变空）——显式移除后的版本槽位可用同字节快照重新 publish 干净入册，
+重发不是冲突；除此之外的同版本重发仍按版本冲突拒绝。verify / gc /
+remove 同 publish / list 一样只对本地注册表生效，远程根报 read-only
+错误退出。
 
 ## 快速开始
 

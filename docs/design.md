@@ -1401,7 +1401,14 @@ path` 支持 http(s) 根，协议为匿名 GET 三资源（包 index、条目账
 <url 指纹>/` 缓存 → 过 `verify_snapshot` 信任门（未经校验不载入）；
 缓存复验干净则离线复用。远程根只读：publish/list 拒绝（协议无包枚举；
 发布在本地注册表完成后由静态服务器托管）。鉴权（token/签名）留待后续
-独立立项。回滚/GC 见 todo.md R4。红线不变：Registry 不执行上传的
+独立立项。R4 回滚与清理已落地——`cage registry verify` 全册审计
+（逐条目重过账本校验 + index 记录与条目账本交叉核对 + 孤儿目录报告，
+E1803 逐条列出）、`cage registry gc` 滚动窗口策略（每包保留最新
+`--keep N` 个版本、下限 1——窗口即回滚面，pin 住旧版本的消费方仍可
+解析，被窗口挤出的版本对消费方 E1802；孤儿目录一并清扫，--dry-run
+报告同一清单不落笔）、`cage registry remove` 显式行政移除（版本目录
+带 index 记录一并删、包 index 保留，同字节可重新 publish 干净入册；
+注册表自身绝不隐式改写历史）。红线不变：Registry 不执行上传的
 Validator（§35）。
 
 ---
