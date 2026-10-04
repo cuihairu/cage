@@ -249,12 +249,12 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 
 | 概念 | 现状 | 差距 / 下一步 |
 | --- | --- | --- |
-| Schema | 已实装：19 种字段类型（含 Map）、引用、唯一约束、字段级 `targets` 可见性、19 错误码族 | 字段可见性冲突语义（E9006）仅码表、无调用点 |
+| Schema | 已实装：19 种字段类型（含 Map）、引用、唯一约束、字段级 `targets` 可见性、19 错误码族 | — |
 | Canonical Model | 已实装：value.rs 全类型 + SourceLocation | — |
 | IR | 定界完成（见上） | 派生形状需求出现时拆 Compiled IR |
-| Validation Context | 已实装：schema/mod.rs（schema / current_table / current_row / current_field …） | — |
-| Dependency Graph | 核心已实装：reference/mod.rs `DependencyGraph`（环检测 / 拓扑）+ `IncrementalPlanner`，测试先行 | **构建路径未接线**：cli 构造 ValidatedSchema 时 `dependency_graph` 恒 `DependencyGraph::default()` 占位；增量第二层（按依赖传播只重建受影响表）依赖此接线 |
-| Profile | 已实装第一层：表 + 字段双层面板过滤（同时裁剪 Schema 与 Document，validation 前执行） | profile 不感知校验 / 安全语义：server-only 字段只有过滤落盘、无泄漏拦截；E9006 待实装 |
+| Validation Context | 已实装：validation/mod.rs（schema / document / diagnostics / max_level / profile / reference_cache） | — |
+| Dependency Graph | 已实装并接线：reference/mod.rs `DependencyGraph`（环检测 / 拓扑）+ `IncrementalPlanner`；cli 构建真实接线，增量第二层按表哈希 + 依赖传播只重建受影响表，manifest 落 `dependencies`/`table_hashes` 账（D2） | 增量删除表回退全量（不沿边传播删除语义）；target 配置变更仍不参与哈希 |
+| Profile | 已实装（D3 语义化）：表 + 字段双层面板过滤裁剪 Schema 与 Document 产物视图；校验在**完整** schema/document 上执行（profile 只裁剪产物视图、不豁免数据校验）；ValidationContext 携带 profile，结构不可缺字段（required 无默认 / 主键 / 唯一约束 / 引用目标）被 profile 隐藏报 E9006 冲突而非静默过滤 | 可选字段裁剪保持合法视图语义；整表剔除是表级可见性语义 |
 | Manifest | 已实装：7 顶层字段（project / profile / cage_version / schema_hash / source_hash / content_hash / artifacts）+ artifact 级 6 字段 | 缺 build_id / dependencies / generator_version（现以 cage_version 兼任）；ir_hash 随 IR 定界省略 |
 | Snapshot | 未实装 | 规划：snapshot/ = manifest + schema + 数据 + 生成物 + 校验清单，服务器启动加载即校 |
 

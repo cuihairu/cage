@@ -336,17 +336,23 @@ fn run_check(path: &Path, level: &str, profile: &str) -> i32 {
             return 2;
         }
     };
-    let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
-    let graph = DependencyGraph::from_schema(&schema);
+    let (_, document) = filter_by_profile(&project.schema, &project.document, profile);
+    // Profile-aware validation runs on the FULL schema/document with the
+    // active profile in the validation context: E9006 fires when the
+    // projection would silently drop a structurally required field (Profile
+    // 语义化——报冲突码而非静默过滤), and every table's data stays checked —
+    // profiles gate runtime views, not data quality. `document` (filtered)
+    // below only feeds the summary count.
     let validated = ValidatedSchema {
-        schema,
-        dependency_graph: graph,
+        schema: project.schema.clone(),
+        dependency_graph: DependencyGraph::from_schema(&project.schema),
     };
-    let diagnostics = cage_core::validation::validate(
+    let diagnostics = cage_core::validation::validate_with_profile(
         &validated,
-        &document,
+        &project.document,
         level,
         project.config.warnings_as_errors,
+        Some(profile),
     );
     if !diagnostics.is_empty() {
         println!("{}", diagnostics.render(false));
@@ -399,15 +405,19 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
     };
 
     let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
+    // Profile-aware validation on the FULL pair (see run_check): E9006 for
+    // structurally broken projections; all data stays checked regardless of
+    // profile. The filtered pair below drives hashing and generation only.
     let validated = ValidatedSchema {
-        schema: schema.clone(),
-        dependency_graph: DependencyGraph::from_schema(&schema),
+        schema: project.schema.clone(),
+        dependency_graph: DependencyGraph::from_schema(&project.schema),
     };
-    let diagnostics = cage_core::validation::validate(
+    let diagnostics = cage_core::validation::validate_with_profile(
         &validated,
-        &document,
+        &project.document,
         level,
         project.config.warnings_as_errors,
+        Some(profile),
     );
     if !diagnostics.is_empty() {
         println!("{}", diagnostics.render(false));
@@ -627,6 +637,31 @@ fn run_gen(path: &Path, profile: &str) -> i32 {
         );
         return 2;
     };
+
+    // Schema-only pass with profile semantics: a projection that would strip
+    // required/key/unique/reference-critical fields is E9006, not a silent
+    // generation (code targets render field metadata from the view).
+    let validated = ValidatedSchema {
+        schema: project.schema.clone(),
+        dependency_graph: DependencyGraph::from_schema(&project.schema),
+    };
+    let diagnostics = cage_core::validation::validate_with_profile(
+        &validated,
+        &project.document,
+        ValidationLevel::Schema,
+        false,
+        Some(profile),
+    );
+    if !diagnostics.is_empty() {
+        println!("{}", diagnostics.render(false));
+    }
+    if diagnostics.has_errors() {
+        println!(
+            "cage gen: FAILED schema validation ({} errors)",
+            diagnostics.errors().len()
+        );
+        return 1;
+    }
 
     let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
     let normalized = normalize_document(&document);

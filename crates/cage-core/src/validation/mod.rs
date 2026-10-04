@@ -4,12 +4,12 @@
 pub mod rules;
 
 use crate::diagnostics::{Diagnostic, DiagnosticBuilder, Diagnostics, Severity};
-use crate::error::codes::{parse, reference, schema, semantic, table, type_val, value};
+use crate::error::codes::{build, parse, reference, schema, semantic, table, type_val, value};
 use crate::schema::{
     ExpressionRule, FieldSchema, FieldType, MapKeyType, ReferenceSchema, Schema, TableSchema,
     ValidatedSchema,
 };
-use crate::value::{Document, Row, TypedValue, Value};
+use crate::value::{Document, Row, SourceLocation, TypedValue, Value};
 use std::collections::HashMap;
 
 /// Validation level enumeration
@@ -104,6 +104,9 @@ pub struct ValidationContext<'a> {
     pub max_level: ValidationLevel,
     /// Whether warnings are escalated to errors
     pub warnings_as_errors: bool,
+    /// Active profile (E9006 field-visibility checks); None = no profile
+    /// semantics: every field is visible
+    pub profile: Option<&'a str>,
     /// Resolved references cache for L5
     pub reference_cache: ReferenceCache,
 }
@@ -149,12 +152,24 @@ impl ReferenceCache {
     }
 }
 
-/// Main validation entry point
+/// Main validation entry point (no active profile — the full schema view)
 pub fn validate(
     schema: &ValidatedSchema,
     document: &Document,
     max_level: ValidationLevel,
     warnings_as_errors: bool,
+) -> Diagnostics {
+    validate_with_profile(schema, document, max_level, warnings_as_errors, None)
+}
+
+/// Profile-aware entry point. `profile` gates the E9006 field-visibility
+/// checks (L1) and is carried in the validation context.
+pub fn validate_with_profile(
+    schema: &ValidatedSchema,
+    document: &Document,
+    max_level: ValidationLevel,
+    warnings_as_errors: bool,
+    profile: Option<&str>,
 ) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
     let mut ctx = ValidationContext {
@@ -163,6 +178,7 @@ pub fn validate(
         diagnostics: &mut diagnostics,
         max_level,
         warnings_as_errors,
+        profile,
         reference_cache: ReferenceCache::build(document, schema),
     };
 
@@ -172,6 +188,7 @@ pub fn validate(
     }
     if max_level >= ValidationLevel::Schema {
         validate_schema(&mut ctx);
+        validate_profile_visibility(&mut ctx);
     }
     if max_level >= ValidationLevel::Type {
         validate_type(&mut ctx);
@@ -268,6 +285,145 @@ fn validate_schema(ctx: &mut ValidationContext) {
                             .build(),
                         );
                     }
+                }
+            }
+        }
+    }
+}
+
+/// E9006 — field-visibility conflicts in the active profile's projection
+/// (Profile 语义化, v0.3). Empty `targets` means "visible in every profile";
+/// stripping a field from the projection is a legitimate profile view only
+/// while the remainder stays structurally valid. A projection that would
+/// lose a required / primary-key / unique-constraint / reference-critical
+/// field is a CONFLICT reported as E9006 — the review's "报冲突码而非静默
+/// 过滤" — instead of silently producing an invalid view. Whole tables are
+/// exempt: a table that excludes the profile disappears from the view
+/// entirely, which is the table-level visibility semantic.
+/// Schema-only profile-visibility check (E9006). Used by `cage gen`, which
+/// skips data validation: the projection's structural validity is a schema
+/// property and must gate code generation too.
+pub fn check_profile_visibility(schema: &Schema, profile: &str) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    profile_visibility(schema, profile, &mut diagnostics);
+    diagnostics
+}
+
+fn validate_profile_visibility(ctx: &mut ValidationContext) {
+    let Some(profile) = ctx.profile else { return };
+    profile_visibility(&ctx.schema.schema, profile, ctx.diagnostics);
+}
+
+fn profile_visibility(schema: &Schema, profile: &str, diagnostics: &mut Diagnostics) {
+    let visible =
+        |targets: &[String]| targets.is_empty() || targets.iter().any(|t| t == profile || t == "*");
+
+    for (table_name, table) in &schema.tables {
+        if !visible(&table.targets) {
+            continue;
+        }
+
+        // Structurally required fields hidden by this profile → conflict.
+        for (field_name, field) in &table.fields {
+            if visible(&field.targets) {
+                continue;
+            }
+            let loc = SourceLocation::new("schema").with_field(field_name);
+            if field.required && field.default.is_none() {
+                diagnostics.add(
+                    DiagnosticBuilder::error(build::E9006, "Required field hidden by profile")
+                        .location(loc.clone())
+                        .table(table_name)
+                        .field(field_name)
+                        .hint(format!(
+                            "field '{field_name}' is required and targets {:?}, which hides it \
+                             from profile '{profile}'; remove 'targets', add '{profile}', or give \
+                             the field a default",
+                            field.targets
+                        ))
+                        .build(),
+                );
+            }
+            if table.primary_key.iter().any(|k| k == field_name) {
+                diagnostics.add(
+                    DiagnosticBuilder::error(build::E9006, "Primary key field hidden by profile")
+                        .location(loc.clone())
+                        .table(table_name)
+                        .field(field_name)
+                        .hint(format!(
+                            "primary key '{field_name}' of table '{table_name}' would be missing \
+                             from profile '{profile}'"
+                        ))
+                        .build(),
+                );
+            }
+            for constraint in &table.unique_constraints {
+                if constraint.fields.iter().any(|f| f == field_name) {
+                    diagnostics.add(
+                        DiagnosticBuilder::error(
+                            build::E9006,
+                            "Unique-constraint field hidden by profile",
+                        )
+                        .location(loc.clone())
+                        .table(table_name)
+                        .field(field_name)
+                        .hint(format!(
+                            "unique constraint '{}' of table '{table_name}' would be incomplete \
+                             in profile '{profile}'",
+                            constraint.name
+                        ))
+                        .build(),
+                    );
+                }
+            }
+        }
+
+        // Reference targets of visible fields must stay visible: a dangling
+        // in-view reference is a projection conflict, not a silent drop.
+        for (field_name, field) in &table.fields {
+            if !visible(&field.targets) {
+                continue;
+            }
+            let Some(reference) = &field.reference else {
+                continue;
+            };
+            let Some(target_table) = schema.tables.get(&reference.table) else {
+                continue;
+            };
+            let loc = SourceLocation::new("schema").with_field(field_name);
+            if !visible(&target_table.targets) {
+                diagnostics.add(
+                    DiagnosticBuilder::error(
+                        build::E9006,
+                        "Reference target table hidden by profile",
+                    )
+                    .location(loc.clone())
+                    .table(table_name)
+                    .field(field_name)
+                    .hint(format!(
+                        "field '{field_name}' references table '{}', which is hidden from \
+                         profile '{profile}'",
+                        reference.table
+                    ))
+                    .build(),
+                );
+            } else if let Some(target_field) = target_table.fields.get(&reference.field) {
+                if !visible(&target_field.targets) {
+                    diagnostics.add(
+                        DiagnosticBuilder::error(
+                            build::E9006,
+                            "Reference target field hidden by profile",
+                        )
+                        .location(loc)
+                        .table(table_name)
+                        .field(field_name)
+                        .hint(format!(
+                            "field '{field_name}' references '{}.{}', which is hidden from \
+                             profile '{profile}'",
+                            reference.table, reference.field
+                        ))
+                        .build(),
+                    );
                 }
             }
         }
@@ -2284,5 +2440,198 @@ mod tests {
         assert!(diags.has_errors());
         let errors = diags.errors();
         assert!(errors.iter().any(|e| e.code == table::E1301));
+    }
+
+    /// Table helper with profile targets on the table and/or fields.
+    fn profiled_table(
+        name: &str,
+        table_targets: &[&str],
+        fields: Vec<(FieldSchema, Vec<&str>)>,
+    ) -> (String, TableSchema) {
+        let mut table = plain_table(name, &[], vec![]);
+        table.targets = table_targets.iter().map(|t| (*t).to_string()).collect();
+        for (mut field, targets) in fields {
+            field.targets = targets.iter().map(|t| (*t).to_string()).collect();
+            table.fields.insert(field.name.clone(), field);
+        }
+        (name.to_string(), table)
+    }
+
+    #[test]
+    fn e9006_required_field_hidden_by_profile_is_conflict() {
+        let mut schema = Schema::new();
+        let mut id = plain_field("id", FieldType::Int32);
+        id.required = true;
+        let mut secret = plain_field("secret", FieldType::String);
+        secret.required = true;
+        let (_name, table) =
+            profiled_table("Account", &[], vec![(id, vec![]), (secret, vec!["server"])]);
+        schema.add_table(table);
+
+        let diags = check_profile_visibility(&schema, "client");
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1, "only the hidden required field conflicts");
+        assert_eq!(errors[0].code, build::E9006);
+        assert_eq!(errors[0].table.as_deref(), Some("Account"));
+        assert_eq!(errors[0].field.as_deref(), Some("secret"));
+        assert!(
+            errors[0].hint.as_deref().unwrap_or("").contains("client"),
+            "hint names the active profile"
+        );
+
+        // Serving profile sees nothing to complain about.
+        let diags_server = check_profile_visibility(&schema, "server");
+        assert!(!diags_server.has_errors());
+    }
+
+    #[test]
+    fn e9006_required_field_with_default_may_be_hidden() {
+        let mut schema = Schema::new();
+        let mut id = plain_field("id", FieldType::Int32);
+        id.required = true;
+        let mut secret = plain_field("secret", FieldType::String);
+        secret.required = true;
+        secret.default = Some(serde_json::json!("redacted"));
+        let (_name, table) =
+            profiled_table("Account", &[], vec![(id, vec![]), (secret, vec!["server"])]);
+        schema.add_table(table);
+
+        let diags = check_profile_visibility(&schema, "client");
+        assert_eq!(
+            diags.errors().len(),
+            0,
+            "default backfills the projected view"
+        );
+    }
+
+    #[test]
+    fn e9006_primary_key_and_unique_members_hidden_are_conflicts() {
+        let mut schema = Schema::new();
+        let mut id = plain_field("id", FieldType::Int32);
+        id.required = true;
+        let mut secret = plain_field("secret", FieldType::String);
+        secret.required = true;
+        let (_name, table) =
+            profiled_table("Account", &[], vec![(id, vec![]), (secret, vec!["server"])]);
+        schema.add_table(table);
+
+        // PK + unique constraint on the hidden field → two more conflicts.
+        let mut vs = validated(schema);
+        let table_mut = vs.schema.tables.get_mut("Account").unwrap();
+        table_mut.primary_key = vec!["secret".to_string()];
+        table_mut.unique_constraints = vec![crate::schema::UniqueConstraint {
+            name: "uq_secret".to_string(),
+            fields: vec!["secret".to_string()],
+        }];
+
+        let diags = check_profile_visibility(&vs.schema, "client");
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 3, "pk + unique + required, one code each");
+        assert!(errors.iter().all(|e| e.code == build::E9006));
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|e| e.field.as_deref() == Some("secret"))
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn e9006_optional_field_may_be_hidden_silently() {
+        let mut schema = Schema::new();
+        let mut id = plain_field("id", FieldType::Int32);
+        id.required = true;
+        let debug = plain_field("debug_log", FieldType::Bool);
+        let (_name, table) =
+            profiled_table("Account", &[], vec![(id, vec![]), (debug, vec!["server"])]);
+        schema.add_table(table);
+
+        let diags = check_profile_visibility(&schema, "client");
+        assert!(
+            !diags.has_errors(),
+            "optional fields are a legitimate view, not a conflict"
+        );
+    }
+
+    #[test]
+    fn e9006_reference_target_hidden_by_profile_is_conflict() {
+        let mut schema = Schema::new();
+        let mut item_id = plain_field("id", FieldType::Int32);
+        item_id.required = true;
+        let (_item_name, mut item_table) = profiled_table(
+            "Item",
+            &[],
+            vec![
+                (item_id.clone(), vec![]),
+                (
+                    plain_field("internal_note", FieldType::String),
+                    vec!["server"],
+                ),
+            ],
+        );
+        item_table.primary_key = vec!["id".to_string()];
+        schema.add_table(item_table);
+
+        let mut drop_id = plain_field("id", FieldType::Int32);
+        drop_id.required = true;
+        let mut link = plain_field("item", FieldType::Int32);
+        link.required = true;
+        link.reference = Some(ReferenceSchema {
+            table: "Item".to_string(),
+            field: "internal_note".to_string(),
+            predicate: None,
+            cardinality: "one".to_string(),
+            compatible_with: None,
+        });
+        let (_drop_name, drop_table) =
+            profiled_table("Drop", &[], vec![(drop_id, vec![]), (link, vec![])]);
+
+        schema.add_table(drop_table);
+
+        // The referencing side is visible in client, the target field is not.
+        let diags = check_profile_visibility(&schema, "client");
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, build::E9006);
+        assert_eq!(errors[0].field.as_deref(), Some("item"));
+
+        // Hiding the whole target TABLE also conflicts.
+        let mut schema2 = Schema::new();
+        let mut table2 = plain_table("Item", &["id"], vec![item_id.clone()]);
+        table2.targets = vec!["server".to_string()];
+        schema2.add_table(table2);
+        let mut link2 = plain_field("item", FieldType::Int32);
+        link2.reference = Some(ReferenceSchema {
+            table: "Item".to_string(),
+            field: "id".to_string(),
+            predicate: None,
+            cardinality: "one".to_string(),
+            compatible_with: None,
+        });
+        let (_, drop_table2) = profiled_table("Drop", &[], vec![(link2, vec![])]);
+        schema2.add_table(drop_table2);
+
+        let diags2 = check_profile_visibility(&schema2, "client");
+        let errs2 = diags2.errors();
+        assert_eq!(errs2.len(), 1, "hidden target table conflicts");
+        assert_eq!(errs2[0].code, build::E9006);
+    }
+
+    #[test]
+    fn e9006_requires_an_active_profile() {
+        let mut schema = Schema::new();
+        let mut secret = plain_field("secret", FieldType::String);
+        secret.required = true;
+        let (_name, table) = profiled_table("Account", &[], vec![(secret, vec!["server"])]);
+        schema.add_table(table);
+
+        // Plain validate() has no profile → no E9006 semantics.
+        let vs = validated(schema);
+        let diags = validate(&vs, &Document::new(), ValidationLevel::Schema, false);
+        assert!(
+            !diags.has_errors(),
+            "no profile means everything is visible"
+        );
     }
 }

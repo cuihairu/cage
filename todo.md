@@ -61,8 +61,11 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       不再是空占位），增量第二层按 `table_hashes` 比对 + 依赖图传播只重建
       受影响表（未受影响表从磁盘携带，manifest 与全量构建逐字节收敛，验证
       见 tests/incremental.rs layer2 用例）；manifest 落 `dependencies` 账
-- [ ] D3 Profile 语义化：E9006 字段可见性冲突实装（server-only 字段进入
-      client 视图/产物时报冲突码而非静默过滤）；profile 感知校验上下文
+- [x] D3 Profile 语义化：校验在完整 schema/document 上执行（profile 只
+      裁剪产物视图）、ValidationContext 携带 profile；E9006 冲突实装——
+      结构不可缺字段（required 无默认/主键/唯一约束/引用目标表或字段）
+      被 profile 隐藏报冲突码而非静默过滤，可选字段与整表剔除仍为合法
+      视图；`cage check/build --profile` 与 `cage gen` 均按此语义
 - [x] D4 Manifest 强化：`build_id`（确定性指纹 blake3(profile+三哈希)
       前 24 位——时间戳方案会破坏确定性构建契约，弃）与
       `generator_version`（"1.0.0"，布局演进自增）落地；旧 manifest

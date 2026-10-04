@@ -94,6 +94,30 @@ Unknown field:
     pric
 ```
 
+### E9006 字段可见性冲突（Profile 语义化）
+
+`targets` 决定字段/表在哪些 profile 的视图里可见（空 = 全 profile）。
+裁剪对视图是常规操作，但**结构上不可缺的字段被 profile 隐藏就是冲突**，
+报 `E9006` 而不是静默过滤：
+
+- `required` 且无 `default` 的字段被当前 profile 隐藏；
+- 主键字段被隐藏；
+- 唯一约束成员被隐藏；
+- 可见表的引用字段，其目标表或目标字段被隐藏（投影后悬空引用）。
+
+有 `default` 的 required 字段、非必需字段、整表被 `targets` 剔除，都是
+合法视图，不报错。检查对完整 schema 执行（`profile` 只裁剪产物视图、不
+豁免数据校验），`cage check/build --profile <p>` 与 `cage gen` 均按此
+语义运行。示例：
+
+```text
+ERROR E9006
+
+Account.secret
+
+Required field hidden by profile (targets: ["server"], profile: "client")
+```
+
 ## L2 Type（类型）
 
 例如：

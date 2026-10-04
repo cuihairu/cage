@@ -1031,3 +1031,97 @@ fn diff_missing_target_manifest_exits_2() {
         stderr(&out)
     );
 }
+
+/// E9006 (Profile 语义化): a projection that would silently strip a
+/// structurally required / key / unique / reference-critical field is a
+/// conflict reported as E9006; optional server-only fields stay a
+/// legitimate client view. Validation covers the full corpus regardless of
+/// profile (profiles gate runtime views, not data quality).
+#[test]
+fn e9006_visibility_conflict_blocks_client_profile() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(
+        root.join("cage.toml"),
+        r#"output_dir = "build"
+schema_path = "schemas"
+
+[project]
+name = "visibility"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client"
+file_template = "{table}.json"
+
+[profiles.server]
+name = "server"
+
+[[profiles.server.targets]]
+format = "json"
+output_dir = "build/server"
+file_template = "{table}.json"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("schemas/account.yaml"),
+        r#"tables:
+  Account:
+    name: Account
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      email: { name: email, type: { kind: String }, required: true }
+      secret: { name: secret, type: { kind: String }, required: true,
+                targets: [server] }
+enums: {}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("config/account.json"),
+        r#"{"Account": [{"id": 1, "email": "a@b.c", "secret": "s3cr3t"}]}"#,
+    )
+    .unwrap();
+
+    // client projection would lose the required server-only field → E9006.
+    let out = run_cage(&["check", root.to_str().unwrap(), "--profile", "client"]);
+    assert_code(&out, 1, "check client with hidden required field");
+    let stdout = stdout(&out);
+    assert!(stdout.contains("E9006"), "expected E9006, got:\n{stdout}");
+    assert!(
+        stdout.contains("Required field hidden by profile") && stdout.contains("secret"),
+        "expected field-level conflict, got:\n{stdout}"
+    );
+
+    // build shares the conflict.
+    let out = run_cage(&["build", root.to_str().unwrap(), "--profile", "client"]);
+    assert_code(&out, 1, "build client with hidden required field");
+
+    // server profile sees the full schema → clean.
+    let out = run_cage(&["check", root.to_str().unwrap(), "--profile", "server"]);
+    assert_code(&out, 0, "check server profile");
+
+    // Optional server-only fields remain a legitimate client view: relax the
+    // field and the client build passes, with the field stripped from output.
+    let schema_text = fs::read_to_string(root.join("schemas/account.yaml")).unwrap();
+    let relaxed = schema_text.replace(
+        "secret: { name: secret, type: { kind: String }, required: true,\n                targets: [server] }",
+        "secret: { name: secret, type: { kind: String }, targets: [server] }",
+    );
+    fs::write(root.join("schemas/account.yaml"), relaxed).unwrap();
+    let out = run_cage(&["build", root.to_str().unwrap(), "--profile", "client"]);
+    assert_code(&out, 0, "client build with optional server-only field");
+    let artifact = fs::read_to_string(root.join("build/client/Account.json")).unwrap();
+    assert!(!artifact.contains("secret"), "leak: {artifact}");
+}
