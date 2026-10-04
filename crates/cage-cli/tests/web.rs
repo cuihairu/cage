@@ -442,6 +442,64 @@ fn web_save_refuses_directory_schema_path() {
     assert!(json(&resp)["schema"]["tables"].get("Monster").is_some());
 }
 
+/// Registry-schema project (R2): the schema is owned by a published entry,
+/// so the editor must refuse to save over it.
+const REG_TOML: &str = r#"schema_path = "registry:common"
+
+[project]
+name = "reg-schema"
+
+[source_roots]
+main = "registry:common"
+
+[registry]
+path = "../reg"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/json"
+file_template = "{table}.json"
+"#;
+
+#[test]
+fn web_save_refuses_registry_schema_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("cage.toml"), REG_TOML).unwrap();
+    let server = start_server(tmp.path());
+
+    // GET resolves the schema through the registry — here the registry has
+    // no such package, and the E1802 surfaces as an error payload.
+    let (status, resp) = request(server.port, "GET", "/api/schema", None);
+    assert_eq!(status, 200, "body: {resp}");
+    assert_eq!(json(&resp)["ok"], false, "body: {resp}");
+    assert!(
+        json(&resp)["error"].as_str().unwrap().contains("E1802"),
+        "response: {resp}"
+    );
+
+    // POST is refused outright: an entry schema is published, not edited.
+    let doc = serde_json::json!({
+        "tables": {"A": {"name": "A", "primary_key": ["id"],
+                          "fields": {"id": {"name": "id", "type": {"kind": "Int32"}}}}},
+        "enums": {}
+    });
+    let body = serde_json::to_string(&doc).unwrap();
+    let (status, resp) = request(server.port, "POST", "/api/schema", Some(&body));
+    assert_eq!(status, 409, "body: {resp}");
+    let v = json(&resp);
+    assert_eq!(v["ok"], false, "body: {resp}");
+    assert_eq!(v["save_target"], "registry:common", "body: {resp}");
+    assert!(
+        v["error"].as_str().unwrap().contains("published"),
+        "response: {resp}"
+    );
+    // And the refusal wrote nothing into the project.
+    assert!(!tmp.path().join("schema.yaml").exists());
+}
+
 #[test]
 fn web_serves_empty_schema_when_config_names_none() {
     let tmp = tempfile::tempdir().unwrap();

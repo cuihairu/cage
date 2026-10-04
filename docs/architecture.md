@@ -256,7 +256,7 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 | Dependency Graph | 已实装并接线：reference/mod.rs `DependencyGraph`（环检测 / 拓扑）+ `IncrementalPlanner`；cli 构建真实接线，增量第二层按表哈希 + 依赖传播只重建受影响表，manifest 落 `dependencies`/`table_hashes` 账（D2） | 增量删除表回退全量（不沿边传播删除语义）；target 配置变更仍不参与哈希 |
 | Profile | 已实装（D3 语义化）：表 + 字段双层面板过滤裁剪 Schema 与 Document 产物视图；校验在**完整** schema/document 上执行（profile 只裁剪产物视图、不豁免数据校验）；ValidationContext 携带 profile，结构不可缺字段（required 无默认 / 主键 / 唯一约束 / 引用目标）被 profile 隐藏报 E9006 冲突而非静默过滤 | 可选字段裁剪保持合法视图语义；整表剔除是表级可见性语义 |
 | Manifest | 已实装（D4）：11 顶层字段（project / profile / cage_version / generator_version / build_id / schema_hash / source_hash / content_hash / dependencies / table_hashes / artifacts） | — |
-| Snapshot | 已实装（D5）：`cage snapshot` 打包 profile 视图 + `--verify` 校验；`snapshot/<profile>-<build_id[..12]>` 确定性目录（manifest / schema.json / data / generated / HASHES 逐文件账本），core 提供 verify/load 服务器入口 | 删除/回滚策略（多快照共存管理）见 Registry 阶段——R1 本地注册表已实装（`cage registry` 发布/列表 + `registry:` 源解析，条目即自校验快照） |
+| Snapshot | 已实装（D5）：`cage snapshot` 打包 profile 视图 + `--verify` 校验；`snapshot/<profile>-<build_id[..12]>` 确定性目录（manifest / schema.json / data / generated / HASHES 逐文件账本），core 提供 verify/load 服务器入口 | 删除/回滚策略（多快照共存管理）见 Registry 阶段——R1/R2 本地注册表已实装（`cage registry` 发布/列表 + `registry:` 源与 schema_path 解析 + `[dependencies]` 版本 pin，条目即自校验快照） |
 
 ### 评审对照修正（2026-10 外部评审）
 

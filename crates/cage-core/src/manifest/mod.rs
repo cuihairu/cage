@@ -418,6 +418,12 @@ pub struct ProjectConfig {
     /// `registry:<package>[@<version>]` source roots must declare it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry: Option<RegistryConfig>,
+    /// Dependency pins (`[dependencies]` in cage.toml): registry package
+    /// name → version requirement (`"1.2.0"`, `">=1.0, <2.0"`, `"^1.2"`,
+    /// `"~1.2"`). A `registry:<package>` reference without an explicit
+    /// `@<version>` resolves through this pin.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub dependencies: IndexMap<String, String>,
 }
 
 /// Local Configuration Registry declaration (`[registry]` in cage.toml)
@@ -490,6 +496,7 @@ impl Default for ProjectConfig {
             warnings_as_errors: false,
             output_dir: Some("build".to_string()),
             registry: None,
+            dependencies: IndexMap::new(),
         }
     }
 }
@@ -908,6 +915,7 @@ mod tests {
             warnings_as_errors: true,
             output_dir: Some("build".to_string()),
             registry: None,
+            dependencies: IndexMap::new(),
         };
 
         let json = serde_json::to_string(&cfg).expect("serialize");
@@ -953,6 +961,7 @@ mod tests {
             warnings_as_errors: false,
             output_dir: None,
             registry: None,
+            dependencies: IndexMap::new(),
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();

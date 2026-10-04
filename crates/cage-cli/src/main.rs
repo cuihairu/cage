@@ -239,10 +239,7 @@ fn main() {
 fn load_project(root: &Path) -> Result<Project, String> {
     let config = load_project_config(root)?;
 
-    let schema = match &config.schema_path {
-        Some(rel) => load_schema(&root.join(rel))?,
-        None => Schema::new(),
-    };
+    let schema = load_schema_for_config(root, &config)?;
 
     let mut document = Document {
         tables: IndexMap::new(),
@@ -252,18 +249,10 @@ fn load_project(root: &Path) -> Result<Project, String> {
     for rel in config.source_roots.values() {
         // `registry:<package>[@<version>]` source roots (R1) resolve to a
         // published entry's data/ directory; the entry's ledger is verified
-        // by `cage_core::registry::resolve` before anything is read.
-        let doc = if let Some(_spec) = rel.strip_prefix("registry:") {
-            let (package, version) = cage_core::registry::parse_spec(rel)?;
-            let reg_root = match &config.registry {
-                Some(reg) => root.join(&reg.path),
-                None => {
-                    return Err(format!(
-                        "{E1802} source root '{rel}' requires '[registry] path' in cage.toml"
-                    ))
-                }
-            };
-            let entry = cage_core::registry::resolve(&reg_root, &package, version.as_deref())?;
+        // before anything is read, and the `[dependencies]` pin (R2) picks
+        // the version when the spec carries none.
+        let doc = if rel.starts_with("registry:") {
+            let entry = registry_entry(root, &config, rel)?;
             load_sources_from_entry(&entry)?
         } else {
             load_sources(&root.join(rel))?
@@ -330,6 +319,73 @@ pub(crate) fn load_schema(path: &Path) -> Result<Schema, String> {
         }
     }
     Ok(merged)
+}
+
+/// Resolve a `registry:<package>[@<version>]` reference (source root or
+/// `schema_path`) to a verified entry directory. The version requirement
+/// comes from the explicit `@<version>` spec or, when the spec carries
+/// none, from the `[dependencies]` pin; an explicit version must still
+/// satisfy the pin (E1802 otherwise).
+fn registry_entry(root: &Path, config: &ProjectConfig, rel: &str) -> Result<PathBuf, String> {
+    let (package, version) = cage_core::registry::parse_spec(rel)?;
+    let reg_root = match &config.registry {
+        Some(reg) => root.join(&reg.path),
+        None => {
+            return Err(format!(
+                "{E1802} registry reference '{rel}' requires '[registry] path' in cage.toml"
+            ))
+        }
+    };
+    let requirement = config
+        .dependencies
+        .get(&package)
+        .map(|pin| {
+            cage_core::registry::parse_version_req(pin)
+                .map_err(|e| format!("{e} (dependency '{package}')"))
+        })
+        .transpose()?;
+    cage_core::registry::resolve_pinned(
+        &reg_root,
+        &package,
+        version.as_deref(),
+        requirement.as_ref(),
+    )
+}
+
+/// Load a resolved registry entry's schema (R2): the entry's `schema.json`
+/// — the profile-projected schema the entry was published with, stored in
+/// the snapshot packing format (`Schema` serde shape).
+fn load_schema_from_entry(entry_dir: &Path) -> Result<Schema, String> {
+    let path = entry_dir.join("schema.json");
+    let content = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "{E1802} registry entry schema missing: {}: {e}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&content).map_err(|e| {
+        format!(
+            "{E1802} corrupt registry entry schema {}: {e}",
+            path.display()
+        )
+    })
+}
+
+/// Schema load for a project config (shared by `load_project` and the web
+/// API): a `registry:` `schema_path` reads the resolved entry's schema.json;
+/// otherwise the filesystem path (single file or directory of schema
+/// files); none configured → empty schema.
+pub(crate) fn load_schema_for_config(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Schema, String> {
+    match &config.schema_path {
+        Some(rel) if rel.starts_with("registry:") => {
+            load_schema_from_entry(&registry_entry(root, config, rel)?)
+        }
+        Some(rel) => load_schema(&root.join(rel)),
+        None => Ok(Schema::new()),
+    }
 }
 
 fn load_sources(root: &Path) -> Result<Document, String> {

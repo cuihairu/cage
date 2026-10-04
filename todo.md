@@ -97,9 +97,19 @@
       pin 解析→构建复现→确定性字节→篡改 E1803→冲突 E1801→错误
       路径）全绿 + 文档（cli.md/validation.md/architecture.md/
       design.md §29/index.md）+ 本勾选
-- [ ] R2 Schema 解析与依赖声明：`schema_path: registry:<包>[@<版本>]`
-      的 schema 侧解析（消费方 Schema 直接来自条目 schema.json），
-      `[dependencies]` 风格多包 pin + 版本区间
+- [x] R2 Schema 解析与依赖声明：`schema_path: registry:<包>[@<版本>]`
+      直接读条目 `schema.json`（发布时的 profile 投影 schema，serde
+      同形回读；缺失/损坏 E1802），`cage web` 对 registry schema 工程
+      拒绝保存（409，schema 归发布方所有）；`[dependencies]` 版本 pin
+      ——比较符 `=` `>` `>=` `<` `<=` 逗号 AND、`^` caret（左起首个
+      非零分量 +1 其后归零）/ `~` tilde（锁定次末位）展开、比较逐分量
+      补零（`>=1.2` 不排除 `1.2.0`）；省略 `@版本` 取满足区间最高版本，
+      显式 `@版本` 必须落在 pin 内，区间无解/越界/非法 pin 均 E1802。
+      验收达成：4 新 core 单测（区间展开/补零满足性/非法规范/pin 解析
+      与门禁）+ 1 新 CLI 集成测试（三版本 pin→1.9.0、caret、@版本
+      冲突 pin、无解区间、非法 pin）+ 1 新 web 集成测试（GET 走注册
+      表解析、POST 409 拒存）全绿 + 文档（cli.md 依赖章节/validation.md
+      /architecture.md/design.md §29/index.md）+ 本勾选
 - [ ] R3 远程 Registry 只读解析：HTTP(S) 注册表根（resolve 走网络，
       发布仍限本地；需鉴权/协议版本设计先行）
 - [ ] R4 回滚与清理：多版本共存下的 GC 策略、`cage registry verify`

@@ -21,11 +21,10 @@
 //! the shipped `cage` binary carries its editor — no Node toolchain.
 
 use crate::load_project_config;
-use crate::load_schema;
+use crate::load_schema_for_config;
 use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_canonical_yaml, to_editor_json};
 use cage_core::manifest::ProjectConfig;
-use cage_core::schema::Schema;
 use std::path::{Path, PathBuf};
 
 /// W3 editor page and assets, embedded at compile time from the docs-site
@@ -140,14 +139,11 @@ fn html_response(status: u16, html: String) -> tiny_http::Response<std::io::Curs
 /// GET /api/schema — merged schema as the editor document plus the project
 /// facts the frontend needs (profiles, write-back target).
 fn api_schema(ctx: &Ctx) -> serde_json::Value {
-    let schema = match &ctx.config.schema_path {
-        Some(rel) => match load_schema(&ctx.root.join(rel)) {
-            Ok(s) => s,
-            Err(e) => {
-                return serde_json::json!({"ok": false, "error": e});
-            }
-        },
-        None => Schema::new(),
+    let schema = match load_schema_for_config(&ctx.root, &ctx.config) {
+        Ok(s) => s,
+        Err(e) => {
+            return serde_json::json!({"ok": false, "error": e});
+        }
     };
     serde_json::json!({
         "ok": true,
@@ -185,11 +181,13 @@ fn diags_json(diags: &Diagnostics) -> serde_json::Value {
 /// POST /api/schema — save the given editor document as canonical YAML.
 ///
 /// The write-back target is the single schema file the project config
-/// names. Multi-file schemas (a `schema_path` pointing at a directory) are
-/// an author-side organization the editor does not rewrite — the client
-/// gets a 409 with instructions. With no `schema_path` configured the
-/// document is written to `schema.yaml` and the response reminds the user
-/// to wire it into the config; the server never rewrites `cage.toml`.
+/// names. Two targets are refused with a 409: multi-file schemas (a
+/// `schema_path` pointing at a directory) are an author-side organization
+/// the editor does not rewrite, and a `registry:` `schema_path` (R2) is
+/// owned by the published entry — edits belong in the publisher project.
+/// With no `schema_path` configured the document is written to
+/// `schema.yaml` and the response reminds the user to wire it into the
+/// config; the server never rewrites `cage.toml`.
 fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
     let schema = match from_editor_json(body) {
         Ok(schema) => schema,
@@ -200,6 +198,23 @@ fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
             );
         }
     };
+
+    if let Some(rel) = ctx.config.schema_path.as_deref() {
+        if rel.starts_with("registry:") {
+            return (
+                409,
+                serde_json::json!({
+                    "ok": false,
+                    "save_target": rel,
+                    "error": format!(
+                        "schema_path '{rel}' resolves into the Configuration Registry; the \
+                         entry schema is published, not edited — change the schema in the \
+                         publisher project and re-publish"
+                    ),
+                }),
+            );
+        }
+    }
 
     let target: PathBuf = match &ctx.config.schema_path {
         Some(rel) => ctx.root.join(rel),

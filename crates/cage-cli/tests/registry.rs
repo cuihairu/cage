@@ -1,10 +1,13 @@
-//! Process-level coverage of the local Configuration Registry (R1):
+//! Process-level coverage of the local Configuration Registry (R1 + R2):
 //! `cage registry publish` (fresh build → self-verifying snapshot → entry,
 //! idempotent identical re-publish, E1801 version conflict), `cage registry
-//! list`, and consumer-side source resolution — `registry:<pkg>[@<ver>]`
+//! list`, consumer-side source resolution — `registry:<pkg>[@<ver>]`
 //! source roots resolve to the entry's data artifacts (manifest-driven
 //! table identity), refusing tampered entries (E1803) and unresolved
-//! references (E1802).
+//! references (E1802) — and the R2 layer: `[dependencies]` pins (version
+//! ranges pick the max satisfying version; an explicit `@<ver>` outside
+//! its pin is rejected) and `schema_path: registry:<pkg>` loading the
+//! entry's published schema.
 
 use std::fs;
 use std::path::Path;
@@ -104,10 +107,26 @@ file_template = "{table}.csv"
 }
 
 fn write_consumer(root: &Path, name: &str, source_root: &str) {
-    write(
-        &root.join(format!("{name}/cage.toml")),
-        r#"output_dir = "build"
-schema_path = "schema.yaml"
+    write_consumer_full(root, name, source_root, None, "schema.yaml");
+}
+
+/// Full-shape consumer: `source_root` lands in `[source_roots].main`,
+/// `deps` (a version-requirement string) becomes a `[dependencies]` pin on
+/// the `common` package, and `schema_path` picks between a local
+/// `schema.yaml` and the entry schema (`registry:common`, R2 — the
+/// consumer then ships no schema file of its own).
+fn write_consumer_full(
+    root: &Path,
+    name: &str,
+    source_root: &str,
+    deps: Option<&str>,
+    schema_path: &str,
+) {
+    let deps_block = deps
+        .map(|d| format!("\n[dependencies]\ncommon = \"{d}\"\n"))
+        .unwrap_or_default();
+    let body = r#"output_dir = "build"
+schema_path = "SCHEMA_PATH"
 
 [project]
 name = "consumer"
@@ -118,7 +137,7 @@ main = "registry:PLACEHOLDER"
 
 [registry]
 path = "../reg"
-
+DEPS_LINE
 [profiles.client]
 name = "client"
 
@@ -127,10 +146,13 @@ format = "json"
 output_dir = "build/client/json"
 file_template = "{table}.json"
 "#
-        .replace("registry:PLACEHOLDER", source_root)
-        .as_str(),
-    );
-    write(&root.join(format!("{name}/schema.yaml")), SCHEMA);
+    .replace("registry:PLACEHOLDER", source_root)
+    .replace("SCHEMA_PATH", schema_path)
+    .replace("DEPS_LINE\n", &deps_block);
+    write(&root.join(format!("{name}/cage.toml")), &body);
+    if !schema_path.starts_with("registry:") {
+        write(&root.join(format!("{name}/schema.yaml")), SCHEMA);
+    }
 }
 
 /// sha256-free determinism probe: sorted (path, size) digest of a tree.
@@ -423,4 +445,126 @@ file_template = "{table}.json"
     assert_code(&out, 2, "tampered entry");
     assert!(stderr(&out).contains("E1803"), "{}", stderr(&out));
     assert!(stderr(&out).contains("hash mismatch"), "{}", stderr(&out));
+}
+
+#[test]
+fn registry_dependencies_pin_and_schema_from_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_publisher(root);
+    let reg = root.join("reg").to_str().unwrap().to_string();
+    let pub_root = root.join("pub").to_str().unwrap().to_string();
+
+    // Three versions with distinct data — latest is 2.0.0.
+    for (v, marker) in [("1.0.0", "Sword"), ("1.9.0", "Shield"), ("2.0.0", "Lance")] {
+        write(&root.join("pub/config/item.json"), &item_rows(marker));
+        let out = run_cage(&[
+            "registry",
+            "publish",
+            &pub_root,
+            "--registry",
+            &reg,
+            "--version",
+            v,
+        ]);
+        assert_code(&out, 0, v);
+    }
+
+    // A pin narrows the resolution: bare `registry:common` with
+    // `common = ">=1.0, <2.0"` must land on 1.9.0, not the 2.0.0 latest —
+    // and the schema comes from the entry too (`schema_path` is also a
+    // registry: spec; the consumer ships no schema file of its own).
+    write_consumer_full(
+        root,
+        "depcon",
+        "registry:common",
+        Some(">=1.0, <2.0"),
+        "registry:common",
+    );
+    let depcon = root.join("depcon").to_str().unwrap().to_string();
+    assert!(!root.join("depcon/schema.yaml").exists());
+    let out = run_cage(&["check", &depcon]);
+    assert_code(&out, 0, "pinned check with entry schema");
+    assert!(stdout(&out).contains("OK (1 tables"), "{}", stdout(&out));
+    let out = run_cage(&["build", &depcon, "--profile", "client"]);
+    assert_code(&out, 0, "pinned build with entry schema");
+    let artifact = fs::read_to_string(root.join("depcon/build/client/json/Item.json")).unwrap();
+    assert!(
+        artifact.contains("Shield"),
+        "pin must resolve 1.9.0, not the 2.0.0 latest: {artifact}"
+    );
+
+    // Caret pins pick the same max-satisfying version (local schema file
+    // this time — registry source + filesystem schema is the mixed mode).
+    write_consumer_full(
+        root,
+        "caretcon",
+        "registry:common",
+        Some("^1.0.0"),
+        "schema.yaml",
+    );
+    let caretcon = root.join("caretcon").to_str().unwrap().to_string();
+    let out = run_cage(&["build", &caretcon, "--profile", "client"]);
+    assert_code(&out, 0, "caret pin build");
+    let artifact = fs::read_to_string(root.join("caretcon/build/client/json/Item.json")).unwrap();
+    assert!(
+        artifact.contains("Shield"),
+        "caret ^1.0.0 must hit 1.9.0: {artifact}"
+    );
+
+    // An explicit @version outside its pin is rejected (E1802) — the pin
+    // wins over the reference.
+    write_consumer_full(
+        root,
+        "conflict",
+        "registry:common@2.0.0",
+        Some("<2.0"),
+        "schema.yaml",
+    );
+    let conflict = root.join("conflict").to_str().unwrap().to_string();
+    let out = run_cage(&["check", &conflict]);
+    assert_code(&out, 2, "version vs pin conflict");
+    assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("does not satisfy"),
+        "{}",
+        stderr(&out)
+    );
+
+    // A requirement nothing satisfies → E1802 with the published list.
+    write_consumer_full(
+        root,
+        "impossible",
+        "registry:common",
+        Some(">=3.0"),
+        "schema.yaml",
+    );
+    let impossible = root.join("impossible").to_str().unwrap().to_string();
+    let out = run_cage(&["check", &impossible]);
+    assert_code(&out, 2, "unsatisfiable requirement");
+    assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("satisfies requirement"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stderr(&out).contains("2.0.0"), "{}", stderr(&out));
+
+    // A malformed dependency pin → E1802 naming the dependency.
+    write_consumer_full(
+        root,
+        "badpin",
+        "registry:common",
+        Some("abc"),
+        "schema.yaml",
+    );
+    let badpin = root.join("badpin").to_str().unwrap().to_string();
+    let out = run_cage(&["check", &badpin]);
+    assert_code(&out, 2, "malformed pin");
+    assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("dependency 'common'"),
+        "{}",
+        stderr(&out)
+    );
 }

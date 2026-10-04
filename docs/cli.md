@@ -137,6 +137,28 @@ main = "registry:common@1.0.0"   # 省略 @版本 = 最高点分序版本
 格式载入（json > yaml > csv > excel），表名以条目 manifest.json 的
 artifact 记录为准。
 
+Schema 侧同样可取自条目（R2）：`schema_path = "registry:common"` 读条目
+`schema.json`（发布时打包的 profile 投影 schema）。此时 schema 归发布方
+所有，`cage web` 的 POST /api/schema 对这类工程返回 409——改 schema 请在
+发布方工程改并重新 publish。
+
+### 依赖声明与版本区间（R2）
+
+`[dependencies]` 为注册表包声明版本 pin：引用省略 `@版本` 时按 pin 解析
+（取满足区间的最高版本）；显式 `@版本` 也必须落在 pin 内，否则 `E1802`。
+
+```toml
+[dependencies]
+common = ">=1.0, <2.0"   # 区间 AND，取满足的最高版本
+items   = "^1.2"         # >=1.2.0, <2.0.0（左起首个非零分量 +1，其后归零）
+monsters = "~1.2"        # >=1.2.0, <1.3.0（锁定到次末位给定分量）
+stages  = "1.2.3"        # 精确等于（裸版本 = 精确匹配）
+```
+
+比较符支持 `=` `>` `>=` `<` `<=`，逗号分隔为 AND；`^` caret 与 `~` tilde
+展开为下闭区间；比较按点分数字序逐分量补零（`>=1.2` 不排除 `1.2.0`）。
+区间内无已发布版本满足 → `E1802`（错误信息附已发布版本列表）。
+
 ## 快速开始
 
 ```bash
