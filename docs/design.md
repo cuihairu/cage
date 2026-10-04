@@ -1394,8 +1394,15 @@ E1802 未解析 / E1803 校验失败）。R2 Schema 侧解析与依赖 pin 已�
 `schema_path: registry:<包>[@<版本>]` 直接读条目 `schema.json`（发布时的
 profile 投影 schema），`[dependencies]` 为包声明版本 pin（比较符区间
 AND、`^`/`~` 展开；省略 `@版本` 取满足区间的最高版本，显式 `@版本`
-也必须落在 pin 内，违者 E1802）。远程 Registry（只读解析）、回滚/GC
-见 todo.md R3–R4。红线不变：Registry 不执行上传的 Validator（§35）。
+也必须落在 pin 内，违者 E1802）。R3 远程只读解析已落地——`[registry]
+path` 支持 http(s) 根，协议为匿名 GET 三资源（包 index、条目账本、条目
+文件），条目字节不可变；解析 = 取 index → 按同一 `select_version` 选版本
+→ 按账本逐文件下载并逐字节校验 blake3 → 落 `.cage-cache/registry/
+<url 指纹>/` 缓存 → 过 `verify_snapshot` 信任门（未经校验不载入）；
+缓存复验干净则离线复用。远程根只读：publish/list 拒绝（协议无包枚举；
+发布在本地注册表完成后由静态服务器托管）。鉴权（token/签名）留待后续
+独立立项。回滚/GC 见 todo.md R4。红线不变：Registry 不执行上传的
+Validator（§35）。
 
 ---
 

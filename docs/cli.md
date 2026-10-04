@@ -142,6 +142,27 @@ Schema 侧同样可取自条目（R2）：`schema_path = "registry:common"` 读�
 所有，`cage web` 的 POST /api/schema 对这类工程返回 409——改 schema 请在
 发布方工程改并重新 publish。
 
+### 远程注册表（R3，只读）
+
+`[registry].path` 也可以是 HTTP(S) 根——解析走网络、发布仍限本地：
+
+```toml
+[registry]
+path = "https://registry.example.com/config"   # http(s):// 前缀 = 远程根
+```
+
+协议为匿名 GET（design §29）：`GET <根>/<包>/index.json`、`GET
+<根>/<包>/<版本>/HASHES.json`、`GET <根>/<包>/<版本>/<文件>`；条目发布后
+字节不可变。解析流程：取 index → 按 pin 选版本（规则与本地相同）→ 按
+账本逐文件下载并逐一校验 blake3（不符 → `E1803`）→ 落项目内缓存
+`.cage-cache/registry/<url 指纹>/` → 过 `verify_snapshot` 信任门才交付。
+缓存再校验干净则直接复用——首次在线拉取后**离线构建可用**（index 也有
+本地副本兜底）；不可达且无缓存 → `E1802`。
+
+远程根只读：`cage registry publish` 与 `cage registry list` 对远程根报错
+退出（协议无包枚举资源，发布方在本地注册表发布后用任意静态服务器托管，
+或留待未来的上传/同步协议）。鉴权方案留待后续立项。
+
 ### 依赖声明与版本区间（R2）
 
 `[dependencies]` 为注册表包声明版本 pin：引用省略 `@版本` 时按 pin 解析

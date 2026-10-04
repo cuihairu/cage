@@ -27,3 +27,7 @@ docs/.vitepress/cache/
 
 # Example project build outputs (regenerate with examples/run.sh)
 examples/*/build/
+
+# Project-local Configuration Registry cache (R3): remote resolve
+# materializes verified entries here; bytes reproduce from the registry
+.cage-cache/

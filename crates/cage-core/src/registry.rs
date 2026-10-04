@@ -592,6 +592,76 @@ fn render_req(req: &VersionReq) -> String {
         .join(", ")
 }
 
+/// Deterministic local cache key for a remote registry root (R3): the first
+/// 12 hex chars of the URL's blake3. Pure — the network layer lives in the
+/// CLI; core only fixes the key so every consumer derives the same cache.
+pub fn cache_key(root_url: &str) -> String {
+    blake3::hash(root_url.as_bytes()).to_hex()[..12].to_string()
+}
+
+/// Pick the entry version for a resolved index: an explicit `version` must
+/// exist and satisfy `requirement`; with only a requirement, the highest
+/// published version satisfying it wins; with neither, the latest
+/// (dotted-numeric order). `registry_display` appears in the error text
+/// (local roots show the path, remote roots the URL). Pure — shared by the
+/// local resolver and the remote (R3) fetcher.
+pub fn select_version(
+    index: &RegistryIndex,
+    version: Option<&str>,
+    requirement: Option<&VersionReq>,
+    registry_display: &str,
+) -> Result<String, String> {
+    let package = &index.package;
+    if index.entries.is_empty() {
+        return Err(format!(
+            "{E1802} registry package not found: {package} (registry {registry_display})"
+        ));
+    }
+    let versions: Vec<String> = index
+        .entries
+        .iter()
+        .map(|e| e.version.clone())
+        .collect::<Vec<_>>();
+    match (version, requirement) {
+        (Some(v), _) => {
+            if !versions.iter().any(|e| e == v) {
+                return Err(format!(
+                    "{E1802} registry version not found: {package}@{v} (registry {registry_display}; published: {})",
+                    versions.join(", ")
+                ));
+            }
+            if let Some(req) = requirement {
+                if !satisfies(v, req) {
+                    return Err(format!(
+                        "{E1802} registry version {package}@{v} does not satisfy requirement \
+                         '{}' (registry {registry_display})",
+                        render_req(req)
+                    ));
+                }
+            }
+            Ok(v.to_string())
+        }
+        (None, Some(req)) => {
+            let req_text = render_req(req);
+            let best = versions
+                .iter()
+                .filter(|v| satisfies(v, req))
+                .max_by(|a, b| version_key(a).cmp(&version_key(b)).then_with(|| a.cmp(b)));
+            let Some(best) = best else {
+                return Err(format!(
+                    "{E1802} no published version of {package} satisfies requirement \
+                     '{req_text}' (registry {registry_display}; published: {})",
+                    versions.join(", ")
+                ));
+            };
+            Ok(best.clone())
+        }
+        (None, None) => Ok(latest_version(&versions)
+            .expect("non-empty entries")
+            .to_string()),
+    }
+}
+
 /// Resolve a registry reference to an entry directory. `version` omitted
 /// means the highest published version (dotted-numeric order). The entry's
 /// ledger is verified before it is handed out — resolving a tampered entry
@@ -610,58 +680,10 @@ pub fn resolve_pinned(
     requirement: Option<&VersionReq>,
 ) -> Result<PathBuf, String> {
     let index = read_index(root, package)?;
-    if index.entries.is_empty() {
-        return Err(format!(
-            "{E1802} registry package not found: {package} (registry {})",
-            root.display()
-        ));
-    }
-    let versions: Vec<String> = index
-        .entries
-        .iter()
-        .map(|e| e.version.clone())
-        .collect::<Vec<_>>();
-    let version = match (version, requirement) {
-        (Some(v), _) => {
-            if !versions.iter().any(|e| e == v) {
-                return Err(format!(
-                    "{E1802} registry version not found: {package}@{v} (registry {}; published: {})",
-                    root.display(),
-                    versions.join(", ")
-                ));
-            }
-            if let Some(req) = requirement {
-                if !satisfies(v, req) {
-                    return Err(format!(
-                        "{E1802} registry version {package}@{v} does not satisfy requirement \
-                         '{}' (registry {})",
-                        render_req(req),
-                        root.display()
-                    ));
-                }
-            }
-            v
-        }
-        (None, Some(req)) => {
-            let req_text = render_req(req);
-            let best = versions
-                .iter()
-                .filter(|v| satisfies(v, req))
-                .max_by(|a, b| version_key(a).cmp(&version_key(b)).then_with(|| a.cmp(b)));
-            let Some(best) = best else {
-                return Err(format!(
-                    "{E1802} no published version of {package} satisfies requirement \
-                     '{req_text}' (registry {}; published: {})",
-                    root.display(),
-                    versions.join(", ")
-                ));
-            };
-            best.as_str()
-        }
-        (None, None) => latest_version(&versions).expect("non-empty entries"),
-    };
+    let display = root.display().to_string();
+    let version = select_version(&index, version, requirement, &display)?;
 
-    let entry = root.join(package).join(version);
+    let entry = root.join(package).join(&version);
     let report = snapshot::verify_snapshot(&entry).map_err(|e| format!("{E1803} {e}"))?;
     if !report.ok {
         return Err(format!(
@@ -976,5 +998,69 @@ mod tests {
         // No pin, no requirement → plain latest (unchanged R1 behavior).
         let dir = resolve_pinned(&root, "common", None, None).unwrap();
         assert!(dir.ends_with("2.0.0"));
+    }
+
+    #[test]
+    fn select_version_is_pure_and_drives_the_remote_fetcher() {
+        let index = RegistryIndex {
+            package: "common".to_string(),
+            entries: vec![
+                IndexEntry {
+                    version: "1.0.0".to_string(),
+                    build_id: "b".to_string(),
+                    content_hash: "c".to_string(),
+                    files: 3,
+                },
+                IndexEntry {
+                    version: "1.9.0".to_string(),
+                    build_id: "b".to_string(),
+                    content_hash: "c".to_string(),
+                    files: 3,
+                },
+                IndexEntry {
+                    version: "2.0.0".to_string(),
+                    build_id: "b".to_string(),
+                    content_hash: "c".to_string(),
+                    files: 3,
+                },
+            ],
+        };
+        // Same decision table as the local resolver — the remote fetcher
+        // (R3) runs this exact function on the fetched index.
+        assert_eq!(
+            select_version(&index, None, Some(&req(">=1.0, <2.0")), "https://r").unwrap(),
+            "1.9.0"
+        );
+        assert_eq!(
+            select_version(&index, None, None, "https://r").unwrap(),
+            "2.0.0"
+        );
+        assert_eq!(
+            select_version(&index, Some("1.0.0"), None, "https://r").unwrap(),
+            "1.0.0"
+        );
+        let err =
+            select_version(&index, Some("2.0.0"), Some(&req("<2.0")), "https://r").unwrap_err();
+        assert!(err.contains("E1802"), "{err}");
+        assert!(err.contains("does not satisfy"), "{err}");
+        let err = select_version(&index, None, Some(&req(">=3.0")), "https://r").unwrap_err();
+        assert!(
+            err.contains("E1802") && err.contains("satisfies requirement"),
+            "{err}"
+        );
+        let empty = RegistryIndex {
+            package: "ghost".to_string(),
+            entries: Vec::new(),
+        };
+        let err = select_version(&empty, None, None, "https://r").unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+
+        // Cache keys are deterministic and short enough for a path segment.
+        assert_eq!(
+            cache_key("https://r/example"),
+            cache_key("https://r/example")
+        );
+        assert_ne!(cache_key("https://r/a"), cache_key("https://r/b"));
+        assert_eq!(cache_key("https://r/example").len(), 12);
     }
 }

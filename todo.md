@@ -110,8 +110,21 @@
       冲突 pin、无解区间、非法 pin）+ 1 新 web 集成测试（GET 走注册
       表解析、POST 409 拒存）全绿 + 文档（cli.md 依赖章节/validation.md
       /architecture.md/design.md §29/index.md）+ 本勾选
-- [ ] R3 远程 Registry 只读解析：HTTP(S) 注册表根（resolve 走网络，
-      发布仍限本地；需鉴权/协议版本设计先行）
+- [x] R3 远程 Registry 只读解析：`[registry].path` 支持 http(s) 根；
+      协议为匿名 GET 三资源（包 index / 条目账本 / 条目文件，条目
+      字节不可变，鉴权留待后续独立立项）；解析 = 取 index → 与本地
+      同一 `select_version` 选版本 → 按账本逐文件下载并逐一校验
+      blake3（不符 E1803）→ 落 `.cage-cache/registry/<url 指纹>/`
+      项目内缓存 → 过 `verify_snapshot` 信任门才交付；缓存复验干净
+      离线复用（index 有本地副本兜底，不可达且无缓存 E1802）；
+      `cage registry publish/list` 对远程根报 usage 错误（协议无包
+      枚举，发布在本地注册表完成后托管）。验收达成：1 新 core 单测
+      （select_version 纯函数决策表 + cache_key 确定性与隔离）+ 2 新
+      CLI 集成测试（本地静态 HTTP 服务器托管真实注册表：pin→1.9.0、
+      显式 @1.0.0、schema_path 走远程、杀服务器后离线复用、幽灵包/错
+      版本/无解 pin E1802、篡改字节 E1803、死根 E1802、publish/list
+      只读拒绝）全绿 + 文档（cli.md 远程章节/design.md §29 协议/
+      validation.md/architecture.md/index.md）+ 本勾选
 - [ ] R4 回滚与清理：多版本共存下的 GC 策略、`cage registry verify`
       全册校验工具、条目移除/重新发布纪律
 

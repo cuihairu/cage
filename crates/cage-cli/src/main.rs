@@ -51,6 +51,7 @@ use cage_core::value::Document;
 use cage_core::Diagnostics;
 use cage_core::DocumentMetadata;
 
+mod remote;
 mod web;
 
 /// Game configuration compilation and validation framework
@@ -325,11 +326,12 @@ pub(crate) fn load_schema(path: &Path) -> Result<Schema, String> {
 /// `schema_path`) to a verified entry directory. The version requirement
 /// comes from the explicit `@<version>` spec or, when the spec carries
 /// none, from the `[dependencies]` pin; an explicit version must still
-/// satisfy the pin (E1802 otherwise).
+/// satisfy the pin (E1802 otherwise). A remote root (`http(s)://`, R3)
+/// resolves over the network into the project-local cache.
 fn registry_entry(root: &Path, config: &ProjectConfig, rel: &str) -> Result<PathBuf, String> {
     let (package, version) = cage_core::registry::parse_spec(rel)?;
-    let reg_root = match &config.registry {
-        Some(reg) => root.join(&reg.path),
+    let reg_path = match &config.registry {
+        Some(reg) => reg.path.clone(),
         None => {
             return Err(format!(
                 "{E1802} registry reference '{rel}' requires '[registry] path' in cage.toml"
@@ -344,6 +346,16 @@ fn registry_entry(root: &Path, config: &ProjectConfig, rel: &str) -> Result<Path
                 .map_err(|e| format!("{e} (dependency '{package}')"))
         })
         .transpose()?;
+    if remote::is_remote_root(&reg_path) {
+        return remote::resolve_remote(
+            root,
+            &reg_path,
+            &package,
+            version.as_deref(),
+            requirement.as_ref(),
+        );
+    }
+    let reg_root = root.join(&reg_path);
     cage_core::registry::resolve_pinned(
         &reg_root,
         &package,
@@ -1124,6 +1136,21 @@ fn run_registry_publish(
         }
     };
 
+    // R3: remote registry roots are read-only — publish stays local.
+    let root_spec = registry_flag.map_or_else(
+        || config.registry.as_ref().map(|r| r.path.clone()),
+        |p| Some(p.to_string_lossy().into_owned()),
+    );
+    if let Some(spec) = &root_spec {
+        if remote::is_remote_root(spec) {
+            eprintln!(
+                "error: registry root '{spec}' is remote — registry roots are read-only over \
+                 the network; publish requires a local registry path"
+            );
+            return 2;
+        }
+    }
+
     // A publish is a fresh full build — no incremental carry-over.
     match build_project(path, "gamerule", profile, false) {
         Ok(out) => match pack_snapshot(path, &out) {
@@ -1180,6 +1207,17 @@ fn run_registry_list(registry_flag: Option<&Path>) -> i32 {
         eprintln!("error: no registry root (pass --registry)");
         return 2;
     };
+    // R3: remote roots cannot be listed — the read-only protocol has no
+    // package enumeration.
+    if let Some(spec) = reg_root.to_str() {
+        if remote::is_remote_root(spec) {
+            eprintln!(
+                "error: registry root '{spec}' is remote — the read-only protocol has no \
+                 package enumeration; reference packages directly via registry:<package>"
+            );
+            return 2;
+        }
+    }
     match cage_core::registry::packages(reg_root) {
         Ok(indexes) => {
             if indexes.is_empty() {
