@@ -1,0 +1,30 @@
+# Cage 完整示例工程 —— 一键跑通见 examples/run.sh
+# 三张表、三种源格式（CSV / YAML / JSON）、三个 schema 文件（合并加载），
+# 一个 profile 构建全部 10 个 target（json/csv 数据 + 8 种代码绑定）。
+output_dir = "build"
+schema_path = "schemas"
+
+[project]
+name = "rpg-demo"
+version = "0.1.0"
+description = "角色成长 + 道具 + 关卡：Cage 端到端示例"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+description = "全量构建：2 个数据 target + 8 种语言代码绑定"
+# options 为可选内联表：namespace / package / enums_file 演示各 target 常用项
+targets = [
+  { format = "json",         output_dir = "build/client/json" },
+  { format = "csv",          output_dir = "build/client/csv" },
+  { format = "csharp",       output_dir = "build/client/cs",  options = { namespace = "Game.Config" } },
+  { format = "python",       output_dir = "build/client/py" },
+  { format = "lua",          output_dir = "build/client/lua" },
+  { format = "typescript",   output_dir = "build/client/ts",  options = { enums_file = "cage_enums.ts" } },
+  { format = "javascript",   output_dir = "build/client/js" },
+  { format = "cpp",          output_dir = "build/client/cpp", options = { namespace = "game::config" } },
+  { format = "go",           output_dir = "build/client/go",  options = { package = "config" } },
+  { format = "java",         output_dir = "build/client/java", options = { package = "game.config" } },
+]

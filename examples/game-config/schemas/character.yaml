@@ -1,0 +1,49 @@
+# 角色成长（源：config/Character.csv）
+# 本文件是三个 schema 文件中按名序最先加载的一个 —— metadata 由它提供。
+metadata:
+  version: "0.1.0"
+  description: Cage 完整示例：角色成长 + 道具 + 关卡
+tables:
+  Character:
+    name: Character
+    description: 角色成长表（CSV 源；name 组合唯一约束；class 为保留字字段）
+    primary_key: [id]
+    unique_constraints:
+      - name: name_unique
+        fields: [name]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true, min: 1 }
+      name:
+        name: name
+        type: { kind: String }
+        required: true
+        min_length: 3
+        max_length: 24
+        pattern: "^[A-Za-z][A-Za-z0-9_]*$"
+      class:
+        name: class
+        type: { kind: Enum, value: CharacterClass }
+        required: true
+        description: 职业（class 在多数目标语言是保留字，生成时自动转义）
+      level: { name: level, type: { kind: Int8 }, required: true, min: 1, max: 100 }
+      hp: { name: hp, type: { kind: Int32 }, required: true, min: 1 }
+      attack:
+        name: attack
+        type: { kind: Int32 }
+        required: true
+        min: 0
+        description: 战力值——L7 power_curve 规则校验 attack <= level * 100 + 50
+      exp_to_next: { name: exp_to_next, type: { kind: Int32 }, required: true, min: 0 }
+      unlocked:
+        name: unlocked
+        type: { kind: Bool }
+        default: true
+        description: 可选布尔，带 Schema 默认值（生成端渲染为初始化字面量）
+enums:
+  CharacterClass:
+    name: CharacterClass
+    description: 职业（整型枚举：每个成员都有整数值）
+    values:
+      - { name: Warrior, value: 1 }
+      - { name: Mage, value: 2 }
+      - { name: Archer, value: 3 }

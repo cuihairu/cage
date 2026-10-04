@@ -51,7 +51,9 @@
 )]
 use cage_core::{
     manifest::TargetConfig,
-    schema::{EnumSchema, EnumValue, FieldSchema, FieldType, Schema, TableSchema},
+    schema::{
+        EnumSchema, EnumValue, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema,
+    },
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -382,11 +384,11 @@ impl JavaTargetGenerator {
 
         // Imports: only what the unit uses, one block sorted lexicographically
         // by full name (java.* and the holder's nested enums mixed together).
+        // The collection scans walk the whole nested type — a map value may
+        // itself be an array or map, so `map<string, Array<Int32>>` spells
+        // `HashMap<String, List<Integer>>` and uses both imports.
         let mut imports: Vec<String> = Vec::new();
-        if rows
-            .iter()
-            .any(|r| matches!(r.field.field_type, FieldType::Array(_)))
-        {
+        if rows.iter().any(|r| uses_list(&r.field.field_type)) {
             imports.push("java.util.List".to_string());
         }
         if rows
@@ -395,11 +397,15 @@ impl JavaTargetGenerator {
         {
             imports.push("java.util.ArrayList".to_string());
         }
-        if rows
-            .iter()
-            .any(|r| matches!(r.field.field_type, FieldType::Object(_)))
+        if rows.iter().any(|r| uses_map_interface(&r.field.field_type))
+            || rows
+                .iter()
+                .any(|r| r.default.as_deref().is_some_and(|d| d.contains("Map.of")))
         {
             imports.push("java.util.Map".to_string());
+        }
+        if rows.iter().any(|r| uses_hash_map(&r.field.field_type)) {
+            imports.push("java.util.HashMap".to_string());
         }
         if let Some(holder) = enums_class {
             for row in &rows {
@@ -551,7 +557,7 @@ impl JavaTargetGenerator {
 
 /// Java type for a field type. `optional` is the optionality group rule
 /// (¬required ∧ no renderable default): primitives widen to their wrapper
-/// type, while references (String, arrays, Map, byte[], enums, Object) are
+/// type, while references (String, arrays, maps, byte[], enums, Object) are
 /// implicitly nullable and stay as-is. `enum_text` is the already-resolved
 /// type text for an enum-typed field (`None` falls back to `String`).
 fn java_type(ft: &FieldType, optional: bool, enum_text: Option<&str>) -> String {
@@ -577,8 +583,25 @@ fn java_type(ft: &FieldType, optional: bool, enum_text: Option<&str>) -> String 
                 box_primitive(&java_type(inner, false, enum_text))
             )
         }
+        // map<K, V> → HashMap<K, V>: string keys stay `String`, int keys
+        // (i64 semantics) become `Long`; the value type recurses with its
+        // primitives boxed, exactly like an array element position.
+        FieldType::Map(map) => format!(
+            "HashMap<{}, {}>",
+            java_map_key(map.key_type),
+            box_primitive(&java_type(&map.value_type, false, enum_text))
+        ),
         FieldType::Object(_) => "Map<String, Object>".to_string(),
         FieldType::Enum(_) => enum_text.unwrap_or("String").to_string(),
+    }
+}
+
+/// Java spelling of a map key type: string keys stay `String`; int keys
+/// carry i64 semantics, and generic contexts need the boxed `Long`.
+fn java_map_key(key: MapKeyType) -> &'static str {
+    match key {
+        MapKeyType::String => "String",
+        MapKeyType::Int => "Long",
     }
 }
 
@@ -607,13 +630,46 @@ fn box_primitive(ty: &str) -> String {
     .to_string()
 }
 
-/// The single enum a field type references (top level or through arrays);
-/// `None` for every other kind. Object properties are erased to `Object`,
-/// so only array element positions count as an enum use.
+/// Whether the rendered Java type mentions `List` at any depth — the import
+/// scan walks the full nested type because a map value may be an array.
+fn uses_list(ft: &FieldType) -> bool {
+    match ft {
+        FieldType::Array(_) => true,
+        FieldType::Map(map) => uses_list(&map.value_type),
+        _ => false,
+    }
+}
+
+/// Whether the rendered Java type mentions the `Map` interface at any depth
+/// (object-typed fields, including object values nested in arrays/maps).
+fn uses_map_interface(ft: &FieldType) -> bool {
+    match ft {
+        FieldType::Object(_) => true,
+        FieldType::Array(inner) => uses_map_interface(inner),
+        FieldType::Map(map) => uses_map_interface(&map.value_type),
+        _ => false,
+    }
+}
+
+/// Whether the rendered Java type mentions `HashMap` at any depth (a map
+/// field, or a map nested inside arrays/other maps).
+fn uses_hash_map(ft: &FieldType) -> bool {
+    match ft {
+        FieldType::Map(_) => true,
+        FieldType::Array(inner) => uses_hash_map(inner),
+        _ => false,
+    }
+}
+
+/// The single enum a field type references (top level, through arrays, or
+/// through map value positions); `None` for every other kind. Object
+/// properties are erased to `Object`, so only array element and map value
+/// positions count as an enum use.
 fn field_enum(ft: &FieldType) -> Option<&str> {
     match ft {
         FieldType::Enum(name) => Some(name),
         FieldType::Array(inner) => field_enum(inner),
+        FieldType::Map(map) => field_enum(&map.value_type),
         _ => None,
     }
 }
@@ -652,8 +708,9 @@ fn push_javadoc(out: &mut String, indent: &str, lines: &[String]) {
 
 /// Render a schema default as a Java field initializer; `None` when the
 /// default does not map to a compile-safe literal (objects, bytes, mismatched
-/// or out-of-range kinds, Enum/Null/Any — the field then keeps its wrapper
-/// or reference type instead).
+/// or out-of-range kinds, Enum/Null/Any, maps with non-scalar values or more
+/// entries than `Map.of` accepts — the field then keeps its wrapper or
+/// reference type instead).
 fn render_default(value: &serde_json::Value, ft: &FieldType, schema: &Schema) -> Option<String> {
     match ft {
         FieldType::Bool => value.as_bool().map(|b| {
@@ -677,6 +734,9 @@ fn render_default(value: &serde_json::Value, ft: &FieldType, schema: &Schema) ->
         FieldType::Array(inner) => value
             .as_array()
             .and_then(|items| array_literal(items, inner, schema)),
+        FieldType::Map(map) => value
+            .as_object()
+            .and_then(|entries| map_literal(entries, map, schema)),
         _ => None,
     }
 }
@@ -704,17 +764,12 @@ fn int_literal(i: i64, ft: &FieldType) -> Option<String> {
     Some(if long { format!("{i}L") } else { i.to_string() })
 }
 
-/// Array defaults render only for scalar element types (the shared rule
-/// across targets) as a fresh mutable list per instance — Java arrays and
-/// `List.of` are immutable, but field initializers re-run per instance, so
-/// `new ArrayList<>(List.of(…))` never shares state between rows.
-fn array_literal(
-    items: &[serde_json::Value],
-    inner: &FieldType,
-    schema: &Schema,
-) -> Option<String> {
-    if !matches!(
-        inner,
+/// Whether a field type is a scalar with a renderable literal — the shared
+/// rule that gates container defaults (array elements, map values) across
+/// targets.
+fn is_scalar_value(ft: &FieldType) -> bool {
+    matches!(
+        ft,
         FieldType::Bool
             | FieldType::Int8
             | FieldType::Int16
@@ -727,7 +782,19 @@ fn array_literal(
             | FieldType::Float32
             | FieldType::Float64
             | FieldType::String
-    ) {
+    )
+}
+
+/// Array defaults render only for scalar element types (the shared rule
+/// across targets) as a fresh mutable list per instance — Java arrays and
+/// `List.of` are immutable, but field initializers re-run per instance, so
+/// `new ArrayList<>(List.of(…))` never shares state between rows.
+fn array_literal(
+    items: &[serde_json::Value],
+    inner: &FieldType,
+    schema: &Schema,
+) -> Option<String> {
+    if !is_scalar_value(inner) {
         return None;
     }
     let mut parts = Vec::with_capacity(items.len());
@@ -735,6 +802,49 @@ fn array_literal(
         parts.push(render_default(item, inner, schema)?);
     }
     Some(format!("new ArrayList<>(List.of({}))", parts.join(", ")))
+}
+
+/// Map defaults follow the array-default rules: a fresh mutable instance
+/// per row (`Map.of(…)` is immutable, but field initializers re-run per
+/// instance, so `new HashMap<>(…)` never shares state between rows). The
+/// empty default is the bare `new HashMap<>()`; entries render only for
+/// scalar value types (the shared rule) and only when every key parses
+/// under the declared key type — otherwise the initializer is skipped
+/// entirely, the same all-or-nothing bucket as array defaults. Entries are
+/// emitted in `serde_json`'s key order (sorted without `preserve_order`),
+/// and more than ten pairs have no `Map.of` overload — also skipped.
+fn map_literal(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    map: &MapField,
+    schema: &Schema,
+) -> Option<String> {
+    if entries.is_empty() {
+        return Some("new HashMap<>()".to_string());
+    }
+    if entries.len() > 10 || !is_scalar_value(&map.value_type) {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(entries.len());
+    // Sort keys: serde_json's map order follows feature unification
+    // (BTreeMap by default, insertion order with preserve_order).
+    let mut sorted: Vec<(&String, &serde_json::Value)> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in sorted {
+        // String keys quote; int keys are stored as numeric strings
+        // ("42", "-7") in the data model and render as `long` literals —
+        // a bare int would infer Map<Integer, …>, which does not copy
+        // into a HashMap<Long, …>.
+        let key_lit = match map.key_type {
+            MapKeyType::String => java_string_literal(key),
+            MapKeyType::Int => {
+                let n: i64 = key.parse().ok()?;
+                format!("{n}L")
+            }
+        };
+        let value_lit = render_default(value, &map.value_type, schema)?;
+        parts.push(format!("{key_lit}, {value_lit}"));
+    }
+    Some(format!("new HashMap<>(Map.of({}))", parts.join(", ")))
 }
 
 /// Java float literal. Non-finite values have no literal — they use the
@@ -1062,6 +1172,35 @@ enums:
         .expect("edge schema must parse")
     }
 
+    /// Map-field schema: string/int keys, array / nested-map / enum values,
+    /// empty and non-empty defaults, and a map inside an array.
+    fn map_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Bag:
+    name: Bag
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      counts: { name: counts, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }, description: Per-tag counts }
+      byId: { name: byId, type: { kind: Map, value: { key_type: int, value_type: { kind: Int64 } } } }
+      nested: { name: nested, type: { kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: string, value_type: { kind: Int64 } } } } } }
+      empty: { name: empty, type: { kind: Map, value: { key_type: string, value_type: { kind: String } } }, default: {} }
+      tags: { name: tags, type: { kind: Map, value: { key_type: string, value_type: { kind: String } } }, default: { a: alpha, b: beta } }
+      kinds: { name: kinds, type: { kind: Map, value: { key_type: string, value_type: { kind: Enum, value: ItemKind } } } }
+      pairs: { name: pairs, type: { kind: Array, value: { kind: Map, value: { key_type: string, value_type: { kind: Int64 } } } } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+      - { name: Shield, value: 2 }
+",
+        )
+        .expect("map schema must parse")
+    }
+
     /// Write one schema's artifacts under `dir/cage/generated` — the default
     /// package directory a manual `javac` run expects.
     fn write_sample(dir: &Path, schema: &Schema) {
@@ -1108,6 +1247,14 @@ enums:
     #[ignore = "writes /tmp/cage-java-sample/edge for manual javac runs"]
     fn write_java_edge_sample_for_javac() {
         write_sample(Path::new("/tmp/cage-java-sample/edge"), &edge_schema());
+    }
+
+    /// Dev-only: dump the map-field schema under `/tmp/cage-java-sample/map`
+    /// for a manual `javac` run.
+    #[test]
+    #[ignore = "writes /tmp/cage-java-sample/map for manual javac runs"]
+    fn write_java_map_sample_for_javac() {
+        write_sample(Path::new("/tmp/cage-java-sample/map"), &map_schema());
     }
 
     #[test]
@@ -1597,6 +1744,181 @@ enums:
         // int_literal accepts only integral kinds — anything else falls in
         // the same "no safe literal" bucket as an out-of-range value.
         assert!(int_literal(1, &FieldType::Float32).is_none());
+    }
+
+    #[test]
+    fn test_map_field_rendering() {
+        let schema = map_schema();
+        let artifacts = gen().generate(&schema, Some("abc123"));
+        let paths: Vec<&str> = artifacts.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["build/java/Bag.java", "build/java/CageEnums.java"]
+        );
+        let src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // map<K, V> → HashMap<K, V>: string keys stay String, int keys
+        // (i64 semantics) become Long, values recurse with primitives boxed
+        // for the generic context — exactly the array element rule.
+        assert!(src.contains("public HashMap<String, List<Integer>> counts;"));
+        assert!(src.contains("public HashMap<Long, Long> byId;"));
+        assert!(src.contains("public HashMap<String, HashMap<String, Long>> nested;"));
+        // A map inside an array mentions HashMap through the element type.
+        assert!(src.contains("public List<HashMap<String, Long>> pairs;"));
+        // Enum values resolve through map value positions like array
+        // elements, importing the holder's nested type.
+        assert!(src.contains("public HashMap<String, ItemKind> kinds;"));
+        // One sorted import block: HashMap for the map mentions, List for
+        // the array mentions (nested through maps too), Map for the
+        // Map.of(…) in the non-empty default.
+        assert!(src.contains(
+            "import cage.generated.CageEnums.ItemKind;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\n"
+        ));
+        // Defaults: the empty map is the bare mutable base; scalar entries
+        // wrap Map.of in a fresh HashMap per instance (never shared).
+        assert!(src.contains("public HashMap<String, String> empty = new HashMap<>();"));
+        assert!(src.contains(
+            "public HashMap<String, String> tags = new HashMap<>(Map.of(\"a\", \"alpha\", \"b\", \"beta\"));"
+        ));
+        // Optionality: HashMap is a reference type — not-required fields
+        // without defaults (byId, counts, …) keep the same spelling, no
+        // wrapper widening. Field docs still render for map fields.
+        assert!(src.contains("/** Per-tag counts */"));
+    }
+
+    #[test]
+    fn test_map_default_rendering() {
+        let schema = Schema::new();
+        let map = |k: MapKeyType, v: FieldType| {
+            FieldType::Map(MapField {
+                key_type: k,
+                value_type: Box::new(v),
+            })
+        };
+        // Empty default → the bare mutable base, never a shared instance.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({}),
+                &map(MapKeyType::String, FieldType::Int32),
+                &schema
+            )
+            .unwrap(),
+            "new HashMap<>()"
+        );
+        // Scalar entries: a fresh HashMap per instance wrapping Map.of,
+        // values through the existing literal rules (long values carry L).
+        assert_eq!(
+            render_default(
+                &serde_json::json!({ "a": 1, "b": 2 }),
+                &map(MapKeyType::String, FieldType::Int32),
+                &schema
+            )
+            .unwrap(),
+            "new HashMap<>(Map.of(\"a\", 1, \"b\", 2))"
+        );
+        assert_eq!(
+            render_default(
+                &serde_json::json!({ "hp": 100 }),
+                &map(MapKeyType::String, FieldType::Int64),
+                &schema
+            )
+            .unwrap(),
+            "new HashMap<>(Map.of(\"hp\", 100L))"
+        );
+        // Int keys are numeric strings in the data model ("42", "-7") and
+        // render as long literals in sorted key order — a bare int literal
+        // would infer Map<Integer, …>, which does not copy into a
+        // HashMap<Long, …>.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({ "-7": 6, "42": 5 }),
+                &map(MapKeyType::Int, FieldType::Int64),
+                &schema
+            )
+            .unwrap(),
+            "new HashMap<>(Map.of(-7L, 6L, 42L, 5L))"
+        );
+        // A non-numeric key under an int key type → skipped initializer.
+        assert!(render_default(
+            &serde_json::json!({ "x": 1 }),
+            &map(MapKeyType::Int, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        // Member kind mismatch (a string value for an Int32 value type) →
+        // the whole initializer is skipped: the array-default
+        // all-or-nothing rule.
+        assert!(render_default(
+            &serde_json::json!({ "a": "x" }),
+            &map(MapKeyType::String, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        // Non-scalar value types skip their members (the shared
+        // cross-target scalar rule — the default machinery covers scalars
+        // and arrays-of-scalars, so map members with array/object/enum
+        // values have no literal). The initializer is dropped entirely
+        // rather than silently rendering an empty base that would lose the
+        // declared data; for reference-typed fields the declaration then
+        // spells exactly what the optionality rule would spell anyway.
+        assert!(render_default(
+            &serde_json::json!({ "a": [1] }),
+            &map(
+                MapKeyType::String,
+                FieldType::Array(Box::new(FieldType::Int32))
+            ),
+            &schema
+        )
+        .is_none());
+        assert!(render_default(
+            &serde_json::json!({ "a": {} }),
+            &map(
+                MapKeyType::String,
+                FieldType::Object(indexmap::IndexMap::default())
+            ),
+            &schema
+        )
+        .is_none());
+        assert!(render_default(
+            &serde_json::json!({ "a": "Sword" }),
+            &map(MapKeyType::String, FieldType::Enum("ItemKind".to_string())),
+            &schema
+        )
+        .is_none());
+        // Map.of stops at ten pairs — beyond that there is no compile-safe
+        // single-expression literal, so the default joins the skip bucket.
+        let entries: serde_json::Map<String, serde_json::Value> = (0..11)
+            .map(|i| (format!("k{i:02}"), serde_json::json!(i)))
+            .collect();
+        assert!(render_default(
+            &serde_json::Value::Object(entries),
+            &map(MapKeyType::String, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        let entries: serde_json::Map<String, serde_json::Value> = (0..10)
+            .map(|i| (format!("k{i:02}"), serde_json::json!(i)))
+            .collect();
+        // Ten pairs still render — the full sorted-entry spelling.
+        assert_eq!(
+            render_default(
+                &serde_json::Value::Object(entries),
+                &map(MapKeyType::String, FieldType::Int32),
+                &schema,
+            )
+            .unwrap(),
+            "new HashMap<>(Map.of(\"k00\", 0, \"k01\", 1, \"k02\", 2, \"k03\", 3, \"k04\", 4, \
+             \"k05\", 5, \"k06\", 6, \"k07\", 7, \"k08\", 8, \"k09\", 9))"
+        );
+        // Kind mismatch (an array where a map is declared) → skipped.
+        assert!(render_default(
+            &serde_json::json!([1]),
+            &map(MapKeyType::String, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        // int_literal keeps rejecting non-integral kinds — maps included.
+        assert!(int_literal(1, &map(MapKeyType::String, FieldType::Int32)).is_none());
     }
 
     #[test]

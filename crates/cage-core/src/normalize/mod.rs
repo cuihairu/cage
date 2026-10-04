@@ -219,6 +219,17 @@ pub fn coerce_to_type(value: &Value, target_type: &crate::schema::FieldType) -> 
             Some(Value::Object(result))
         }
 
+        // Map coercion: open-ended — every entry's value is coerced by
+        // value_type, keys pass through untouched (normalize_object sorts
+        // them for determinism) and missing/extra keys are all legal.
+        (Value::Object(obj), crate::schema::FieldType::Map(map)) => {
+            let mut result = IndexMap::new();
+            for (k, v) in obj {
+                result.insert(k.clone(), coerce_to_type(v, &map.value_type)?);
+            }
+            Some(Value::Object(result))
+        }
+
         _ => None,
     }
 }
@@ -226,8 +237,15 @@ pub fn coerce_to_type(value: &Value, target_type: &crate::schema::FieldType) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::FieldType;
+    use crate::schema::{FieldType, MapField, MapKeyType};
     use crate::value::Value;
+
+    fn map_type(key_type: MapKeyType, value_type: FieldType) -> FieldType {
+        FieldType::Map(MapField {
+            key_type,
+            value_type: Box::new(value_type),
+        })
+    }
 
     #[test]
     fn test_normalize_string() {
@@ -912,5 +930,92 @@ mod tests {
             coerce_to_type(&Value::String("1".to_string()), &FieldType::Bytes),
             None
         );
+    }
+
+    #[test]
+    fn test_coerce_map_values_recursively_and_keep_keys() {
+        // Every value is coerced by value_type; keys pass through untouched.
+        let mut obj = IndexMap::new();
+        obj.insert(
+            "b".to_string(),
+            Value::Array(vec![
+                Value::String("1".to_string()),
+                Value::String("2".to_string()),
+            ]),
+        );
+        obj.insert("a".to_string(), Value::Array(vec![]));
+        let array_map = map_type(
+            MapKeyType::String,
+            FieldType::Array(Box::new(FieldType::Int32)),
+        );
+        let mut expected = IndexMap::new();
+        expected.insert(
+            "b".to_string(),
+            Value::Array(vec![Value::Int(1), Value::Int(2)]),
+        );
+        expected.insert("a".to_string(), Value::Array(vec![]));
+        assert_eq!(
+            coerce_to_type(&Value::Object(obj), &array_map),
+            Some(Value::Object(expected))
+        );
+
+        // Numeric string keys stay keys (they are not re-typed), only values are.
+        let mut int_keys = IndexMap::new();
+        int_keys.insert("42".to_string(), Value::String("7".to_string()));
+        int_keys.insert("-1".to_string(), Value::String("8".to_string()));
+        let int_map = map_type(MapKeyType::Int, FieldType::Int32);
+        let mut expected_int = IndexMap::new();
+        expected_int.insert("42".to_string(), Value::Int(7));
+        expected_int.insert("-1".to_string(), Value::Int(8));
+        assert_eq!(
+            coerce_to_type(&Value::Object(int_keys), &int_map),
+            Some(Value::Object(expected_int))
+        );
+
+        // Empty map stays empty
+        assert_eq!(
+            coerce_to_type(&Value::Object(IndexMap::new()), &int_map),
+            Some(Value::Object(IndexMap::new()))
+        );
+
+        // One bad value fails the whole map
+        let mut bad = IndexMap::new();
+        bad.insert("k".to_string(), Value::String("NaN".to_string()));
+        assert_eq!(coerce_to_type(&Value::Object(bad), &int_map), None);
+
+        // Scalar / array values are not maps
+        assert_eq!(coerce_to_type(&Value::Int(1), &int_map), None);
+        assert_eq!(coerce_to_type(&Value::Array(vec![]), &int_map), None);
+    }
+
+    #[test]
+    fn test_normalize_map_field_values_deterministically() {
+        // A map-typed field (a Value::Object) passes through normalization:
+        // keys sorted, values canonicalized, repeated runs byte-identical.
+        let mut obj = IndexMap::new();
+        obj.insert("z".to_string(), Value::String("  last  ".to_string()));
+        obj.insert("a".to_string(), Value::Float(-0.0));
+        let typed = TypedValue::new(
+            Value::Object(obj),
+            crate::value::SourceLocation::new("sheet.json").with_row(1),
+        );
+
+        let first = normalize_typed_value(&typed);
+        let second = normalize_typed_value(&typed);
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap(),
+            "map-typed fields must normalize deterministically"
+        );
+        let debug = format!("{:?}", first.value);
+        let a = debug
+            .find(r#""a": Float(0.0)"#)
+            .expect("float canonicalized to 0.0");
+        let z = debug
+            .find(r#""z": String("last")"#)
+            .expect("string trimmed");
+        assert!(a < z, "map keys must be sorted, got: {debug}");
+        // Locations survive normalization
+        assert_eq!(first.location, typed.location);
     }
 }

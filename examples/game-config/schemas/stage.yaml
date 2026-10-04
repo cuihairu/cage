@@ -1,0 +1,59 @@
+# 关卡（源：config/Stage.json）
+tables:
+  Stage:
+    name: Stage
+    description: 关卡表（JSON 源；数组 / 对象 / 跨表引用 / Map<K,V> 字段全覆盖）
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true, min: 1 }
+      name: { name: name, type: { kind: String }, required: true, min_length: 1, max_length: 64 }
+      difficulty:
+        name: difficulty
+        type: { kind: Enum, value: Difficulty }
+        required: true
+      min_level: { name: min_level, type: { kind: Int8 }, required: true, min: 1, max: 100 }
+      max_level: { name: max_level, type: { kind: Int8 }, required: true, min: 1, max: 100 }
+      boss_item_id:
+        name: boss_item_id
+        type: { kind: Int32 }
+        required: true
+        description: Boss 首杀奖励道具 —— 引用 Item.id（L5 跨表引用校验）
+        reference:
+          table: Item
+          field: id
+      tags:
+        name: tags
+        type:
+          kind: Array
+          value: { kind: String }
+        required: true
+        min_items: 1
+        max_items: 4
+        description: 关卡标签（Array<String>，1-4 个）
+      drop_table:
+        name: drop_table
+        type:
+          kind: Map
+          value:
+            key_type: string
+            value_type:
+              kind: Array
+              value: { kind: Int32 }
+        required: true
+        description: 稀有度 → 掉落道具 id 列表（map<string, Array<Int32>>；空 map 合法）
+      boss:
+        name: boss
+        type:
+          kind: Object
+          value:
+            name: { kind: String }
+            hp: { kind: Int32 }
+        description: 关卡 Boss（可选对象组：部分行缺省）
+enums:
+  Difficulty:
+    name: Difficulty
+    description: 难度（无值枚举：成员名即回退值，生成常量类）
+    values:
+      - { name: Easy }
+      - { name: Normal }
+      - { name: Hard }

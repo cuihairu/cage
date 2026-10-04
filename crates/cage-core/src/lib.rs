@@ -63,8 +63,9 @@ pub use reference::{
     DependencyGraph, IncrementalPlanner, ReferenceResolver, ResolvedReference, UnresolvedReference,
 };
 pub use schema::{
-    EnumSchema, EnumValue, ExpressionRule, FieldSchema, FieldType, ReferenceSchema, Schema,
-    SchemaMetadata, TableSchema, UniqueConstraint, ValidatedSchema, ValidationContext,
+    EnumSchema, EnumValue, ExpressionRule, FieldSchema, FieldType, MapField, MapKeyType,
+    ReferenceSchema, Schema, SchemaMetadata, TableSchema, UniqueConstraint, ValidatedSchema,
+    ValidationContext,
 };
 pub use validation::{validate, ValidationContext as ValidationCtx, ValidationLevel};
 pub use value::{Document, DocumentMetadata, Row, SourceLocation, Table, TypedValue, Value};

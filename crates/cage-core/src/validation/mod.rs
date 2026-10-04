@@ -6,7 +6,8 @@ pub mod rules;
 use crate::diagnostics::{Diagnostic, DiagnosticBuilder, Diagnostics, Severity};
 use crate::error::codes::{parse, reference, schema, semantic, table, type_val, value};
 use crate::schema::{
-    ExpressionRule, FieldSchema, FieldType, ReferenceSchema, Schema, TableSchema, ValidatedSchema,
+    ExpressionRule, FieldSchema, FieldType, MapKeyType, ReferenceSchema, Schema, TableSchema,
+    ValidatedSchema,
 };
 use crate::value::{Document, Row, TypedValue, Value};
 use std::collections::HashMap;
@@ -301,10 +302,9 @@ fn validate_type(ctx: &mut ValidationContext) {
                             .row(format!("{}", row.index))
                             .field(field_name)
                             .value(serde_json::to_value(&typed_value.value).unwrap_or_default())
-                            .hint(format!(
-                                "Expected type: {:?}, got: {}",
-                                field_schema.field_type,
-                                typed_value.value.type_name()
+                            .hint(type_mismatch_hint(
+                                &field_schema.field_type,
+                                typed_value.value.type_name(),
                             ))
                             .build(),
                     );
@@ -324,6 +324,17 @@ fn value_matches_type(value: &Value, expected: &FieldType) -> bool {
                 && obj
                     .iter()
                     .all(|(k, v)| fields.get(k).is_some_and(|ft| value_matches_type(v, ft)))
+        }
+        // Map: an open-ended object — key_type gates which keys are legal
+        // (int keys are numeric strings in the data model), value_type gates
+        // every value recursively. An empty object is always a valid map.
+        (Value::Object(obj), FieldType::Map(map)) => {
+            obj.iter().all(|(k, _)| match map.key_type {
+                MapKeyType::String => true, // Value::Object keys are String by construction
+                MapKeyType::Int => k.parse::<i64>().is_ok(),
+            }) && obj
+                .iter()
+                .all(|(_, v)| value_matches_type(v, &map.value_type))
         }
         // Enum membership itself is checked in L3 (value constraints)
         (Value::String(_), FieldType::Enum(_)) => true,
@@ -349,6 +360,26 @@ fn value_matches_type(value: &Value, expected: &FieldType) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+/// Hint text for an E1101 type mismatch.
+///
+/// Non-map expectations keep the plain `Debug` rendering byte-for-byte
+/// (`Expected type: Int32, got: string`); a map expectation is spelled
+/// `map<string, Array(Int32)>`-style because `Debug` on the payload struct
+/// (`Map(MapField { key_type: String, value_type: ... })`) reads poorly.
+fn type_mismatch_hint(expected: &FieldType, got: &str) -> String {
+    match expected {
+        FieldType::Map(map) => format!(
+            "Expected type: map<{}, {:?}>, got: {got}",
+            match map.key_type {
+                MapKeyType::String => "string",
+                MapKeyType::Int => "int",
+            },
+            map.value_type
+        ),
+        _ => format!("Expected type: {expected:?}, got: {got}"),
     }
 }
 
@@ -1079,6 +1110,13 @@ mod tests {
         FieldType::Array(Box::new(inner))
     }
 
+    fn map_type(key_type: MapKeyType, value_type: FieldType) -> FieldType {
+        FieldType::Map(crate::schema::MapField {
+            key_type,
+            value_type: Box::new(value_type),
+        })
+    }
+
     #[test]
     fn level_all_lists_pipeline_order_and_as_str_matches() {
         let names: Vec<&str> = ValidationLevel::all()
@@ -1317,6 +1355,208 @@ mod tests {
             .is_some_and(|h| h.contains("Int32") && h.contains("got: string")));
     }
 
+    /// Table used by the map-focused L2 tests: `weights` is `map<int, Int32>`,
+    /// `drops` is `map<string, Array<Int32>>`.
+    fn map_schema() -> Schema {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("weights", map_type(MapKeyType::Int, FieldType::Int32)),
+                plain_field(
+                    "drops",
+                    map_type(MapKeyType::String, array_type(FieldType::Int32)),
+                ),
+            ],
+        ));
+        schema
+    }
+
+    #[test]
+    fn l2_map_non_object_reports_e1101_with_row_location() {
+        let vs = validated(map_schema());
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    ("weights", str_val("not a map")),
+                    ("drops", object_val(&[])),
+                ],
+            )],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1, "diags: {diags:?}");
+        let err = errors[0];
+        assert_eq!(err.code, type_val::E1101);
+        assert_eq!(err.table.as_deref(), Some("Item"));
+        assert_eq!(err.row.as_deref(), Some("0"));
+        assert_eq!(err.field.as_deref(), Some("weights"));
+        let loc = err.location.as_ref().expect("E1101 carries a location");
+        assert_eq!(loc.file, "sheet.json");
+        assert_eq!(loc.row, Some(1));
+        assert_eq!(loc.field.as_deref(), Some("weights"));
+        assert!(err
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("map<int, Int32>") && h.contains("got: string")));
+    }
+
+    #[test]
+    fn l2_map_int_keys_must_be_numeric_strings() {
+        let vs = validated(map_schema());
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    ("weights", object_val(&[("foo", Value::Int(1))])),
+                    ("drops", object_val(&[])),
+                ],
+            )],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1, "diags: {diags:?}");
+        assert_eq!(errors[0].code, type_val::E1101);
+        assert_eq!(errors[0].table.as_deref(), Some("Item"));
+        assert_eq!(errors[0].row.as_deref(), Some("0"));
+        assert_eq!(errors[0].field.as_deref(), Some("weights"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("map<int, Int32>")));
+    }
+
+    #[test]
+    fn l2_map_accepts_valid_keys_and_well_typed_nested_values() {
+        let vs = validated(map_schema());
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    (
+                        "weights",
+                        object_val(&[("1", Value::Int(10)), ("-2", Value::Int(3))]),
+                    ),
+                    (
+                        "drops",
+                        object_val(&[
+                            ("sword", Value::Array(vec![Value::Int(1), Value::Int(2)])),
+                            // A string-keyed map accepts any key, including
+                            // spaces and empty arrays as values.
+                            ("any key", Value::Array(vec![])),
+                        ]),
+                    ),
+                ],
+            )],
+        );
+
+        // Integration: through the public validate() entry at Type level …
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        assert!(
+            diags.is_empty(),
+            "well-typed maps must not diagnose: {diags:?}"
+        );
+        // … and through the whole L0–L7 pipeline: no level chokes on maps.
+        let full = validate(&vs, &doc, ValidationLevel::GameRule, false);
+        assert!(full.is_empty(), "full pipeline must stay quiet: {full:?}");
+    }
+
+    #[test]
+    fn l2_map_rejects_nested_value_mismatch_and_accepts_empty_maps() {
+        let vs = validated(map_schema());
+        // One bad element nested inside map<string, Array<Int32>> fails the row.
+        let bad_doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    ("weights", object_val(&[])),
+                    (
+                        "drops",
+                        object_val(&[("sword", Value::Array(vec![Value::Int(1), str_val("x")]))]),
+                    ),
+                ],
+            )],
+        );
+        let diags = validate(&vs, &bad_doc, ValidationLevel::Type, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1, "diags: {diags:?}");
+        assert_eq!(errors[0].code, type_val::E1101);
+        assert_eq!(errors[0].field.as_deref(), Some("drops"));
+        assert_eq!(errors[0].row.as_deref(), Some("0"));
+        assert!(errors[0].hint.as_deref().is_some_and(|h| {
+            // The hint names the field's expected type and the top-level
+            // value type (the map itself is an object) — same machinery as
+            // a single bad element inside a plain array.
+            h.contains("map<string, Array(Int32)>") && h.contains("got: object")
+        }));
+
+        // Empty maps (no entries) are always valid for every key type.
+        let empty_doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    ("weights", object_val(&[])),
+                    ("drops", object_val(&[])),
+                ],
+            )],
+        );
+        let diags = validate(&vs, &empty_doc, ValidationLevel::Type, false);
+        assert!(diags.is_empty(), "empty maps must pass: {diags:?}");
+    }
+
+    #[test]
+    fn l2_object_schema_still_rejects_extra_keys() {
+        // Maps are open-ended; schema Objects keep their closed-key semantics.
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("stats", object_type(&[("hp", FieldType::Int32)])),
+            ],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    (
+                        "stats",
+                        object_val(&[("hp", Value::Int(10)), ("mp", Value::Int(5))]),
+                    ),
+                ],
+            )],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1, "diags: {diags:?}");
+        assert_eq!(errors[0].code, type_val::E1101);
+        assert_eq!(errors[0].field.as_deref(), Some("stats"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("Object")));
+    }
+
     #[test]
     fn value_matches_type_covers_every_family() {
         // Array: every element must match the declared inner type.
@@ -1342,6 +1582,40 @@ mod tests {
         assert!(!value_matches_type(
             &object_val(&[("hp", str_val("10"))]),
             &object
+        ));
+        // Map: keys are gated by key_type, values by value_type; an empty
+        // object is always a valid map, and any string key is legal for a
+        // string-keyed map.
+        let map = map_type(MapKeyType::String, FieldType::Int32);
+        assert!(value_matches_type(&object_val(&[]), &map));
+        assert!(value_matches_type(
+            &object_val(&[("any key/空间", Value::Int(1))]),
+            &map
+        ));
+        assert!(!value_matches_type(
+            &object_val(&[("k", str_val("1"))]),
+            &map
+        ));
+        assert!(!value_matches_type(&str_val("not an object"), &map));
+        assert!(!value_matches_type(&Value::Int(1), &map));
+        let int_map = map_type(MapKeyType::Int, FieldType::Int32);
+        assert!(value_matches_type(
+            &object_val(&[("-7", Value::Int(1))]),
+            &int_map
+        ));
+        assert!(!value_matches_type(
+            &object_val(&[("foo", Value::Int(1))]),
+            &int_map
+        ));
+        // Nested value types are checked recursively.
+        let nested = map_type(MapKeyType::String, array_type(FieldType::Int32));
+        assert!(value_matches_type(
+            &object_val(&[("a", Value::Array(vec![Value::Int(1)]))]),
+            &nested
+        ));
+        assert!(!value_matches_type(
+            &object_val(&[("a", Value::Array(vec![str_val("x")]))]),
+            &nested
         ));
         // Enum membership itself is deferred to L3, so strings always pass.
         assert!(value_matches_type(

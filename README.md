@@ -44,6 +44,12 @@ Authoring Sources → Source Adapters → Canonical Model
 ## 快速开始
 
 ```bash
+bash examples/run.sh   # 一键跑通完整示例工程：校验 → 构建 10 个 target → 生成 8 语言代码 → E1601 坏数据诊断演示
+```
+
+示例工程详解见 [`examples/game-config/`](examples/game-config/README.md) 与文档站「完整示例」页。其余常用命令：
+
+```bash
 cage check config/                 # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
 cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）

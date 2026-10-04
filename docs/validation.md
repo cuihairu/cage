@@ -125,6 +125,11 @@ Value:
     "abc"
 ```
 
+Map 字段的键值逐项校验：键按 `key_type` 门控（string 键恒合法；int 键
+必须是可 `parse::<i64>` 的数字字符串），值按 `value_type` 递归校验，
+不匹配同样走 `E1101`（提示带 `map<key, value>` 拼写的期望类型）；空 map
+恒合法。
+
 ## L3 Value（值）
 
 类型正确也不代表值合理。Schema：

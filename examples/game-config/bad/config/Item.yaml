@@ -1,0 +1,35 @@
+# 道具表（YAML 多文档格式：根键 = 表名）
+# attack_bonus / desc 为可选字段 —— 消耗品行缺省，演示可空字段在 8 种语言的可选类型。
+Item:
+  - id: 1001
+    name: 铁剑
+    type: Weapon
+    rarity: common
+    price: 100
+    attack_bonus: 15
+    desc: 新手的第一把剑
+  - id: 1002
+    name: 秘银大剑
+    type: Weapon
+    rarity: epic
+    price: 2400
+    attack_bonus: 120
+    desc: 隐藏矿脉锻造的双手巨剑
+  - id: 2001
+    name: 皮甲
+    type: Armor
+    rarity: common
+    price: 80
+    attack_bonus: 5
+  - id: 2002
+    name: 龙鳞铠
+    type: Armor
+    rarity: legendary
+    price: 9999
+    attack_bonus: 60
+    desc: 传说中巨龙的鳞片缝制
+  - id: 3001
+    name: 治疗药水
+    type: Consumable
+    rarity: common
+    price: 50

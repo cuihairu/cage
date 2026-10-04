@@ -162,10 +162,51 @@ pub enum FieldType {
     Array(Box<FieldType>),
     /// Object with typed properties
     Object(IndexMap<String, FieldType>),
+    /// Map with typed keys and values: `map<K, V>`.
+    ///
+    /// Canonical YAML/JSON schema syntax (adjacently tagged like every other
+    /// kind):
+    ///
+    /// ```yaml
+    /// type:
+    ///   kind: Map
+    ///   value:
+    ///     key_type: string              # string | int
+    ///     value_type:
+    ///       kind: Array
+    ///       value: { kind: Int32 }
+    /// ```
+    ///
+    /// So `map<string, Array<Int32>>` =
+    /// `{ kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }`.
+    /// The payload is a struct rather than a bare `Box<FieldType>` because the
+    /// key type declaration has to live inside the type — nested maps carry
+    /// their own `key_type` that way.
+    Map(MapField),
     /// Reference to a named enum
     Enum(String),
     /// Any value
     Any,
+}
+
+/// Map payload: key type plus (possibly nested) value type — `map<K, V>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapField {
+    /// Key type: string keys or signed-integer keys.
+    pub key_type: MapKeyType,
+    /// Value type — arbitrary, may nest (Array / Map / Object / ...).
+    pub value_type: Box<FieldType>,
+}
+
+/// Key kinds accepted by [`MapField::key_type`] (wire format: `string` | `int`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MapKeyType {
+    /// String keys — every `Value::Object` key is a string, so all pass.
+    String,
+    /// Signed-integer keys, stored as numeric strings in the data model
+    /// (`"42"`, `"-7"`); non-numeric keys are rejected at L2.
+    Int,
 }
 
 impl FieldType {
@@ -225,6 +266,10 @@ impl FieldType {
             FieldType::Bytes => "Vec<u8>",
             FieldType::Array(_) => "Vec<_>",
             FieldType::Object(_) => "IndexMap<String, _>",
+            FieldType::Map(m) => match m.key_type {
+                MapKeyType::String => "HashMap<String, _>",
+                MapKeyType::Int => "HashMap<i64, _>",
+            },
             FieldType::Enum(_) => "Enum",
             FieldType::Any => "serde_json::Value",
         }
@@ -542,6 +587,14 @@ impl Default for Schema {
 mod tests {
     use super::*;
 
+    /// `map<key_type, value_type>` — shared by the tests below.
+    fn map_type(key_type: MapKeyType, value_type: FieldType) -> FieldType {
+        FieldType::Map(MapField {
+            key_type,
+            value_type: Box::new(value_type),
+        })
+    }
+
     #[test]
     fn test_schema_validation() {
         let mut schema = Schema::new();
@@ -745,6 +798,8 @@ mod tests {
             FieldType::Enum("E".to_string()),
             FieldType::Array(Box::new(FieldType::Int32)),
             FieldType::Object(IndexMap::new()),
+            map_type(MapKeyType::String, FieldType::Int32),
+            map_type(MapKeyType::Int, FieldType::Int32),
         ] {
             assert!(!t.is_numeric());
             assert!(!t.is_integer());
@@ -776,12 +831,21 @@ mod tests {
             FieldType::Object(IndexMap::new()).rust_type(),
             "IndexMap<String, _>"
         );
+        assert_eq!(
+            map_type(MapKeyType::String, FieldType::Int32).rust_type(),
+            "HashMap<String, _>"
+        );
+        assert_eq!(
+            map_type(MapKeyType::Int, FieldType::Int32).rust_type(),
+            "HashMap<i64, _>"
+        );
         assert_eq!(FieldType::Enum("Rarity".to_string()).rust_type(), "Enum");
         assert_eq!(FieldType::Any.rust_type(), "serde_json::Value");
     }
 
     #[test]
     fn field_type_yaml_parsing_all_kinds_and_edges() {
+        // Every one of the 19 FieldType kinds must round-trip through YAML.
         let cases = [
             ("{ kind: Null }", FieldType::Null),
             ("{ kind: Bool }", FieldType::Bool),
@@ -803,10 +867,40 @@ mod tests {
                 FieldType::Array(Box::new(FieldType::Int32)),
             ),
             (
+                "{ kind: Object, value: { hp: { kind: Int32 }, tag: { kind: String } } }",
+                FieldType::Object(IndexMap::from([
+                    ("hp".to_string(), FieldType::Int32),
+                    ("tag".to_string(), FieldType::String),
+                ])),
+            ),
+            (
                 "{ kind: Enum, value: Rarity }",
                 FieldType::Enum("Rarity".to_string()),
             ),
+            // The 19th kind: map<K, V> — string keys ...
+            (
+                "{ kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }",
+                map_type(MapKeyType::String, FieldType::Int32),
+            ),
+            // ... signed-integer keys ...
+            (
+                "{ kind: Map, value: { key_type: int, value_type: { kind: String } } }",
+                map_type(MapKeyType::Int, FieldType::String),
+            ),
+            // ... and arbitrary nesting in both directions.
+            (
+                "{ kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } } } }",
+                map_type(
+                    MapKeyType::String,
+                    map_type(MapKeyType::String, FieldType::Int32),
+                ),
+            ),
+            (
+                "{ kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }",
+                map_type(MapKeyType::String, FieldType::Array(Box::new(FieldType::Int32))),
+            ),
         ];
+        let mut kinds = HashSet::new();
         for (yaml, expected) in cases {
             let parsed: FieldType =
                 serde_yaml::from_str(yaml).unwrap_or_else(|e| panic!("parse {yaml}: {e}"));
@@ -815,24 +909,109 @@ mod tests {
             let emitted = serde_yaml::to_string(&parsed).expect("serialize kind");
             let back: FieldType = serde_yaml::from_str(&emitted).expect("re-parse kind");
             assert_eq!(back, expected, "roundtrip: {emitted}");
+            // Debug starts with the variant name (e.g. `Map(MapField { ... })`)
+            let debug = format!("{expected:?}");
+            kinds.insert(
+                debug
+                    .split('(')
+                    .next()
+                    .expect("Debug rendering starts with the variant name")
+                    .to_string(),
+            );
         }
-
-        let obj: FieldType = serde_yaml::from_str(
-            "{ kind: Object, value: { hp: { kind: Int32 }, tag: { kind: String } } }",
-        )
-        .expect("object type");
-        let expected_obj = FieldType::Object(IndexMap::from([
-            ("hp".to_string(), FieldType::Int32),
-            ("tag".to_string(), FieldType::String),
-        ]));
-        assert_eq!(obj, expected_obj);
+        assert_eq!(kinds.len(), 19, "kinds covered: {kinds:?}");
 
         // unknown kind, missing content for data variants, missing tag, not a map
         assert!(serde_yaml::from_str::<FieldType>("{ kind: Quadruple }").is_err());
         assert!(serde_yaml::from_str::<FieldType>("{ kind: Array }").is_err());
         assert!(serde_yaml::from_str::<FieldType>("{ kind: Enum }").is_err());
+        assert!(serde_yaml::from_str::<FieldType>("{ kind: Map }").is_err());
+        assert!(
+            serde_yaml::from_str::<FieldType>(
+                "{ kind: Map, value: { key_type: bool, value_type: { kind: Int32 } } }"
+            )
+            .is_err(),
+            "unknown key_type must fail"
+        );
+        assert!(
+            serde_yaml::from_str::<FieldType>("{ kind: Map, value: { key_type: string } }")
+                .is_err(),
+            "missing value_type must fail"
+        );
         assert!(serde_yaml::from_str::<FieldType>("{}").is_err());
         assert!(serde_yaml::from_str::<FieldType>("just-a-string").is_err());
+    }
+
+    #[test]
+    fn map_key_type_wire_format_is_lowercase() {
+        // Wire format is the lowercase rename — "string" / "int", nothing else.
+        assert_eq!(
+            serde_yaml::to_string(&MapKeyType::String).expect("yaml string"),
+            "string\n"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&MapKeyType::Int).expect("yaml int"),
+            "int\n"
+        );
+        assert_eq!(
+            serde_json::to_string(&MapKeyType::String).expect("json string"),
+            "\"string\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MapKeyType::Int).expect("json int"),
+            "\"int\""
+        );
+        for (wire, expected) in [
+            ("string", MapKeyType::String),
+            ("int", MapKeyType::Int),
+            ("\"string\"", MapKeyType::String),
+            ("\"int\"", MapKeyType::Int),
+        ] {
+            let key: MapKeyType = if wire.starts_with('"') {
+                serde_json::from_str(wire).expect("json key type")
+            } else {
+                serde_yaml::from_str(wire).expect("yaml key type")
+            };
+            assert_eq!(key, expected, "wire: {wire}");
+        }
+        assert!(serde_yaml::from_str::<MapKeyType>("u32").is_err());
+        assert!(serde_yaml::from_str::<MapKeyType>("String").is_err());
+        assert!(serde_json::from_str::<MapKeyType>("\"u32\"").is_err());
+    }
+
+    #[test]
+    fn field_schema_yaml_parses_map_field() {
+        let yaml = r"
+name: drops
+type:
+  kind: Map
+  value:
+    key_type: string
+    value_type:
+      kind: Array
+      value: { kind: Int32 }
+description: drop table keyed by rarity
+";
+        let field: FieldSchema = serde_yaml::from_str(yaml).expect("map field parses");
+        assert_eq!(field.name, "drops");
+        assert_eq!(
+            field.field_type,
+            map_type(
+                MapKeyType::String,
+                FieldType::Array(Box::new(FieldType::Int32))
+            )
+        );
+        assert_eq!(
+            field.description.as_deref(),
+            Some("drop table keyed by rarity")
+        );
+        // JSON carries the same shape
+        let json = serde_json::to_value(&field.field_type).expect("map type to json");
+        assert_eq!(json["kind"], "Map");
+        assert_eq!(json["value"]["key_type"], "string");
+        assert_eq!(json["value"]["value_type"]["kind"], "Array");
+        let back: FieldType = serde_json::from_value(json).expect("map type from json");
+        assert_eq!(back, field.field_type);
     }
 
     #[test]

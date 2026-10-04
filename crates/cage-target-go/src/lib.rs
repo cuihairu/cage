@@ -53,7 +53,7 @@
 )]
 use cage_core::{
     manifest::TargetConfig,
-    schema::{EnumSchema, FieldSchema, FieldType, Schema, TableSchema},
+    schema::{EnumSchema, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema},
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -846,6 +846,7 @@ fn is_nilable_reference(ft: &FieldType) -> bool {
         ft,
         FieldType::Array(_)
             | FieldType::Bytes
+            | FieldType::Map(_)
             | FieldType::Object(_)
             | FieldType::Null
             | FieldType::Any
@@ -889,10 +890,25 @@ fn go_type(ft: &FieldType, enum_types: &HashMap<&str, String>) -> String {
         FieldType::Bytes => "[]byte".to_string(),
         FieldType::Array(inner) => format!("[]{}", go_type(inner, enum_types)),
         FieldType::Object(_) => "map[string]any".to_string(),
+        FieldType::Map(map) => format!(
+            "map[{}]{}",
+            go_map_key_type(map.key_type),
+            go_type(&map.value_type, enum_types)
+        ),
         FieldType::Enum(name) => enum_types
             .get(name.as_str())
             .cloned()
             .unwrap_or_else(|| "string".to_string()),
+    }
+}
+
+/// Go type for a map key: string keys → `string`; signed-integer keys →
+/// `int64` (the schema's key semantics are i64, and encoding/json decodes
+/// the quoted-string keys of integer-keyed maps natively).
+fn go_map_key_type(key_type: MapKeyType) -> &'static str {
+    match key_type {
+        MapKeyType::String => "string",
+        MapKeyType::Int => "int64",
     }
 }
 
@@ -924,6 +940,9 @@ fn render_default(
         FieldType::Array(inner) => value
             .as_array()
             .and_then(|items| array_literal(items, inner, enum_types)),
+        FieldType::Map(map) => value
+            .as_object()
+            .and_then(|entries| map_literal(entries, map, enum_types)),
         _ => None,
     }
 }
@@ -961,6 +980,48 @@ fn array_literal(
         go_type(inner, enum_types),
         parts.join(", ")
     ))
+}
+
+/// Map defaults render each entry's value through [`render_default`] under
+/// the same compile-safe rule as array defaults (one unrenderable entry drops
+/// the whole default). An empty default renders the typed empty map literal —
+/// the constructor evaluates it on every call, so rows never share one map.
+/// Entry order follows the default object's (`serde_json`'s lexicographic)
+/// key order, which is deterministic.
+fn map_literal(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    map: &MapField,
+    enum_types: &HashMap<&str, String>,
+) -> Option<String> {
+    let mut parts = Vec::with_capacity(entries.len());
+    // Sort keys: serde_json's map order follows feature unification
+    // (BTreeMap by default, insertion order with preserve_order).
+    let mut sorted: Vec<(&String, &serde_json::Value)> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in sorted {
+        parts.push(format!(
+            "{}: {}",
+            map_key_literal(key, map.key_type)?,
+            render_default(value, &map.value_type, enum_types)?
+        ));
+    }
+    Some(format!(
+        "map[{}]{}{{{}}}",
+        go_map_key_type(map.key_type),
+        go_type(&map.value_type, enum_types),
+        parts.join(", ")
+    ))
+}
+
+/// Map key literal: string keys render as Go string literals; integer keys
+/// are stored as numeric strings in the data model and parse as i64, so they
+/// render bare to match the `int64` map key type (non-numeric keys — already
+/// rejected at L2 for data — drop the default rather than mis-render).
+fn map_key_literal(key: &str, key_type: MapKeyType) -> Option<String> {
+    match key_type {
+        MapKeyType::String => Some(go_string_literal(key)),
+        MapKeyType::Int => key.parse::<i64>().ok().map(|i| i.to_string()),
+    }
 }
 
 /// Go float literal: integral values render bare (`100` is a valid untyped
@@ -1471,6 +1532,163 @@ enums:
         .is_none());
     }
 
+    #[test]
+    fn test_map_type_rendering() {
+        let schema: Schema = serde_yaml::from_str(
+            r#"
+tables:
+  Loot:
+    name: Loot
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      drops: { name: drops, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } } }
+      weights: { name: weights, type: { kind: Map, value: { key_type: int, value_type: { kind: Float32 } } } }
+      nested: { name: nested, type: { kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } } } } }
+      kinds: { name: kinds, type: { kind: Map, value: { key_type: string, value_type: { kind: Enum, value: ItemKind } } } }
+      counts: { name: counts, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: {} }
+      scores: { name: scores, type: { kind: Map, value: { key_type: int, value_type: { kind: String } } }, default: {"1": a, "-2": b} }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+"#,
+        )
+        .expect("map schema");
+        let artifacts = gen().generate(&schema, Some("abc123"));
+        assert_eq!(artifacts.len(), 2); // Loot.go + cage_enums.go
+        let src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+        let lines = normalized(&src);
+
+        // Typed maps: key type (string / int64 for int keys), then the value
+        // type — arrays and nested maps nest, enum values resolve to the
+        // allocated type name.
+        for expected in [
+            "Drops map[string][]int32 `json:\"drops\"`",
+            "Weights map[int64]float32 `json:\"weights\"`",
+            "Nested map[string]map[string]int32 `json:\"nested\"`",
+            "Kinds map[string]ItemKind `json:\"kinds\"`",
+            "Counts map[string]int32 `json:\"counts\"`",
+        ] {
+            assert!(lines.contains(&expected.to_string()), "missing: {expected}");
+        }
+        // Maps are nil-able already: optional map fields never get a pointer.
+        assert!(!src.contains("*map["));
+
+        // New{Table}: the empty map default renders the typed empty literal,
+        // and entry defaults render keys per key type — quoted strings, bare
+        // i64 — in the default object's key order ("-2" sorts before "1").
+        assert!(src.contains("func NewLoot() Loot {\n"));
+        assert!(lines.contains(&"Counts: map[string]int32{},".to_string()));
+        assert!(lines.contains(&"Scores: map[int64]string{-2: \"b\", 1: \"a\"},".to_string()));
+    }
+
+    #[test]
+    fn test_map_default_rendering_rules() {
+        let schema = test_schema();
+        let enums = enum_type_map(&schema);
+        let map = |k: MapKeyType, v: FieldType| {
+            FieldType::Map(MapField {
+                key_type: k,
+                value_type: Box::new(v),
+            })
+        };
+        // Key spelling: string → string, int → int64 (i64 key semantics).
+        assert_eq!(go_map_key_type(MapKeyType::String), "string");
+        assert_eq!(go_map_key_type(MapKeyType::Int), "int64");
+        // Empty default → the typed empty literal.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({}),
+                &map(MapKeyType::String, FieldType::Int32),
+                &enums
+            )
+            .unwrap(),
+            "map[string]int32{}"
+        );
+        // Entries: string keys quoted, values per the existing scalar rules.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"a": 1, "b": 2}),
+                &map(MapKeyType::String, FieldType::Int32),
+                &enums
+            )
+            .unwrap(),
+            "map[string]int32{\"a\": 1, \"b\": 2}"
+        );
+        // Integer keys are numeric strings in the data model; they parse as
+        // i64 and render bare.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"1": 0.5, "-2": 0.25}),
+                &map(MapKeyType::Int, FieldType::Float32),
+                &enums
+            )
+            .unwrap(),
+            "map[int64]float32{-2: 0.25, 1: 0.5}"
+        );
+        // Array values render under the array rule; nested maps nest.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"common": [1, 2]}),
+                &map(
+                    MapKeyType::String,
+                    FieldType::Array(Box::new(FieldType::Int32))
+                ),
+                &enums
+            )
+            .unwrap(),
+            "map[string][]int32{\"common\": []int32{1, 2}}"
+        );
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"x": {"3": 9}}),
+                &map(MapKeyType::String, map(MapKeyType::Int, FieldType::Int32)),
+                &enums
+            )
+            .unwrap(),
+            "map[string]map[int64]int32{\"x\": map[int64]int32{3: 9}}"
+        );
+        // Kind mismatch → None (a map default must be an object).
+        assert!(render_default(
+            &serde_json::json!([1]),
+            &map(MapKeyType::String, FieldType::Int32),
+            &enums
+        )
+        .is_none());
+        // One unrenderable entry drops the whole default (array rule).
+        assert!(render_default(
+            &serde_json::json!({"a": {}}),
+            &map(
+                MapKeyType::String,
+                FieldType::Object(indexmap::IndexMap::default())
+            ),
+            &enums
+        )
+        .is_none());
+        // Enum values keep the shared no-enum-literals rule.
+        assert!(render_default(
+            &serde_json::json!({"x": 1}),
+            &map(MapKeyType::String, FieldType::Enum("ItemKind".to_string())),
+            &enums
+        )
+        .is_none());
+        // Non-numeric or out-of-i64-range integer keys cannot render.
+        assert!(render_default(
+            &serde_json::json!({"x": 1}),
+            &map(MapKeyType::Int, FieldType::Int32),
+            &enums
+        )
+        .is_none());
+        assert!(render_default(
+            &serde_json::json!({"9223372036854775808": 1}),
+            &map(MapKeyType::Int, FieldType::Int32),
+            &enums
+        )
+        .is_none());
+    }
+
     /// Empty-map helper matching `generate`'s enum type resolution.
     fn enum_type_map(schema: &Schema) -> HashMap<&str, String> {
         GoTargetGenerator::emitted_enums(schema)
@@ -1552,7 +1770,7 @@ enums:
     }
 
     /// Sample schema shared by the dev-only dump and the edge rendering
-    /// test: every field kind (incl. Null/Any/Bytes/Object), unsigned
+    /// test: every field kind (incl. Null/Any/Bytes/Object/Map), unsigned
     /// widths, string escapes, constraint docs, empty and no-primary-key
     /// tables, a single-field table, int64/uint64 and string-bucket enums,
     /// and a defaulted 44-char ident (the go/printer geometric-mean path
@@ -1587,6 +1805,8 @@ tables:
       anyx: { name: anyx, type: { kind: Any } }
       blob: { name: blob, type: { kind: Bytes } }
       meta: { name: meta, type: { kind: Object, value: {} } }
+      drops: { name: drops, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } } }
+      weights: { name: weights, type: { kind: Map, value: { key_type: int, value_type: { kind: Float32 } } }, default: {} }
       qty: { name: qty, type: { kind: Int32 }, required: true, max: 99, description: Stock }
       code: { name: code, type: { kind: String }, min_length: 1, max_length: 10, pattern: "^[a-z]+$" }
       desc: { name: desc, type: { kind: String }, default: "q\"r\\s\n\t\rz" }
@@ -1698,6 +1918,8 @@ enums:
             "Anyx any `json:\"anyx\"`",
             "Blob []byte `json:\"blob\"`",
             "Meta map[string]any `json:\"meta\"`",
+            "Drops map[string][]int32 `json:\"drops\"`",
+            "Weights map[int64]float32 `json:\"weights\"`",
             "Qty int32 `json:\"qty\"`",
             "Code *string `json:\"code\"`",
         ] {
@@ -1712,6 +1934,8 @@ enums:
         assert!(lines.contains(&"Flag: true,".to_string()));
         assert!(lines.contains(&"Desc: \"q\\\"r\\\\s\\n\\t\\rz\",".to_string()));
         assert!(lines.contains(&"UnreasonablyLongFieldNameExceedingFortyChars: 1,".to_string()));
+        // Empty map default: the typed empty literal, built per call.
+        assert!(lines.contains(&"Weights: map[int64]float32{},".to_string()));
         assert!(lines.contains(&"return Item{".to_string()));
 
         // Empty field set: gofmt's one-liner struct.

@@ -1,0 +1,43 @@
+# 道具（源：config/Item.yaml）
+tables:
+  Item:
+    name: Item
+    description: 道具表（YAML 源；attack_bonus/desc 可选 —— 部分行缺省，演示可空字段）
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true, min: 1 }
+      name: { name: name, type: { kind: String }, required: true, min_length: 1, max_length: 64 }
+      type:
+        name: type
+        type: { kind: Enum, value: ItemType }
+        required: true
+      rarity:
+        name: rarity
+        type: { kind: Enum, value: Rarity }
+        required: true
+      price: { name: price, type: { kind: Int32 }, required: true, min: 0, max: 999999 }
+      attack_bonus:
+        name: attack_bonus
+        type: { kind: Int32 }
+        description: 武器/护甲的攻击加成；消耗品行缺省（可空）
+      desc:
+        name: desc
+        type: { kind: String }
+        max_length: 256
+        description: 道具描述（可选，部分行缺省）
+enums:
+  ItemType:
+    name: ItemType
+    description: 道具类型（整型枚举）
+    values:
+      - { name: Weapon, value: 1 }
+      - { name: Armor, value: 2 }
+      - { name: Consumable, value: 3 }
+  Rarity:
+    name: Rarity
+    description: 稀有度（字符串枚举：成员无整数值，生成常量类）
+    values:
+      - { name: common }
+      - { name: rare }
+      - { name: epic }
+      - { name: legendary }

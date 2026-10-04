@@ -75,6 +75,8 @@ output_dir = "build/java"
       name: { name: name, type: { kind: String }, required: true }
       price: { name: price, type: { kind: Int32 }, min: 0 }
       kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+      drops: { name: drops, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } } }
+      weights: { name: weights, type: { kind: Map, value: { key_type: int, value_type: { kind: Float32 } } } }
 enums:
   ItemKind:
     name: ItemKind
@@ -87,7 +89,7 @@ enums:
 
     fs::write(
         root.join("config/item.json"),
-        r#"{"Item": [{"id": 1, "name": "Sword", "price": 100, "kind": "Sword"}, {"id": 2, "name": "Shield", "price": 50, "kind": "Shield"}]}"#,
+        r#"{"Item": [{"id": 1, "name": "Sword", "price": 100, "kind": "Sword", "drops": {"common": [1, 2]}, "weights": {"1": 0.5}}, {"id": 2, "name": "Shield", "price": 50, "kind": "Shield", "drops": {}, "weights": {}}]}"#,
     )
     .unwrap();
 }

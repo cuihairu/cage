@@ -24,3 +24,6 @@ target
 node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+
+# Example project build outputs (regenerate with examples/run.sh)
+examples/*/build/

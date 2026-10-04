@@ -1,0 +1,16 @@
+# 坏数据示例：与上层工程共用同一份 schema，只把 Character.csv 的第一行
+# attack 改成 500（level=1 → power_curve 上限 150）→ 触发 L7 E1601 行级诊断。
+output_dir = "build"
+schema_path = "../schemas"
+
+[project]
+name = "rpg-demo-bad"
+version = "0.1.0"
+description = "Cage 坏数据示例：attack 越过 power curve → E1601"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+targets = []

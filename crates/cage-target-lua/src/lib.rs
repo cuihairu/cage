@@ -8,8 +8,9 @@
 //!
 //! Each table module exposes name / `primary_key` / field metadata / schema
 //! defaults plus an `M.new(t)` constructor that fills missing fields from the
-//! defaults (array defaults are copied so rows never share state). Shared
-//! enums live in one flat module (`M.<Enum> = { member = value, ... }`).
+//! defaults (table defaults — arrays and maps alike — are copied recursively
+//! so rows never share state). Shared enums live in one flat module
+//! (`M.<Enum> = { member = value, ... }`).
 
 // Lint gate: default set + pedantic, with scoped allows.
 // (nursery/cargo stay at built-in defaults — see crate docs.)
@@ -45,7 +46,7 @@
 )]
 use cage_core::{
     manifest::TargetConfig,
-    schema::{EnumSchema, FieldSchema, FieldType, Schema, TableSchema},
+    schema::{EnumSchema, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema},
 };
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -76,6 +77,14 @@ const LUA_KEYWORDS: &[&str] = &[
     "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
     "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
 ];
+
+/// Doc note for Map fields: in Lua both Map and Array are `table`, so the
+/// metadata comment must say which shape the field carries — a Map lives in
+/// the hash part, an Array is a sequence part.
+const MAP_NOTE: &str = "键值表（hash part），与 Array 的数组 table（sequence part）不同";
+/// Extra note for integer-keyed maps: the data model stores the keys as
+/// numeric strings (`"42"`), so consumers convert them with `tonumber`.
+const MAP_INT_KEY_NOTE: &str = "int 键在数据里是数字字符串，消费端用 tonumber 转换";
 
 impl LuaTargetGenerator {
     /// Create from target config
@@ -220,7 +229,8 @@ impl LuaTargetGenerator {
 
         // Schema defaults by field key; fields whose default has no safe
         // literal (objects, mismatched kinds, non-finite floats) simply have
-        // no entry.
+        // no entry — inside a map default, members without a safe literal
+        // are skipped entry-by-entry instead of sinking the whole map.
         let _ = writeln!(out);
         let _ = writeln!(out, "-- Schema defaults by field key.");
         let _ = writeln!(out, "M.defaults = {{");
@@ -238,7 +248,19 @@ impl LuaTargetGenerator {
         let _ = writeln!(out, "}}");
 
         // Generic constructor: caller values win, missing keys fall back to
-        // M.defaults; array defaults are copied so rows never share state.
+        // M.defaults; table defaults (arrays and maps alike) are copied
+        // recursively so rows never share a table, not even nested ones.
+        let _ = writeln!(out);
+        let _ = writeln!(out, "local function copy_default(v)");
+        let _ = writeln!(out, "    if type(v) ~= \"table\" then");
+        let _ = writeln!(out, "        return v");
+        let _ = writeln!(out, "    end");
+        let _ = writeln!(out, "    local copy = {{}}");
+        let _ = writeln!(out, "    for k, item in pairs(v) do");
+        let _ = writeln!(out, "        copy[k] = copy_default(item)");
+        let _ = writeln!(out, "    end");
+        let _ = writeln!(out, "    return copy");
+        let _ = writeln!(out, "end");
         let _ = writeln!(out);
         let _ = writeln!(
             out,
@@ -255,15 +277,7 @@ impl LuaTargetGenerator {
         let _ = writeln!(out, "    end");
         let _ = writeln!(out, "    for k, v in pairs(M.defaults) do");
         let _ = writeln!(out, "        if row[k] == nil then");
-        let _ = writeln!(out, "            if type(v) == \"table\" then");
-        let _ = writeln!(out, "                local copy = {{}}");
-        let _ = writeln!(out, "                for i, item in ipairs(v) do");
-        let _ = writeln!(out, "                    copy[i] = item");
-        let _ = writeln!(out, "                end");
-        let _ = writeln!(out, "                row[k] = copy");
-        let _ = writeln!(out, "            else");
-        let _ = writeln!(out, "                row[k] = v");
-        let _ = writeln!(out, "            end");
+        let _ = writeln!(out, "            row[k] = copy_default(v)");
         let _ = writeln!(out, "        end");
         let _ = writeln!(out, "    end");
         let _ = writeln!(out, "    return row");
@@ -343,12 +357,26 @@ fn lua_type_label(ft: &FieldType, schema: &Schema) -> String {
         FieldType::String => "string".to_string(),
         FieldType::Bytes => "bytes".to_string(),
         FieldType::Array(inner) => format!("array<{}>", lua_type_label(inner, schema)),
+        FieldType::Map(mf) => format!(
+            "map<{}, {}>",
+            map_key_label(mf.key_type),
+            lua_type_label(&mf.value_type, schema)
+        ),
         FieldType::Object(_) => "table".to_string(),
         FieldType::Enum(name) => match schema.enums.get(name).filter(|e| !e.values.is_empty()) {
             Some(_) => name.clone(),
             // Unresolved (or empty) enum: fall back to plain string.
             None => "string".to_string(),
         },
+    }
+}
+
+/// Label for the key half of `map<K, V>`: `string` | `int` (the schema's
+/// `MapKeyType` spelling, mirroring the YAML wire format).
+fn map_key_label(key: MapKeyType) -> &'static str {
+    match key {
+        MapKeyType::String => "string",
+        MapKeyType::Int => "int",
     }
 }
 
@@ -386,7 +414,45 @@ fn render_default(value: &serde_json::Value, ft: &FieldType, schema: &Schema) ->
         FieldType::Array(inner) => value
             .as_array()
             .and_then(|items| array_literal(items, inner, schema)),
+        FieldType::Map(mf) => value
+            .as_object()
+            .map(|entries| map_literal(entries, mf, schema)),
         _ => None,
+    }
+}
+
+/// Map defaults render member-by-member with the existing scalar rules
+/// (recursing through [`render_default`], so nested maps and scalar arrays
+/// work too). Unlike arrays, a member with no safe literal is skipped
+/// individually — one mismatched entry does not sink the whole default;
+/// a fully-skipped or empty default renders as an empty table.
+fn map_literal(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    mf: &MapField,
+    schema: &Schema,
+) -> String {
+    let mut parts = Vec::with_capacity(entries.len());
+    // Sort keys: serde_json's map order follows feature unification
+    // (BTreeMap by default, insertion order with preserve_order).
+    let mut sorted: Vec<(&String, &serde_json::Value)> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in sorted {
+        if let Some(rendered) = render_default(value, &mf.value_type, schema) {
+            parts.push(format!("{} = {rendered}", lua_table_key(key)));
+        }
+    }
+    format!("{{ {} }}", parts.join(", "))
+}
+
+/// Lua table-constructor key: identifier-safe string keys take the short
+/// `k = v` form; everything else (keywords, spaces, escapes, and the
+/// numeric-string keys of int-keyed maps — kept verbatim because that is
+/// the data-model spelling) goes bracketed `["k"]`.
+fn lua_table_key(key: &str) -> String {
+    if sanitize_ident(key) == key && !LUA_KEYWORDS.contains(&key) {
+        key.to_string()
+    } else {
+        format!("[{}]", lua_string_literal(key))
     }
 }
 
@@ -533,6 +599,14 @@ fn field_doc(schema: &Schema, field: &FieldSchema) -> Option<String> {
             parts.push(format!("unresolved enum: {name}"));
         }
     }
+    // Map and Array are both `table` in Lua — the doc must say which shape
+    // the field carries, and int-keyed maps how to read their keys.
+    if let FieldType::Map(mf) = &field.field_type {
+        match mf.key_type {
+            MapKeyType::String => parts.push(MAP_NOTE.to_string()),
+            MapKeyType::Int => parts.push(format!("{MAP_NOTE}；{MAP_INT_KEY_NOTE}")),
+        }
+    }
     if parts.is_empty() {
         None
     } else {
@@ -649,6 +723,36 @@ enums: {}
 ",
         )
         .expect("schema must parse")
+    }
+
+    /// Schema exercising every Map shape: string and int keys, array /
+    /// nested-map / enum members, an empty default, a default with one
+    /// mismatched member, and a wholly mismatched default kind.
+    fn map_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Drop:
+    name: Drop
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      pools: { name: pools, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }, default: { rare: [1, 2] }, description: Loot pools }
+      weights: { name: weights, type: { kind: Map, value: { key_type: int, value_type: { kind: Float32 } } }, default: { '1': 0.5, '3': 1.25 } }
+      nested: { name: nested, type: { kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } } } }, default: { outer: { inner: 7 } } }
+      quota: { name: quota, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: {} }
+      kinds: { name: kinds, type: { kind: Map, value: { key_type: string, value_type: { kind: Enum, value: ItemKind } } } }
+      mixed: { name: mixed, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: { good: 1, bad: nope } }
+      odd: { name: odd, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: [1, 2] }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+      - { name: Shield, value: 2 }
+",
+        )
+        .expect("map schema must parse")
     }
 
     fn gen() -> LuaTargetGenerator {
@@ -805,6 +909,201 @@ enums: {}
             "{ name = \"frac\", key = \"frac\", type = \"integer\", required = false },"
         ));
         assert!(!edge.contains("    frac = "));
+    }
+
+    #[test]
+    fn test_map_type_labels_and_doc_notes() {
+        let artifacts = gen().generate(&map_schema(), Some("map1"));
+        let drop_src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // Type labels: `map<K, V>` — K is string/int, V recurses into the
+        // existing label spellings (array<integer>, map<...>, enum names).
+        assert!(drop_src.contains(
+            "{ name = \"pools\", key = \"pools\", type = \"map<string, array<integer>>\", required = false },"
+        ));
+        assert!(drop_src.contains(
+            "{ name = \"weights\", key = \"weights\", type = \"map<int, number>\", required = false },"
+        ));
+        assert!(drop_src.contains(
+            "{ name = \"nested\", key = \"nested\", type = \"map<string, map<string, integer>>\", required = false },"
+        ));
+        assert!(drop_src.contains(
+            "{ name = \"kinds\", key = \"kinds\", type = \"map<string, ItemKind>\", required = false },"
+        ));
+
+        // Every map field's metadata comment distinguishes the key-value
+        // table (hash part) from an Array's sequential table; int-keyed
+        // maps add the numeric-string/tonumber hint.
+        assert!(drop_src.contains(&format!("    -- Loot pools, {MAP_NOTE}")));
+        assert!(drop_src.contains(&format!("    -- {MAP_NOTE}；{MAP_INT_KEY_NOTE}")));
+    }
+
+    #[test]
+    fn test_map_defaults_render() {
+        let artifacts = gen().generate(&map_schema(), Some("map1"));
+        let drop_src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // Empty map default → empty table; scalar members render recursively
+        // (nested maps, and arrays of scalars inside maps).
+        assert!(drop_src.contains("    quota = {  },"));
+        assert!(drop_src.contains("    nested = { outer = { inner = 7 } },"));
+        assert!(drop_src.contains("    pools = { rare = { 1, 2 } },"));
+        // Int keys keep their data-model spelling — numeric strings, read
+        // back with tonumber at the consumer.
+        assert!(drop_src.contains("    weights = { [\"1\"] = 0.5, [\"3\"] = 1.25 },"));
+        // A member with a mismatched kind is skipped entry-by-entry instead
+        // of sinking the whole map default.
+        assert!(drop_src.contains("    mixed = { good = 1 },"));
+        assert!(!drop_src.contains("bad ="));
+        // A wholly mismatched default kind (array on a map field) and map
+        // fields without defaults get no M.defaults entry at all.
+        assert!(!drop_src.contains("    odd = "));
+        assert!(!drop_src.contains("    kinds = "));
+
+        // The constructor deep-copies defaults via the recursive helper.
+        assert!(drop_src.contains("local function copy_default(v)"));
+        assert!(drop_src.contains("        copy[k] = copy_default(item)"));
+        assert!(drop_src.contains("            row[k] = copy_default(v)"));
+    }
+
+    /// lua availability probe — the execution test below is a no-op (never a
+    /// failure) on machines without an interpreter.
+    fn lua_available() -> bool {
+        std::process::Command::new("lua")
+            .arg("-e")
+            .arg("return 0")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    /// Run the real generated module under lua: rows built by M.new must not
+    /// share any table — not the top-level maps, nor nested maps, nor arrays
+    /// inside maps — and caller-supplied values must win over defaults.
+    #[test]
+    fn test_map_default_copy_runs_under_lua() {
+        if !lua_available() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("cage-lua-map-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (path, bytes) in gen().generate(&map_schema(), Some("map1")) {
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .expect("artifact file name")
+                .to_string_lossy()
+                .into_owned();
+            std::fs::write(root.join(name), bytes).unwrap();
+        }
+        let module = root.join("Drop.lua").to_string_lossy().into_owned();
+        let script = format!(
+            r#"local M = dofile([[{module}]])
+local a = M.new({{}})
+local b = M.new({{}})
+assert(a.id == nil and b.id == nil, "no id default exists")
+assert(a.weights ~= b.weights, "rows share the top-level map")
+assert(a.weights["1"] == 0.5, "int keys are numeric strings")
+assert(tonumber("1") == 1, "consumers convert keys with tonumber")
+a.weights["1"] = 42
+assert(b.weights["1"] == 0.5, "rows share int-keyed entries")
+assert(M.defaults.weights["1"] == 0.5, "M.defaults was mutated")
+assert(a.nested.outer.inner == 7 and b.nested.outer.inner == 7)
+a.nested.outer.inner = 99
+assert(b.nested.outer.inner == 7, "rows share nested map tables")
+assert(a.pools.rare[1] == 1 and a.pools.rare[2] == 2)
+a.pools.rare[1] = 9
+assert(b.pools.rare[1] == 1, "rows share arrays inside maps")
+local c = M.new({{ id = 5 }})
+assert(c.id == 5, "caller-supplied values win")
+assert(next(c.quota) == nil, "empty map default stays empty")
+"#
+        );
+        let out = std::process::Command::new("lua")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .expect("lua must run");
+        assert!(
+            out.status.success(),
+            "lua failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_render_default_map_edges() {
+        fn map_of(key: MapKeyType, value: FieldType) -> FieldType {
+            FieldType::Map(MapField {
+                key_type: key,
+                value_type: Box::new(value),
+            })
+        }
+
+        let schema = test_schema();
+
+        // Wholly mismatched default kind (array on a map field) → no entry.
+        assert!(render_default(
+            &serde_json::json!([1, 2]),
+            &map_of(MapKeyType::String, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        // Null default is filtered before render_default is even called, but
+        // a JSON null inside a map is skipped like any other mismatch.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"a": null, "b": 2}),
+                &map_of(MapKeyType::String, FieldType::Int32),
+                &schema
+            )
+            .unwrap(),
+            "{ b = 2 }"
+        );
+        // Enum members have no literal rule (same as bare enum fields) —
+        // skipped entry-by-entry rather than sinking the map.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"a": "Sword"}),
+                &map_of(MapKeyType::String, FieldType::Enum("ItemKind".to_string())),
+                &schema
+            )
+            .unwrap(),
+            "{  }"
+        );
+        // Keys needing brackets: keywords, spaces, and the numeric-string
+        // keys of int-keyed maps (kept verbatim — that is the data spelling).
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"a b": 1, "end": 2}),
+                &map_of(MapKeyType::String, FieldType::Int32),
+                &schema
+            )
+            .unwrap(),
+            "{ [\"a b\"] = 1, [\"end\"] = 2 }"
+        );
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"42": 2, "-7": 1}),
+                &map_of(MapKeyType::Int, FieldType::Int32),
+                &schema
+            )
+            .unwrap(),
+            "{ [\"-7\"] = 1, [\"42\"] = 2 }"
+        );
+        // One unrenderable array member sinks that entry only.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"a": [1, "x"], "b": [3]}),
+                &map_of(
+                    MapKeyType::String,
+                    FieldType::Array(Box::new(FieldType::Int32))
+                ),
+                &schema
+            )
+            .unwrap(),
+            "{ b = { 3 } }"
+        );
     }
 
     #[test]

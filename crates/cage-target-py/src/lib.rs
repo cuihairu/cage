@@ -43,7 +43,7 @@
 )]
 use cage_core::{
     manifest::TargetConfig,
-    schema::{EnumSchema, FieldSchema, FieldType, Schema, TableSchema},
+    schema::{EnumSchema, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema},
 };
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -183,23 +183,17 @@ impl PyTargetGenerator {
         let fields = Self::sorted_fields(table);
 
         // Import surface grows with what the module actually uses: `field`
-        // only when a mutable (list) default needs a default_factory,
+        // only when a mutable (list/dict) default needs a default_factory,
         // `typing.Any` only when an Any-ish annotation appears.
         let needs_field = fields.iter().any(|(_, f)| {
-            matches!(&f.field_type, FieldType::Array(_))
+            matches!(&f.field_type, FieldType::Array(_) | FieldType::Map(_))
                 && f.default
                     .as_ref()
                     .is_some_and(|d| render_default(d, &f.field_type, schema).is_some())
         });
-        let needs_any = fields.iter().any(|(_, f)| {
-            matches!(
-                &f.field_type,
-                FieldType::Null | FieldType::Any | FieldType::Object(_)
-            ) || matches!(
-                &f.field_type,
-                FieldType::Array(inner) if matches!(**inner, FieldType::Null | FieldType::Any)
-            )
-        });
+        let needs_any = fields
+            .iter()
+            .any(|(_, f)| annotation_uses_any(&f.field_type));
         let _ = writeln!(
             out,
             "from dataclasses import dataclass{}",
@@ -209,18 +203,25 @@ impl PyTargetGenerator {
             let _ = writeln!(out, "from typing import Any");
         }
 
-        // Enum imports: emitted shared enums actually referenced by fields.
+        // Enum imports: emitted shared enums actually referenced by fields,
+        // including through `list[...]`/`dict[...]` nesting.
         let used_enums: Vec<String> = {
-            let mut used: HashSet<String> = HashSet::new();
+            let mut referenced: HashSet<&str> = HashSet::new();
             for (_, f) in &fields {
-                if let FieldType::Enum(name) = &f.field_type {
-                    if schema.enums.get(name).is_some_and(|e| !e.values.is_empty()) {
-                        used.insert(py_ident(name));
-                    }
-                }
+                annotation_enum_names(&f.field_type, &mut referenced);
             }
-            let mut names: Vec<String> = used.into_iter().collect();
+            let mut names: Vec<String> = referenced
+                .into_iter()
+                .filter(|name| {
+                    schema
+                        .enums
+                        .get(*name)
+                        .is_some_and(|e| !e.values.is_empty())
+                })
+                .map(py_ident)
+                .collect();
             names.sort();
+            names.dedup();
             names
         };
         if !used_enums.is_empty() {
@@ -272,12 +273,17 @@ impl PyTargetGenerator {
                     plain.push((member, py_type(&field.field_type, schema), doc));
                 }
                 Some(expr) => {
-                    // Mutable (list) defaults must go through default_factory
-                    // so instances never share one list object.
-                    let expr = if matches!(&field.field_type, FieldType::Array(_)) {
-                        format!("field(default_factory=lambda: {expr})")
-                    } else {
-                        expr
+                    // Mutable (list/dict) defaults must go through
+                    // default_factory so instances never share one object;
+                    // an empty dict spells that with the `dict` constructor.
+                    let expr = match &field.field_type {
+                        FieldType::Map(_) if expr == "{}" => {
+                            "field(default_factory=dict)".to_string()
+                        }
+                        FieldType::Array(_) | FieldType::Map(_) => {
+                            format!("field(default_factory=lambda: {expr})")
+                        }
+                        _ => expr,
                     };
                     defaulted.push((member, py_type(&field.field_type, schema), expr, doc));
                 }
@@ -398,6 +404,11 @@ fn py_type(ft: &FieldType, schema: &Schema) -> String {
         FieldType::Bytes => "bytes".to_string(),
         FieldType::Array(inner) => format!("list[{}]", py_type(inner, schema)),
         FieldType::Object(_) => "dict[str, Any]".to_string(),
+        FieldType::Map(map) => format!(
+            "dict[{}, {}]",
+            map_key_annotation(map.key_type),
+            py_type(&map.value_type, schema)
+        ),
         FieldType::Enum(name) => match schema.enums.get(name).filter(|e| !e.values.is_empty()) {
             Some(_) => py_ident(name),
             // Unresolved (or empty) enum: fall back to plain str.
@@ -434,6 +445,9 @@ fn render_default(value: &serde_json::Value, ft: &FieldType, schema: &Schema) ->
         FieldType::Array(inner) => value
             .as_array()
             .and_then(|items| array_literal(items, inner, schema)),
+        FieldType::Map(map) => value
+            .as_object()
+            .map(|entries| map_literal(entries, map, schema)),
         _ => None,
     }
 }
@@ -467,6 +481,78 @@ fn array_literal(
         parts.push(render_default(item, inner, schema)?);
     }
     Some(format!("[{}]", parts.join(", ")))
+}
+
+/// Python annotation for a map key type: string keys → `str`, integer
+/// keys → `int` (they live as numeric strings in the data model, but the
+/// annotation is the semantic type).
+fn map_key_annotation(key_type: MapKeyType) -> &'static str {
+    match key_type {
+        MapKeyType::String => "str",
+        MapKeyType::Int => "int",
+    }
+}
+
+/// Map defaults render entry by entry through the existing rules; entries
+/// whose key or value kind does not match are skipped (unlike arrays, where
+/// one bad element sinks the whole default), so a partially renderable map
+/// still yields its renderable members.
+fn map_literal(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    map: &MapField,
+    schema: &Schema,
+) -> String {
+    let mut parts = Vec::with_capacity(entries.len());
+    // Sort keys: serde_json's map order follows feature unification
+    // (BTreeMap by default, insertion order with preserve_order).
+    let mut sorted: Vec<(&String, &serde_json::Value)> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in sorted {
+        let Some(rendered_key) = map_key_literal(key, map.key_type) else {
+            continue;
+        };
+        let Some(rendered_value) = render_default(value, &map.value_type, schema) else {
+            continue;
+        };
+        parts.push(format!("{rendered_key}: {rendered_value}"));
+    }
+    format!("{{{}}}", parts.join(", "))
+}
+
+/// Python literal for one map key. Integer keys arrive as numeric strings
+/// (`"42"`, `"-7"`) and become int literals; a non-numeric key does not
+/// match an `int` key type and is skipped by the caller.
+fn map_key_literal(key: &str, key_type: MapKeyType) -> Option<String> {
+    match key_type {
+        MapKeyType::String => Some(py_string_literal(key)),
+        MapKeyType::Int => key.parse::<i64>().ok().map(|i| i.to_string()),
+    }
+}
+
+/// Whether the Python annotation for this type mentions `Any` (Null/Any
+/// kinds, untyped objects, or any Array/Map nesting thereof) — those
+/// modules need `from typing import Any`.
+fn annotation_uses_any(ft: &FieldType) -> bool {
+    match ft {
+        FieldType::Null | FieldType::Any | FieldType::Object(_) => true,
+        FieldType::Array(inner) => annotation_uses_any(inner),
+        FieldType::Map(map) => annotation_uses_any(&map.value_type),
+        _ => false,
+    }
+}
+
+/// Enum names a field's annotation spells out, collected through
+/// `list[...]`/`dict[...]` nesting — the module must import exactly these,
+/// or the generated annotation would name an undefined class.
+fn annotation_enum_names<'a>(ft: &'a FieldType, out: &mut HashSet<&'a str>) {
+    match ft {
+        FieldType::Enum(name) => {
+            out.insert(name.as_str());
+        }
+        FieldType::Array(inner) => annotation_enum_names(inner, out),
+        FieldType::Map(map) => annotation_enum_names(&map.value_type, out),
+        _ => {}
+    }
 }
 
 fn py_float_literal(f: f64) -> String {
@@ -732,6 +818,39 @@ enums: {}
         .expect("schema must parse")
     }
 
+    /// Schema exercising map fields: string/int keys, nested value types,
+    /// empty and non-empty defaults, mismatched members, non-numeric keys,
+    /// an Any value type, and an enum value type.
+    fn map_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Lookup:
+    name: Lookup
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      perks: { name: perks, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }, required: true }
+      counts: { name: counts, type: { kind: Map, value: { key_type: int, value_type: { kind: Int32 } } }, required: true }
+      nested: { name: nested, type: { kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } } } }, required: true }
+      empty: { name: empty, type: { kind: Map, value: { key_type: string, value_type: { kind: String } } }, default: {} }
+      bonus: { name: bonus, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: { hp: 10, mp: -4 } }
+      ranked: { name: ranked, type: { kind: Map, value: { key_type: string, value_type: { kind: String } } }, default: { a: alpha, b: 2, c: [x] } }
+      ints: { name: ints, type: { kind: Map, value: { key_type: int, value_type: { kind: String } } }, default: { '1': one, '-7': neg, oops: x } }
+      spare: { name: spare, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } } }
+      tags_by_kind: { name: tags_by_kind, type: { kind: Map, value: { key_type: string, value_type: { kind: Enum, value: ItemKind } } } }
+      wild: { name: wild, type: { kind: Map, value: { key_type: string, value_type: { kind: Any } } } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+      - { name: Shield, value: 2 }
+",
+        )
+        .expect("map schema must parse")
+    }
+
     fn gen() -> PyTargetGenerator {
         PyTargetGenerator::default()
     }
@@ -935,6 +1054,117 @@ enums: {}
         assert!(solo.contains("    note: str | None = None"));
         assert!(solo.contains("    weight: float = 1.5"));
         assert!(!solo.contains("    id:"));
+    }
+
+    #[test]
+    fn test_map_type_annotations() {
+        let artifacts = gen().generate(&map_schema(), Some("abc123"));
+        let lookup = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // Key/value spelling: string keys, int keys, nested value types.
+        assert!(lookup.contains("    perks: dict[str, list[int]]\n"));
+        assert!(lookup.contains("    counts: dict[int, int]\n"));
+        assert!(lookup.contains("    nested: dict[str, dict[str, int]]\n"));
+        // Optional map without default → nullable annotation (shared rule).
+        assert!(lookup.contains("    spare: dict[str, int] | None = None"));
+        // Enum-valued map: annotation names the shared enum and imports it.
+        assert!(lookup.contains("    tags_by_kind: dict[str, ItemKind] | None = None"));
+        assert!(lookup.contains("from cage_enums import ItemKind"));
+        // Any-valued map pulls the typing import through the Map value.
+        assert!(lookup.contains("    wild: dict[str, Any] | None = None"));
+        assert!(lookup.contains("from typing import Any"));
+        // Required maps without defaults sit in the plain (first) group.
+        let counts_pos = lookup.find("    counts: dict[int, int]\n").unwrap();
+        let bonus_pos = lookup.find("    bonus:").unwrap();
+        assert!(counts_pos < bonus_pos);
+    }
+
+    #[test]
+    fn test_map_defaults() {
+        let artifacts = gen().generate(&map_schema(), Some("abc123"));
+        let lookup = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // Empty map default → the `dict` constructor (a fresh object per
+        // instance); non-empty defaults render literal entries and also go
+        // through default_factory so instances never share the dict.
+        assert!(lookup.contains("    empty: dict[str, str] = field(default_factory=dict)"));
+        assert!(lookup.contains(
+            "    bonus: dict[str, int] = field(default_factory=lambda: {\"hp\": 10, \"mp\": -4})"
+        ));
+        // Mismatched member kinds are skipped, not fatal (unlike arrays).
+        assert!(lookup.contains(
+            "    ranked: dict[str, str] = field(default_factory=lambda: {\"a\": \"alpha\"})"
+        ));
+        // Integer keys render as int literals; non-numeric keys are skipped.
+        assert!(lookup.contains(
+            "    ints: dict[int, str] = field(default_factory=lambda: {-7: \"neg\", 1: \"one\"})"
+        ));
+        // A rendered map default pulls the `field` import.
+        assert!(lookup.contains("from dataclasses import dataclass, field"));
+    }
+
+    #[test]
+    fn test_render_default_map_edge_cases() {
+        let schema = Schema::new();
+        let map = |key_type: MapKeyType, value_type: FieldType| {
+            FieldType::Map(MapField {
+                key_type,
+                value_type: Box::new(value_type),
+            })
+        };
+        // Non-object default on a map field → None (member falls back to
+        // `| None = None`).
+        assert!(render_default(
+            &serde_json::json!([1]),
+            &map(MapKeyType::String, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        // Every value unrenderable → empty literal (entries skipped).
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"a": {"x": 1}}),
+                &map(MapKeyType::String, FieldType::Int32),
+                &schema
+            )
+            .unwrap(),
+            "{}"
+        );
+        // A non-numeric key under an int key type is skipped entry-wise.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"oops": 1}),
+                &map(MapKeyType::Int, FieldType::Int32),
+                &schema
+            )
+            .unwrap(),
+            "{}"
+        );
+        // Value recursion follows the existing rules: array-of-scalar
+        // members render through the Array arm.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"a": [1, 2]}),
+                &map(
+                    MapKeyType::String,
+                    FieldType::Array(Box::new(FieldType::Int32))
+                ),
+                &schema
+            )
+            .unwrap(),
+            "{\"a\": [1, 2]}"
+        );
+        // Enum-valued members render through the Enum arm (None: no
+        // literal mapping), sinking just that entry.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"a": 1}),
+                &map(MapKeyType::String, FieldType::Enum("Missing".to_string())),
+                &schema
+            )
+            .unwrap(),
+            "{}"
+        );
     }
 
     #[test]

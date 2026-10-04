@@ -1,0 +1,5 @@
+id,name,class,level,hp,attack,exp_to_next,unlocked
+1,Hero_A,Warrior,1,120,500,0,true
+2,Mage_B,Mage,5,80,480,1500,true
+3,Archer_C,Archer,10,150,1050,9000,true
+4,Hero_A2,Warrior,20,400,1800,50000,false

@@ -74,6 +74,20 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace --locked
 
+  # 示例工程防烂腿：examples/run.sh 端到端跑一遍
+  # （check/build/gen/坏数据 E1601 断言），示例烂了这里就红。
+  example:
+    name: Example project
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run end-to-end example
+        run: bash examples/run.sh
+
   # 覆盖率：llvm-cov 出 lcov 上传 Codecov。tokenless 走 OIDC
   # （codecov-action use_oidc，无需仓库 secret；受保护分支下裸
   # tokenless 上传会被 Codecov 以 "Token required" 拒绝）。

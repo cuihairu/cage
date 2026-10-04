@@ -48,7 +48,9 @@
 )]
 use cage_core::{
     manifest::TargetConfig,
-    schema::{EnumSchema, EnumValue, FieldSchema, FieldType, Schema, TableSchema},
+    schema::{
+        EnumSchema, EnumValue, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema,
+    },
 };
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -577,6 +579,7 @@ fn collect_enum_refs(
             out.insert(name.clone());
         }
         FieldType::Array(inner) => collect_enum_refs(inner, schema, out),
+        FieldType::Map(map) => collect_enum_refs(&map.value_type, schema, out),
         _ => {}
     }
 }
@@ -792,12 +795,27 @@ fn ts_type(
         FieldType::String => "string".to_string(),
         FieldType::Bytes => "Uint8Array".to_string(),
         FieldType::Array(inner) => format!("{}[]", ts_type(inner, schema, enum_ty)),
+        FieldType::Map(map) => format!(
+            "Map<{}, {}>",
+            ts_map_key(map.key_type),
+            ts_type(&map.value_type, schema, enum_ty)
+        ),
         FieldType::Object(_) => "Record<string, unknown>".to_string(),
         FieldType::Enum(name) => match schema.enums.get(name).filter(|e| !e.values.is_empty()) {
             Some(_) => enum_ty.get(name).cloned().unwrap_or_else(|| ts_ident(name)),
             // Unresolved (or empty) enum: fall back to plain string.
             None => "string".to_string(),
         },
+    }
+}
+
+/// Map key annotation: `string` keys stay strings; int keys are typed as
+/// `number` (the data model stores them as numeric strings, but the typed
+/// surface spells them as numbers).
+fn ts_map_key(key: MapKeyType) -> &'static str {
+    match key {
+        MapKeyType::String => "string",
+        MapKeyType::Int => "number",
     }
 }
 
@@ -829,19 +847,19 @@ fn render_default(value: &serde_json::Value, ft: &FieldType, schema: &Schema) ->
         FieldType::Array(inner) => value
             .as_array()
             .and_then(|items| array_literal(items, inner, schema)),
+        FieldType::Map(map) => value
+            .as_object()
+            .and_then(|entries| map_literal(entries, map, schema)),
         _ => None,
     }
 }
 
-/// Array defaults are rendered only for scalar element types (same rule as
-/// the C#/Python/Lua generators — keeps the outputs aligned).
-fn array_literal(
-    items: &[serde_json::Value],
-    inner: &FieldType,
-    schema: &Schema,
-) -> Option<String> {
-    if !matches!(
-        inner,
+/// Value types a collection default can render (`array_literal` and
+/// `map_literal` share this gate — same rule as the C#/Python/Lua
+/// generators, keeps the outputs aligned).
+fn is_defaultable_scalar(ft: &FieldType) -> bool {
+    matches!(
+        ft,
         FieldType::Bool
             | FieldType::Int8
             | FieldType::Int16
@@ -854,7 +872,17 @@ fn array_literal(
             | FieldType::Float32
             | FieldType::Float64
             | FieldType::String
-    ) {
+    )
+}
+
+/// Array defaults are rendered only for scalar element types (same rule as
+/// the C#/Python/Lua generators — keeps the outputs aligned).
+fn array_literal(
+    items: &[serde_json::Value],
+    inner: &FieldType,
+    schema: &Schema,
+) -> Option<String> {
+    if !is_defaultable_scalar(inner) {
         return None;
     }
     let mut parts = Vec::with_capacity(items.len());
@@ -862,6 +890,39 @@ fn array_literal(
         parts.push(render_default(item, inner, schema)?);
     }
     Some(format!("[{}]", parts.join(", ")))
+}
+
+/// Map defaults render as `new Map(...)` entries (never an object literal —
+/// the typed surface is `Map<K, V>`): an empty object gives `new Map()`,
+/// other values follow the array rule (scalar value types only, and any
+/// unrenderable entry sinks the whole default). Keys are strings on the
+/// wire; an int-keyed map's numeric-string keys are promoted to number
+/// literals (a non-numeric key is a mismatched kind → dropped).
+fn map_literal(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    map: &MapField,
+    schema: &Schema,
+) -> Option<String> {
+    if !is_defaultable_scalar(&map.value_type) {
+        return None;
+    }
+    if entries.is_empty() {
+        return Some("new Map()".to_string());
+    }
+    let mut parts = Vec::with_capacity(entries.len());
+    // Sort keys: serde_json's map order follows feature unification
+    // (BTreeMap by default, insertion order with preserve_order).
+    let mut sorted: Vec<(&String, &serde_json::Value)> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in sorted {
+        let key_lit = match map.key_type {
+            MapKeyType::String => ts_string_literal(key),
+            MapKeyType::Int => key.parse::<i64>().ok()?.to_string(),
+        };
+        let value_lit = render_default(value, &map.value_type, schema)?;
+        parts.push(format!("[{key_lit}, {value_lit}]"));
+    }
+    Some(format!("new Map([{}])", parts.join(", ")))
 }
 
 /// TS/JS float literal: non-finite values render as the real `NaN` /
@@ -1213,6 +1274,58 @@ enums:
         .expect("edge schema must parse")
     }
 
+    /// Schema exercising the Map field type: string and int keys, array /
+    /// nested-map / enum value types, a renderable empty default and a
+    /// non-empty scalar-member default.
+    fn map_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Loot:
+    name: Loot
+    description: Loot table.
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      bonuses: { name: bonuses, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }, required: true, description: Bonus tables }
+      cooldowns: { name: cooldowns, type: { kind: Map, value: { key_type: int, value_type: { kind: Int64 } } }, description: Per-level cooldown }
+      grid: { name: grid, type: { kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } } } }, required: true }
+      labels: { name: labels, type: { kind: Map, value: { key_type: string, value_type: { kind: String } } }, default: {} }
+      scores: { name: scores, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: { easy: 1, hard: 7 } }
+      tier: { name: tier, type: { kind: Map, value: { key_type: string, value_type: { kind: Enum, value: Rarity } } }, required: true }
+enums:
+  Rarity:
+    name: Rarity
+    values:
+      - { name: common }
+      - { name: rare }
+",
+        )
+        .expect("map schema must parse")
+    }
+
+    /// Map defaults that must NOT render: a non-object default, a non-numeric
+    /// key on an int-keyed map, one unrenderable member, and a non-scalar
+    /// value type.
+    fn bad_map_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  BadMap:
+    name: BadMap
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      scalar: { name: scalar, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: oops }
+      bad_key: { name: bad_key, type: { kind: Map, value: { key_type: int, value_type: { kind: Int32 } } }, default: { x: 1 } }
+      bad_value: { name: bad_value, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: { a: 1, b: nope } }
+      nonscalar: { name: nonscalar, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }, default: { a: [1] } }
+enums: {}
+",
+        )
+        .expect("bad map schema must parse")
+    }
+
     fn gen() -> TsTargetGenerator {
         TsTargetGenerator::default()
     }
@@ -1351,6 +1464,103 @@ options:
         assert!(drop.contains("  return { ...init } as Drop;"));
         // No import when nothing resolves.
         assert!(!drop.contains("import type"));
+    }
+
+    #[test]
+    fn test_map_types_ts() {
+        let schema = map_schema();
+        let artifacts = gen().generate(&schema, Some("abc123"));
+        let loot = src(&artifacts, 0);
+
+        assert!(loot.contains("export interface Loot {"));
+        // K/V spellings: string and int keys, array / nested-map / enum values.
+        assert!(loot.contains("  bonuses: Map<string, number[]>;"));
+        assert!(loot.contains("  cooldowns?: Map<number, number>;"));
+        assert!(loot.contains("  grid: Map<string, Map<string, number>>;"));
+        assert!(loot.contains("  labels: Map<string, string>;"));
+        assert!(loot.contains("  scores: Map<string, number>;"));
+        assert!(loot.contains("  tier: Map<string, Rarity>;"));
+        // The enum reached through the map value is imported like any other.
+        assert!(loot.contains("import type { Rarity } from \"./cage_enums\";"));
+        // Only the int-keyed map (no default) is optional; the empty-object
+        // default counts as a renderable default, so `labels` stays required.
+        assert!(loot.contains("  labels: Map<string, string>;\n") && !loot.contains("  labels?:"));
+        assert_eq!(loot.matches("?:").count(), 1);
+    }
+
+    #[test]
+    fn test_map_defaults_new_map_ts() {
+        let schema = map_schema();
+        let artifacts = gen().generate(&schema, Some("abc123"));
+        let loot = src(&artifacts, 0);
+
+        // Map defaults are `new Map(...)` entries, never object literals.
+        assert!(loot.contains("export const LootDefaults: Partial<Loot> = {"));
+        assert!(loot.contains("  labels: new Map(),"));
+        assert!(loot.contains("  scores: new Map([[\"easy\", 1], [\"hard\", 7]]),"));
+        assert!(!loot.contains("labels: {},"));
+        // The factory inlines fresh maps so rows never share one instance.
+        assert!(loot.contains("export function newLoot(init: Partial<Loot> = {}): Loot {"));
+        assert!(loot.contains(
+            "  return { labels: new Map(), scores: new Map([[\"easy\", 1], [\"hard\", 7]]), ...init } as Loot;"
+        ));
+    }
+
+    #[test]
+    fn test_map_jsdoc_typedef() {
+        let schema = map_schema();
+        let artifacts = js_gen("build/js").generate(&schema, Some("abc123"));
+        let js = src(&artifacts, 0);
+
+        // JSDoc types carry the same Map spellings; enums inline-import.
+        assert!(js.contains(" * @typedef {Object} Loot"));
+        assert!(js.contains(" * @property {Map<string, number[]>} bonuses Bonus tables"));
+        assert!(js.contains(" * @property {Map<number, number>} [cooldowns] Per-level cooldown"));
+        assert!(js.contains(" * @property {Map<string, Map<string, number>>} grid"));
+        assert!(js.contains(" * @property {Map<string, string>} labels"));
+        assert!(js.contains(" * @property {Map<string, number>} scores"));
+        assert!(js.contains(" * @property {Map<string, import(\"./cage_enums.js\").Rarity>} tier"));
+        // Defaults/factory use the same `new Map(...)` expressions.
+        assert!(js.contains("export const LootDefaults = {"));
+        assert!(js.contains("  labels: new Map(),"));
+        assert!(js.contains("  scores: new Map([[\"easy\", 1], [\"hard\", 7]]),"));
+        assert!(js.contains(
+            "  return { labels: new Map(), scores: new Map([[\"easy\", 1], [\"hard\", 7]]), ...init };"
+        ));
+    }
+
+    #[test]
+    fn test_map_dts_declarations() {
+        let schema = map_schema();
+        let artifacts = js_gen("build/js").generate(&schema, Some("abc123"));
+        let dts = src(&artifacts, 1);
+
+        // The .d.ts pair restates the TS-mode surface with real Map types.
+        assert!(dts.contains("import type { Rarity } from \"./cage_enums\";"));
+        assert!(dts.contains("export interface Loot {"));
+        assert!(dts.contains("  bonuses: Map<string, number[]>;"));
+        assert!(dts.contains("  cooldowns?: Map<number, number>;"));
+        assert!(dts.contains("  grid: Map<string, Map<string, number>>;"));
+        assert!(dts.contains("  tier: Map<string, Rarity>;"));
+        assert!(dts.contains("export declare const LootDefaults: Partial<Loot>;"));
+        assert!(dts.contains("export declare function newLoot(init?: Partial<Loot>): Loot;"));
+    }
+
+    #[test]
+    fn test_map_default_mismatch_skipped() {
+        let schema = bad_map_schema();
+        let artifacts = gen().generate(&schema, Some("abc123"));
+        let out = src(&artifacts, 0);
+
+        // No mismatched default survives: empty Defaults const + factory.
+        assert!(out.contains("export const BadMapDefaults: Partial<BadMap> = {};"));
+        assert!(out.contains("  return { ...init } as BadMap;"));
+        assert!(!out.contains("new Map"));
+        // Every dropped default leaves an optional member instead.
+        assert!(out.contains("  bad_key?: Map<number, number>;"));
+        assert!(out.contains("  bad_value?: Map<string, number>;"));
+        assert!(out.contains("  nonscalar?: Map<string, number[]>;"));
+        assert!(out.contains("  scalar?: Map<string, number>;"));
     }
 
     #[test]
@@ -1802,6 +2012,101 @@ enums:
         assert_eq!(ts_string_literal("a\nb\r\tc"), "\"a\\nb\\r\\tc\"");
         assert_eq!(ts_string_literal("naïve — 列"), "\"naïve — 列\"");
         assert_eq!(ts_string_literal("q\"\\q"), "\"q\\\"\\\\q\"");
+    }
+
+    #[test]
+    fn test_map_type_and_default_units() {
+        let schema = test_schema();
+        let empty = std::collections::HashMap::new();
+        let map = |key: MapKeyType, value: FieldType| {
+            FieldType::Map(MapField {
+                key_type: key,
+                value_type: Box::new(value),
+            })
+        };
+
+        // Type spellings: keys string/number, values recurse.
+        assert_eq!(
+            ts_type(&map(MapKeyType::String, FieldType::String), &schema, &empty),
+            "Map<string, string>"
+        );
+        assert_eq!(
+            ts_type(&map(MapKeyType::Int, FieldType::Int64), &schema, &empty),
+            "Map<number, number>"
+        );
+        assert_eq!(
+            ts_type(
+                &map(
+                    MapKeyType::String,
+                    FieldType::Array(Box::new(FieldType::Int32))
+                ),
+                &schema,
+                &empty
+            ),
+            "Map<string, number[]>"
+        );
+        assert_eq!(
+            ts_type(
+                &map(MapKeyType::String, map(MapKeyType::Int, FieldType::Float64)),
+                &schema,
+                &empty
+            ),
+            "Map<string, Map<number, number>>"
+        );
+        // Enum values resolve through the alias map like any other position.
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("ItemKind".to_string(), "ItemKind_".to_string());
+        assert_eq!(
+            ts_type(
+                &map(MapKeyType::String, FieldType::Enum("ItemKind".into())),
+                &schema,
+                &aliases
+            ),
+            "Map<string, ItemKind_>"
+        );
+
+        // Empty object default → `new Map()` (never `{}`).
+        let string_ints = map(MapKeyType::String, FieldType::Int32);
+        assert_eq!(
+            render_default(&serde_json::json!({}), &string_ints, &schema).unwrap(),
+            "new Map()"
+        );
+        // Scalar members recurse through the shared rules (keys sorted:
+        // serde_json's map is ordered here).
+        assert_eq!(
+            render_default(&serde_json::json!({"a": 1, "b": -2}), &string_ints, &schema).unwrap(),
+            "new Map([[\"a\", 1], [\"b\", -2]])"
+        );
+        // Int keys: numeric strings promote to number literals.
+        let int_strings = map(MapKeyType::Int, FieldType::String);
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"42": "x", "-7": "y"}),
+                &int_strings,
+                &schema
+            )
+            .unwrap(),
+            "new Map([[-7, \"y\"], [42, \"x\"]])"
+        );
+        // Mismatched shapes are all skipped: non-object default,
+        // non-scalar value type, non-numeric int key, bad member.
+        assert!(render_default(&serde_json::json!("x"), &string_ints, &schema).is_none());
+        assert!(render_default(
+            &serde_json::json!({"a": [1]}),
+            &map(
+                MapKeyType::String,
+                FieldType::Array(Box::new(FieldType::Int32))
+            ),
+            &schema
+        )
+        .is_none());
+        assert!(render_default(
+            &serde_json::json!({"x": 1}),
+            &map(MapKeyType::Int, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        assert!(render_default(&serde_json::json!({"a": "nope"}), &string_ints, &schema).is_none());
     }
 
     #[test]

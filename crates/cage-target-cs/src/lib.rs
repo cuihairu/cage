@@ -40,7 +40,7 @@
 )]
 use cage_core::{
     manifest::TargetConfig,
-    schema::{EnumSchema, FieldSchema, FieldType, Schema, TableSchema},
+    schema::{EnumSchema, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema},
 };
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -442,11 +442,28 @@ fn cs_type_inner(ft: &FieldType, schema: &Schema) -> String {
         FieldType::Bytes => "byte[]".to_string(),
         FieldType::Array(inner) => format!("IReadOnlyList<{}>", cs_type_inner(inner, schema)),
         FieldType::Object(_) => "IReadOnlyDictionary<string, object?>".to_string(),
+        // Unlike Object, a Map knows its exact K/V — the concrete
+        // Dictionary (not IReadOnlyDictionary) so `= new();` defaults and
+        // empty initializers compile against it.
+        FieldType::Map(map) => format!(
+            "Dictionary<{}, {}>",
+            cs_map_key_type(map.key_type),
+            cs_type_inner(&map.value_type, schema)
+        ),
         FieldType::Enum(name) => match schema.enums.get(name).filter(|e| !e.values.is_empty()) {
             Some(_) => cs_ident(name),
             // Unresolved (or empty) enum: fall back to plain string.
             None => "string".to_string(),
         },
+    }
+}
+
+/// Map key type: string keys stay `string`; signed-integer keys (stored as
+/// numeric strings in the data model, e.g. `"42"` / `"-7"`) widen to `long`.
+fn cs_map_key_type(key: MapKeyType) -> &'static str {
+    match key {
+        MapKeyType::String => "string",
+        MapKeyType::Int => "long",
     }
 }
 
@@ -456,6 +473,7 @@ fn needs_ref_init(ty: &str) -> bool {
     !ty.ends_with('?')
         && (ty == "string"
             || ty.starts_with("byte[")
+            || ty.starts_with("Dictionary<")
             || ty.starts_with("IReadOnlyList<")
             || ty.starts_with("IReadOnlyDictionary<"))
 }
@@ -465,6 +483,9 @@ fn ref_empty_init(ty: &str) -> String {
         "string.Empty".to_string()
     } else if ty.starts_with("byte[") {
         "Array.Empty<byte>()".to_string()
+    } else if ty.starts_with("Dictionary<") {
+        // Target-typed `new()` — K/V type arguments come from the field.
+        "new()".to_string()
     } else if let Some(inner) = ty
         .strip_prefix("IReadOnlyList<")
         .and_then(|s| s.strip_suffix('>'))
@@ -504,19 +525,19 @@ fn render_default(value: &serde_json::Value, ft: &FieldType, schema: &Schema) ->
         FieldType::Array(inner) => value
             .as_array()
             .and_then(|items| render_array_default(items, inner, schema)),
+        FieldType::Map(map) => value
+            .as_object()
+            .and_then(|entries| render_map_default(entries, map, schema)),
         _ => None,
     }
 }
 
-/// Array defaults are rendered only for scalar element types (same rule as
-/// the Python/Lua generators — keeps the three outputs aligned).
-fn render_array_default(
-    items: &[serde_json::Value],
-    inner: &FieldType,
-    schema: &Schema,
-) -> Option<String> {
-    if !matches!(
-        inner,
+/// Scalar types whose defaults render as literals — the only element/value
+/// types array and map defaults accept (same rule as the Python/Lua
+/// generators — keeps the outputs aligned).
+fn is_defaultable_scalar(ft: &FieldType) -> bool {
+    matches!(
+        ft,
         FieldType::Bool
             | FieldType::Int8
             | FieldType::Int16
@@ -529,7 +550,17 @@ fn render_array_default(
             | FieldType::Float32
             | FieldType::Float64
             | FieldType::String
-    ) {
+    )
+}
+
+/// Array defaults are rendered only for scalar element types (see
+/// [`is_defaultable_scalar`]).
+fn render_array_default(
+    items: &[serde_json::Value],
+    inner: &FieldType,
+    schema: &Schema,
+) -> Option<String> {
+    if !is_defaultable_scalar(inner) {
         return None;
     }
     let mut parts = Vec::with_capacity(items.len());
@@ -538,6 +569,43 @@ fn render_array_default(
     }
     let elem = cs_type_inner(inner, schema);
     Some(format!("new {elem}[] {{ {} }}", parts.join(", ")))
+}
+
+/// Map defaults follow the array rule: only scalar value types render, and
+/// any unrenderable entry sinks the whole default. Keys are strings on the
+/// wire; an int-keyed map's numeric-string keys are promoted to `long`
+/// literals (a non-numeric key is a mismatched kind → dropped). An empty
+/// object renders as the target-typed `new()`.
+fn render_map_default(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    map: &MapField,
+    schema: &Schema,
+) -> Option<String> {
+    if !is_defaultable_scalar(&map.value_type) {
+        return None;
+    }
+    if entries.is_empty() {
+        return Some("new()".to_string());
+    }
+    let mut parts = Vec::with_capacity(entries.len());
+    // Sort keys: serde_json's map order follows feature unification
+    // (BTreeMap by default, insertion order with preserve_order).
+    let mut sorted: Vec<(&String, &serde_json::Value)> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in sorted {
+        let key_lit = match map.key_type {
+            MapKeyType::String => cs_string_literal(key),
+            MapKeyType::Int => key.parse::<i64>().ok()?.to_string(),
+        };
+        let value_lit = render_default(value, &map.value_type, schema)?;
+        parts.push(format!("{{ {key_lit}, {value_lit} }}"));
+    }
+    let ty = format!(
+        "Dictionary<{}, {}>",
+        cs_map_key_type(map.key_type),
+        cs_type_inner(&map.value_type, schema)
+    );
+    Some(format!("new {ty} {{ {} }}", parts.join(", ")))
 }
 
 fn cs_float_literal(f: f64, float32: bool) -> String {
@@ -793,6 +861,36 @@ enums:
         .expect("edge schema must parse")
     }
 
+    /// Schema exercising `FieldType::Map`: string/int keys, nested and
+    /// enum values, empty / scalar / dropped defaults, nullability.
+    fn map_schema() -> Schema {
+        serde_yaml::from_str(
+            r"
+tables:
+  Mapped:
+    name: Mapped
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      scores: { name: scores, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }, required: true }
+      names: { name: names, type: { kind: Map, value: { key_type: int, value_type: { kind: String } } } }
+      nested: { name: nested, type: { kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } } } } }
+      empty: { name: empty, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: {} }
+      counts: { name: counts, type: { kind: Map, value: { key_type: string, value_type: { kind: Int64 } } }, default: { a: 1, b: -2 } }
+      quotas: { name: quotas, type: { kind: Map, value: { key_type: int, value_type: { kind: Int32 } } }, default: { '1': 10, '-2': 20 } }
+      kinds: { name: kinds, type: { kind: Map, value: { key_type: string, value_type: { kind: Enum, value: ItemKind } } } }
+      lists: { name: lists, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }, default: { a: [1] } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+      - { name: Shield, value: 2 }
+",
+        )
+        .expect("map schema must parse")
+    }
+
     fn gen() -> CsTargetGenerator {
         CsTargetGenerator::default()
     }
@@ -963,6 +1061,81 @@ enums:
         assert!(edge.contains("/// <summary>Bounded count, max: 100</summary>"));
         assert!(
             edge.contains("/// <summary>min_length: 1, max_length: 8, pattern: ^[A-Z]+$</summary>")
+        );
+    }
+
+    #[test]
+    fn test_map_type_mapping() {
+        let artifacts = gen().generate(&map_schema(), Some("abc123"));
+        let src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // String keys stay `string`; values recurse with the crate's usual
+        // spellings (Array<Int32> keeps IReadOnlyList).
+        assert!(src.contains("public Dictionary<string, IReadOnlyList<int>> scores"));
+        // A required map without a default gets the target-typed empty init.
+        assert!(src.contains(
+            "public Dictionary<string, IReadOnlyList<int>> scores { get; init; } = new();"
+        ));
+        // Int keys widen to `long`.
+        assert!(src.contains("public Dictionary<long, string>? names"));
+        // Nested maps recurse on the value side.
+        assert!(src.contains("public Dictionary<string, Dictionary<string, int>>? nested"));
+        // Enum values keep the enum member name.
+        assert!(src.contains("public Dictionary<string, ItemKind>? kinds"));
+    }
+
+    #[test]
+    fn test_map_default_rendering() {
+        let artifacts = gen().generate(&map_schema(), Some("abc123"));
+        let src = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // Empty map default → target-typed `new()`.
+        assert!(src.contains("public Dictionary<string, int> empty { get; init; } = new();"));
+        // Non-empty scalar-valued default renders as a dictionary initializer.
+        assert!(src.contains(
+            "public Dictionary<string, long> counts { get; init; } = new Dictionary<string, long> { { \"a\", 1 }, { \"b\", -2 } };"
+        ));
+        // Int keys promote numeric-string keys to long literals (entry order
+        // follows the data model's object key order).
+        assert!(src.contains("new Dictionary<long, int> {"));
+        assert!(src.contains("{ 1, 10 }"));
+        assert!(src.contains("{ -2, 20 }"));
+        // Non-scalar value types sink the default; the field stays nullable.
+        assert!(src.contains("public Dictionary<string, IReadOnlyList<int>>? lists"));
+    }
+
+    #[test]
+    fn test_render_default_map_edges() {
+        let schema = Schema::new();
+        let string_int = FieldType::Map(MapField {
+            key_type: MapKeyType::String,
+            value_type: Box::new(FieldType::Int32),
+        });
+        // Empty object default → target-typed `new()`.
+        assert_eq!(
+            render_default(&serde_json::json!({}), &string_int, &schema).unwrap(),
+            "new()"
+        );
+        // Mismatched default kind (array on a map field) → dropped.
+        assert!(render_default(&serde_json::json!([1]), &string_int, &schema).is_none());
+        // Unrenderable value entry sinks the whole default.
+        assert!(render_default(&serde_json::json!({ "a": "s" }), &string_int, &schema).is_none());
+        // Non-scalar value types never render, even for `{}`.
+        let string_list = FieldType::Map(MapField {
+            key_type: MapKeyType::String,
+            value_type: Box::new(FieldType::Array(Box::new(FieldType::Int32))),
+        });
+        assert!(render_default(&serde_json::json!({}), &string_list, &schema).is_none());
+        // Non-numeric key on an int-keyed map → dropped.
+        let int_int = FieldType::Map(MapField {
+            key_type: MapKeyType::Int,
+            value_type: Box::new(FieldType::Int32),
+        });
+        assert!(render_default(&serde_json::json!({ "x": 1 }), &int_int, &schema).is_none());
+        // Numeric-string keys render as long literals.
+        assert_eq!(
+            render_default(&serde_json::json!({ "42": 1, "-7": 2 }), &int_int, &schema).unwrap(),
+            "new Dictionary<long, int> { { -7, 2 }, { 42, 1 } }"
         );
     }
 

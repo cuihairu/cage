@@ -72,7 +72,7 @@ DropItemID:
 
 | 约束 | 说明 |
 | --- | --- |
-| `type` | 字段类型：`uint32` / `int64` / `float` / `string` / `bool` / `enum` / `array` / `object` 等 |
+| `type` | 字段类型：`uint32` / `int64` / `float` / `string` / `bool` / `enum` / `array` / `object` / `map` 等 |
 | `required` | 必填（缺失报 `E1001`） |
 | `default` | 默认值（缺省时填充） |
 | `enum` / `values` | 枚举取值域 |

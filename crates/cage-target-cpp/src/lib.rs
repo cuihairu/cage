@@ -49,7 +49,9 @@
 )]
 use cage_core::{
     manifest::TargetConfig,
-    schema::{EnumSchema, EnumValue, FieldSchema, FieldType, Schema, TableSchema},
+    schema::{
+        EnumSchema, EnumValue, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema,
+    },
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -556,6 +558,24 @@ fn cpp_type(ft: &FieldType, enums: &HashMap<&str, EnumAlloc>, needs: &mut Needs)
             needs.angle.insert("any");
             "std::map<std::string, std::any>".to_string()
         }
+        FieldType::Map(map) => {
+            // Homogeneous `map<K, V>` → unordered_map; the key type decides
+            // its own include (string keys → <string>, int keys → <cstdint>),
+            // the value type recurses through this same mapping.
+            needs.angle.insert("unordered_map");
+            let key = match map.key_type {
+                MapKeyType::String => {
+                    needs.angle.insert("string");
+                    "std::string".to_string()
+                }
+                MapKeyType::Int => {
+                    needs.angle.insert("cstdint");
+                    "std::int64_t".to_string()
+                }
+            };
+            let value = cpp_type(&map.value_type, enums, needs);
+            format!("std::unordered_map<{key}, {value}>")
+        }
         FieldType::Enum(name) => {
             let Some(alloc) = enums.get(name.as_str()) else {
                 // Unresolved (or empty) enum: fall back to plain string.
@@ -578,7 +598,8 @@ fn cpp_type(ft: &FieldType, enums: &HashMap<&str, EnumAlloc>, needs: &mut Needs)
 
 /// Render a schema default as a C++ initializer expression; `None` when the
 /// default does not map to a compile-safe literal (objects, bytes, null,
-/// enums, mismatched kinds — shared rule across all targets).
+/// enums, mismatched kinds — shared rule across all targets; arrays and maps
+/// render for scalar element types only).
 fn render_default(value: &serde_json::Value, ft: &FieldType, schema: &Schema) -> Option<String> {
     match ft {
         FieldType::Bool => value.as_bool().map(|b| b.to_string()),
@@ -599,19 +620,18 @@ fn render_default(value: &serde_json::Value, ft: &FieldType, schema: &Schema) ->
         FieldType::Array(inner) => value
             .as_array()
             .and_then(|items| array_literal(items, inner, schema)),
+        FieldType::Map(map) => value
+            .as_object()
+            .and_then(|entries| map_literal(entries, map, schema)),
         _ => None,
     }
 }
 
-/// Array defaults are rendered only for scalar element types (same rule as
-/// the other generators); rendered as a brace initializer list.
-fn array_literal(
-    items: &[serde_json::Value],
-    inner: &FieldType,
-    schema: &Schema,
-) -> Option<String> {
-    if !matches!(
-        inner,
+/// Whether a default literal exists for this element type: scalars only —
+/// the rule array and map defaults share with the other generators.
+fn scalar_default_type(ft: &FieldType) -> bool {
+    matches!(
+        ft,
         FieldType::Bool
             | FieldType::Int8
             | FieldType::Int16
@@ -624,12 +644,54 @@ fn array_literal(
             | FieldType::Float32
             | FieldType::Float64
             | FieldType::String
-    ) {
+    )
+}
+
+/// Array defaults are rendered only for scalar element types (same rule as
+/// the other generators); rendered as a brace initializer list.
+fn array_literal(
+    items: &[serde_json::Value],
+    inner: &FieldType,
+    schema: &Schema,
+) -> Option<String> {
+    if !scalar_default_type(inner) {
         return None;
     }
     let mut parts = Vec::with_capacity(items.len());
     for item in items {
         parts.push(render_default(item, inner, schema)?);
+    }
+    Some(format!("{{{}}}", parts.join(", ")))
+}
+
+/// Map defaults: an empty object renders the empty brace-init list; a
+/// non-empty one renders `{{key, value}, ...}` pairs, and only for scalar
+/// value types (same rule as arrays). Int keys arrive in their data-model
+/// form — numeric strings — and are parsed exactly the way L2 validates
+/// them; a non-numeric key skips the whole default.
+fn map_literal(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    map: &MapField,
+    schema: &Schema,
+) -> Option<String> {
+    if entries.is_empty() {
+        return Some("{}".to_string());
+    }
+    if !scalar_default_type(&map.value_type) {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(entries.len());
+    // Sort keys: serde_json's map order follows feature unification
+    // (BTreeMap by default, insertion order with preserve_order).
+    let mut sorted: Vec<(&String, &serde_json::Value)> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in sorted {
+        let key_lit = match map.key_type {
+            MapKeyType::String => cpp_string_literal(key),
+            MapKeyType::Int => cpp_int_literal(key.parse::<i64>().ok()?),
+        };
+        let value_lit = render_default(value, &map.value_type, schema)?;
+        parts.push(format!("{{{key_lit}, {value_lit}}}"));
     }
     Some(format!("{{{}}}", parts.join(", ")))
 }
@@ -1351,6 +1413,161 @@ enums:
         assert!(enums.contains("inline constexpr std::string_view off{\"off\"};"));
     }
 
+    /// Map-typed schema: string and int keys, scalar / array / nested-map /
+    /// enum value types, an Object member to prove `<map>` and
+    /// `<unordered_map>` coexist, plus defaults on both the good and bad
+    /// paths (empty map, non-empty entries, non-scalar values).
+    const MAP_SCHEMA: &str = r#"
+tables:
+  Board:
+    name: Board
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      counts: { name: counts, type: { kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }, default: { gold: 10, silver: 2 } }
+      byRank: { name: byRank, type: { kind: Map, value: { key_type: int, value_type: { kind: String } } }, default: { "1": one, "2": two } }
+      slots: { name: slots, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } } }
+      layers: { name: layers, type: { kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: int, value_type: { kind: Bool } } } } } }
+      rates: { name: rates, type: { kind: Map, value: { key_type: string, value_type: { kind: Float64 } } }, default: {} }
+      kinds: { name: kinds, type: { kind: Map, value: { key_type: string, value_type: { kind: Enum, value: ItemKind } } } }
+      labels: { name: labels, type: { kind: Map, value: { key_type: string, value_type: { kind: Enum, value: Rarity } } } }
+      meta: { name: meta, type: { kind: Object, value: {} } }
+      badSlots: { name: badSlots, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }, default: { a: [1] } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+  Rarity:
+    name: Rarity
+    values:
+      - { name: common }
+      - { name: rare }
+"#;
+
+    const MAP_MAIN_CPP: &str = r#"#include "Board.h"
+#include "cage_enums.h"
+
+int main() {
+    cage::generated::Board b{};
+    b.id = 1;
+    b.counts["gold"] = 3;
+    b.byRank[1] = "one";
+    b.rates["x"] = 0.5;
+    b.slots.value()["row"] = {1, 2};
+    b.layers.value()["grid"][7] = true;
+    b.kinds.value()["k"] = cage::generated::ItemKind::Sword;
+    b.labels.value()["l"] = cage::generated::Rarity::common;
+    (void)b.meta;
+    (void)b.badSlots;
+    return 0;
+}
+"#;
+
+    #[test]
+    fn test_map_field_type_mapping() {
+        let schema: Schema = serde_yaml::from_str(MAP_SCHEMA).expect("map schema");
+        let artifacts = gen().generate(&schema, Some("map77"));
+        assert_eq!(artifacts.len(), 2);
+        let board = String::from_utf8(artifacts[0].1.clone()).unwrap();
+
+        // `<unordered_map>` is injected on demand and keeps its place in the
+        // sorted angle-include block — next to, but distinct from, the `<map>`
+        // an Object member pulls in.
+        assert!(board.contains(
+            "#include <any>\n#include <cstdint>\n#include <map>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <unordered_map>\n#include <vector>\n"
+        ));
+        assert!(board.contains("#include \"cage_enums.h\""));
+
+        // Key mapping (String → std::string, Int → std::int64_t) and value
+        // recursion through the ordinary rules: arrays, nested maps, and enum
+        // values keep the spelling they would have as plain field types.
+        for expected in [
+            "std::unordered_map<std::string, std::int32_t> counts{{\"gold\", 10}, {\"silver\", 2}};",
+            "std::unordered_map<std::int64_t, std::string> byRank{{1, \"one\"}, {2, \"two\"}};",
+            "std::optional<std::unordered_map<std::string, std::vector<std::int32_t>>> slots;",
+            "std::optional<std::unordered_map<std::string, std::unordered_map<std::int64_t, bool>>> layers;",
+            "std::unordered_map<std::string, double> rates{};",
+            "std::optional<std::unordered_map<std::string, ItemKind>> kinds;",
+            "std::optional<std::unordered_map<std::string, std::string_view>> labels;",
+            "std::optional<std::map<std::string, std::any>> meta;",
+            // Non-scalar value type: the default is skipped and the member
+            // goes optional without an initializer (nullability unchanged).
+            "std::optional<std::unordered_map<std::string, std::vector<std::int32_t>>> badSlots;",
+            "std::int32_t id{};",
+        ] {
+            assert!(board.contains(expected), "missing: {expected}");
+        }
+    }
+
+    #[test]
+    fn test_map_default_rendering_rules() {
+        let schema = Schema::new();
+        let map = |key: MapKeyType, value: FieldType| {
+            FieldType::Map(MapField {
+                key_type: key,
+                value_type: Box::new(value),
+            })
+        };
+        // Empty object default → the empty brace-init list.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({}),
+                &map(MapKeyType::String, FieldType::Float64),
+                &schema
+            )
+            .unwrap(),
+            "{}"
+        );
+        // Int keys arrive as numeric strings and literalize as integers.
+        assert_eq!(
+            render_default(
+                &serde_json::json!({"-7": "x"}),
+                &map(MapKeyType::Int, FieldType::String),
+                &schema
+            )
+            .unwrap(),
+            "{{-7, \"x\"}}"
+        );
+        // Non-object payload → kind mismatch, no default.
+        assert!(render_default(
+            &serde_json::json!(5),
+            &map(MapKeyType::String, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        // Non-scalar value types (arrays, enums) are skipped, like objects.
+        assert!(render_default(
+            &serde_json::json!({"a": [1]}),
+            &map(
+                MapKeyType::String,
+                FieldType::Array(Box::new(FieldType::Int32))
+            ),
+            &schema
+        )
+        .is_none());
+        assert!(render_default(
+            &serde_json::json!({"a": "Sword"}),
+            &map(MapKeyType::String, FieldType::Enum("ItemKind".to_string())),
+            &schema
+        )
+        .is_none());
+        // A non-numeric int key (L2 would reject it) skips the default.
+        assert!(render_default(
+            &serde_json::json!({"x": 1}),
+            &map(MapKeyType::Int, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+        // A value-kind mismatch inside an otherwise valid entry skips it too.
+        assert!(render_default(
+            &serde_json::json!({"a": "s"}),
+            &map(MapKeyType::String, FieldType::Int32),
+            &schema
+        )
+        .is_none());
+    }
+
     #[test]
     fn test_render_default_edge_cases() {
         let schema = Schema::new();
@@ -1456,9 +1673,9 @@ enums:
             .is_ok_and(|o| o.status.success())
     }
 
-    /// Compiler sanity: generate both schemas and syntax-check the headers
-    /// with g++ (`-Wall -Wextra -Werror`). Skipped, not failed, when no g++
-    /// is installed.
+    /// Compiler sanity: generate every fixture schema and syntax-check the
+    /// headers with g++ (`-Wall -Wextra -Werror`). Skipped, not failed, when
+    /// no g++ is installed.
     #[test]
     fn test_generated_headers_compile() {
         if !gpp_available() {
@@ -1479,6 +1696,13 @@ enums:
         write_headers(&extremes, &gen().generate(&schema, Some("def456")));
         std::fs::write(extremes.join("main.cpp"), EXTREMES_MAIN_CPP).unwrap();
         run_gpp(&extremes, "main.cpp");
+
+        let maps = root.join("maps");
+        std::fs::create_dir_all(&maps).unwrap();
+        let schema: Schema = serde_yaml::from_str(MAP_SCHEMA).expect("map schema");
+        write_headers(&maps, &gen().generate(&schema, Some("map77")));
+        std::fs::write(maps.join("main.cpp"), MAP_MAIN_CPP).unwrap();
+        run_gpp(&maps, "main.cpp");
 
         let _ = std::fs::remove_dir_all(&root);
     }

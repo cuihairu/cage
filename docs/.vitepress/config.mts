@@ -30,7 +30,8 @@ export default defineConfig({
       { text: 'Validation', link: '/validation' },
       { text: 'Target', link: '/target' },
       { text: 'CLI', link: '/cli' },
-      { text: 'Build', link: '/build' }
+      { text: 'Build', link: '/build' },
+      { text: '完整示例', link: '/example' }
     ],
 
     sidebar: {
@@ -38,7 +39,8 @@ export default defineConfig({
         {
           text: '概览',
           items: [
-            { text: '架构', link: '/architecture' }
+            { text: '架构', link: '/architecture' },
+            { text: '完整示例', link: '/example' }
           ]
         },
         {

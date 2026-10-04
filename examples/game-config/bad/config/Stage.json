@@ -1,0 +1,44 @@
+{
+  "Stage": [
+    {
+      "id": 1,
+      "name": "新手村训练场",
+      "difficulty": "Easy",
+      "min_level": 1,
+      "max_level": 10,
+      "boss_item_id": 1001,
+      "tags": ["story", "open"],
+      "drop_table": {},
+      "boss": { "name": "木桩假人", "hp": 100 }
+    },
+    {
+      "id": 2,
+      "name": "幽暗森林",
+      "difficulty": "Normal",
+      "min_level": 8,
+      "max_level": 25,
+      "boss_item_id": 2001,
+      "tags": ["forest", "night"],
+      "drop_table": {
+        "common": [1001, 2001],
+        "rare": [1002],
+        "epic": [1002, 2002]
+      }
+    },
+    {
+      "id": 3,
+      "name": "熔火深渊",
+      "difficulty": "Hard",
+      "min_level": 30,
+      "max_level": 60,
+      "boss_item_id": 2002,
+      "tags": ["dungeon", "fire", "raid"],
+      "drop_table": {
+        "common": [3001, 2001],
+        "rare": [2002],
+        "legendary": [1002]
+      },
+      "boss": { "name": "炎魔领主", "hp": 120000 }
+    }
+  ]
+}
