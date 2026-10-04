@@ -306,6 +306,12 @@ fn load_project(root: &Path) -> Result<Project, String> {
         let doc = if rel.starts_with("registry:") {
             let entry = registry_entry(root, &config, rel)?;
             load_sources_from_entry(&entry)?
+        } else if rel.starts_with("mysql:") || rel.starts_with("pg:") {
+            // Remote Source DB (S2, design §45): `mysql:<表|具名查询>` /
+            // `pg:<表|具名查询>` — static read-only whitelist (E1905) +
+            // session read-only pin, DSN from env (E1904), row set
+            // materialized through the same cache-and-parse path.
+            cage_source_db::DbSourceAdapter::load(root, &config, rel)?
         } else if remote::is_remote_root(rel) {
             // Remote Source (S1, design §45): an http(s) URL is fetched,
             // materialized under `.cage-cache/source/`, and parsed by the

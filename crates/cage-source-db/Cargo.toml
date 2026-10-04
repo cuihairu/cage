@@ -1,0 +1,23 @@
+[package]
+name = "cage-source-db"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "MySQL / PostgreSQL source adapter for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+cage-source-json = { path = "../cage-source-json" }
+# preserve_order：行对象键序 = SELECT 列序（与 CSV / Excel / 本地 JSON 同口径），
+# 也让缓存字节不随依赖图的特征统一（有无 preserve_order）而变
+serde_json = { workspace = true, features = ["preserve_order"] }
+base64 = { workspace = true }
+mysql = { workspace = true }
+postgres = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

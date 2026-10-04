@@ -146,7 +146,7 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1 已交付，S2 起未开工）
+### S 系列：Remote Source（2026-10 立项，design §45；S1–S2 已交付，S3 起未开工）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
 纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
@@ -154,7 +154,8 @@
 （source_hash 覆盖解析后的 Canonical Model 内容，远端数据变化 →
 build_id 旋转，manifest 里可见）；凭据只存环境变量名，不进 cage.toml；
 查询只读（装载期 SELECT 白名单 + 运行期只读事务）。错误码 E19xx 族已
-全族注册进 codes.rs 与 validation.md（S1，E1903–E1905 标预留）。
+全族注册进 codes.rs 与 validation.md（S1；E1901/E1902 随 S1、
+E1904/E1905 随 S2 接线生效，E1903 预留给 S3 Sheets）。
 
 - [x] S0 设计定稿（design.md §45）：四源句法与映射表（table 形式：
       取数方式 / 行映射 / 类型口径，DECIMAL 走字符串）、确定性锚点与
@@ -176,18 +177,36 @@ build_id 旋转，manifest 里可见）；凭据只存环境变量名，不进 c
       全绿 + 文档（design §45 实装状态与 source_hash 口径修正、
       validation.md E19xx、architecture.md 结构树、source.md HTTP API
       小节）+ 本勾选
-- [ ] S2 MySQL / PostgreSQL 源（`cage-source-db`，两后端同 crate 共享
-      行集映射）：表名展开 `SELECT *`、具名查询静态白名单校验（E1905）、
-      DSN 经 env（E1904）、NULL → Null、DECIMAL → 字符串、无 ORDER BY
-      按主键补排行序确定
+- [x] S2 MySQL / PostgreSQL 源（`cage-source-db`，两后端同 crate 共享
+      行集映射）：`mysql:<表|具名查询>` / `pg:<同>`，具名查询优先、
+      表名展开 `SELECT *`；装载顺序 spec → 查询解析（E1905）→ SELECT
+      白名单（单条、SELECT 开头，拒分号 / 注释 / FOR UPDATE|SHARE /
+      INTO / CTE）→ dsn_env 解析（E1904）→ 连接——白名单与凭据校验
+      都在任何网络触达之前；会话钉只读（MySQL `SESSION TRANSACTION
+      READ ONLY`、PG `default_transaction_read_only`，双保险第二重）；
+      类型口径 NULL → Null、DECIMAL/NUMERIC 文本保真不走 Float、
+      二进制列 base64、日期时间文本渲染；行序确定：带 `ORDER BY`
+      尊重原序，否则按行序列化形式排序（写实：主键在适配器侧不可知，
+      序列化排序同样满足确定性）；行集 → canonical JSON（键序 = 列序，
+      serde_json preserve_order 与全仓同口径）落 `.cage-cache/source/
+      <scheme+DSN+SQL 指纹>/` → 标准 JSON 解析，与 S1 同一缓存锚与
+      解析链。验收达成：8 新 crate 单测（spec 切分、白名单 13 拒 3 纳、
+      具名查询优先与表名校验、dsn_env 三态、值映射含 u64::MAX 与
+      DECIMAL 文本、行序两向 + pretty JSON 逐字节断言、materialize
+      缓存落盘、load 报错顺序）+ 2 新 CLI 集成测试（无需真实 DB：
+      未声明 / 未设 dsn_env → E1904、非 SELECT 具名查询与非法表名 →
+      E1905 且先于凭据校验、mysql/pg 死端口与坏 DSN → E1901，退出码
+      2）全绿 + 文档（design §45 实装状态与 `[remote.pg]` 句法对齐、
+      validation.md E1904/E1905 转已接线、architecture.md 结构树、
+      source.md MySQL / PostgreSQL 小节与 crate 表行）+ 本勾选
 - [ ] S3 Google Sheets 源（`cage-source-sheets`）：Sheets API v4
       `values` + UNFORMATTED_VALUE（公式缓存值），tab → 表、首行表头
       同 Excel 惯例；service account / API key 经 env；连接类失败有界重试
 - [ ] S4 确定性与离线语义收口：远端变更 → source_hash / build_id 旋转
       的端到端测试；断网缓存回退 + WARNING 诊断；`--no-cache` 严格模式
 - [ ] S5 错误码接线收口：E1901–E1905 已于 S1 全族注册（`codes.rs` +
-      validation.md），本项接线剩余码并去掉「预留」标注（E1903–E1905
-      随 S2/S3 落地），诊断渲染覆盖四源
+      validation.md），E1904/E1905 已随 S2 转已接线，本项收口剩余的
+      E1903（随 S3 Sheets 落地）并核对全族标注，诊断渲染覆盖四源
 - [ ] S6 文档收口：source.md 后续扩展清单转正、cli.md 远程源章节、
       需求整理.md Remote Source 勾选、architecture.md 工程结构树补三 crate
 

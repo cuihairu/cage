@@ -306,8 +306,8 @@ YAML
 XML
 TOML
 SQLite
-MySQL            ← 已立项（§45 Remote Source，2026-10 设计定稿）
-PostgreSQL       ← 已立项（§45）
+MySQL            ← 已实装（§45，S2 cage-source-db）
+PostgreSQL       ← 已实装（§45，S2 cage-source-db）
 Google Sheets    ← 已立项（§45）
 HTTP API         ← 已实装（§45，S1 cage-source-http）
 Custom Binary
@@ -1742,9 +1742,9 @@ CI Integration
 Web UI                 ← 已实装（W 系列）
 Schema Editor          ← 已实装（W 系列）
 Configuration Registry ← 已实装（R1–R4）
-Remote Source          ← S1 HTTP API 源已实装；Sheets / DB 在 S2–S3（§45）
+Remote Source          ← HTTP / DB 源已实装（S1–S2）；Sheets 在 S3（§45）
 Google Sheets          ← 已立项（§45，S3）
-Database Source        ← 已立项（§45，S2）
+Database Source        ← 已实装（§45，S2 cage-source-db）
 Migration
 Artifact Distribution
 ```
@@ -2078,7 +2078,7 @@ levels   = "gsheet:1AbC...xz/Levels" # Sheets：spreadsheet_id / tab
 [remote.mysql]
 dsn_env = "CAGE_MYSQL_URL"           # 只存 env 名，DSN 不进仓库
 
-[remote.postgres]
+[remote.pg]
 dsn_env = "CAGE_PG_URL"
 
 [remote.gsheets]
@@ -2092,9 +2092,16 @@ credential_env = "CAGE_SHEETS_CREDENTIAL"   # API key 或 service account JSON �
 | Google Sheets | Sheets API v4 `values`，`valueRenderOption=UNFORMATTED_VALUE`（公式缓存值，不重算，同 Excel adapter 口径） | tab = 表，首行 = 表头（同 Excel 惯例），其余行按字符串读、类型交 Schema 校准 | 初值为字符串，L2/L3 校验裁型 |
 
 具名查询与表名在装载期做静态校验：只接受单条以 `SELECT` 开头的语句，
-分号、注释、多语句一律拒（E1905）；运行期连接设为只读事务
-（PostgreSQL `default_transaction_read_only`、MySQL
-`SESSION TRANSACTION READ ONLY`），双保险。
+分号、注释、多语句、行锁子句（`FOR UPDATE` / `FOR SHARE`）与
+`INTO` 一律拒（E1905）；运行期连接设为只读事务（PostgreSQL
+`default_transaction_read_only`、MySQL `SESSION TRANSACTION READ
+ONLY`），双保险。行序确定性：语句自带 `ORDER BY` 则尊重作者承诺的
+顺序；否则行按其序列化形式排序——构建不依赖服务端返回顺序。行集
+序列化成 canonical JSON 后落缓存（行对象键序 = SELECT 列序，与
+CSV / Excel / 本地 JSON 同一顺序口径；DECIMAL / NUMERIC 文本保真、
+二进制列 base64），再走标准 JSON 解析——与 HTTP 源同一缓存锚与
+解析链。缓存键覆盖 scheme + DSN（单向哈希）+ 语句，不同
+服务器 / 查询永不共槽。
 
 ## 确定性与缓存
 
@@ -2131,16 +2138,17 @@ S4 收口，S1 当前取不到即失败）。新鲜度上限（max_age）留待�
 
 | 代码 | 含义 | 状态 |
 | --- | --- | --- |
-| `E1901` | 远端取数失败（网络 / DNS / 超时重试用尽、404 等非认证错误状态） | 已实装（HTTP 源） |
+| `E1901` | 远端取数失败（网络 / DNS / 超时重试用尽、404 等非认证错误状态、DB 连接 / 语句失败） | 已实装（HTTP / DB 源） |
 | `E1902` | 认证 / 授权被拒（HTTP 401 / 403） | 已实装（HTTP 源） |
 | `E1903` | 响应形状不合法（非行集 / 缺表头） | 已注册，预留 |
-| `E1904` | 凭据缺失（env 未设置或凭据文件不可读） | 已注册，预留 |
-| `E1905` | 查询非法（配置了非只读语句） | 已注册，预留 |
+| `E1904` | 凭据缺失（env 未设置或凭据文件不可读） | 已实装（DB 源：dsn_env 未声明 / env 未设置） |
+| `E1905` | 查询非法（配置了非只读语句） | 已实装（DB 源：SELECT 白名单 + 表名校验） |
 
 E1901–E1905 已全族注册进 `codes.rs` 与 validation.md，未接线的码标
 「预留」（已定义、当前代码路径不抛出）。HTTP 源的坏 JSON 不走
-E1903——它走与本地文件同一条 Parse 诊断（E0001 带行列定位），E1903
-留给行集类源的形状校验（DB / Sheets 落地时接线）。
+E1903——它走与本地文件同一条 Parse 诊断（E0001 带行列定位）。
+DB 源的行集由适配器自产 canonical JSON，形状不可能非法，也不经
+E1903；E1903 留给 Sheets 落地时接线（非行集 / 缺表头）。
 
 重试只覆盖连接类失败（有界次数 + 退避，口径同 ci.yml 的 curl 重试）；
 4xx 不重试。
@@ -2156,7 +2164,9 @@ E1903——它走与本地文件同一条 Parse 诊断（E0001 带行列定位�
 
 **实装状态**（2026-10）：S1 已交付——HTTP API 源实装
 （`cage-source-http`，`[source_roots]` 直写 http(s) URL），共享取数 /
-重试 / 缓存 helper 首落 `cage_core::remote`（R3 registry 同源复用），
-E1901 / E1902 接线生效，E1903–E1905 注册为预留；缓存复用回退与
-`--no-cache` 严格模式在 S4 收口（当前取不到远端即失败）。S2–S6
-未开工。
+重试 / 缓存 helper 首落 `cage_core::remote`（R3 registry 同源复用）。
+S2 已交付——MySQL / PostgreSQL 源实装（`cage-source-db`，两后端共享
+行集映射：SELECT 白名单 E1905 → dsn_env 解析 E1904 → 连接 + 会话
+只读 pin → 行集 canonical JSON 落缓存 → 标准 JSON 解析；CLI 错误码
+E1901 / E1904 / E1905 接线生效）。缓存复用回退与 `--no-cache` 严格
+模式在 S4 收口（当前取不到远端即失败）。S3–S6 未开工。

@@ -424,6 +424,12 @@ pub struct ProjectConfig {
     /// `@<version>` resolves through this pin.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub dependencies: IndexMap<String, String>,
+    /// Remote source connection settings (`[remote.<scheme>]` in
+    /// cage.toml, design §45): only environment variable NAMES and named
+    /// read-only queries live here — DSNs and keys stay out of the
+    /// config file entirely.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub remote: IndexMap<String, RemoteSourceConfig>,
 }
 
 /// Local Configuration Registry declaration (`[registry]` in cage.toml)
@@ -432,6 +438,26 @@ pub struct RegistryConfig {
     /// Registry root directory. A relative path is resolved against the
     /// project root — the consumer project pins which registry it reads.
     pub path: String,
+}
+
+/// Remote source connection settings (`[remote.<scheme>]`, design §45).
+/// The config file carries only the *names* of environment variables —
+/// DSNs and credentials resolve from the environment at load time
+/// (missing → E1904, never guessed, never logged).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemoteSourceConfig {
+    /// Name of the env var carrying the DSN / connection string
+    /// (`[remote.mysql] dsn_env = "CAGE_MYSQL_URL"`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsn_env: Option<String>,
+    /// Name of the env var carrying a credential — API key or service
+    /// account JSON path (Google Sheets, S3)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_env: Option<String>,
+    /// Named read-only queries: `mysql:top_items` resolves here first,
+    /// then falls back to a table-name expansion
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub queries: IndexMap<String, String>,
 }
 
 /// Project identity information
@@ -497,6 +523,7 @@ impl Default for ProjectConfig {
             output_dir: Some("build".to_string()),
             registry: None,
             dependencies: IndexMap::new(),
+            remote: IndexMap::new(),
         }
     }
 }
@@ -916,6 +943,7 @@ mod tests {
             output_dir: Some("build".to_string()),
             registry: None,
             dependencies: IndexMap::new(),
+            remote: IndexMap::new(),
         };
 
         let json = serde_json::to_string(&cfg).expect("serialize");
@@ -962,11 +990,13 @@ mod tests {
             output_dir: None,
             registry: None,
             dependencies: IndexMap::new(),
+            remote: IndexMap::new(),
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         // Every skip_serializing_if path stays silent when the value is absent
         assert!(v.get("source_roots").is_none());
+        assert!(v.get("remote").is_none());
         assert!(v.get("schema_path").is_none());
         assert!(v.get("warnings_as_errors").is_none());
         assert!(v.get("output_dir").is_none());
