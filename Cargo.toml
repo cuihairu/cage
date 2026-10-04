@@ -57,7 +57,7 @@ blake3 = "1.5"
 base64 = "0.22"
 
 # Remote Source backends (§45, S2) — pure-Rust protocol clients
-mysql = "26"
+mysql = "28"
 postgres = "0.19"
 
 # Testing
