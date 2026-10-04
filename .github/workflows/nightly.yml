@@ -91,6 +91,11 @@ jobs:
           path: dist
           pattern: cage-nightly-*
           merge-multiple: true
+      - name: Attach install scripts
+        run: |
+          # 一键安装脚本随 Release 分发：用户可直接取本仓库脚本或 Release
+          # 资产，二者内容一致
+          cp scripts/install.sh scripts/install.ps1 dist/
       - name: Generate SHA256SUMS
         run: |
           cd dist
@@ -122,6 +127,8 @@ jobs:
               *linux-x86_64*) note="Linux x86_64（正式腿，CI 全量验证同平台）" ;;
               *macos-aarch64*) note="macOS arm64（试运行腿）" ;;
               *windows-x86_64*) note="Windows x86_64（试运行腿）" ;;
+              install.sh) note="一键安装脚本（Linux / macOS，用法见 README「一键安装」）" ;;
+              install.ps1) note="一键安装脚本（Windows PowerShell，用法见 README「一键安装」）" ;;
               *) note="" ;;
               esac
               echo "| \`${b}\` | ${sz} | ${note} |"

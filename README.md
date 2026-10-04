@@ -61,6 +61,74 @@ cage inspect Item                  # 查看 Schema 与配置结构
 cage web ./                        # 启动 Schema 编辑器本地服务（只绑 127.0.0.1）
 ```
 
+## 一键安装
+
+从滚动 [nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly) 匿名直链下载二进制（不走 Actions artifacts、不带 token），自动校验 SHA256，无需 Rust 工具链。
+
+**Linux / macOS**（`sh`）：
+
+1. 执行安装（默认装最新 nightly）：
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.sh | sh
+   ```
+
+   预期输出（末两行）：
+
+   ```text
+   安装完成：/home/<你>/.local/bin/cage
+   cage 0.1.0
+   ```
+
+2. 若提示安装目录不在 PATH 中，重开终端，或手动加入：
+
+   ```sh
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
+
+3. 验证：
+
+   ```sh
+   cage --version
+   ```
+
+**Windows**（PowerShell 5.1+，无需管理员）：
+
+1. 执行安装（默认装最新 nightly）：
+
+   ```powershell
+   irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 | iex
+   ```
+
+   预期输出（末两行）：
+
+   ```text
+   安装完成：C:\Users\<你>\AppData\Local\cage\cage.exe
+   cage 0.1.0
+   ```
+
+2. 脚本已把安装目录加入用户级 PATH，重开终端生效。
+
+3. 验证：
+
+   ```powershell
+   cage --version
+   ```
+
+**装指定版本**（默认最新 nightly；指定 Release tag 需该 Release 带对应平台资产）：
+
+```sh
+sh <(curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.sh) v0.1.0   # Linux / macOS
+```
+
+```powershell
+irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -Version v0.1.0   # Windows
+```
+
+安装目录可用环境变量覆盖（`CAGE_INSTALL_DIR`，Windows 固定 `%LOCALAPPDATA%\cage`）；`--path`（sh）/ 自动（ps1）把安装目录写进 shell profile / 用户级 PATH；`--uninstall`（sh）/ `-Uninstall`（ps1）卸载——删除二进制后，再手动从 profile / 用户级 PATH 移除对应条目即可。
+
+平台覆盖：Linux x86_64（正式腿）、macOS aarch64 与 Windows x86_64（试运行腿）；其余架构暂无资产。脚本与本体一样随 `nightly` Release 分发（`install.sh` / `install.ps1` 资产），源码在 [`scripts/`](scripts/)。
+
 ## 每日构建
 
 不装 Rust 工具链可直接取二进制：[Nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly) 每日随 main 滚动更新（Linux x86_64 正式腿，macOS / Windows 试运行腿），压缩包内即 `cage` 单文件，附 `SHA256SUMS` 校验单。
