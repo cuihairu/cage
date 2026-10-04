@@ -72,20 +72,51 @@ fn start_server(root: &Path) -> Server {
 /// bytes and decodes chunked transfer encoding — tiny_http switches to
 /// chunked for larger bodies (like the embedded editor bundle), and a
 /// chunk boundary can land inside a multi-byte UTF-8 sequence.
+///
+/// Retries on connection-level failures (refused / reset, bounded): under
+/// parallel test load many `cage web` instances share the accept backlog and
+/// the listener occasionally resets a just-accepted connection. Every request
+/// here is idempotent (GET, validate, or canonical single-file save), so a
+/// bounded retry turns that flake into a pass without masking a dead server —
+/// the retry cap is what still fails if the server is really gone.
 fn request(port: u16, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut last_err: Option<std::io::Error> = None;
+    for _ in 0..4 {
+        match request_once(port, method, path, body) {
+            Ok(res) => return res,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                last_err = Some(err);
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => panic!("request failed: {err}"),
+        }
+    }
+    panic!("request kept failing: {}", last_err.unwrap());
+}
+
+fn request_once(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> std::io::Result<(u16, String)> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
     let len = body.map(str::len).unwrap_or(0);
     write!(
         stream,
         "{method} {path} HTTP/1.1\r\nHost: cage-web-test\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
-    )
-    .expect("write request line");
+    )?;
     if let Some(b) = body {
-        stream.write_all(b.as_bytes()).expect("write body");
+        stream.write_all(b.as_bytes())?;
     }
-    stream.shutdown(Shutdown::Write).expect("shutdown");
+    stream.shutdown(Shutdown::Write)?;
     let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).expect("read response");
+    stream.read_to_end(&mut raw)?;
 
     let head_end = raw
         .windows(4)
@@ -108,7 +139,7 @@ fn request(port: u16, method: &str, path: &str, body: Option<&str>) -> (u16, Str
         payload = &chunked;
     }
     let body = String::from_utf8(payload.to_vec()).expect("utf-8 body");
-    (status, body)
+    Ok((status, body))
 }
 
 /// Strip one chunked-encoding framing block (`<hex-size>\r\n<data>\r\n...`,
