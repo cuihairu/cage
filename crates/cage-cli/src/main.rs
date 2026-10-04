@@ -306,6 +306,12 @@ fn load_project(root: &Path) -> Result<Project, String> {
         let doc = if rel.starts_with("registry:") {
             let entry = registry_entry(root, &config, rel)?;
             load_sources_from_entry(&entry)?
+        } else if remote::is_remote_root(rel) {
+            // Remote Source (S1, design §45): an http(s) URL is fetched,
+            // materialized under `.cage-cache/source/`, and parsed by the
+            // standard JSON adapter — same shapes, same L0-L7 pipeline,
+            // no bypass for remote bytes.
+            cage_source_http::HttpSourceAdapter::load(root, rel)?
         } else {
             load_sources(&root.join(rel))?
         };

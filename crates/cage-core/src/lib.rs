@@ -45,6 +45,7 @@ pub mod manifest;
 pub mod normalize;
 pub mod reference;
 pub mod registry;
+pub mod remote;
 pub mod schema;
 pub mod snapshot;
 pub mod validation;

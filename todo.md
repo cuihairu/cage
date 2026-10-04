@@ -146,25 +146,36 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；设计已定稿，实现未开工）
+### S 系列：Remote Source（2026-10 立项，design §45；S1 已交付，S2 起未开工）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
-纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/` 并记
-blake3 指纹，缓存复用前重过校验门（未经校验不载入）；构建确定性锚在
-「取到的字节」上（source_hash 覆盖远端字节，远端变化 → build_id 旋转，
-manifest 里可见）；凭据只存环境变量名，不进 cage.toml；查询只读
-（装载期 SELECT 白名单 + 运行期只读事务）。错误码拟设 E19xx 族，实现期
-注册进 codes.rs 与 validation.md。
+纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
+复用前重过校验门（未经校验不载入）；构建确定性锚在「取到的字节」上
+（source_hash 覆盖解析后的 Canonical Model 内容，远端数据变化 →
+build_id 旋转，manifest 里可见）；凭据只存环境变量名，不进 cage.toml；
+查询只读（装载期 SELECT 白名单 + 运行期只读事务）。错误码 E19xx 族已
+全族注册进 codes.rs 与 validation.md（S1，E1903–E1905 标预留）。
 
 - [x] S0 设计定稿（design.md §45）：四源句法与映射表（table 形式：
       取数方式 / 行映射 / 类型口径，DECIMAL 走字符串）、确定性锚点与
       缓存布局、凭据经 env、只读双保险、断网回退语义、E19xx 五行规划、
       留待实现期清单（增量拉取 / OAuth / 连接池 / 分页 / 内省均不在
       首期）——本轮交付，勾选
-- [ ] S1 HTTP API 源（`cage-source-http`）：GET JSON → Canonical Model
-      （单表对象或 `{表名: 行数组}`），最简先行（无 SDK 依赖）；共享
-      取数 / 缓存 / 重试 helper 首次落地（复用 R3 cache_key 口径），
-      source_hash 覆盖远端字节
+- [x] S1 HTTP API 源（`cage-source-http`）：`[source_roots]` 直写
+      http(s) URL，GET 响应字节落 `.cage-cache/source/<cache_key>/`
+      后走标准 JSON 解析（形状与本地 JSON 完全一致，无新方言）；共享
+      取数 / 重试 / 缓存键 helper 首落 `cage_core::remote`（cache_key /
+      RetryPolicy / with_retries / http_get，R3 registry 同源复用，cli
+      侧的重复实现摘除）；E1901/E1902 接线生效。验收达成：4 新 core
+      单测（cache_key 确定与隔离、缓存目录派生、重试恢复与预算耗尽、
+      服务端应答不重试）+ 6 新 crate 单测（取数解析并落缓存、401→
+      E1902、404→E1901、死端口→E1901、坏 JSON→E0001 拒载、非 http
+      URL 拒收）+ 2 新 CLI 集成测试（真实静态 HTTP 服务器：取数构建
+      并断言缓存字节、同字节重建 manifest 逐字节一致、远端变更
+      source_hash/build_id 旋转；401/404/死根/坏体的错误码与退出码）
+      全绿 + 文档（design §45 实装状态与 source_hash 口径修正、
+      validation.md E19xx、architecture.md 结构树、source.md HTTP API
+      小节）+ 本勾选
 - [ ] S2 MySQL / PostgreSQL 源（`cage-source-db`，两后端同 crate 共享
       行集映射）：表名展开 `SELECT *`、具名查询静态白名单校验（E1905）、
       DSN 经 env（E1904）、NULL → Null、DECIMAL → 字符串、无 ORDER BY
@@ -174,8 +185,9 @@ manifest 里可见）；凭据只存环境变量名，不进 cage.toml；查询�
       同 Excel 惯例；service account / API key 经 env；连接类失败有界重试
 - [ ] S4 确定性与离线语义收口：远端变更 → source_hash / build_id 旋转
       的端到端测试；断网缓存回退 + WARNING 诊断；`--no-cache` 严格模式
-- [ ] S5 错误码接线：E1901–E1905 注册进 `codes.rs` + validation.md
-      （登记即去掉「预留」口径），诊断渲染覆盖四源
+- [ ] S5 错误码接线收口：E1901–E1905 已于 S1 全族注册（`codes.rs` +
+      validation.md），本项接线剩余码并去掉「预留」标注（E1903–E1905
+      随 S2/S3 落地），诊断渲染覆盖四源
 - [ ] S6 文档收口：source.md 后续扩展清单转正、cli.md 远程源章节、
       需求整理.md Remote Source 勾选、architecture.md 工程结构树补三 crate
 

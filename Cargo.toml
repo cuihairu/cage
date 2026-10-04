@@ -5,6 +5,7 @@ members = [
     "crates/cage-source-excel",
     "crates/cage-source-csv",
     "crates/cage-source-json",
+    "crates/cage-source-http",
     "crates/cage-source-yaml",
     "crates/cage-target-json",
     "crates/cage-target-csv",

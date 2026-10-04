@@ -314,10 +314,12 @@ cage/
 │   │       ├── manifest/        # Build Manifest
 │   │       ├── snapshot/        # Configuration Snapshot（打包 / 校验 / 加载）
 │   │       ├── edit/            # Schema ↔ 编辑器交换模型（W1）
-│   │       └── registry.rs      # Configuration Registry（发布 / 解析 / 审计，R1-R4）
+│   │       ├── registry.rs      # Configuration Registry（发布 / 解析 / 审计，R1-R4）
+│   │       └── remote.rs        # Remote Source 共享取数 / 重试 / 缓存键（§45）
 │   ├── cage-source-excel/   # Excel 输入源（calamine）
 │   ├── cage-source-csv/     # CSV 输入源
 │   ├── cage-source-json/    # JSON 输入源
+│   ├── cage-source-http/    # HTTP API 输入源（S1，design §45）
 │   ├── cage-source-yaml/    # YAML 输入源
 │   ├── cage-target-json/    # JSON 产出
 │   ├── cage-target-csv/     # CSV 产出

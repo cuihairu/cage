@@ -593,10 +593,10 @@ fn render_req(req: &VersionReq) -> String {
 }
 
 /// Deterministic local cache key for a remote registry root (R3): the first
-/// 12 hex chars of the URL's blake3. Pure — the network layer lives in the
-/// CLI; core only fixes the key so every consumer derives the same cache.
+/// 12 hex chars of the URL's blake3, one key scheme shared with the Remote
+/// Source cache (§45). Delegates to `crate::remote::cache_key`.
 pub fn cache_key(root_url: &str) -> String {
-    blake3::hash(root_url.as_bytes()).to_hex()[..12].to_string()
+    crate::remote::cache_key(root_url)
 }
 
 /// Pick the entry version for a resolved index: an explicit `version` must

@@ -1,0 +1,17 @@
+[package]
+name = "cage-source-http"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "HTTP API source adapter for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+cage-source-json = { path = "../cage-source-json" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

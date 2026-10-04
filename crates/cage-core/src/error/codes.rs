@@ -132,6 +132,29 @@ pub mod registry {
     pub const E1803: &str = "E1803";
 }
 
+/// Remote Source errors (S series, design §45): read-only fetch of
+/// Google Sheets / MySQL / PostgreSQL / HTTP API sources. E1901/E1902
+/// are wired today (HTTP API source); the rest are defined and reserved
+/// until their source lands — no code path throws them yet.
+pub mod remote {
+    /// E1901 - Remote source fetch failed: network / DNS / timeout after
+    /// bounded retries, or a non-auth HTTP error status
+    pub const E1901: &str = "E1901";
+    /// E1902 - Remote source authentication / authorization rejected
+    /// (HTTP 401 / 403)
+    pub const E1902: &str = "E1902";
+    /// E1903 - Remote source response shape invalid (not a row set /
+    /// missing header) — reserved until a source adapter needs it
+    pub const E1903: &str = "E1903";
+    /// E1904 - Remote source credential missing (configured env var
+    /// unset, credential file unreadable) — reserved until the DB /
+    /// Sheets sources land
+    pub const E1904: &str = "E1904";
+    /// E1905 - Remote source query invalid (non-SELECT / multi-statement
+    /// named query) — reserved until the DB sources land
+    pub const E1905: &str = "E1905";
+}
+
 /// Build/Transform errors (Target generation)
 pub mod build {
     /// E9001 - Target generator not found for format
@@ -212,6 +235,12 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         registry::E1801 => Some("Registry Publish Conflict"),
         registry::E1802 => Some("Registry Reference Unresolved"),
         registry::E1803 => Some("Registry Entry Verification Failed"),
+        // Remote Source
+        remote::E1901 => Some("Remote Source Fetch Failed"),
+        remote::E1902 => Some("Remote Source Auth Rejected"),
+        remote::E1903 => Some("Remote Source Response Invalid"),
+        remote::E1904 => Some("Remote Source Credential Missing"),
+        remote::E1905 => Some("Remote Source Query Invalid"),
         // Build
         build::E9001 => Some("Target Generator Not Found"),
         build::E9002 => Some("Target Generation Failed"),
@@ -334,6 +363,7 @@ mod tests {
             ("E1601", "Game Rule Validation Failed"),
             ("E1701", "Editor Interchange Invalid"),
             ("E1802", "Registry Reference Unresolved"),
+            ("E1901", "Remote Source Fetch Failed"),
             ("E9001", "Target Generator Not Found"),
             ("E9901", "Internal Error"),
         ];

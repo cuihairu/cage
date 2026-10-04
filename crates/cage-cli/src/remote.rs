@@ -20,75 +20,18 @@
 //! is served without a single request — builds work offline after the first
 //! fetch. Publish and list stay local-only: the registry never rewrites
 //! history, and the protocol has no package enumeration.
+//!
+//! The HTTP GET itself comes from `cage_core::remote` (§45): one fetch,
+//! one retry policy for every remote consumer.
 
 use cage_core::error::codes::registry::{E1802, E1803};
 use cage_core::registry::{RegistryIndex, VersionReq};
-use std::io::Read;
+use cage_core::remote::{http_get, FetchFailure};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// Whether a `[registry].path` is a remote root (R3): an http(s) URL.
 pub(crate) fn is_remote_root(spec: &str) -> bool {
     spec.starts_with("http://") || spec.starts_with("https://")
-}
-
-/// One HTTP GET failure, kind-tagged so callers attach the right registry
-/// error code: a 404 index is "package not found" (E1802), a transport
-/// failure is "cannot reach" (E1802), a hash mismatch is the tamper gate
-/// (E1803).
-enum FetchError {
-    /// HTTP 404 — the resource does not exist on the server
-    NotFound(String),
-    /// Connection / timeout / other transport-level failure
-    Transport(String),
-    /// Any other HTTP status
-    Status(u16),
-}
-
-impl std::fmt::Display for FetchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FetchError::NotFound(url) => write!(f, "not found on registry: {url}"),
-            FetchError::Transport(e) => write!(f, "cannot reach registry: {e}"),
-            FetchError::Status(code) => write!(f, "registry returned HTTP {code}"),
-        }
-    }
-}
-
-/// GET one URL, bounded retries on transport-level flake (the web test
-/// harness saw the same refused/reset jitter under parallel load) so a
-/// busy registry does not fail a build for nothing. 404s and other server
-/// responses are definitive — no retry.
-fn http_get(url: &str) -> Result<Vec<u8>, FetchError> {
-    let mut last: Option<FetchError> = None;
-    for _ in 0..3 {
-        match http_get_once(url) {
-            Ok(bytes) => return Ok(bytes),
-            Err(FetchError::Transport(e)) => {
-                last = Some(FetchError::Transport(e));
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(other) => return Err(other),
-        }
-    }
-    Err(last.expect("three retries leave an error"))
-}
-
-fn http_get_once(url: &str) -> Result<Vec<u8>, FetchError> {
-    let response = ureq::get(url)
-        .timeout(Duration::from_secs(30))
-        .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(404, _) => FetchError::NotFound(url.to_string()),
-            ureq::Error::Status(code, _) => FetchError::Status(code),
-            ureq::Error::Transport(t) => FetchError::Transport(t.to_string()),
-        })?;
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(|e| FetchError::Transport(format!("reading {url}: {e}")))?;
-    Ok(bytes)
 }
 
 /// Reject a ledger-relative path that could escape the cache directory.
@@ -139,7 +82,7 @@ pub(crate) fn resolve_remote(
             let _ = std::fs::write(&cache_index, &bytes);
             bytes
         }
-        Err(FetchError::Transport(e)) => {
+        Err(FetchFailure::Transport(e)) => {
             let cached = std::fs::read(&cache_index).map_err(|_| {
                 format!(
                     "{E1802} cannot reach registry: {e} ({index_url}); no cached index for \

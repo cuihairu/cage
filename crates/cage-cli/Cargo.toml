@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 cage-core = { path = "../cage-core" }
 cage-source-json = { path = "../cage-source-json" }
+cage-source-http = { path = "../cage-source-http" }
 cage-source-yaml = { path = "../cage-source-yaml" }
 cage-source-csv = { path = "../cage-source-csv" }
 cage-source-excel = { path = "../cage-source-excel" }
@@ -31,7 +32,6 @@ cage-target-java = { path = "../cage-target-java" }
 clap = { workspace = true }
 tiny_http = { workspace = true }
 blake3 = { workspace = true }
-ureq = { workspace = true }
 indexmap = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

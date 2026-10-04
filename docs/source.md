@@ -79,21 +79,27 @@ Document
 - 天然树形结构，直接映射到 Canonical Model
 - 保留路径定位：文本格式错误（YAML 语法错误等）精确到行号（错误码 `E0001` 族）
 
+### HTTP API（远程源，S1）
+
+`[source_roots]` 直写 http(s) URL 即远程源：GET 响应字节原样落
+`.cage-cache/source/<URL 指纹>/`，再走与本地 JSON 完全相同的解析
+（`{表名: 行数组}` / 单对象 → `Root` / 行数组 → `Data`），L0-L7
+全量校验、无旁路。连接类失败有界重试；取数失败报 `E1901`，
+401/403 报 `E1902`，坏 JSON 报 `E0001`（与本地文件同一诊断）。
+四源形态定稿见 design §45；MySQL / PostgreSQL / Google Sheets 在
+S2–S3。
+
 ## 后续扩展
 
 ```text
 XML
 TOML
 SQLite
-MySQL            ← 已立项（design §45 Remote Source，2026-10 设计定稿）
-PostgreSQL       ← 已立项（design §45）
-Google Sheets    ← 已立项（design §45）
-HTTP API         ← 已立项（design §45）
+MySQL            ← 已立项（design §45 Remote Source，S2）
+PostgreSQL       ← 已立项（design §45，S2）
+Google Sheets    ← 已立项（design §45，S3）
 Custom Binary
 ```
-
-四源形态定稿（句法、映射、确定性锚点、E19xx 错误码规划）见仓库设计稿
-`docs/design.md` §45；实现拆解见仓库根 `todo.md` 的 S 系列。
 
 ## Rust 落地
 
@@ -103,5 +109,6 @@ Custom Binary
 | CSV | `cage-source-csv` | csv |
 | JSON | `cage-source-json` | serde_json |
 | YAML | `cage-source-yaml` | serde_yaml |
+| HTTP API | `cage-source-http` | `cage_core::remote`（取数 / 重试 / 缓存）+ cage-source-json |
 
 统一产出 `cage-core` 的 Canonical Model：Null / Bool / Int / UInt / Float / String / Bytes / Array / Object，并携带 Source Location 与元数据。

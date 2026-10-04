@@ -134,6 +134,7 @@ dependencies = [
  "cage-core",
  "cage-source-csv",
  "cage-source-excel",
+ "cage-source-http",
  "cage-source-json",
  "cage-source-yaml",
  "cage-target-cpp",
@@ -152,7 +153,6 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "toml",
- "ureq",
 ]
 
 [[package]]
@@ -168,6 +168,7 @@ dependencies = [
  "serde_path_to_error",
  "serde_yaml",
  "tempfile",
+ "ureq",
 ]
 
 [[package]]
@@ -187,6 +188,15 @@ dependencies = [
  "cage-core",
  "calamine",
  "indexmap",
+]
+
+[[package]]
+name = "cage-source-http"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "cage-source-json",
+ "tempfile",
 ]
 
 [[package]]

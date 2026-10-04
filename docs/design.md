@@ -309,7 +309,7 @@ SQLite
 MySQL            ← 已立项（§45 Remote Source，2026-10 设计定稿）
 PostgreSQL       ← 已立项（§45）
 Google Sheets    ← 已立项（§45）
-HTTP API         ← 已立项（§45）
+HTTP API         ← 已实装（§45，S1 cage-source-http）
 Custom Binary
 ```
 
@@ -1742,9 +1742,9 @@ CI Integration
 Web UI                 ← 已实装（W 系列）
 Schema Editor          ← 已实装（W 系列）
 Configuration Registry ← 已实装（R1–R4）
-Remote Source          ← 已立项（§45，2026-10 设计定稿）
-Google Sheets          ← 已立项（§45）
-Database Source        ← 已立项（§45）
+Remote Source          ← S1 HTTP API 源已实装；Sheets / DB 在 S2–S3（§45）
+Google Sheets          ← 已立项（§45，S3）
+Database Source        ← 已立项（§45，S2）
 Migration
 Artifact Distribution
 ```
@@ -2087,7 +2087,7 @@ credential_env = "CAGE_SHEETS_CREDENTIAL"   # API key 或 service account JSON �
 
 | 源 | 取数 | 表 / 行映射 | 类型口径 |
 | --- | --- | --- | --- |
-| HTTP API | 一次 GET，响应体即表 | 单表对象或 `{表名: 行数组}`；字段名 = 字段 | JSON 值类型直接映射 |
+| HTTP API | 一次 GET，响应体即表 | 与本地 JSON 源同一形状：`{表名: 行数组}` / 单对象 → `Root` / 行数组 → `Data`；字段名 = 字段 | JSON 值类型直接映射 |
 | MySQL / PostgreSQL | 只读 SELECT，表名展开为 `SELECT * FROM t`，具名查询放 `[remote.<scheme>.queries]` | 列名 = 字段，NULL = Null，行 = 记录 | DECIMAL / NUMERIC 渲染为字符串，不走 Float（浮点丢精度，怎么解释交 Schema） |
 | Google Sheets | Sheets API v4 `values`，`valueRenderOption=UNFORMATTED_VALUE`（公式缓存值，不重算，同 Excel adapter 口径） | tab = 表，首行 = 表头（同 Excel 惯例），其余行按字符串读、类型交 Schema 校准 | 初值为字符串，L2/L3 校验裁型 |
 
@@ -2098,40 +2098,49 @@ credential_env = "CAGE_SHEETS_CREDENTIAL"   # API key 或 service account JSON �
 
 ## 确定性与缓存
 
-确定性构建的锚点是**取到的字节**，不是「远端的当前状态」：
+确定性构建的锚点是**取到的字节**，不是「远端的当前状态」。响应字节
+原样落缓存，解析只吃这份字节，不存在「边取边算」：
 
 ```text
-fetch（或缓存命中）
+fetch
    |
    v
-字节落 .cage-cache/source/<源指纹>/<blake3 前 12 hex>.<ext>
+字节落 .cage-cache/source/<源指纹>/<指纹>.json
    |
    v
-source_hash = 字节 blake3，随 manifest 进 build_id
+同一套 Parse / 校验流水线（无旁路）→ Canonical Model
    |
    v
-同一套 Parse / 校验流水线 → 产物
+内容进 source_hash → build_id → 产物
 ```
 
-远端变了，字节就变，source_hash 跟着变，build_id 旋转——变化在
+source_hash 覆盖的是解析后的 Canonical Model 内容（表名 / 行序 /
+主键 / 字段，`manifest::hash_source` 同一把尺子）。远端数据变了，
+解析出的内容就变，source_hash 跟着变，build_id 旋转——变化在
 manifest 里看得见，不存在「悄悄换了数据」；同字节重复构建仍逐字节
-一致，golden 契约不破。源指纹复用 R3 的 `cache_key` 口径（URL 或
-scheme+名字的 blake3 前 12 hex），取数、重试、缓存复验抽一处共享
-helper（首期放 cage-core），不搞四份实现。
+一致，golden 契约不破。源指纹复用 R3 的 `cache_key` 口径（URL 的
+blake3 前 12 hex），取数、重试、缓存路径抽一处共享 helper
+（`cage_core::remote`，R3 registry 与各源适配器同源复用），不搞四份
+实现。
 
 断网语义与 R3 对齐：取不到远端时回退缓存并发 WARNING 诊断，缓存字节
-同样先过校验门才可用；`--no-cache` 关闭回退，取不到即失败。新鲜度
-上限（max_age）留待实现期。
+同样先过校验门才可用；`--no-cache` 关闭回退，取不到即失败（回退在
+S4 收口，S1 当前取不到即失败）。新鲜度上限（max_age）留待实现期。
 
-## 错误码（E19xx 族，实现期注册）
+## 错误码（E19xx 族）
 
-| 代码 | 含义 |
-| --- | --- |
-| `E1901` | 远端取数失败（网络 / DNS / 超时，重试用尽） |
-| `E1902` | 认证 / 授权被拒 |
-| `E1903` | 响应形状不合法（非 JSON / 非行集 / 缺表头） |
-| `E1904` | 凭据缺失（env 未设置或凭据文件不可读） |
-| `E1905` | 查询非法（配置了非只读语句） |
+| 代码 | 含义 | 状态 |
+| --- | --- | --- |
+| `E1901` | 远端取数失败（网络 / DNS / 超时重试用尽、404 等非认证错误状态） | 已实装（HTTP 源） |
+| `E1902` | 认证 / 授权被拒（HTTP 401 / 403） | 已实装（HTTP 源） |
+| `E1903` | 响应形状不合法（非行集 / 缺表头） | 已注册，预留 |
+| `E1904` | 凭据缺失（env 未设置或凭据文件不可读） | 已注册，预留 |
+| `E1905` | 查询非法（配置了非只读语句） | 已注册，预留 |
+
+E1901–E1905 已全族注册进 `codes.rs` 与 validation.md，未接线的码标
+「预留」（已定义、当前代码路径不抛出）。HTTP 源的坏 JSON 不走
+E1903——它走与本地文件同一条 Parse 诊断（E0001 带行列定位），E1903
+留给行集类源的形状校验（DB / Sheets 落地时接线）。
 
 重试只覆盖连接类失败（有界次数 + 退避，口径同 ci.yml 的 curl 重试）；
 4xx 不重试。
@@ -2145,6 +2154,9 @@ helper（首期放 cage-core），不搞四份实现。
 - HTTP 分页协议与限流协商
 - 从库表内省自动生成 Schema 草稿
 
-**实装状态**：本章是设计定稿（todo S0，2026-10）。S1–S6 实现项全部
-未开工，E19xx 尚未注册进 `codes.rs` 与 validation.md——注册前错误码
-表不出现这五行，不写进已实现清单。
+**实装状态**（2026-10）：S1 已交付——HTTP API 源实装
+（`cage-source-http`，`[source_roots]` 直写 http(s) URL），共享取数 /
+重试 / 缓存 helper 首落 `cage_core::remote`（R3 registry 同源复用），
+E1901 / E1902 接线生效，E1903–E1905 注册为预留；缓存复用回退与
+`--no-cache` 严格模式在 S4 收口（当前取不到远端即失败）。S2–S6
+未开工。
