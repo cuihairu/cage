@@ -38,11 +38,13 @@
 )]
 use clap::{Parser, Subcommand};
 use indexmap::IndexMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig, TargetConfig};
 use cage_core::normalize::normalize_document;
-use cage_core::schema::{DependencyGraph, Schema, ValidatedSchema};
+use cage_core::reference::{DependencyGraph, IncrementalPlanner};
+use cage_core::schema::{Schema, ValidatedSchema};
 use cage_core::validation::ValidationLevel;
 use cage_core::value::Document;
 use cage_core::DocumentMetadata;
@@ -335,9 +337,10 @@ fn run_check(path: &Path, level: &str, profile: &str) -> i32 {
         }
     };
     let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
+    let graph = DependencyGraph::from_schema(&schema);
     let validated = ValidatedSchema {
         schema,
-        dependency_graph: DependencyGraph::default(),
+        dependency_graph: graph,
     };
     let diagnostics = cage_core::validation::validate(
         &validated,
@@ -398,7 +401,7 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
     let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
     let validated = ValidatedSchema {
         schema: schema.clone(),
-        dependency_graph: DependencyGraph::default(),
+        dependency_graph: DependencyGraph::from_schema(&schema),
     };
     let diagnostics = cage_core::validation::validate(
         &validated,
@@ -423,10 +426,23 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
     let output_dir = project.config.output_dir.as_deref().unwrap_or("build");
     let manifest_dir = path.join(output_dir);
 
-    // Incremental build: skip regeneration when the previous manifest
-    // recorded the same schema/source hashes (same profile) and every
-    // artifact it lists is still on disk. Target config changes are NOT
-    // hashed — re-run a full build after editing cage.toml targets.
+    // Incremental build, two layers (docs/build.md 增量构建):
+    // Layer 1: skip regeneration entirely when the previous manifest recorded
+    // the same schema/source hashes (same profile) and every artifact it
+    // lists is still on disk. Target config changes are NOT hashed — re-run
+    // a full build after editing cage.toml targets.
+    // Layer 2 (dependency-graph propagation): when only data changed (schema
+    // hash identical — the schema drives code-target shapes, so any schema
+    // change falls back to a full build), per-table hashes detect which
+    // tables changed, the dependency graph propagates the change set to its
+    // transitive dependents, and only affected tables are regenerated;
+    // untouched artifacts are carried over from disk. Generators are
+    // deterministic, so the carried bytes equal a full build's — the merged
+    // manifest matches a full build byte-for-byte. Layer 2 also falls back to
+    // a full build when the previous manifest predates per-table hashes, a
+    // table was deleted, or an untouched artifact is missing/unreadable.
+    let mut affected: Option<HashSet<String>> = None;
+    let mut carried: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
     if incremental {
         if let Ok(prev) = load_manifest(&manifest_dir) {
             let unchanged = prev.profile == profile
@@ -441,19 +457,90 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
                 );
                 return 0;
             }
+            let layer2_ok = prev.profile == profile
+                && prev.schema_hash == schema_hash
+                && !prev.table_hashes.is_empty()
+                && prev
+                    .table_hashes
+                    .keys()
+                    .all(|t| normalized.tables.contains_key(t));
+            if layer2_ok {
+                let cur = ManifestGenerator::table_hashes(&normalized);
+                let mut changed: Vec<String> = cur
+                    .keys()
+                    .filter(|name| prev.table_hashes.get(*name) != cur.get(*name))
+                    .cloned()
+                    .collect();
+                for (rel, info) in &prev.artifacts {
+                    if let Some(table) = &info.table {
+                        if !changed.contains(table) && !path.join(rel).is_file() {
+                            changed.push(table.clone());
+                        }
+                    }
+                }
+                changed.sort();
+                let graph = DependencyGraph::from_schema(&schema);
+                let planner = IncrementalPlanner::new(&graph);
+                let aff = planner.compute_affected(&changed);
+                let mut carry_ok = true;
+                for (rel, info) in &prev.artifacts {
+                    // Shared units (enum files) are schema-wide and are
+                    // always regenerated — never carried.
+                    let Some(table) = &info.table else { continue };
+                    if aff.contains(table) {
+                        continue;
+                    }
+                    match std::fs::read(path.join(rel)) {
+                        Ok(bytes) => carried.push((
+                            rel.clone(),
+                            bytes,
+                            info.format.clone(),
+                            info.table.clone(),
+                        )),
+                        Err(e) => {
+                            eprintln!(
+                                "warning: carried artifact '{rel}' unreadable ({e}); \
+                                 falling back to a full build"
+                            );
+                            carried.clear();
+                            carry_ok = false;
+                            break;
+                        }
+                    }
+                }
+                if carry_ok {
+                    affected = Some(aff);
+                }
+            }
         }
     }
 
-    let mut artifacts: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
+    // Generation inputs: full when layer 2 is off, otherwise filtered to the
+    // affected tables. Code targets keep the full enum set (the shared enums
+    // unit renders from schema-wide enums even when only some tables rebuild).
+    let (gen_schema, gen_doc) = match &affected {
+        Some(keep) => {
+            let mut fs = schema.clone();
+            fs.tables.retain(|name, _| keep.contains(name));
+            let mut fd = normalized.clone();
+            fd.tables.retain(|name, _| keep.contains(name));
+            (fs, fd)
+        }
+        None => (schema.clone(), normalized.clone()),
+    };
+
+    let carried_len = carried.len();
+    let mut artifacts = carried;
     for target in &build_profile.targets {
-        let generated = match code_target_items(target, &schema, &schema_hash) {
+        let generated = match code_target_items(target, &gen_schema, &schema_hash) {
             // Code targets (cs/python/lua/ts/…) are schema-driven and infallible.
             Some(items) => Ok(items),
             None => match target.format.as_str() {
                 "json" => cage_target_json::JsonTargetGenerator::from_config(target)
-                    .generate(&normalized, &[]),
-                "csv" => cage_target_csv::CsvTargetGenerator::from_config(target)
-                    .generate(&normalized, &[]),
+                    .generate(&gen_doc, &[]),
+                "csv" => {
+                    cage_target_csv::CsvTargetGenerator::from_config(target).generate(&gen_doc, &[])
+                }
                 other => {
                     eprintln!("error: unsupported target format '{other}'");
                     return 2;
@@ -473,6 +560,10 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
             }
         }
     }
+    // Canonical artifact order (path-sorted) so a layer-2 incremental run and
+    // a full build produce byte-identical manifests (same inputs → same
+    // manifest bytes, the determinism contract).
+    artifacts.sort_by(|a, b| a.0.cmp(&b.0));
 
     let version = env!("CARGO_PKG_VERSION").to_string();
     let manifest = ManifestGenerator::new(
@@ -489,11 +580,22 @@ fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 
         }
     };
 
-    println!(
-        "cage build: OK (profile '{profile}', {} artifacts, manifest {})",
-        artifacts.len(),
-        manifest_path.display()
-    );
+    if affected.is_some() {
+        println!(
+            "cage build: OK (profile '{profile}', {} artifacts — {} regenerated, \
+             {} unchanged via dependency graph, manifest {})",
+            artifacts.len(),
+            artifacts.len() - carried_len,
+            carried_len,
+            manifest_path.display()
+        );
+    } else {
+        println!(
+            "cage build: OK (profile '{profile}', {} artifacts, manifest {})",
+            artifacts.len(),
+            manifest_path.display()
+        );
+    }
     0
 }
 

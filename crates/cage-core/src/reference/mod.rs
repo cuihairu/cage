@@ -250,10 +250,15 @@ impl DependencyGraph {
         Self::default()
     }
 
-    /// Build the graph from all references in the schema
+    /// Build the graph from all references in the schema. Every table is
+    /// registered (isolated tables without reference edges included) so the
+    /// topological build order always covers the whole schema.
     pub fn from_schema(schema: &Schema) -> Self {
         let mut graph = Self::new();
 
+        for table_name in schema.tables.keys() {
+            graph.forward.entry(table_name.clone()).or_default();
+        }
         for (table_name, table_schema) in &schema.tables {
             for field_schema in table_schema.fields.values() {
                 if let Some(ref_schema) = &field_schema.reference {
@@ -274,6 +279,12 @@ impl DependencyGraph {
             .entry(to.to_string())
             .or_default()
             .insert(from.to_string());
+    }
+
+    /// All forward edges (table -> its dependencies), table order arbitrary —
+    /// callers that need deterministic order must sort.
+    pub fn forward_edges(&self) -> Vec<(&String, &HashSet<String>)> {
+        self.forward.iter().collect()
     }
 
     /// Get direct dependencies (tables this table references)
@@ -328,12 +339,16 @@ impl DependencyGraph {
         visited
     }
 
-    /// Topological sort for build order
+    /// Topological sort for build order. Deterministic: nodes are visited in
+    /// sorted name order and dependencies in sorted order — required by the
+    /// determinism contract (same schema → same build order bytes).
     pub fn topological_sort(&self) -> Result<Vec<String>, String> {
         let mut visited = HashSet::new();
         let mut temp = HashSet::new();
         let mut order = Vec::new();
-        let all_nodes: HashSet<_> = self.forward.keys().chain(self.reverse.keys()).collect();
+        let mut all_nodes: Vec<&String> = self.forward.keys().chain(self.reverse.keys()).collect();
+        all_nodes.sort();
+        all_nodes.dedup();
 
         for node in all_nodes {
             if !visited.contains(node) {
@@ -359,6 +374,8 @@ impl DependencyGraph {
         }
         temp.insert(node.to_string());
         if let Some(deps) = graph.forward.get(node) {
+            let mut deps: Vec<&String> = deps.iter().collect();
+            deps.sort();
             for dep in deps {
                 Self::visit_topo(graph, dep, visited, temp, order)?;
             }

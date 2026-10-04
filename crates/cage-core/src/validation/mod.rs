@@ -1041,7 +1041,7 @@ mod tests {
     fn validated(schema: Schema) -> ValidatedSchema {
         ValidatedSchema {
             schema,
-            dependency_graph: crate::schema::DependencyGraph::default(),
+            dependency_graph: crate::reference::DependencyGraph::new(),
         }
     }
 
@@ -2229,7 +2229,7 @@ mod tests {
     fn test_value_validation_catches_range() {
         let schema = ValidatedSchema {
             schema: make_test_schema(),
-            dependency_graph: crate::schema::DependencyGraph::default(),
+            dependency_graph: crate::reference::DependencyGraph::new(),
         };
         let doc = make_test_doc();
         let diags = validate(&schema, &doc, ValidationLevel::Value, false);
@@ -2277,7 +2277,7 @@ mod tests {
 
         let validated_schema = ValidatedSchema {
             schema,
-            dependency_graph: crate::schema::DependencyGraph::default(),
+            dependency_graph: crate::reference::DependencyGraph::new(),
         };
         let diags = validate(&validated_schema, &doc, ValidationLevel::Table, false);
 

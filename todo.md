@@ -56,12 +56,16 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
 
 - [x] D1 边界定稿（架构文档 v0.3 概念表 + 差距核对 + 评审对照修正；build.md
       Manifest 字段表 / 依赖图现状 / 增量分层 / Snapshot 规划）
-- [ ] D2 Dependency Graph 接线：L5 校验产出真实依赖图（替换 cli 构造
-      ValidatedSchema 时的空占位），增量第二层按依赖传播只重建受影响表；
-      manifest 落 `dependencies` 账
+- [x] D2 Dependency Graph 接线：L5 校验产出真实依赖图（cli 构建
+      ValidatedSchema 时以 `reference::DependencyGraph::from_schema` 实装，
+      不再是空占位），增量第二层按 `table_hashes` 比对 + 依赖图传播只重建
+      受影响表（未受影响表从磁盘携带，manifest 与全量构建逐字节收敛，验证
+      见 tests/incremental.rs layer2 用例）；manifest 落 `dependencies` 账
 - [ ] D3 Profile 语义化：E9006 字段可见性冲突实装（server-only 字段进入
       client 视图/产物时报冲突码而非静默过滤）；profile 感知校验上下文
-- [ ] D4 Manifest 强化：`build_id`（时间戳 + 短哈希，唯一构建标识）落地，
-      generator_version 独立于 cage_version
+- [x] D4 Manifest 强化：`build_id`（确定性指纹 blake3(profile+三哈希)
+      前 24 位——时间戳方案会破坏确定性构建契约，弃）与
+      `generator_version`（"1.0.0"，布局演进自增）落地；旧 manifest
+      缺字段经 serde(default) 兼容反序列化；确定性/轮换/兼容三测试
 - [ ] D5 Configuration Snapshot：snapshot 构建（manifest + schema + 数据 +
       生成物 + 校验清单）、服务器启动加载校验入口

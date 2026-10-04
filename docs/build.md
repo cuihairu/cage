@@ -59,12 +59,13 @@ Build(A) == Build(A)
 | 字段 | 现状 | 说明 |
 | --- | --- | --- |
 | `project` / `profile` | 已实装 | 构建身份 |
-| `cage_version` | 已实装 | 兼任 generator_version / 编译器版本 |
+| `cage_version` | 已实装 | cage 编译器版本 |
+| `generator_version` | 已实装 | Manifest 结构版本（"1.0.0"；布局演进时自增，独立于 cage 版本） |
+| `build_id` | 已实装 | **确定性指纹**：blake3(profile + schema_hash + source_hash + content_hash) 前 24 位。同输入同 ID（可复现/匹配/回滚），语义变更即旋转。不用时间戳——那会破坏「相同输入 → 相同 Manifest 字节」的确定性契约 |
 | `schema_hash` | 已实装 | Blake3，覆盖 schema 全量 |
 | `source_hash` | 已实装 | Blake3，覆盖全部源内容 |
 | `content_hash` | 已实装 | Blake3，覆盖全部产物字节 |
 | `artifacts` | 已实装 | 每产物 path / hash / size / format / table / encoding |
-| `build_id` | 待补 | 唯一构建标识（时间戳 + 短哈希），支撑服务器版本匹配与回滚点 |
 | `dependencies` | 待补 | 表间依赖清单（依赖图接线后由 ManifestGenerator 落账） |
 | `ir_hash` | 随 IR 定界省略 | IR 与 Canonical 同构（见架构文档），以 schema_hash + source_hash 覆盖 |
 
@@ -116,21 +117,36 @@ Monster
 - 调试
 
 现状：核心类型与算法已实装并有测试（reference/mod.rs：`DependencyGraph` /
-`IncrementalPlanner`、环检测、拓扑、增量规划），但**构建路径尚未接线**——
-cli 构建时传给验证器的依赖图仍是空占位，真实图未参与构建决策。接线任务见
-「增量构建」第二层与 todo 第四阶段。
+`IncrementalPlanner`、环检测、拓扑、增量规划），构建路径已接线——L5
+校验产出真实引用图（`DependencyGraph::from_schema`），cli 构建用它做增量
+第二层决策，manifest 落 `dependencies` 引用账。核心与 cli 的接线覆盖在
+tests/incremental.rs（含第二层端到端：变更传播 + 携带 + manifest 收敛）。
 
 ## 增量构建
 
-`cage build --incremental` 已实装第一层：哈希比对跳过。构建时把当前
-schema/source 哈希与上一次 `manifest.json` 记录的值比对，同 profile、同
-哈希且产物都在磁盘上时直接跳过重新生成（校验仍然全量执行）；任一输入变
-化或产物缺失则全量重建。注意：target 配置（cage.toml 的 targets）不参与
-哈希，改完请跑一次全量构建。
+`cage build --incremental` 分两层。
 
-第二层（基于 Dependency Graph 的变更影响分析，只重建受影响表）未实装：
-核心算法（环检测 / 拓扑 / 增量规划）已在 cage-core 就位，工程上是把
-`ValidatedSchema` 里的空占位图换成 L5 真实构建的图，再沿边传播影响。
+**第一层：哈希比对跳过。** 构建时把当前 schema/source 哈希与上一次
+`manifest.json` 记录的值比对，同 profile、同哈希且产物都在磁盘上时直接
+跳过重新生成（校验仍然全量执行）；任一输入变化或产物缺失则进入第二层或
+全量重建。注意：target 配置（cage.toml 的 targets）不参与哈希，改完请跑
+一次全量构建。
+
+**第二层：依赖图传播（v0.3 实装）。** 当 schema 哈希未变（schema 驱动
+code-target 形态，schema 变则整体回退全量）、`table_hashes` 非空且没有
+删除表时，按表哈希找出变更表，经依赖图
+（`IncrementalPlanner::compute_affected`）传播出受影响表集合，只重建这
+些表：
+
+- 生成输入裁剪到受影响表（code-target 保留完整枚举集：共享 enums 单元
+  全量重生成，从不携带）；
+- 未受影响表、且在磁盘上完好的产物从磁盘携带（generator 确定性 ⇒ 携带
+  字节与全量构建完全一致），产物顺序按路径排序规范化，合并后的 manifest
+  与全量构建逐字节一致（确定性契约）。
+
+回退全量的条件：prev 无 `table_hashes`（旧版 manifest）、删除过表（prev
+表集合 ⊄ 当前 —— 避免把过期产物错误携带）、携带产物缺文件或读失败
+（warn 后回退）。
 
 例如 `Item.xlsx` 修改，影响：
 
@@ -148,14 +164,18 @@ Item
 Changed Sources
       |
       v
-Dependency Graph
+table_hashes 比对 → 变更表
       |
       v
-Affected Tables
+Dependency Graph 传播 → 受影响表
       |
       v
-Incremental Build
+只重建受影响表 + 携带其余（字节一致）
 ```
+
+`drop-table → full fallback` 语义：`table_hashes` 的键是上一次构建的全部
+表，当前 schema 若少了任何表（删除场景），第二层整体回退全量重建，避免
+把过期产物错误携带。
 
 ## Configuration Snapshot（规划）
 

@@ -13,12 +13,33 @@ pub struct BuildManifest {
     pub profile: String,
     /// Cage version that produced the build
     pub cage_version: String,
+    /// Manifest structure version (bump when the field layout evolves);
+    /// independent of the cage toolchain version
+    #[serde(default)]
+    pub generator_version: String,
+    /// Deterministic build id: blake3 fingerprint of
+    /// `(profile + schema_hash + source_hash + content_hash)`. Identical
+    /// inputs yield the identical id (same input → same manifest bytes, the
+    /// determinism contract), any semantic change rotates it. Deliberately
+    /// NOT wall-clock unique — a timestamp here would break deterministic
+    /// builds.
+    #[serde(default)]
+    pub build_id: String,
     /// Blake3 hash of the schema document
     pub schema_hash: String,
     /// Blake3 hash of all source content
     pub source_hash: String,
     /// Blake3 hash of all artifact content
     pub content_hash: String,
+    /// Reference topology: table -> sorted list of tables it references
+    /// (the dependency graph's forward edges, as manifest 账本)
+    #[serde(default)]
+    pub dependencies: IndexMap<String, Vec<String>>,
+    /// Per-table source hash (deterministic rows fingerprint): the change
+    /// detector for incremental builds — a table whose hash moved is
+    /// "changed", its transitive dependents are "affected".
+    #[serde(default)]
+    pub table_hashes: IndexMap<String, String>,
     /// Artifacts by output path
     pub artifacts: IndexMap<String, ArtifactInfo>,
 }
@@ -48,6 +69,9 @@ pub struct ManifestGenerator {
 }
 
 impl ManifestGenerator {
+    /// Manifest structure version — bump on breaking layout changes
+    pub const GENERATOR_VERSION: &str = "1.0.0";
+
     /// Create a generator for a project / profile / tool version
     pub fn new(project_name: String, profile_name: String, cage_version: String) -> Self {
         Self {
@@ -67,6 +91,14 @@ impl ManifestGenerator {
         let schema_hash = Self::hash_schema(schema);
         let source_hash = Self::hash_source(document);
         let content_hash = Self::hash_content(artifacts);
+        let build_id = Self::build_id(
+            &self.profile_name,
+            &schema_hash,
+            &source_hash,
+            &content_hash,
+        );
+        let dependencies = Self::dependency_ledger(schema);
+        let table_hashes = Self::table_hashes(document);
 
         let mut artifact_infos = IndexMap::new();
         for (path, content, format, table) in artifacts {
@@ -88,11 +120,49 @@ impl ManifestGenerator {
             project: self.project_name.clone(),
             profile: self.profile_name.clone(),
             cage_version: self.cage_version.clone(),
+            generator_version: Self::GENERATOR_VERSION.to_string(),
+            build_id,
             schema_hash,
             source_hash,
             content_hash,
+            dependencies,
+            table_hashes,
             artifacts: artifact_infos,
         }
+    }
+
+    /// Reference topology for the manifest: for each table, the sorted list
+    /// of tables it references (deterministic order — `HashSet` iteration is
+    /// not). Empty when the schema has no reference edges.
+    fn dependency_ledger(schema: &crate::schema::Schema) -> IndexMap<String, Vec<String>> {
+        let graph = crate::reference::DependencyGraph::from_schema(schema);
+        let mut ledger = IndexMap::new();
+        // Deterministic: tables in sorted order, deps within each table sorted.
+        let mut edges = graph.forward_edges();
+        edges.sort_by_key(|(name, _)| *name);
+        for (table, deps) in edges {
+            let mut deps: Vec<String> = deps.iter().cloned().collect();
+            deps.sort();
+            ledger.insert(table.clone(), deps);
+        }
+        ledger
+    }
+
+    /// Per-table source hash: blake3 over the table's normalized rows in
+    /// name order (deterministic — same input always yields the same hash).
+    /// The incremental build compares these against the previous manifest
+    /// to detect which tables changed.
+    pub fn table_hashes(document: &Document) -> IndexMap<String, String> {
+        let mut hashes = IndexMap::new();
+        let mut tables: Vec<_> = document.tables.iter().collect();
+        tables.sort_by_key(|(k, _)| *k);
+        for (name, table) in tables {
+            // Deterministic serialization: rows in source order, fields in
+            // insertion order — identical normalized input → identical bytes.
+            let json = serde_json::to_vec(table).expect("Table serialization failed");
+            hashes.insert(name.clone(), blake3::hash(&json).to_hex().to_string());
+        }
+        hashes
     }
 
     /// Hash the build inputs (schema + source document) exactly as
@@ -101,6 +171,21 @@ impl ManifestGenerator {
     /// skipped.
     pub fn input_hashes(schema: &crate::schema::Schema, document: &Document) -> (String, String) {
         (Self::hash_schema(schema), Self::hash_source(document))
+    }
+
+    /// Deterministic build id: fingerprints the build's semantic identity
+    /// (profile + all three input/output hashes). Deterministic by contract —
+    /// see the field's doc comment.
+    fn build_id(profile: &str, schema_hash: &str, source_hash: &str, content_hash: &str) -> String {
+        let mut ctx = blake3::Hasher::new();
+        ctx.update(profile.as_bytes());
+        ctx.update(b"|");
+        ctx.update(schema_hash.as_bytes());
+        ctx.update(b"|");
+        ctx.update(source_hash.as_bytes());
+        ctx.update(b"|");
+        ctx.update(content_hash.as_bytes());
+        ctx.finalize().to_hex()[..24].to_string()
     }
 
     fn hash_schema(schema: &crate::schema::Schema) -> String {
@@ -635,9 +720,13 @@ mod tests {
             project: "test".to_string(),
             profile: "client".to_string(),
             cage_version: "0.1.0".to_string(),
+            generator_version: ManifestGenerator::GENERATOR_VERSION.to_string(),
+            build_id: "test-build-id".to_string(),
             schema_hash: "abc".to_string(),
             source_hash: "def".to_string(),
             content_hash: "ghi".to_string(),
+            dependencies: IndexMap::new(),
+            table_hashes: IndexMap::new(),
             artifacts: {
                 let mut m = IndexMap::new();
                 m.insert(
@@ -727,9 +816,28 @@ mod tests {
         assert_eq!(back.project, manifest.project);
         assert_eq!(back.profile, manifest.profile);
         assert_eq!(back.cage_version, manifest.cage_version);
+        assert_eq!(back.generator_version, manifest.generator_version);
+        assert_eq!(back.build_id, manifest.build_id);
         assert_eq!(back.schema_hash, manifest.schema_hash);
         assert_eq!(back.source_hash, manifest.source_hash);
         assert_eq!(back.content_hash, manifest.content_hash);
+
+        // Old manifests (pre-build_id / pre-generator_version) must still parse:
+        // serde(default) keeps them readable with empty fields.
+        let mut json_without: serde_json::Value =
+            serde_json::from_str(&json).expect("reparse as value");
+        if let serde_json::Value::Object(map) = &mut json_without {
+            map.remove("build_id");
+            map.remove("generator_version");
+            map.remove("dependencies");
+            map.remove("table_hashes");
+        }
+        let legacy: BuildManifest =
+            serde_json::from_value(json_without).expect("legacy manifest must deserialize");
+        assert_eq!(legacy.build_id, "");
+        assert_eq!(legacy.generator_version, "");
+        assert!(legacy.dependencies.is_empty());
+        assert!(legacy.table_hashes.is_empty());
         // IndexMap preserves artifact order across the roundtrip
         assert_eq!(
             back.artifacts.keys().collect::<Vec<_>>(),
@@ -976,6 +1084,175 @@ mod tests {
         assert_eq!(m1.schema_hash, m2.schema_hash);
         assert_eq!(m1.source_hash, m2.source_hash);
         assert_eq!(m1.content_hash, m2.content_hash);
+        // build_id must be deterministic too: identical inputs → identical id
+        assert_eq!(m1.build_id, m2.build_id);
+        assert_eq!(m1.generator_version, ManifestGenerator::GENERATOR_VERSION);
+        assert_eq!(m1.build_id.len(), 24);
+        // New ledger fields are deterministic as well
+        assert_eq!(m1.table_hashes, m2.table_hashes);
+        assert_eq!(m1.dependencies, m2.dependencies);
+        assert!(!m1.table_hashes.is_empty());
+        // A single changed row must rotate the per-table hash
+        let mut doc2 = make_test_doc();
+        if let Some(table) = doc2.tables.values_mut().next() {
+            table.rows.push(crate::value::Row {
+                primary_key: vec![Value::UInt(2)],
+                fields: {
+                    let mut f = IndexMap::new();
+                    f.insert(
+                        "id".to_string(),
+                        crate::value::TypedValue::new(
+                            Value::UInt(2),
+                            SourceLocation::new("items.json"),
+                        ),
+                    );
+                    f
+                },
+                location: SourceLocation::new("items.json"),
+                index: 1,
+            });
+        }
+        let m3 = generator.generate(&schema, &doc2, &artifacts);
+        assert_ne!(
+            m1.table_hashes, m3.table_hashes,
+            "row change must rotate the per-table hash"
+        );
+    }
+
+    #[test]
+    fn test_dependency_ledger_records_references() {
+        use crate::schema::{FieldSchema, FieldType, ReferenceSchema, TableSchema};
+
+        let mut schema = Schema::new();
+        let mut item = TableSchema {
+            name: "Item".to_string(),
+            description: None,
+            primary_key: vec!["id".to_string()],
+            fields: IndexMap::new(),
+            unique_constraints: vec![],
+            order_by: None,
+            targets: vec![],
+        };
+        item.fields.insert(
+            "id".to_string(),
+            FieldSchema {
+                name: "id".to_string(),
+                field_type: FieldType::UInt32,
+                description: None,
+                required: true,
+                default: None,
+                min: None,
+                max: None,
+                min_length: None,
+                max_length: None,
+                pattern: None,
+                enum_values: None,
+                min_items: None,
+                max_items: None,
+                items: None,
+                properties: None,
+                additional_properties: None,
+                reference: None,
+                targets: vec![],
+                rules: vec![],
+                metadata: IndexMap::new(),
+            },
+        );
+        let mut monster = TableSchema {
+            name: "Monster".to_string(),
+            description: None,
+            primary_key: vec!["id".to_string()],
+            fields: IndexMap::new(),
+            unique_constraints: vec![],
+            order_by: None,
+            targets: vec![],
+        };
+        monster.fields.insert(
+            "drop_item".to_string(),
+            FieldSchema {
+                name: "drop_item".to_string(),
+                field_type: FieldType::UInt32,
+                description: None,
+                required: true,
+                default: None,
+                min: None,
+                max: None,
+                min_length: None,
+                max_length: None,
+                pattern: None,
+                enum_values: None,
+                min_items: None,
+                max_items: None,
+                items: None,
+                properties: None,
+                additional_properties: None,
+                reference: Some(ReferenceSchema {
+                    table: "Item".to_string(),
+                    field: "id".to_string(),
+                    predicate: None,
+                    cardinality: "one".to_string(),
+                    compatible_with: None,
+                }),
+                targets: vec![],
+                rules: vec![],
+                metadata: IndexMap::new(),
+            },
+        );
+        schema.add_table(item);
+        schema.add_table(monster);
+
+        let doc = Document::new();
+        let generator = ManifestGenerator::new(
+            "test".to_string(),
+            "client".to_string(),
+            "0.1.0".to_string(),
+        );
+        let manifest = generator.generate(&schema, &doc, &[]);
+
+        assert_eq!(
+            manifest.dependencies.get("Monster").map(Vec::as_slice),
+            Some(&["Item".to_string()][..]),
+            "Monster references Item"
+        );
+        assert!(
+            manifest.dependencies.get("Item").is_none_or(Vec::is_empty),
+            "Item references nothing"
+        );
+    }
+
+    #[test]
+    fn test_build_id_rotates_with_semantic_changes() {
+        let schema = make_test_schema();
+        let doc = make_test_doc();
+        let generator = ManifestGenerator::new(
+            "test".to_string(),
+            "client".to_string(),
+            "0.1.0".to_string(),
+        );
+
+        let base = generator.generate(&schema, &doc, &[]);
+        let mut other_doc = make_test_doc();
+        if let Some(table) = other_doc.tables.values_mut().next() {
+            if let Some(row) = table.rows.first_mut() {
+                row.fields.clear();
+            }
+        }
+        let other = generator.generate(&schema, &other_doc, &[]);
+        assert_ne!(
+            base.build_id, other.build_id,
+            "data change must rotate build_id"
+        );
+
+        let other_profile = ManifestGenerator::new(
+            "test".to_string(),
+            "server".to_string(),
+            "0.1.0".to_string(),
+        );
+        let other_profile_m = other_profile.generate(&schema, &doc, &[]);
+        assert_ne!(
+            base.build_id, other_profile_m.build_id,
+            "profile change must rotate build_id"
+        );
     }
 
     #[test]
@@ -999,9 +1276,13 @@ mod tests {
             project: "test".to_string(),
             profile: "client".to_string(),
             cage_version: "0.1.0".to_string(),
+            generator_version: ManifestGenerator::GENERATOR_VERSION.to_string(),
+            build_id: "test-build-id".to_string(),
             schema_hash: "abc".to_string(),
             source_hash: "def".to_string(),
             content_hash: "ghi".to_string(),
+            dependencies: IndexMap::new(),
+            table_hashes: IndexMap::new(),
             artifacts: {
                 let mut m = IndexMap::new();
                 m.insert(

@@ -3,7 +3,6 @@
 use crate::value::SourceLocation;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 /// Root schema document
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,82 +364,7 @@ pub struct ValidatedSchema {
     /// The validated schema
     pub schema: Schema,
     /// Table dependency graph (for build order)
-    pub dependency_graph: DependencyGraph,
-}
-
-/// Dependency graph between tables
-#[derive(Debug, Clone, Default)]
-pub struct DependencyGraph {
-    /// table -> set of tables it depends on
-    edges: IndexMap<String, HashSet<String>>,
-}
-
-impl DependencyGraph {
-    /// Create an empty dependency graph
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Record that `from` depends on `to`
-    pub fn add_dependency(&mut self, from: &str, to: &str) {
-        self.edges
-            .entry(from.to_string())
-            .or_default()
-            .insert(to.to_string());
-    }
-
-    /// Tables that `table` depends on (direct edges)
-    pub fn dependencies_of(&self, table: &str) -> Vec<&String> {
-        self.edges
-            .get(table)
-            .map(|s| s.iter().collect())
-            .unwrap_or_default()
-    }
-
-    /// Topologically sort all tables; errors on circular dependencies
-    pub fn topological_sort(&self) -> Result<Vec<String>, String> {
-        let mut visited = HashSet::new();
-        let mut temp = HashSet::new();
-        let mut order = Vec::new();
-
-        for node in self.edges.keys() {
-            if !visited.contains(node) {
-                Self::visit_topo(self, node, &mut visited, &mut temp, &mut order)?;
-            }
-        }
-
-        // Also include tables with no dependencies
-        for table in self.edges.keys() {
-            if !order.contains(table) {
-                order.push(table.clone());
-            }
-        }
-
-        Ok(order)
-    }
-
-    fn visit_topo(
-        graph: &DependencyGraph,
-        node: &str,
-        visited: &mut HashSet<String>,
-        temp: &mut HashSet<String>,
-        order: &mut Vec<String>,
-    ) -> Result<(), String> {
-        if temp.contains(node) {
-            return Err(format!("Circular dependency detected involving: {node}"));
-        }
-        if visited.contains(node) {
-            return Ok(());
-        }
-        temp.insert(node.to_string());
-        for dep in graph.dependencies_of(node) {
-            Self::visit_topo(graph, dep, visited, temp, order)?;
-        }
-        temp.remove(node);
-        visited.insert(node.to_string());
-        order.push(node.to_string());
-        Ok(())
-    }
+    pub dependency_graph: crate::reference::DependencyGraph,
 }
 
 impl Schema {
@@ -557,24 +481,6 @@ impl Schema {
 
         diags
     }
-
-    /// Build dependency graph from references
-    pub fn build_dependency_graph(&self) -> DependencyGraph {
-        let mut graph = DependencyGraph::new();
-        for table_name in self.tables.keys() {
-            // Register every table so isolated tables (no references in or
-            // out) still appear in the topological build order.
-            graph.edges.entry(table_name.clone()).or_default();
-        }
-        for (table_name, table) in &self.tables {
-            for field in table.fields.values() {
-                if let Some(ref_schema) = &field.reference {
-                    graph.add_dependency(table_name, &ref_schema.table);
-                }
-            }
-        }
-        graph
-    }
 }
 
 impl Default for Schema {
@@ -586,6 +492,7 @@ impl Default for Schema {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     /// `map<key_type, value_type>` — shared by the tests below.
     fn map_type(key_type: MapKeyType, value_type: FieldType) -> FieldType {
@@ -744,8 +651,8 @@ mod tests {
         );
         schema.add_table(monster);
 
-        let graph = schema.build_dependency_graph();
-        let deps = graph.dependencies_of("Monster");
+        let graph = crate::reference::DependencyGraph::from_schema(&schema);
+        let deps = graph.dependencies("Monster");
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0], "Item");
 
@@ -1258,19 +1165,19 @@ enums: {}
     fn dependency_graph_sort_handles_revisits_and_cycles() {
         // A → B → C: C is pulled in as a dependency before the loop reaches B,
         // so the second visit of B skips the recursive call entirely.
-        let mut graph = DependencyGraph::new();
-        graph.add_dependency("A", "B");
-        graph.add_dependency("B", "C");
-        assert_eq!(graph.dependencies_of("A"), ["B"]);
-        assert_eq!(graph.dependencies_of("B"), ["C"]);
-        assert_eq!(graph.dependencies_of("C"), [] as [&String; 0]);
+        let mut graph = crate::reference::DependencyGraph::new();
+        graph.add_edge("A", "B");
+        graph.add_edge("B", "C");
+        assert_eq!(graph.dependencies("A"), ["B"]);
+        assert_eq!(graph.dependencies("B"), ["C"]);
+        assert_eq!(graph.dependencies("C"), [] as [&String; 0]);
         let order = graph.topological_sort().expect("acyclic");
         assert_eq!(order, ["C", "B", "A"]);
 
         // circular dependencies are reported instead of looping forever
-        let mut cyclic = DependencyGraph::new();
-        cyclic.add_dependency("X", "Y");
-        cyclic.add_dependency("Y", "X");
+        let mut cyclic = crate::reference::DependencyGraph::new();
+        cyclic.add_edge("X", "Y");
+        cyclic.add_edge("Y", "X");
         let err = cyclic.topological_sort().expect_err("cycle detected");
         assert!(
             err.contains("Circular dependency detected involving:"),
