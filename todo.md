@@ -62,10 +62,12 @@
       + ci.yml web-smoke job + docs/web.md 定稿）
 
 ### 其余（预排）
-- [ ] Registry（远程配置仓库 + 版本）——已开工，拆解为下方「R 系列：
-      Configuration Registry」（2026-10）；Remote Source 与 Artifact 分发
-      仍留待后续独立立项
-- [ ] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）
+- [x] Registry（远程配置仓库 + 版本）——R1–R4 收官（2026-10，见下方
+      「R 系列：Configuration Registry」：本地多版本仓库 / `[dependencies]`
+      版本 pin / 远程 http(s) 只读解析 / verify 全册审计 + gc 滚动窗口 +
+      remove 显式移除）；遗留的注册表鉴权与远程发布协议不在本项
+- [ ] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——已立项
+      （2026-10），设计定稿 design §45，实现拆解见下方「S 系列」
 - [ ] Artifact 分发与迁移
 
 ### R 系列：Configuration Registry（2026-10 开工，design §29）
@@ -143,6 +145,39 @@
       实删/verify 空册/missing E1802→同字节重发入册）+ 远程只读
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
+
+### S 系列：Remote Source（2026-10 立项，design §45；设计已定稿，实现未开工）
+
+形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
+纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/` 并记
+blake3 指纹，缓存复用前重过校验门（未经校验不载入）；构建确定性锚在
+「取到的字节」上（source_hash 覆盖远端字节，远端变化 → build_id 旋转，
+manifest 里可见）；凭据只存环境变量名，不进 cage.toml；查询只读
+（装载期 SELECT 白名单 + 运行期只读事务）。错误码拟设 E19xx 族，实现期
+注册进 codes.rs 与 validation.md。
+
+- [x] S0 设计定稿（design.md §45）：四源句法与映射表（table 形式：
+      取数方式 / 行映射 / 类型口径，DECIMAL 走字符串）、确定性锚点与
+      缓存布局、凭据经 env、只读双保险、断网回退语义、E19xx 五行规划、
+      留待实现期清单（增量拉取 / OAuth / 连接池 / 分页 / 内省均不在
+      首期）——本轮交付，勾选
+- [ ] S1 HTTP API 源（`cage-source-http`）：GET JSON → Canonical Model
+      （单表对象或 `{表名: 行数组}`），最简先行（无 SDK 依赖）；共享
+      取数 / 缓存 / 重试 helper 首次落地（复用 R3 cache_key 口径），
+      source_hash 覆盖远端字节
+- [ ] S2 MySQL / PostgreSQL 源（`cage-source-db`，两后端同 crate 共享
+      行集映射）：表名展开 `SELECT *`、具名查询静态白名单校验（E1905）、
+      DSN 经 env（E1904）、NULL → Null、DECIMAL → 字符串、无 ORDER BY
+      按主键补排行序确定
+- [ ] S3 Google Sheets 源（`cage-source-sheets`）：Sheets API v4
+      `values` + UNFORMATTED_VALUE（公式缓存值），tab → 表、首行表头
+      同 Excel 惯例；service account / API key 经 env；连接类失败有界重试
+- [ ] S4 确定性与离线语义收口：远端变更 → source_hash / build_id 旋转
+      的端到端测试；断网缓存回退 + WARNING 诊断；`--no-cache` 严格模式
+- [ ] S5 错误码接线：E1901–E1905 注册进 `codes.rs` + validation.md
+      （登记即去掉「预留」口径），诊断渲染覆盖四源
+- [ ] S6 文档收口：source.md 后续扩展清单转正、cli.md 远程源章节、
+      需求整理.md Remote Source 勾选、architecture.md 工程结构树补三 crate
 
 ## 第四阶段（核心模型边界定稿，2026-10 评审驱动）
 

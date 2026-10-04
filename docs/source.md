@@ -85,12 +85,15 @@ Document
 XML
 TOML
 SQLite
-MySQL
-PostgreSQL
-Google Sheets
-HTTP API
+MySQL            ← 已立项（design §45 Remote Source，2026-10 设计定稿）
+PostgreSQL       ← 已立项（design §45）
+Google Sheets    ← 已立项（design §45）
+HTTP API         ← 已立项（design §45）
 Custom Binary
 ```
+
+四源形态定稿（句法、映射、确定性锚点、E19xx 错误码规划）见仓库设计稿
+`docs/design.md` §45；实现拆解见仓库根 `todo.md` 的 S 系列。
 
 ## Rust 落地
 

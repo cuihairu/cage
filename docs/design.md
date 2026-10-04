@@ -306,10 +306,10 @@ YAML
 XML
 TOML
 SQLite
-MySQL
-PostgreSQL
-Google Sheets
-HTTP API
+MySQL            ← 已立项（§45 Remote Source，2026-10 设计定稿）
+PostgreSQL       ← 已立项（§45）
+Google Sheets    ← 已立项（§45）
+HTTP API         ← 已立项（§45）
 Custom Binary
 ```
 
@@ -1739,12 +1739,12 @@ CI Integration
 再考虑：
 
 ```text
-Web UI
-Schema Editor
-Configuration Registry
-Remote Source
-Google Sheets
-Database Source
+Web UI                 ← 已实装（W 系列）
+Schema Editor          ← 已实装（W 系列）
+Configuration Registry ← 已实装（R1–R4）
+Remote Source          ← 已立项（§45，2026-10 设计定稿）
+Google Sheets          ← 已立项（§45）
+Database Source        ← 已立项（§45）
 Migration
 Artifact Distribution
 ```
@@ -2040,3 +2040,111 @@ Excel -> JSON
 
 这也是这个项目最值得做成独立开源基础设施的部分。
 
+
+---
+
+# 45. Remote Source
+
+MVP 的四个 Source 都读本地文件。策划数据真正住在线上系统的场景有三个：
+数值表放在 Google Sheets，运营与账号数据在业务库（MySQL /
+PostgreSQL），工具链把一部分表开放成了 JSON 接口。Remote Source 把这
+三类输入接进同一条编译链，连同 HTTP API 共四源。四源一律**只读**。
+
+## 定位与红线
+
+- 远端是数据源，不是可信源。取回的字节与本地文件走同一条
+  Parse → Schema → … → Game Rule 流水线，L0-L7 全量执行，没有旁路。
+  「未经校验不载入」对远端字节同样成立（与 R3 缓存复验同一口径）。
+- 只读。不做写回、不跑 DDL/DML；配置数据的编辑仍在作者侧工具完成，
+  `cage web` 的保存面不变。
+- 不执行远端代码。不调用存储过程、不 eval 响应内容，与 §35 的
+  Validator 红线同款。
+- 凭据不入 cage.toml。配置文件只写环境变量名，连接串与密钥在运行时
+  从 env 解析；env 未设置直接报错（E1904），不猜、不落日志。
+
+## 源句法与映射
+
+四源走 `[source_roots]` 的 scheme 声明，与 `registry:` 前缀同一风格。
+`http(s) URL` 出现在 `[source_roots]` 是 HTTP API 源，出现在
+`[registry].path` 是注册表根，两者不混用：
+
+```toml
+[source_roots]
+items    = "https://api.example.com/v1/items.json"   # HTTP API：GET JSON
+monsters = "mysql:Monsters"          # MySQL：表名或具名查询
+drops    = "pg:drop_tables"          # PostgreSQL
+levels   = "gsheet:1AbC...xz/Levels" # Sheets：spreadsheet_id / tab
+
+[remote.mysql]
+dsn_env = "CAGE_MYSQL_URL"           # 只存 env 名，DSN 不进仓库
+
+[remote.postgres]
+dsn_env = "CAGE_PG_URL"
+
+[remote.gsheets]
+credential_env = "CAGE_SHEETS_CREDENTIAL"   # API key 或 service account JSON 路径
+```
+
+| 源 | 取数 | 表 / 行映射 | 类型口径 |
+| --- | --- | --- | --- |
+| HTTP API | 一次 GET，响应体即表 | 单表对象或 `{表名: 行数组}`；字段名 = 字段 | JSON 值类型直接映射 |
+| MySQL / PostgreSQL | 只读 SELECT，表名展开为 `SELECT * FROM t`，具名查询放 `[remote.<scheme>.queries]` | 列名 = 字段，NULL = Null，行 = 记录 | DECIMAL / NUMERIC 渲染为字符串，不走 Float（浮点丢精度，怎么解释交 Schema） |
+| Google Sheets | Sheets API v4 `values`，`valueRenderOption=UNFORMATTED_VALUE`（公式缓存值，不重算，同 Excel adapter 口径） | tab = 表，首行 = 表头（同 Excel 惯例），其余行按字符串读、类型交 Schema 校准 | 初值为字符串，L2/L3 校验裁型 |
+
+具名查询与表名在装载期做静态校验：只接受单条以 `SELECT` 开头的语句，
+分号、注释、多语句一律拒（E1905）；运行期连接设为只读事务
+（PostgreSQL `default_transaction_read_only`、MySQL
+`SESSION TRANSACTION READ ONLY`），双保险。
+
+## 确定性与缓存
+
+确定性构建的锚点是**取到的字节**，不是「远端的当前状态」：
+
+```text
+fetch（或缓存命中）
+   |
+   v
+字节落 .cage-cache/source/<源指纹>/<blake3 前 12 hex>.<ext>
+   |
+   v
+source_hash = 字节 blake3，随 manifest 进 build_id
+   |
+   v
+同一套 Parse / 校验流水线 → 产物
+```
+
+远端变了，字节就变，source_hash 跟着变，build_id 旋转——变化在
+manifest 里看得见，不存在「悄悄换了数据」；同字节重复构建仍逐字节
+一致，golden 契约不破。源指纹复用 R3 的 `cache_key` 口径（URL 或
+scheme+名字的 blake3 前 12 hex），取数、重试、缓存复验抽一处共享
+helper（首期放 cage-core），不搞四份实现。
+
+断网语义与 R3 对齐：取不到远端时回退缓存并发 WARNING 诊断，缓存字节
+同样先过校验门才可用；`--no-cache` 关闭回退，取不到即失败。新鲜度
+上限（max_age）留待实现期。
+
+## 错误码（E19xx 族，实现期注册）
+
+| 代码 | 含义 |
+| --- | --- |
+| `E1901` | 远端取数失败（网络 / DNS / 超时，重试用尽） |
+| `E1902` | 认证 / 授权被拒 |
+| `E1903` | 响应形状不合法（非 JSON / 非行集 / 缺表头） |
+| `E1904` | 凭据缺失（env 未设置或凭据文件不可读） |
+| `E1905` | 查询非法（配置了非只读语句） |
+
+重试只覆盖连接类失败（有界次数 + 退避，口径同 ci.yml 的 curl 重试）；
+4xx 不重试。
+
+## 留待实现期（不在首期）
+
+- 增量拉取：按 revision / updated_at 只取变更行
+- OAuth 用户授权流与 mTLS（首期只 API key / service account / DSN）
+- 连接池、并发多源、大表游标分页
+- Sheets 富文本与公式重算（首期只缓存值）
+- HTTP 分页协议与限流协商
+- 从库表内省自动生成 Schema 草稿
+
+**实装状态**：本章是设计定稿（todo S0，2026-10）。S1–S6 实现项全部
+未开工，E19xx 尚未注册进 `codes.rs` 与 validation.md——注册前错误码
+表不出现这五行，不写进已实现清单。
