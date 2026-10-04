@@ -321,6 +321,7 @@ cage/
 │   ├── cage-source-json/    # JSON 输入源
 │   ├── cage-source-http/    # HTTP API 输入源（S1，design §45）
 │   ├── cage-source-db/      # MySQL / PostgreSQL 输入源（S2，design §45：SELECT 白名单 + 会话只读 + 行集 → canonical JSON 落缓存）
+│   ├── cage-source-sheets/  # Google Sheets 输入源（S3，design §45：values UNFORMATTED_VALUE + 首行表头 + 形状门 E1903）
 │   ├── cage-source-yaml/    # YAML 输入源
 │   ├── cage-target-json/    # JSON 产出
 │   ├── cage-target-csv/     # CSV 产出

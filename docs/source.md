@@ -86,7 +86,7 @@ Document
 （`{表名: 行数组}` / 单对象 → `Root` / 行数组 → `Data`），L0-L7
 全量校验、无旁路。连接类失败有界重试；取数失败报 `E1901`，
 401/403 报 `E1902`，坏 JSON 报 `E0001`（与本地文件同一诊断）。
-四源形态定稿见 design §45；Google Sheets 在 S3。
+四源形态定稿见 design §45。
 
 ### MySQL / PostgreSQL（远程源，S2）
 
@@ -105,13 +105,28 @@ Document
 否则按行序列化形式排序（构建不依赖服务端返回顺序）。连接 /
 语句失败报 `E1901`。
 
+### Google Sheets（远程源，S3）
+
+`[source_roots]` 写 `gsheet:<spreadsheet_id>/<tab>`，凭据是 API key，
+从 `[remote.gsheets].credential_env` 指名的环境变量读（未声明 /
+未设置报 `E1904`，key 永不进 cage.toml 也不落任何日志——错误诊断只
+引 spec）。取数走 Sheets API v4 `values`，
+`valueRenderOption=UNFORMATTED_VALUE`（公式缓存值，不重算，同 Excel
+adapter 口径）。映射同 Excel 惯例：tab = 表、首行 = 表头（空表头
+单元格退 `col<i>`）、空行跳过、短行补 null 对齐表头宽，tab 自然行序
+= 作者承诺序原样保留。单元格初值为字符串（数字 / 布尔保留 JSON
+文本），类型交 Schema 校准。响应形状门（非行集 / 空表头 /
+majorDimension 非 ROWS）报 `E1903`；401/403 报 `E1902`，取数失败报
+`E1901`。canonical JSON 落
+`.cage-cache/source/<gsheets+id+tab 指纹>/`（API key 不进指纹——
+它不改变字节语义），再走标准 JSON 解析。
+
 ## 后续扩展
 
 ```text
 XML
 TOML
 SQLite
-Google Sheets    ← 已立项（design §45，S3）
 Custom Binary
 ```
 
@@ -125,5 +140,6 @@ Custom Binary
 | YAML | `cage-source-yaml` | serde_yaml |
 | HTTP API | `cage-source-http` | `cage_core::remote`（取数 / 重试 / 缓存）+ cage-source-json |
 | MySQL / PostgreSQL | `cage-source-db` | mysql / postgres（纯 Rust 协议客户端）+ `cage_core::remote`（缓存键）+ cage-source-json |
+| Google Sheets | `cage-source-sheets` | `cage_core::remote`（取数 / 重试 / 缓存）+ cage-source-json |
 
 统一产出 `cage-core` 的 Canonical Model：Null / Bool / Int / UInt / Float / String / Bytes / Array / Object，并携带 Source Location 与元数据。

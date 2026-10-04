@@ -308,7 +308,7 @@ TOML
 SQLite
 MySQL            ← 已实装（§45，S2 cage-source-db）
 PostgreSQL       ← 已实装（§45，S2 cage-source-db）
-Google Sheets    ← 已立项（§45）
+Google Sheets    ← 已实装（§45，S3 cage-source-sheets）
 HTTP API         ← 已实装（§45，S1 cage-source-http）
 Custom Binary
 ```
@@ -1742,8 +1742,8 @@ CI Integration
 Web UI                 ← 已实装（W 系列）
 Schema Editor          ← 已实装（W 系列）
 Configuration Registry ← 已实装（R1–R4）
-Remote Source          ← HTTP / DB 源已实装（S1–S2）；Sheets 在 S3（§45）
-Google Sheets          ← 已立项（§45，S3）
+Remote Source          ← 三源已实装（S1–S3：HTTP / DB / Sheets）（§45）
+Google Sheets          ← 已实装（§45，S3 cage-source-sheets）
 Database Source        ← 已实装（§45，S2 cage-source-db）
 Migration
 Artifact Distribution
@@ -2082,14 +2082,15 @@ dsn_env = "CAGE_MYSQL_URL"           # 只存 env 名，DSN 不进仓库
 dsn_env = "CAGE_PG_URL"
 
 [remote.gsheets]
-credential_env = "CAGE_SHEETS_CREDENTIAL"   # API key 或 service account JSON 路径
+credential_env = "CAGE_SHEETS_CREDENTIAL"   # API key（service account 需
+                                            # OAuth JWT 交换，留待实现期）
 ```
 
 | 源 | 取数 | 表 / 行映射 | 类型口径 |
 | --- | --- | --- | --- |
 | HTTP API | 一次 GET，响应体即表 | 与本地 JSON 源同一形状：`{表名: 行数组}` / 单对象 → `Root` / 行数组 → `Data`；字段名 = 字段 | JSON 值类型直接映射 |
 | MySQL / PostgreSQL | 只读 SELECT，表名展开为 `SELECT * FROM t`，具名查询放 `[remote.<scheme>.queries]` | 列名 = 字段，NULL = Null，行 = 记录 | DECIMAL / NUMERIC 渲染为字符串，不走 Float（浮点丢精度，怎么解释交 Schema） |
-| Google Sheets | Sheets API v4 `values`，`valueRenderOption=UNFORMATTED_VALUE`（公式缓存值，不重算，同 Excel adapter 口径） | tab = 表，首行 = 表头（同 Excel 惯例），其余行按字符串读、类型交 Schema 校准 | 初值为字符串，L2/L3 校验裁型 |
+| Google Sheets | Sheets API v4 `values`（`gsheet:<spreadsheet_id>/<tab>`），`valueRenderOption=UNFORMATTED_VALUE`（公式缓存值，不重算，同 Excel adapter 口径）；API key 从 `[remote.gsheets].credential_env` 指名的 env 读（E1904），错误诊断只引 spec 不引 URL（key 不落日志） | tab = 表，首行 = 表头（空表头单元格退 `col<i>`，同 Excel 惯例），空行跳过、短行补 null 对齐表头宽，tab 自然行序 = 作者承诺序原样保留；非行集 / 缺表头拒载（E1903） | 初值为字符串（数字 / 布尔保留 JSON 文本），L2/L3 校验裁型 |
 
 具名查询与表名在装载期做静态校验：只接受单条以 `SELECT` 开头的语句，
 分号、注释、多语句、行锁子句（`FOR UPDATE` / `FOR SHARE`）与
@@ -2101,7 +2102,9 @@ ONLY`），双保险。行序确定性：语句自带 `ORDER BY` 则尊重作者
 CSV / Excel / 本地 JSON 同一顺序口径；DECIMAL / NUMERIC 文本保真、
 二进制列 base64），再走标准 JSON 解析——与 HTTP 源同一缓存锚与
 解析链。缓存键覆盖 scheme + DSN（单向哈希）+ 语句，不同
-服务器 / 查询永不共槽。
+服务器 / 查询永不共槽。Sheets 源同锚同链：canonical JSON 落
+`.cage-cache/source/<gsheets+id+tab 指纹>/`（API key 不进指纹——
+它不改变字节语义），tab 自然行序即作者承诺序原样保留。
 
 ## 确定性与缓存
 
@@ -2139,16 +2142,17 @@ S4 收口，S1 当前取不到即失败）。新鲜度上限（max_age）留待�
 | 代码 | 含义 | 状态 |
 | --- | --- | --- |
 | `E1901` | 远端取数失败（网络 / DNS / 超时重试用尽、404 等非认证错误状态、DB 连接 / 语句失败） | 已实装（HTTP / DB 源） |
-| `E1902` | 认证 / 授权被拒（HTTP 401 / 403） | 已实装（HTTP 源） |
-| `E1903` | 响应形状不合法（非行集 / 缺表头） | 已注册，预留 |
-| `E1904` | 凭据缺失（env 未设置或凭据文件不可读） | 已实装（DB 源：dsn_env 未声明 / env 未设置） |
+| `E1902` | 认证 / 授权被拒（HTTP 401 / 403） | 已实装（HTTP / Sheets 源） |
+| `E1903` | 响应形状不合法（非行集 / 缺表头） | 已实装（Sheets 源形状门） |
+| `E1904` | 凭据缺失（env 未设置或凭据文件不可读） | 已实装（DB 源 dsn_env、Sheets 源 credential_env） |
 | `E1905` | 查询非法（配置了非只读语句） | 已实装（DB 源：SELECT 白名单 + 表名校验） |
 
-E1901–E1905 已全族注册进 `codes.rs` 与 validation.md，未接线的码标
-「预留」（已定义、当前代码路径不抛出）。HTTP 源的坏 JSON 不走
-E1903——它走与本地文件同一条 Parse 诊断（E0001 带行列定位）。
-DB 源的行集由适配器自产 canonical JSON，形状不可能非法，也不经
-E1903；E1903 留给 Sheets 落地时接线（非行集 / 缺表头）。
+E1901–E1905 已全族注册进 `codes.rs` 与 validation.md 并全部接线生效
+（E1901/E1902 随 S1、E1904/E1905 随 S2、E1903 随 S3）。HTTP 源的
+坏 JSON 不走 E1903——它走与本地文件同一条 Parse 诊断（E0001 带行列
+定位）；DB 源的行集由适配器自产 canonical JSON，形状不可能非法，
+同样不经 E1903；E1903 由 Sheets 源的形状门消费（非行集 / 缺表头 /
+majorDimension 非 ROWS）。
 
 重试只覆盖连接类失败（有界次数 + 退避，口径同 ci.yml 的 curl 重试）；
 4xx 不重试。
@@ -2156,7 +2160,8 @@ E1903；E1903 留给 Sheets 落地时接线（非行集 / 缺表头）。
 ## 留待实现期（不在首期）
 
 - 增量拉取：按 revision / updated_at 只取变更行
-- OAuth 用户授权流与 mTLS（首期只 API key / service account / DSN）
+- OAuth 用户授权流、mTLS 与 service account 凭据（Sheets 首期只
+  API key——service account 需 OAuth JWT 交换）
 - 连接池、并发多源、大表游标分页
 - Sheets 富文本与公式重算（首期只缓存值）
 - HTTP 分页协议与限流协商
@@ -2168,5 +2173,9 @@ E1903；E1903 留给 Sheets 落地时接线（非行集 / 缺表头）。
 S2 已交付——MySQL / PostgreSQL 源实装（`cage-source-db`，两后端共享
 行集映射：SELECT 白名单 E1905 → dsn_env 解析 E1904 → 连接 + 会话
 只读 pin → 行集 canonical JSON 落缓存 → 标准 JSON 解析；CLI 错误码
-E1901 / E1904 / E1905 接线生效）。缓存复用回退与 `--no-cache` 严格
-模式在 S4 收口（当前取不到远端即失败）。S3–S6 未开工。
+E1901 / E1904 / E1905 接线生效）。S3 已交付——Google Sheets 源实装
+（`cage-source-sheets`，`gsheet:<id>/<tab>`，UNFORMATTED_VALUE、
+首行表头同 Excel 惯例、初值字符串口径、tab 自然行序保留，API key
+经 credential_env，E1902 / E1903 / E1904 接线生效；service account
+留待实现期）。缓存复用回退与 `--no-cache` 严格模式在 S4 收口（当前
+取不到远端即失败）。S4–S6 未开工。

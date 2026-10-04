@@ -7,6 +7,7 @@ members = [
     "crates/cage-source-json",
     "crates/cage-source-http",
     "crates/cage-source-db",
+    "crates/cage-source-sheets",
     "crates/cage-source-yaml",
     "crates/cage-target-json",
     "crates/cage-target-csv",

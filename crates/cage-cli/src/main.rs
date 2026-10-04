@@ -312,6 +312,12 @@ fn load_project(root: &Path) -> Result<Project, String> {
             // session read-only pin, DSN from env (E1904), row set
             // materialized through the same cache-and-parse path.
             cage_source_db::DbSourceAdapter::load(root, &config, rel)?
+        } else if rel.starts_with("gsheet:") {
+            // Remote Source Sheets (S3, design §45): `gsheet:<id>/<tab>`
+            // via Sheets API v4 values (UNFORMATTED_VALUE), first row =
+            // header, credential from env (E1904), shape gate (E1903),
+            // canonical JSON through the same cache-and-parse path.
+            cage_source_sheets::SheetsSourceAdapter::load(root, &config, rel)?
         } else if remote::is_remote_root(rel) {
             // Remote Source (S1, design §45): an http(s) URL is fetched,
             // materialized under `.cage-cache/source/`, and parsed by the

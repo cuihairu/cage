@@ -583,13 +583,13 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 
 | 代码 | 含义 |
 | --- | --- |
-| `E1901` | 远端取数失败：网络 / DNS / 超时（有界重试用尽）、404 或其他非认证错误状态（HTTP 源已接线）；DB 连接 / DSN 非法 / 会话只读 pin 失败 / 语句执行失败（DB 源已接线） |
-| `E1902` | 远端认证 / 授权被拒（HTTP 401 / 403）（HTTP 源已接线） |
-| `E1903` | 远端响应形状不合法（非行集 / 缺表头）（预留） |
-| `E1904` | 凭据缺失：`[remote.<scheme>].dsn_env` 未声明，或声明的 env 未设置 / 为空（DB 源已接线；凭据文件不可读留给 Sheets） |
+| `E1901` | 远端取数失败：网络 / DNS / 超时（有界重试用尽）、404 或其他非认证错误状态、非规范 gsheet spec / 非法 spreadsheet id（HTTP / Sheets 源已接线）；DB 连接 / DSN 非法 / 会话只读 pin 失败 / 语句执行失败（DB 源已接线） |
+| `E1902` | 远端认证 / 授权被拒（HTTP 401 / 403）（HTTP / Sheets 源已接线） |
+| `E1903` | 远端响应形状不合法：Sheets 响应非行集 / 空表头 / majorDimension 非 ROWS（Sheets 源形状门已接线） |
+| `E1904` | 凭据缺失：`[remote.<scheme>].dsn_env` / `[remote.gsheets].credential_env` 未声明，或声明的 env 未设置 / 为空（DB / Sheets 源已接线） |
 | `E1905` | 远端查询非法：非 SELECT 开头、多语句（分号）、注释、行锁子句、`INTO`、具名查询外的非安全表名（DB 源已接线） |
 
-HTTP 源（`cage-source-http`，design §45 S1）的坏 JSON 不走 E1903——它走与本地文件同一条 Parse 诊断（`E0001` 带行列定位）。DB 源（`cage-source-db`，§45 S2）的行集由适配器自产 canonical JSON，形状不可能非法，同样不经 E1903；E1903 留给 Sheets 落地时接线。DB 源装载顺序：解析 spec → 具名查询 / 表名解析（E1905）→ SELECT 白名单（E1905）→ DSN env 解析（E1904）→ 连接（E1901）——白名单与凭据校验都在任何网络触达之前。
+HTTP 源（`cage-source-http`，design §45 S1）的坏 JSON 不走 E1903——它走与本地文件同一条 Parse 诊断（`E0001` 带行列定位）。DB 源（`cage-source-db`，§45 S2）的行集由适配器自产 canonical JSON，形状不可能非法，同样不经 E1903。DB 源装载顺序：解析 spec → 具名查询 / 表名解析（E1905）→ SELECT 白名单（E1905）→ DSN env 解析（E1904）→ 连接（E1901）——白名单与凭据校验都在任何网络触达之前。Sheets 源（`cage-source-sheets`，§45 S3）装载顺序：解析 spec 与 spreadsheet id（E1901）→ credential env 解析（E1904）→ 取数（401/403 → E1902，其余 → E1901）→ 形状门（E1903）——spec 与凭据校验同样都在网络触达之前，错误诊断只引 `gsheet:<id>/<tab>` spec，API key 不落日志。
 
 ### Internal（系统级）
 

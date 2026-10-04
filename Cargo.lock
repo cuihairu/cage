@@ -193,6 +193,7 @@ dependencies = [
  "cage-source-excel",
  "cage-source-http",
  "cage-source-json",
+ "cage-source-sheets",
  "cage-source-yaml",
  "cage-target-cpp",
  "cage-target-cs",
@@ -275,6 +276,16 @@ version = "0.1.0"
 dependencies = [
  "cage-core",
  "indexmap",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "cage-source-sheets"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "cage-source-json",
  "serde_json",
  "tempfile",
 ]

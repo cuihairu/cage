@@ -146,7 +146,7 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1–S2 已交付，S3 起未开工）
+### S 系列：Remote Source（2026-10 立项，design §45；S1–S3 已交付，S4 起未开工）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
 纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
@@ -154,8 +154,8 @@
 （source_hash 覆盖解析后的 Canonical Model 内容，远端数据变化 →
 build_id 旋转，manifest 里可见）；凭据只存环境变量名，不进 cage.toml；
 查询只读（装载期 SELECT 白名单 + 运行期只读事务）。错误码 E19xx 族已
-全族注册进 codes.rs 与 validation.md（S1；E1901/E1902 随 S1、
-E1904/E1905 随 S2 接线生效，E1903 预留给 S3 Sheets）。
+全族注册进 codes.rs 与 validation.md 并全部接线生效（E1901/E1902 随
+S1、E1904/E1905 随 S2、E1903 随 S3）。
 
 - [x] S0 设计定稿（design.md §45）：四源句法与映射表（table 形式：
       取数方式 / 行映射 / 类型口径，DECIMAL 走字符串）、确定性锚点与
@@ -199,14 +199,31 @@ E1904/E1905 随 S2 接线生效，E1903 预留给 S3 Sheets）。
       2）全绿 + 文档（design §45 实装状态与 `[remote.pg]` 句法对齐、
       validation.md E1904/E1905 转已接线、architecture.md 结构树、
       source.md MySQL / PostgreSQL 小节与 crate 表行）+ 本勾选
-- [ ] S3 Google Sheets 源（`cage-source-sheets`）：Sheets API v4
-      `values` + UNFORMATTED_VALUE（公式缓存值），tab → 表、首行表头
-      同 Excel 惯例；service account / API key 经 env；连接类失败有界重试
+- [x] S3 Google Sheets 源（`cage-source-sheets`）：`gsheet:<id>/<tab>`
+      走 Sheets API v4 `values` + UNFORMATTED_VALUE（公式缓存值），
+      tab → 表、首行表头同 Excel 惯例（空表头退 col<i>）、空行跳过、
+      短行补 null、tab 自然行序 = 作者承诺序保留；API key 经
+      `[remote.gsheets].credential_env`（写实：service account 需
+      OAuth JWT 交换，留待实现期，todo 原口径「service account / API
+      key 经 env」首签只落 API key）；形状门 E1903 在此接线（非行集 /
+      空表头 / majorDimension 非 ROWS）；API base 显式注入点供测试，
+      CLI 恒走生产 endpoint。验收达成：10 新 crate 单测（spec 切分与
+      id 严格校验、credential 三态、URL 编码、错误码映射且诊断不携
+      key、canonical 映射含 pretty JSON 逐字节断言、形状门六拒、
+      spec/凭据先于网络的 load 顺序、mock 服务器端到端取数映射缓存、
+      403→E1902 / 404 与死端口→E1901 / 坏形状→E1903）+ 1 新 CLI
+      集成测试（未声明 / 未设 credential_env → E1904、坏 spec 与
+      traversal id → E1901，退出码 2）全绿 + 文档（design §45 实装
+      状态与映射表 / E19xx 表 / service account 口径修正、
+      validation.md E1903 转已接线与 Sheets 装载顺序、architecture.md
+      结构树、source.md Google Sheets 小节与 crate 表行 + 后续扩展
+      清单移除）+ 本勾选
 - [ ] S4 确定性与离线语义收口：远端变更 → source_hash / build_id 旋转
       的端到端测试；断网缓存回退 + WARNING 诊断；`--no-cache` 严格模式
 - [ ] S5 错误码接线收口：E1901–E1905 已于 S1 全族注册（`codes.rs` +
-      validation.md），E1904/E1905 已随 S2 转已接线，本项收口剩余的
-      E1903（随 S3 Sheets 落地）并核对全族标注，诊断渲染覆盖四源
+      validation.md）并已全部接线生效（E1901/E1902 随 S1、E1904/E1905
+      随 S2、E1903 随 S3），本项核对全族「预留」标注清零、诊断渲染
+      覆盖四源后收口
 - [ ] S6 文档收口：source.md 后续扩展清单转正、cli.md 远程源章节、
       需求整理.md Remote Source 勾选、architecture.md 工程结构树补三 crate
 

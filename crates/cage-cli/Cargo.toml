@@ -18,6 +18,7 @@ cage-core = { path = "../cage-core" }
 cage-source-json = { path = "../cage-source-json" }
 cage-source-http = { path = "../cage-source-http" }
 cage-source-db = { path = "../cage-source-db" }
+cage-source-sheets = { path = "../cage-source-sheets" }
 cage-source-yaml = { path = "../cage-source-yaml" }
 cage-source-csv = { path = "../cage-source-csv" }
 cage-source-excel = { path = "../cage-source-excel" }
