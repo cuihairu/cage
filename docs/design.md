@@ -1072,7 +1072,7 @@ Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义�
 - **IR 整体作模板变量**：Schema 全量序列化——tables / fields / 类型 /
   描述 / 默认值模板内全部可引用——外加顶层 `schema_hash`；逐表模板另获
   当前 `table` 变量。字段与表的迭代序 = schema 声明序（serde_json
-  preserve_order 显式声明，与九语言官方生成器同口径，不随依赖图特征
+  preserve_order 显式声明，与各语言官方生成器同口径，不随依赖图特征
   统一漂移）
 - **模板文件名即输出文件名模板**：`{table}.py.tera` 按表名序每表一
   文件，不含 `{table}` 的模板全局渲染一次（输出名 = 文件名去 `.tera`）
@@ -1080,17 +1080,20 @@ Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义�
 - **模板内不写逻辑**：命名约定（snake_case / camelCase / PascalCase）
   与各语言类型映射 / 默认值字面量做成 Tera filter，决策留在 Rust（原
   plan 层的活换了个挂点，不搬进模板）
-- **确定性**：产物顺序 = 模板名序 × 表名序，Tera workspace 锁版，模板
-  随源码——同 schema + 同模板逐字节一致；官方模板改写后现有 golden
-  测试逐字节不变为验收锚
+- **确定性**：产物顺序 = 模板注册序（文件系统模式按路径名序、官方内存
+  模板按传入序）× 表名序，Tera workspace 锁版，模板随源码——同 schema
+  + 同模板逐字节一致；官方模板改写后现有测试逐字节不变为验收锚
 
 实装状态：
 
 - G1 模板引擎接入：已交付——`cage-target-template`（Tera 实例封装、
   IR context 桥、文件名映射两渲染形态、命名约定三过滤器首落、
   from_config 读 `options.template_dir`、10 单测）
-- G2 官方模板改写：未开工——九语言 render 层改写为随包官方 `.tera`
-  模板（现有 golden 测试逐字节不变为验收锚）
+- G2 官方模板改写：推进中——引擎新增 `generate_official`（内存模板 +
+  双 hook：`setup` 注册语言过滤器、`extras` 按 context 合并语言预计算
+  决策，产出顺序 = 传入序 × 表名序）；Lua 已改写（`templates/table.lua.tera`
+  + `enums.lua.tera` 随包 `include_str!`，18 测试逐字节不变），余
+  C# / Python / TS/JS / C++ / Go / Java 未开工
 - G3 自定义模板加载：未开工——CLI 接线（target 配置 `template_dir`，
   `.cage/templates/` 惯例位置）+ 模板渲染错误通道（现役
   `code_target_items` 是不可失败口径，需开 Result 分支）
@@ -1187,7 +1190,7 @@ verify（dev-only：tsc / javac / g++ / gofmt 回验产物，不进 CI 依赖）
 > 类型 / import / 默认值字面量）留在 Rust；但对「谁能改生成的文本」
 > 不再成立：用户改模板不改代码的需求出现后，模板的动态能力（循环 /
 > 分支 / 宏 / 继承）正是该场景要的。新口径是官方与自定义共用一个
-> Tera 引擎（`cage-target-template`）：官方九语言绑定改写为随包官方
+> Tera 引擎（`cage-target-template`）：官方各语言绑定改写为随包官方
 > 模板（G2），用户自定义模板经 `template_dir` 接入（G3），语言类型
 > 映射与字面量做成 filter（G4），**模板内不写逻辑**——上面担心的
 > 「分支逻辑下沉模板」用「决策留 Rust、模板只表达文本形状 + golden

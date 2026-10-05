@@ -403,9 +403,11 @@ name = "cage-target-lua"
 version = "0.1.0"
 dependencies = [
  "cage-core",
+ "cage-target-template",
  "indexmap",
  "serde_json",
  "serde_yaml",
+ "tera",
 ]
 
 [[package]]

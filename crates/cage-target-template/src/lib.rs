@@ -92,10 +92,7 @@ impl TemplateTargetGenerator {
         schema: &Schema,
         schema_hash: Option<&str>,
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
-        let mut tera = Tera::default();
-        // Code templates are text, not HTML: escape nothing, so output
-        // bytes match the template's own rendering decisions.
-        tera.autoescape_on(Vec::<&str>::new());
+        let mut tera = base_tera();
 
         let mut files = Vec::new();
         collect_templates(&self.template_dir, &mut files)?;
@@ -106,6 +103,7 @@ impl TemplateTargetGenerator {
             ));
         }
         files.sort();
+        let mut names = Vec::new();
         for path in &files {
             let rel = path
                 .strip_prefix(&self.template_dir)
@@ -114,31 +112,82 @@ impl TemplateTargetGenerator {
                 .into_owned();
             tera.add_template_file(path, Some(&rel))
                 .map_err(|e| format!("template target: {}: {e}", path.display()))?;
+            names.push(rel);
         }
         register_convention_filters(&mut tera);
+        self.render_registered(&tera, &names, schema, schema_hash, &no_extras)
+    }
 
-        let mut names: Vec<String> = tera.get_template_names().map(str::to_owned).collect();
-        names.sort();
+    /// Render in-memory templates — the official shape: language generators
+    /// ship theirs via `include_str!`, so no filesystem lookup.
+    ///
+    /// Two hooks split the language decision surface:
+    /// - `setup` runs once and registers language filters (pure text
+    ///   conversions, optionally holding state built from `schema`)
+    /// - `extras` runs per rendered context (`Some(table)` per-table,
+    ///   `None` global) and merges language-precomputed keys — schema
+    ///   mappings, collected literals, unique member names — into the
+    ///   context, keeping decisions out of templates
+    ///
+    /// `templates` are registered in the given order, and artifacts follow
+    /// that order (then table-name order) — the legacy generator emission
+    /// order. Names may carry the `{table}` placeholder for per-table
+    /// rendering; without it the template renders once.
+    pub fn generate_official<F, X>(
+        &self,
+        schema: &Schema,
+        schema_hash: Option<&str>,
+        templates: &[(&str, &str)],
+        setup: F,
+        extras: X,
+    ) -> Result<Vec<(String, Vec<u8>)>, String>
+    where
+        F: FnOnce(&mut Tera, &Schema),
+        X: Fn(&Schema, Option<&TableSchema>) -> Result<serde_json::Value, String>,
+    {
+        let mut tera = base_tera();
+        let mut names = Vec::new();
+        for (name, content) in templates {
+            tera.add_raw_template(name, content)
+                .map_err(|e| format!("template target: {name}: {e}"))?;
+            names.push((*name).to_string());
+        }
+        setup(&mut tera, schema);
+        self.render_registered(&tera, &names, schema, schema_hash, &extras)
+    }
 
+    /// Render the registered templates in registration order: `{table}`
+    /// names once per table (name order), others once.
+    fn render_registered<X>(
+        &self,
+        tera: &Tera,
+        names: &[String],
+        schema: &Schema,
+        schema_hash: Option<&str>,
+        extras: &X,
+    ) -> Result<Vec<(String, Vec<u8>)>, String>
+    where
+        X: Fn(&Schema, Option<&TableSchema>) -> Result<serde_json::Value, String>,
+    {
         let mut table_names: Vec<&String> = schema.tables.keys().collect();
         table_names.sort();
 
         let mut artifacts = Vec::new();
-        for rel in &names {
+        for rel in names {
             let out_pattern = rel.strip_suffix(".tera").unwrap_or(rel);
             if out_pattern.contains("{table}") {
                 for table_name in &table_names {
                     let table = &schema.tables[table_name.as_str()];
-                    let ctx = ir_context(schema, schema_hash, Some(table))?;
-                    let rendered = render(&tera, rel, &ctx)?;
+                    let ctx = ir_context(schema, schema_hash, Some(table), extras)?;
+                    let rendered = render(tera, rel, &ctx)?;
                     artifacts.push((
                         self.join_output(&out_pattern.replace("{table}", table_name)),
                         rendered.into_bytes(),
                     ));
                 }
             } else {
-                let ctx = ir_context(schema, schema_hash, None)?;
-                let rendered = render(&tera, rel, &ctx)?;
+                let ctx = ir_context(schema, schema_hash, None, extras)?;
+                let rendered = render(tera, rel, &ctx)?;
                 artifacts.push((self.join_output(out_pattern), rendered.into_bytes()));
             }
         }
@@ -150,19 +199,32 @@ impl TemplateTargetGenerator {
     }
 }
 
+/// Fresh engine: no autoescaping (code templates are text), convention
+/// filters registered per engine (each `generate*` call builds its own).
+fn base_tera() -> Tera {
+    let mut tera = Tera::default();
+    tera.autoescape_on(Vec::<&str>::new());
+    register_convention_filters(&mut tera);
+    tera
+}
+
 fn render(tera: &Tera, name: &str, ctx: &TeraContext) -> Result<String, String> {
     tera.render(name, ctx)
         .map_err(|e| format!("template target: {name}: {e}"))
 }
 
 /// Template context: the schema serialization as-is (tables, fields, types,
-/// descriptions all referencable), `schema_hash` on top, and `table` for
-/// per-table templates.
-fn ir_context(
+/// descriptions all referencable), `schema_hash` on top, `table` for
+/// per-table templates, plus whatever language `extras` merged in.
+fn ir_context<X>(
     schema: &Schema,
     schema_hash: Option<&str>,
     table: Option<&TableSchema>,
-) -> Result<TeraContext, String> {
+    extras: &X,
+) -> Result<TeraContext, String>
+where
+    X: Fn(&Schema, Option<&TableSchema>) -> Result<serde_json::Value, String>,
+{
     let mut value = serde_json::to_value(schema)
         .map_err(|e| format!("template target: schema serialization failed: {e}"))?;
     let obj = value
@@ -177,7 +239,24 @@ fn ir_context(
             .map_err(|e| format!("template target: table serialization failed: {e}"))?;
         obj.insert("table".to_string(), t);
     }
+    let extra = extras(schema, table)?;
+    let extra = extra
+        .as_object()
+        .ok_or_else(|| "template target: extras must be a JSON object".to_string())?;
+    for (k, v) in extra {
+        // Language keys augment, never replace, the IR view.
+        if !obj.contains_key(k) {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
     TeraContext::from_value(value).map_err(|e| format!("template target: context: {e}"))
+}
+
+/// Default extras: nothing to merge (file-system template mode).
+// The Result matches the extras contract shared with language hooks.
+#[allow(clippy::unnecessary_wraps)]
+fn no_extras(_schema: &Schema, _table: Option<&TableSchema>) -> Result<serde_json::Value, String> {
+    Ok(Value::Object(serde_json::Map::new()))
 }
 
 /// Recursively collect `*.tera` files under `dir`.
@@ -474,6 +553,60 @@ enums:
         };
         let err = gen.generate(&test_schema(), None).expect_err("must fail");
         assert!(err.contains("bad.txt.tera"), "{err}");
+    }
+
+    #[test]
+    fn official_mode_uses_in_memory_templates_extras_and_filters() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Directory stays empty on purpose: official mode never reads it.
+        let gen = TemplateTargetGenerator {
+            output_dir: PathBuf::from("build/out"),
+            template_dir: tmp.path().to_path_buf(),
+        };
+        let artifacts = gen
+            .generate_official(
+                &test_schema(),
+                Some("h1"),
+                &[
+                    (
+                        "{table}.x.tera",
+                        "T={{ table.name }} x={{ x }} u={{ table.name | up }}\n",
+                    ),
+                    ("global.tera", "g={{ table_count }}\n"),
+                ],
+                |tera, _schema| {
+                    struct Up;
+                    impl tera::Filter for Up {
+                        fn filter(
+                            &self,
+                            value: &Value,
+                            _args: &HashMap<String, Value>,
+                        ) -> tera::Result<Value> {
+                            match value {
+                                Value::String(s) => Ok(Value::String(s.to_uppercase())),
+                                _ => Err("up expects a string".into()),
+                            }
+                        }
+                    }
+                    tera.register_filter("up", Up);
+                },
+                |schema, table| match table {
+                    Some(t) => Ok(serde_json::json!({ "x": t.name.to_uppercase() })),
+                    None => Ok(serde_json::json!({ "table_count": schema.tables.len() })),
+                },
+            )
+            .expect("render");
+        // Registration order (not name order) drives artifacts: the
+        // per-table template was registered first.
+        assert_eq!(artifacts.len(), 3);
+        assert_eq!(artifacts[0].0, "build/out/Aura.x");
+        assert_eq!(artifacts[1].0, "build/out/Item.x");
+        assert_eq!(artifacts[2].0, "build/out/global");
+        assert_eq!(
+            std::str::from_utf8(&artifacts[0].1).expect("utf8"),
+            "T=Aura x=AURA u=AURA\n"
+        );
+        assert_eq!(std::str::from_utf8(&artifacts[2].1).expect("utf8"), "g=2\n");
     }
 
     #[test]
