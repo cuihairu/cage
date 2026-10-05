@@ -1,0 +1,22 @@
+[package]
+name = "cage-target-template"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "Tera template target generator for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+# preserve_order: template variables iterate `tables` / `fields` in schema
+# declaration order (the order the nine language generators honor), and the
+# behavior must not drift with feature unification across the build graph.
+serde_json = { workspace = true, features = ["preserve_order"] }
+tera = { workspace = true }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }
+tempfile = { workspace = true }

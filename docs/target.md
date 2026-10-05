@@ -125,9 +125,10 @@ Java            ← 已实装
 （「规划」项不在 `format =` 支持范围内，构建报
 `unsupported target format '<fmt>'` 并以退出码 2 失败。）
 
-Code Target 的生成方式（直接渲染，而非 AST / 模板引擎）及其选型理由见
-仓库设计稿 `docs/design.md` 的 Code Targets 章节（plan → render → verify
-三层、与 AST 库/模板引擎的取舍）。
+Code Target 的现役生成方式（plan → render → verify 直渲染，不依赖 AST
+库）及其选型理由见仓库设计稿 `docs/design.md` 的 Code Targets 章节；
+模板化形态（Template Target，Tera——官方模板随包 + 用户自定义模板，
+决策仍在 Rust 过滤器层）同见 §22，按 G 系列推进中。
 
 例如同一份数据：
 

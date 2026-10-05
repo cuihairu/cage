@@ -18,6 +18,7 @@ members = [
     "crates/cage-target-cpp",
     "crates/cage-target-go",
     "crates/cage-target-java",
+    "crates/cage-target-template",
     "crates/cage-cli",
 ]
 
@@ -55,6 +56,9 @@ toml = "0.8"
 # Hashing & deterministic
 blake3 = "1.5"
 base64 = "0.22"
+
+# Template Target engine (§22 Template Target, G series)
+tera = "1"
 
 # Remote Source backends (§45, S2) — pure-Rust protocol clients
 mysql = "28"

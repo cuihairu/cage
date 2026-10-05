@@ -227,6 +227,54 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
 - [ ] S6 文档收口：source.md 后续扩展清单转正、cli.md 远程源章节、
       需求整理.md Remote Source 勾选、architecture.md 工程结构树补三 crate
 
+### G 系列：Template Target（2026-10 立项，design §22；G1 随立项交付）
+
+形态定稿：Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义的
+代码生成面——IR（Schema）整体作模板变量（tables / fields / 类型 /
+描述 / 默认值全部可引用，逐表模板另获当前 `table` 变量，顶层
+`schema_hash`；迭代序 = schema 声明序）；模板文件名即输出文件名模板
+（`{table}.py.tera` 按表名序每表一文件、不含 `{table}` 全局渲染一次，
+沿用 `file_template` 的 `{table}` 占位符口径）；**模板内不写逻辑**——
+命名约定与各语言类型映射 / 默认值字面量做成 Tera filter，决策留 Rust；
+确定性 = 模板名序 × 表名序产物顺序 + Tera workspace 锁版 + 模板随源码
++ 现有 golden 测试逐字节不变为改写验收锚。与 §23 直渲染的关系：plan →
+render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点（模板
+文本），原「为什么不是模板引擎」论证在 §23 留档并附决策更新段。
+
+- [x] G1 模板引擎接入（`cage-target-template`）：Tera 实例封装（递归
+      收集 `*.tera`，模板名 = 相对路径，autoescape 关）、IR context
+      桥（schema 全量序列化 + schema_hash + 逐表 table）、文件名映射
+      两渲染形态（逐表 / 全局）、命名约定过滤器首落
+      （snake_case / camelCase / PascalCase，含缩略词与数字边界
+      words 分词）、from_config 读 `options.template_dir`；serde_json
+      preserve_order 显式声明（fields / tables 迭代序 = schema 声明
+      序，不随依赖图特征统一漂移）。验收：10 单测（逐表渲染两表序 +
+      声明序断言、全局模板引用表 / 字段 / 类型 / 枚举、schema_hash
+      暴露、三过滤器、描述与默认值可引用（default 过滤器兜底）、
+      缺目录 / 空目录 / 语法错三路错误通道、from_config、words 边界
+      四组）+ design §22 修订（Target Generator → Template Target，
+      实装状态 G1 交付 / G2–G5 未开工）+ §23 决策更新段（论证留档 +
+      反转理由写实）+ target.md 引用句同步。实现顺序后续四步：
+      引擎接入（本轮）→ 官方模板改写 → 自定义模板加载 → 过滤器库
+- [ ] G2 官方模板改写：九语言（C#/Python/Lua/TS/JS/C++/Go/Java）
+      生成器 render 层改写为随包官方 `.tera` 模板（crate 内
+      `templates/` 目录可复制可改 + `include_str!` 编译进二进制保
+      无文件系统时可用）；plan 层决策沉淀为 Rust 过滤器与 context
+      预计算；**现有 golden 测试逐字节不变为验收锚**（输出字节变 =
+      回滚信号）
+- [ ] G3 自定义模板加载：CLI 接线——target 配置 `template_dir`
+      （`.cage/templates/` 惯例位置，相对项目根），`code_target_items`
+      开 Result 分支承接模板渲染错误（现役口径不可失败），
+      gen/build/diff 面板接输出；模板缺失 / 语法错诊断指到模板文件
+- [ ] G4 过滤器库：G2 改写中沉淀的过滤器整理成库——各语言类型映射
+      （py_type / cs_type / ts_type / …）、默认值字面量
+      （*_literal）、语言字段排序（*_field_order）、命名约定扩展
+      （kebab_case / SCREAMING_CASE 等），过滤器表进 target.md
+- [ ] G5 文档收口：§22/§23 与实装对账复查、target.md 新增模板小节
+      （模板变量表 / 过滤器表 / 自定义模板指南）、需求整理.md 状态行、
+      architecture.md 结构树补 cage-target-template、README Target
+      插件行更新
+
 ## 第四阶段（核心模型边界定稿，2026-10 评审驱动）
 
 方向共识：不堆功能，先把「Schema / Canonical Model / IR / Validation

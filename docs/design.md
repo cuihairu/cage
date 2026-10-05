@@ -1037,9 +1037,9 @@ Transform 负责：
 
 ---
 
-# 22. Target Generator
+# 22. Template Target
 
-Target Generator 也是插件。
+Target Generator 也是插件。数据与代码 target 清单不变：
 
 第一阶段：
 
@@ -1063,6 +1063,40 @@ FlatBuffers
 Binary
 SQLite
 ```
+
+## 模板化形态（G 系列，2026-10 立项）
+
+Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义的代码生成
+面（新 crate `cage-target-template`）：
+
+- **IR 整体作模板变量**：Schema 全量序列化——tables / fields / 类型 /
+  描述 / 默认值模板内全部可引用——外加顶层 `schema_hash`；逐表模板另获
+  当前 `table` 变量。字段与表的迭代序 = schema 声明序（serde_json
+  preserve_order 显式声明，与九语言官方生成器同口径，不随依赖图特征
+  统一漂移）
+- **模板文件名即输出文件名模板**：`{table}.py.tera` 按表名序每表一
+  文件，不含 `{table}` 的模板全局渲染一次（输出名 = 文件名去 `.tera`）
+  ——沿用 `file_template` 的 `{table}` 占位符口径
+- **模板内不写逻辑**：命名约定（snake_case / camelCase / PascalCase）
+  与各语言类型映射 / 默认值字面量做成 Tera filter，决策留在 Rust（原
+  plan 层的活换了个挂点，不搬进模板）
+- **确定性**：产物顺序 = 模板名序 × 表名序，Tera workspace 锁版，模板
+  随源码——同 schema + 同模板逐字节一致；官方模板改写后现有 golden
+  测试逐字节不变为验收锚
+
+实装状态：
+
+- G1 模板引擎接入：已交付——`cage-target-template`（Tera 实例封装、
+  IR context 桥、文件名映射两渲染形态、命名约定三过滤器首落、
+  from_config 读 `options.template_dir`、10 单测）
+- G2 官方模板改写：未开工——九语言 render 层改写为随包官方 `.tera`
+  模板（现有 golden 测试逐字节不变为验收锚）
+- G3 自定义模板加载：未开工——CLI 接线（target 配置 `template_dir`，
+  `.cage/templates/` 惯例位置）+ 模板渲染错误通道（现役
+  `code_target_items` 是不可失败口径，需开 Result 分支）
+- G4 过滤器库：未开工——类型映射 / 字面量 / 排序过滤器成库 + 文档表
+- G5 文档收口：未开工——§22/§23 与实装对账复查、target.md 模板小节
+  （模板变量表 / 过滤器表 / 自定义指南）、需求整理.md 状态
 
 ---
 
@@ -1114,10 +1148,12 @@ Canonical Model
       +---- C++ / Go / Java
 ```
 
-### 代码生成方式：直接渲染，而非 AST / 模板引擎
+### 代码生成方式：plan → render → verify 直渲染（现役；G2 起官方迁移随包模板）
 
-Code Target 的生成器不构建目标语言的 AST，也不引入模板引擎，而是
-**plan → render → verify** 三层的直接字符串渲染：
+Code Target 的生成器不构建目标语言的 AST，也不依赖模板动态能力，
+而是 **plan → render → verify** 三层的直接字符串渲染（模板化形态与
+其分工见 §22 Template Target：G2 起官方生成器的 render 层改为随包
+官方模板，决策仍在 Rust）：
 
 ```text
 Schema
@@ -1146,6 +1182,19 @@ verify（dev-only：tsc / javac / g++ / gofmt 回验产物，不进 CI 依赖）
 里反而失去 Rust 类型检查；配置中的 `file_template = "{table}.ts"` 只是
 文件名占位符，与代码模板无关。
 
+> 决策更新（2026-10，G 系列，见 §22）：上面对「生成器内部结构」的
+> 结论仍然成立——plan → render → verify 三层不动，决策（标识符 /
+> 类型 / import / 默认值字面量）留在 Rust；但对「谁能改生成的文本」
+> 不再成立：用户改模板不改代码的需求出现后，模板的动态能力（循环 /
+> 分支 / 宏 / 继承）正是该场景要的。新口径是官方与自定义共用一个
+> Tera 引擎（`cage-target-template`）：官方九语言绑定改写为随包官方
+> 模板（G2），用户自定义模板经 `template_dir` 接入（G3），语言类型
+> 映射与字面量做成 filter（G4），**模板内不写逻辑**——上面担心的
+> 「分支逻辑下沉模板」用「决策留 Rust、模板只表达文本形状 + golden
+> 逐字节锚定」挡住了。确定性锚不放松：Tera workspace 锁版 + 模板随
+> 源码 + 现有 golden 测试字节不变。`file_template` 的占位符口径原样
+> 沿用（模板文件名 `{table}.py.tera` 是同一套 `{table}` 替换）。
+
 可靠性的失效模式分析：生成物是纯声明代码（字段、类型、默认值），没有
 控制流——要么编译不过（当场暴露），要么就是对的；不存在「编译通过但
 运行时悄悄出错」的中间态。因此语法正确性由 dev-only 的真编译器回验保证
@@ -1156,7 +1205,8 @@ Java/C++ 生成器内部同样是字符串拼接。
 
 升级信号：当某个 target 需要生成带逻辑的代码（内联校验函数、复杂
 runtime 支撑码）或改写用户已有代码时，为该 target 单独引入 IR 层——
-插件架构下这是局部决定，不影响其余 target。
+插件架构下这是局部决定，不影响其余 target。该信号与「用户改模板」
+的需求合并，已落地为 Template Target（§22，G 系列）。
 
 ---
 
