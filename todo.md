@@ -256,7 +256,7 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       实装状态 G1 交付 / G2–G5 未开工）+ §23 决策更新段（论证留档 +
       反转理由写实）+ target.md 引用句同步。实现顺序后续四步：
       引擎接入（本轮）→ 官方模板改写 → 自定义模板加载 → 过滤器库
-- [ ] G2 官方模板改写（推进中，Lua 已落地；余 6 crate 见 G2b）：各语言
+- [ ] G2 官方模板改写（推进中，Lua / C# 已落地；余 5 crate 见 G2b）：各语言
       （C#/Python/Lua/TS/JS/C++/Go/Java，7 crate）生成器 render 层改写
       为随包官方 `.tera` 模板（crate 内 `templates/` 目录可复制可改 +
       `include_str!` 编译进二进制保无文件系统时可用）；plan 层决策沉淀
@@ -271,9 +271,14 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       unique_ident、type_label、doc、default_expr、primary_key_lit、
       emitted_enum_objects），`templates/table.lua.tera` +
       `enums.lua.tera` 随包，18 测试不改一字全绿（含 lua 运行时回验与
-      确定性）
-- [ ] G2b 余量改写：C# → Python → TS/JS → C++ → Go → Java 逐 crate
-      复制 Lua 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
+      确定性）。C# 第二签：render_table / render_enums / header /
+      path_for / sorted_tables 摘除，决策进 `cs_extras`（namespace、
+      summary_head+desc 转义、class_ident、members 名序含可选 `?` 与
+      ref-init 解析、enum-vs-static-class 按全整型判定分流与 backing
+      后缀选择），`templates/table.cs.tera` + `enums.cs.tera` 随包，
+      18 测试不改一字全绿
+- [ ] G2b 余量改写：Python → TS/JS → C++ → Go → Java 逐 crate
+      复制 Lua/C# 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
       逐字节不变），全数落地后 G2 勾选收口
 - [ ] G3 自定义模板加载：CLI 接线——target 配置 `template_dir`
       （`.cage/templates/` 惯例位置，相对项目根），`code_target_items`
