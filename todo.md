@@ -351,10 +351,17 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       复制 Lua/C# 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
       逐字节不变）——六签全数落地（C# / Python / TS-JS / C++ / Go /
       Java，Lua 首签在 G2 正条），G2 已勾选收口
-- [ ] G3 自定义模板加载：CLI 接线——target 配置 `template_dir`
-      （`.cage/templates/` 惯例位置，相对项目根），`code_target_items`
-      开 Result 分支承接模板渲染错误（现役口径不可失败），
-      gen/build/diff 面板接输出；模板缺失 / 语法错诊断指到模板文件
+- [x] G3 自定义模板加载（已交付）：`format = "template"` 进 CLI——
+      `code_target_items` 开 `Option<CodeTargetItems>` Result 分支
+      （七语言 `Some(Ok(…))` 原样，template 分支走
+      `TemplateTargetGenerator::from_config` + `generate`），build 面
+      板模板错走 `BuildFailure::Io`、gen 面板 eprintln + 退码 2，diff
+      面板经 manifest 天然覆盖无需接线；`template_dir` 默认
+      `.cage/templates/` 相对项目根解析（`options.template_dir` 覆盖），
+      from_config 默认值同步收敛；Tera cause 链展平（`tera_err`），
+      缺目录 / 空目录 / 语法错诊断指到模板文件路径；CLI 测试 5 新增
+      （惯例目录 + options 覆盖 + build/manifest + 缺失两形态 + 语法错
+      + 确定性），workspace 534 全绿
 - [ ] G4 过滤器库：G2 改写中沉淀的过滤器整理成库——各语言类型映射
       （py_type / cs_type / ts_type / …）、默认值字面量
       （*_literal）、语言字段排序（*_field_order）、命名约定扩展

@@ -59,14 +59,15 @@ impl Default for TemplateTargetGenerator {
     fn default() -> Self {
         Self {
             output_dir: PathBuf::from("build/template"),
-            template_dir: PathBuf::from("templates"),
+            template_dir: PathBuf::from(".cage/templates"),
         }
     }
 }
 
 impl TemplateTargetGenerator {
     /// Create from target config. `options.template_dir` (string) overrides
-    /// the default `templates`.
+    /// the `.cage/templates` convention directory (the CLI resolves that
+    /// relative path against the project root).
     pub fn from_config(config: &TargetConfig) -> Self {
         let mut gen = Self {
             output_dir: PathBuf::from(&config.output_dir),
@@ -111,7 +112,7 @@ impl TemplateTargetGenerator {
                 .to_string_lossy()
                 .into_owned();
             tera.add_template_file(path, Some(&rel))
-                .map_err(|e| format!("template target: {}: {e}", path.display()))?;
+                .map_err(|e| tera_err(&path.display().to_string(), &e))?;
             names.push(rel);
         }
         register_convention_filters(&mut tera);
@@ -149,7 +150,7 @@ impl TemplateTargetGenerator {
         let mut names = Vec::new();
         for (name, content) in templates {
             tera.add_raw_template(name, content)
-                .map_err(|e| format!("template target: {name}: {e}"))?;
+                .map_err(|e| tera_err(name, &e))?;
             names.push((*name).to_string());
         }
         setup(&mut tera, schema);
@@ -209,8 +210,22 @@ fn base_tera() -> Tera {
 }
 
 fn render(tera: &Tera, name: &str, ctx: &TeraContext) -> Result<String, String> {
-    tera.render(name, ctx)
-        .map_err(|e| format!("template target: {name}: {e}"))
+    tera.render(name, ctx).map_err(|e| tera_err(name, &e))
+}
+
+/// Tera hides the real fault behind a bare `Failed to render '<name>'`
+/// Display; the cause chain carries the actual template fault (unknown
+/// variable, missing filter argument, …). Flatten the chain so callers —
+/// CLI users editing templates — see the fault, not just the file.
+fn tera_err(name: &str, e: &tera::Error) -> String {
+    use std::fmt::Write as _;
+    let mut msg = format!("template target: {name}: {e}");
+    let mut src = std::error::Error::source(&e);
+    while let Some(cause) = src {
+        let _ = write!(msg, ": {cause}");
+        src = cause.source();
+    }
+    msg
 }
 
 /// Template context: the schema serialization as-is (tables, fields, types,

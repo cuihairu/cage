@@ -31,6 +31,7 @@ cage-target-ts = { path = "../cage-target-ts" }
 cage-target-cpp = { path = "../cage-target-cpp" }
 cage-target-go = { path = "../cage-target-go" }
 cage-target-java = { path = "../cage-target-java" }
+cage-target-template = { path = "../cage-target-template" }
 clap = { workspace = true }
 tiny_http = { workspace = true }
 blake3 = { workspace = true }

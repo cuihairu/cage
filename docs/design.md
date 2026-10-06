@@ -1102,9 +1102,22 @@ Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义�
   Java `table.java.tera` + `enums.java.tera`，20 测试逐字节不变 +
   javac 真机回验——路径按 class ident 重映射（file stem = class
   ident，引擎按 schema name 替换 `{table}`，产物按发射序 zip 回写））
-- G3 自定义模板加载：未开工——CLI 接线（target 配置 `template_dir`，
-  `.cage/templates/` 惯例位置）+ 模板渲染错误通道（现役
-  `code_target_items` 是不可失败口径，需开 Result 分支）
+- G3 自定义模板加载：已交付——`format = "template"` 进 CLI：
+  `code_target_items` 开 Result 分支（bundled 七语言 `Some(Ok(…))`
+  不可失败口径原样保留，template 分支承接 `TemplateTargetGenerator::
+  from_config(target).generate(…)` 的可失败结果），build 面板模板错
+  走 `BuildFailure::Io`、gen 面板 eprintln + 退码 2；`template_dir`
+  默认 `.cage/templates/`，相对路径按项目根（build/gen 的 path 参数）
+  解析、`options.template_dir` 可覆盖；产物 path 含 `output_dir` 前缀
+  （引擎 `render_registered` 统一 `join_output`，build/gen/diff 三面板
+  经 manifest 天然覆盖——diff 只比 manifest 无需接线）。错误通道增强：
+  Tera 顶层 Display 只有 `Failed to render '<name>'`，crate 新增
+  `tera_err` 展平 cause 链（未知变量/过滤器参数缺失等真实故障直达），
+  文件系统模式 `add_template_file` 错误带模板全路径。CLI 测试 5 新增
+  （惯例目录渲染 + `options.template_dir` 覆盖 + build/manifest 记录
+  format "template" + 缺目录/空目录两形态 + 语法错指到模板文件 +
+  两跑逐字节一致）；from_config 默认值随惯例位置收敛
+  （`templates` → `.cage/templates`）
 - G4 过滤器库：未开工——类型映射 / 字面量 / 排序过滤器成库 + 文档表
 - G5 文档收口：未开工——§22/§23 与实装对账复查、target.md 模板小节
   （模板变量表 / 过滤器表 / 自定义指南）、需求整理.md 状态

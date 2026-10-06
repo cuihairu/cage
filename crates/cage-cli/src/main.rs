@@ -927,15 +927,19 @@ fn build_project(
     let carried_len = carried.len();
     let mut artifacts = carried;
     for target in &build_profile.targets {
-        let generated = match code_target_items(target, &gen_schema, &schema_hash) {
-            // Code targets (cs/python/lua/ts/…) are schema-driven and infallible.
-            Some(items) => Ok(items),
+        let generated = match code_target_items(target, &gen_schema, &schema_hash, path) {
+            // Bundled code targets (cs/python/lua/ts/…) are schema-driven
+            // and infallible; the user-template target can fail (template
+            // fault or missing directory) and surfaces through Io.
+            Some(Ok(items)) => Ok(items),
+            Some(Err(e)) => Err(BuildFailure::Io(e)),
             None => match target.format.as_str() {
                 "json" => cage_target_json::JsonTargetGenerator::from_config(target)
-                    .generate(&gen_doc, &[]),
-                "csv" => {
-                    cage_target_csv::CsvTargetGenerator::from_config(target).generate(&gen_doc, &[])
-                }
+                    .generate(&gen_doc, &[])
+                    .map_err(BuildFailure::Validation),
+                "csv" => cage_target_csv::CsvTargetGenerator::from_config(target)
+                    .generate(&gen_doc, &[])
+                    .map_err(BuildFailure::Validation),
                 other => {
                     return Err(BuildFailure::Io(format!(
                         "unsupported target format '{other}'"
@@ -943,13 +947,9 @@ fn build_project(
                 }
             },
         };
-        match generated {
-            Ok(items) => {
-                write_artifact_files(path, items, &target.format, &mut artifacts)
-                    .map_err(BuildFailure::Io)?;
-            }
-            Err(diags) => return Err(BuildFailure::Validation(diags)),
-        }
+        let items = generated?;
+        write_artifact_files(path, items, &target.format, &mut artifacts)
+            .map_err(BuildFailure::Io)?;
     }
     // Canonical artifact order (path-sorted) so a layer-2 incremental run and
     // a full build produce byte-identical manifests (same inputs → same
@@ -1520,16 +1520,23 @@ fn run_gen(path: &Path, profile: &str) -> i32 {
 
     let mut artifacts: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
     for target in &build_profile.targets {
-        if let Some(items) = code_target_items(target, &schema, &schema_hash) {
-            if let Err(e) = write_artifact_files(path, items, &target.format, &mut artifacts) {
+        match code_target_items(target, &schema, &schema_hash, path) {
+            Some(Ok(items)) => {
+                if let Err(e) = write_artifact_files(path, items, &target.format, &mut artifacts) {
+                    eprintln!("error: {e}");
+                    return 2;
+                }
+            }
+            Some(Err(e)) => {
                 eprintln!("error: {e}");
                 return 2;
             }
+            None => {}
         }
     }
     if artifacts.is_empty() {
         eprintln!(
-            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java)"
+            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java/template)"
         );
         return 2;
     }
@@ -1559,45 +1566,50 @@ fn run_gen(path: &Path, profile: &str) -> i32 {
 }
 
 /// Generate code-target artifacts for one target config; `None` when the
-/// format is a data target (json/csv) rather than a code target. All
-/// generators are schema-driven, deterministic, and infallible; each file
-/// header is stamped with the manifest's schema hash.
+/// format is a data target (json/csv) rather than a code target. The
+/// bundled language generators are schema-driven, deterministic, and
+/// infallible; the user-template target (`format = "template"`) renders
+/// `.tera` files from disk and can fail — its `Err` names the offending
+/// template file or the missing template directory. Each file header is
+/// stamped with the manifest's schema hash.
+type CodeTargetItems = Result<Vec<(String, Vec<u8>)>, String>;
+
 fn code_target_items(
     target: &TargetConfig,
     schema: &Schema,
     schema_hash: &str,
-) -> Option<Vec<(String, Vec<u8>)>> {
+    root: &Path,
+) -> Option<CodeTargetItems> {
     // "csharp"/"python"/"typescript" per docs; short aliases ("cs"/"py"/
     // "ts"/"js") and the common alternates ("golang", "c++"/"cxx") accepted.
     match target.format.as_str() {
-        "cs" | "csharp" => Some(
-            cage_target_cs::CsTargetGenerator::from_config(target)
-                .generate(schema, Some(schema_hash)),
-        ),
-        "python" | "py" => Some(
-            cage_target_py::PyTargetGenerator::from_config(target)
-                .generate(schema, Some(schema_hash)),
-        ),
-        "lua" => Some(
-            cage_target_lua::LuaTargetGenerator::from_config(target)
-                .generate(schema, Some(schema_hash)),
-        ),
-        "typescript" | "ts" | "javascript" | "js" => Some(
-            cage_target_ts::TsTargetGenerator::from_config(target)
-                .generate(schema, Some(schema_hash)),
-        ),
-        "cpp" | "c++" | "cxx" => Some(
-            cage_target_cpp::CppTargetGenerator::from_config(target)
-                .generate(schema, Some(schema_hash)),
-        ),
-        "go" | "golang" => Some(
-            cage_target_go::GoTargetGenerator::from_config(target)
-                .generate(schema, Some(schema_hash)),
-        ),
-        "java" => Some(
-            cage_target_java::JavaTargetGenerator::from_config(target)
-                .generate(schema, Some(schema_hash)),
-        ),
+        "cs" | "csharp" => Some(Ok(cage_target_cs::CsTargetGenerator::from_config(target)
+            .generate(schema, Some(schema_hash)))),
+        "python" | "py" => Some(Ok(cage_target_py::PyTargetGenerator::from_config(target)
+            .generate(schema, Some(schema_hash)))),
+        "lua" => Some(Ok(cage_target_lua::LuaTargetGenerator::from_config(target)
+            .generate(schema, Some(schema_hash)))),
+        "typescript" | "ts" | "javascript" | "js" => {
+            Some(Ok(cage_target_ts::TsTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash))))
+        }
+        "cpp" | "c++" | "cxx" => Some(Ok(cage_target_cpp::CppTargetGenerator::from_config(target)
+            .generate(schema, Some(schema_hash)))),
+        "go" | "golang" => Some(Ok(cage_target_go::GoTargetGenerator::from_config(target)
+            .generate(schema, Some(schema_hash)))),
+        "java" => Some(Ok(cage_target_java::JavaTargetGenerator::from_config(
+            target,
+        )
+        .generate(schema, Some(schema_hash)))),
+        "template" => {
+            let mut gen = cage_target_template::TemplateTargetGenerator::from_config(target);
+            // `options.template_dir` (default `.cage/templates`) is relative
+            // to the project root, like output_dir — not the process CWD.
+            if gen.template_dir.is_relative() {
+                gen.template_dir = root.join(&gen.template_dir);
+            }
+            Some(gen.generate(schema, Some(schema_hash)))
+        }
         _ => None,
     }
 }

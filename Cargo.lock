@@ -237,6 +237,7 @@ dependencies = [
  "cage-target-json",
  "cage-target-lua",
  "cage-target-py",
+ "cage-target-template",
  "cage-target-ts",
  "clap",
  "indexmap",

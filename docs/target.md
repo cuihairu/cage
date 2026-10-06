@@ -120,6 +120,7 @@ JavaScript      ← 已实装
 C++             ← 已实装
 Go              ← 已实装
 Java            ← 已实装
+Template        ← 已实装（用户自定义模板）
 ```
 
 （「规划」项不在 `format =` 支持范围内，构建报
@@ -127,8 +128,9 @@ Java            ← 已实装
 
 Code Target 的现役生成方式（plan → render → verify 直渲染，不依赖 AST
 库）及其选型理由见仓库设计稿 `docs/design.md` 的 Code Targets 章节；
-模板化形态（Template Target，Tera——官方模板随包 + 用户自定义模板，
-决策仍在 Rust 过滤器层）同见 §22，按 G 系列推进中。
+模板化形态（Template Target，Tera）已全量交付——官方语言模板随包
+（G2），用户自定义模板经 `format = "template"` 接入（G3，见下节），
+决策仍在 Rust 过滤器层，同见 §22。
 
 例如同一份数据：
 
@@ -404,6 +406,52 @@ enums_file = "CageEnums.java"  # 默认 CageEnums.java
   `new HashMap<>()`，标量成员 `new HashMap<>(Map.of(…))` 每实例新建
   （超过 `Map.of` 的 10 对重载上限整体跳过）；import 按嵌套字段类型
   递归扫描注入
+
+## Template：用户自定义模板
+
+`format = "template"` 用 [Tera](https://keats.github.io/tera/) 模板渲染
+Schema IR——语言绑定之外的任意文本产物（配置文件、文档、DSL 脚本）走这
+条通道。模板从磁盘加载，不随包：
+
+```toml
+[[profiles.client.targets]]
+format = "template"
+output_dir = "build/tpl"
+
+[profiles.client.targets.options]
+template_dir = "my_templates"   # 默认 .cage/templates（相对项目根）
+```
+
+模板文件约定：
+
+- **输出名 = 模板相对路径去掉 `.tera` 后缀**（`defs.tera` →
+  `defs`、`{table}.tpl.tera` → `Item.tpl`），子目录结构原样保留
+- 文件名含 `{table}` 占位符的模板**每表渲染一次**（表名序）；不含的
+  **全局渲染一次**（模板名序）。产物顺序 = 模板名序 × 表名序，
+  两跑逐字节一致
+- 目录不存在、目录里没有 `*.tera`、模板语法错 → 退出码 2，错误信息
+  指到对应模板文件（Tera 的 cause 链完整展开）
+
+模板上下文（Schema IR 原样序列化 + 两个补充键）：
+
+| 变量 | 形状 | 可用性 |
+|------|------|--------|
+| `tables` | 表名 → 表（`name` / `description` / `primary_key` / `fields` / `unique_constraints` / `order_by` / `targets`） | 恒有 |
+| `table` | 当前表（同上形状） | 仅 `{table}` 模板 |
+| `enums` | 枚举名 → 枚举定义 | 恒有 |
+| `metadata` | Schema 级元数据 | 可空 |
+| `schema_hash` | 内容哈希（确定性构建口径） | 恒有（缺省 `(unavailable)` 场合为 null，配 `default` 过滤器兜底） |
+
+`fields` 是字段名 → 字段的映射（`name` / `type` / `description` /
+`required` / `default` / `min` / `max` / `min_length` / `max_length`）。
+Tera 内置过滤器全量可用，另附三个命名约定过滤器：`snake_case` /
+`camelCase` / `PascalCase`。
+
+```text
+.cage/templates/{table}.tpl.tera   →   build/tpl/Item.tpl
+────────────────────────────────────────────────────────────
+table={{ table.name }} pk-snake={{ table.name | snake_case }}
+```
 
 ## Profile：前端 / 后端
 
