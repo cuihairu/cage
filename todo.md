@@ -281,8 +281,17 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       （import 面预计算——field/Any/enum 三路按需、dataclass 分组排序
       plain→defaulted 且成员行整体预拼、IntEnum-vs-plain-class 按全整型
       判定、IntEnum/字符串桶字面量），`templates/table.py.tera` +
-      `enums.py.tera` 随包，18 测试不改一字全绿
-- [ ] G2b 余量改写：TS/JS → C++ → Go → Java 逐 crate
+      `enums.py.tera` 随包，18 测试不改一字全绿。TS/JS 第四签（双形态
+      crate 一笔）：TS 与 JS 两模式 ×6 模板随包（table.{ts,js,d.ts} +
+      enums.{ts,js,d.ts}.tera，.d.ts 走 `dts_path_for` 派生模板名），
+      JS 模式每表 .js+.d.ts 成对发射——引擎「传入序 × 表名序」是模板主序，
+      与旧逐表交错序不同，改为 main/dts 两次 generate_official 再按序
+      zip（两遍走同一表集与 enums 条件，1:1 对齐），路径序测试不改一字
+      仍锁定旧交错序；决策进 `ts_extras`（双 plan 预计算——Local 与
+      InlineImport 两种枚举拼写同备、import type 整行、jsdoc 名称括号
+      与扫描器安全分行判定、default_rows 与 factory_inline 同源、
+      枚举桶字面量 + typedef 行），28 测试不改一字全绿
+- [ ] G2b 余量改写：C++ → Go → Java 逐 crate
       复制 Lua/C# 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
       逐字节不变），全数落地后 G2 勾选收口
 - [ ] G3 自定义模板加载：CLI 接线——target 配置 `template_dir`

@@ -52,6 +52,8 @@ use cage_core::{
         EnumSchema, EnumValue, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema,
     },
 };
+use cage_target_template::TemplateTargetGenerator;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -65,6 +67,15 @@ pub enum TsMode {
     /// (format `javascript` / `js`).
     JavaScript,
 }
+
+/// Official templates ship with the crate (design §22 G2): `include_str!`
+/// compiles them into the binary so no filesystem is needed.
+const TABLE_TS_TEMPLATE: &str = include_str!("../templates/table.ts.tera");
+const TABLE_JS_TEMPLATE: &str = include_str!("../templates/table.js.tera");
+const TABLE_DTS_TEMPLATE: &str = include_str!("../templates/table.d.ts.tera");
+const ENUMS_TS_TEMPLATE: &str = include_str!("../templates/enums.ts.tera");
+const ENUMS_JS_TEMPLATE: &str = include_str!("../templates/enums.js.tera");
+const ENUMS_DTS_TEMPLATE: &str = include_str!("../templates/enums.d.ts.tera");
 
 /// TypeScript/JavaScript Target Generator
 pub struct TsTargetGenerator {
@@ -127,374 +138,68 @@ impl TsTargetGenerator {
     /// `schema_hash` is the same hash `manifest.json` records for the schema
     /// (Build Manifest 口径); it is stamped into every file header.
     pub fn generate(&self, schema: &Schema, schema_hash: Option<&str>) -> Vec<(String, Vec<u8>)> {
-        let mut artifacts = Vec::new();
-        for table in sorted_tables(schema) {
-            let content = self.render_table(schema, table, schema_hash);
-            artifacts.push((self.path_for(&table.name), content.into_bytes()));
-            if self.mode == TsMode::JavaScript && self.emit_dts {
-                let decl = self.render_table_dts(schema, table, schema_hash);
-                artifacts.push((dts_path_for(&self.path_for(&table.name)), decl.into_bytes()));
-            }
-        }
-        if !emitted_enums(schema).is_empty() {
-            let content = self.render_enums(schema, schema_hash);
-            let path = self
-                .output_dir
-                .join(&self.enums_file)
-                .to_string_lossy()
-                .to_string();
-            artifacts.push((path.clone(), content.into_bytes()));
-            if self.mode == TsMode::JavaScript && self.emit_dts {
-                let decl = render_enums_dts(schema, schema_hash);
-                artifacts.push((dts_path_for(&path), decl.into_bytes()));
-            }
-        }
-        artifacts
-    }
-
-    fn path_for(&self, table_name: &str) -> String {
-        let file_name = self.file_template.replace("{table}", table_name);
-        self.output_dir
-            .join(file_name)
-            .to_string_lossy()
-            .to_string()
-    }
-
-    fn render_table(
-        &self,
-        schema: &Schema,
-        table: &TableSchema,
-        schema_hash: Option<&str>,
-    ) -> String {
-        let style = match self.mode {
-            TsMode::TypeScript => EnumStyle::Local,
-            TsMode::JavaScript => EnumStyle::InlineImport,
+        // Official templates ship with this crate (design §22 G2): rendered
+        // from memory, registered in the legacy emission order.
+        let engine = TemplateTargetGenerator {
+            output_dir: self.output_dir.clone(),
+            // Official mode renders from memory; the directory is unused.
+            template_dir: PathBuf::new(),
         };
-        let plan = plan_table(schema, table, style, &self.enums_file);
-        let js = self.mode == TsMode::JavaScript;
-        let ident = &plan.table_ident;
-
-        let mut out = String::new();
-        out.push_str(&header(&format!("table:  {}", table.name), schema_hash));
-        let _ = writeln!(out);
-
-        // Type-only import of the enums actually used (TS mode only — JSDoc
-        // spells enums through inline `import("…")` types instead).
-        if !js && !plan.import_rows.is_empty() {
-            let names = plan
-                .import_rows
-                .iter()
-                .map(|(export, local)| {
-                    if export == local {
-                        export.clone()
-                    } else {
-                        format!("{export} as {local}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let _ = writeln!(
-                out,
-                "import type {{ {names} }} from \"{}\";",
-                module_specifier(&self.enums_file)
-            );
-            let _ = writeln!(out);
-        }
-
-        if js {
-            // JSDoc typedef describing the interface (no runtime imports).
-            let _ = writeln!(out, "/**");
-            if let Some(desc) = &table.description {
-                let _ = writeln!(out, " * {desc}");
-            }
-            let _ = writeln!(out, " * {}", banner_line(table));
-            let _ = writeln!(out, " * @typedef {{Object}} {ident}");
-            for m in &plan.members {
-                let ty = ts_type(m.ft, schema, &plan.enum_ty);
-                let name = m.jsdoc_name();
-                match &m.doc {
-                    // Bracketed names re-lex the description's first
-                    // character; unsafe starters go on a continuation line.
-                    Some(doc) if m.is_optional() && !jsdoc_desc_safe(doc) => {
-                        let _ = writeln!(out, " * @property {{{ty}}} {name}");
-                        let _ = writeln!(out, " * {doc}");
-                    }
-                    Some(doc) => {
-                        let _ = writeln!(out, " * @property {{{ty}}} {name} {doc}");
-                    }
-                    None => {
-                        let _ = writeln!(out, " * @property {{{ty}}} {name}");
-                    }
+        match self.mode {
+            TsMode::TypeScript => {
+                let mut templates: Vec<(&str, &str)> =
+                    vec![(self.file_template.as_str(), TABLE_TS_TEMPLATE)];
+                if !emitted_enums(schema).is_empty() {
+                    templates.push((self.enums_file.as_str(), ENUMS_TS_TEMPLATE));
                 }
+                engine
+                    .generate_official(
+                        schema,
+                        schema_hash,
+                        &templates,
+                        |_tera, _schema| {},
+                        |schema, table| ts_extras(&self.enums_file, schema, table),
+                    )
+                    .expect("official TypeScript templates are valid Tera")
             }
-            let _ = writeln!(out, " */");
-        } else {
-            // JSDoc header block: description line + banner line.
-            match &table.description {
-                Some(desc) => {
-                    let _ = writeln!(out, "/**");
-                    let _ = writeln!(out, " * {desc}");
-                    let _ = writeln!(out, " * {}", banner_line(table));
-                    let _ = writeln!(out, " */");
+            TsMode::JavaScript => {
+                // Legacy emission order interleaves each `.js` module with
+                // its `.d.ts` declaration (then the enums pair), so the two
+                // flavors render in separate passes and zip back together —
+                // both passes walk the same table/enums set, so the zip is
+                // 1:1.
+                let mut mains: Vec<(&str, &str)> =
+                    vec![(self.file_template.as_str(), TABLE_JS_TEMPLATE)];
+                let dts_table_name = dts_path_for(&self.file_template);
+                let dts_enums_name = dts_path_for(&self.enums_file);
+                let mut decls: Vec<(&str, &str)> =
+                    vec![(dts_table_name.as_str(), TABLE_DTS_TEMPLATE)];
+                if !emitted_enums(schema).is_empty() {
+                    mains.push((self.enums_file.as_str(), ENUMS_JS_TEMPLATE));
+                    decls.push((dts_enums_name.as_str(), ENUMS_DTS_TEMPLATE));
                 }
-                None => {
-                    let _ = writeln!(out, "/** {} */", banner_line(table));
-                }
-            }
-            if plan.members.is_empty() {
-                let _ = writeln!(out, "export interface {ident} {{}}");
-            } else {
-                let _ = writeln!(out, "export interface {ident} {{");
-                for m in &plan.members {
-                    if let Some(doc) = &m.doc {
-                        let _ = writeln!(out, "  /** {doc} */");
-                    }
-                    let opt = if m.required || m.default.is_some() {
-                        ""
-                    } else {
-                        "?"
-                    };
-                    let ty = ts_type(m.ft, schema, &plan.enum_ty);
-                    let _ = writeln!(out, "  {}{opt}: {ty};", m.prop);
-                }
-                let _ = writeln!(out, "}}");
-            }
-        }
-
-        // Defaults const and factory are rendered from the same collection
-        // so they can never drift; the factory inlines fresh literals so
-        // rows never share arrays.
-        let defaults: Vec<(&Member<'_>, &String)> = plan
-            .members
-            .iter()
-            .filter_map(|m| m.default.as_ref().map(|d| (m, d)))
-            .collect();
-        let _ = writeln!(out);
-        if defaults.is_empty() {
-            if js {
-                let _ = writeln!(out, "export const {ident}Defaults = {{}};");
-            } else {
-                let _ = writeln!(
-                    out,
-                    "export const {ident}Defaults: Partial<{ident}> = {{}};"
-                );
-            }
-        } else {
-            if js {
-                let _ = writeln!(out, "export const {ident}Defaults = {{");
-            } else {
-                let _ = writeln!(out, "export const {ident}Defaults: Partial<{ident}> = {{");
-            }
-            for (m, expr) in &defaults {
-                let _ = writeln!(out, "  {}: {expr},", m.prop);
-            }
-            let _ = writeln!(out, "}};");
-        }
-        let inline = defaults
-            .iter()
-            .map(|(m, expr)| format!("{}: {expr}", m.prop))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = writeln!(out);
-        if js {
-            let _ = writeln!(out, "export function new{ident}(init = {{}}) {{");
-            if inline.is_empty() {
-                let _ = writeln!(out, "  return {{ ...init }};");
-            } else {
-                let _ = writeln!(out, "  return {{ {inline}, ...init }};");
-            }
-            let _ = writeln!(out, "}}");
-        } else {
-            let _ = writeln!(
-                out,
-                "export function new{ident}(init: Partial<{ident}> = {{}}): {ident} {{"
-            );
-            if inline.is_empty() {
-                let _ = writeln!(out, "  return {{ ...init }} as {ident};");
-            } else {
-                let _ = writeln!(out, "  return {{ {inline}, ...init }} as {ident};");
-            }
-            let _ = writeln!(out, "}}");
-        }
-        out
-    }
-
-    fn render_table_dts(
-        &self,
-        schema: &Schema,
-        table: &TableSchema,
-        schema_hash: Option<&str>,
-    ) -> String {
-        // The declaration pair restates the TS-mode surface as real types.
-        let plan = plan_table(schema, table, EnumStyle::Local, &self.enums_file);
-        let ident = &plan.table_ident;
-
-        let mut out = String::new();
-        out.push_str(&header(&format!("table:  {}", table.name), schema_hash));
-        let _ = writeln!(out);
-        if !plan.import_rows.is_empty() {
-            let names = plan
-                .import_rows
-                .iter()
-                .map(|(export, local)| {
-                    if export == local {
-                        export.clone()
-                    } else {
-                        format!("{export} as {local}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let _ = writeln!(
-                out,
-                "import type {{ {names} }} from \"{}\";",
-                module_specifier(&self.enums_file)
-            );
-            let _ = writeln!(out);
-        }
-        match &table.description {
-            Some(desc) => {
-                let _ = writeln!(out, "/**");
-                let _ = writeln!(out, " * {desc}");
-                let _ = writeln!(out, " * {}", banner_line(table));
-                let _ = writeln!(out, " */");
-            }
-            None => {
-                let _ = writeln!(out, "/** {} */", banner_line(table));
-            }
-        }
-        if plan.members.is_empty() {
-            let _ = writeln!(out, "export interface {ident} {{}}");
-        } else {
-            let _ = writeln!(out, "export interface {ident} {{");
-            for m in &plan.members {
-                if let Some(doc) = &m.doc {
-                    let _ = writeln!(out, "  /** {doc} */");
-                }
-                let opt = if m.required || m.default.is_some() {
-                    ""
-                } else {
-                    "?"
+                let extras = |schema: &Schema, table: Option<&TableSchema>| {
+                    ts_extras(&self.enums_file, schema, table)
                 };
-                let ty = ts_type(m.ft, schema, &plan.enum_ty);
-                let _ = writeln!(out, "  {}{opt}: {ty};", m.prop);
-            }
-            let _ = writeln!(out, "}}");
-        }
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "export declare const {ident}Defaults: Partial<{ident}>;"
-        );
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "export declare function new{ident}(init?: Partial<{ident}>): {ident};"
-        );
-        out
-    }
-
-    fn render_enums(&self, schema: &Schema, schema_hash: Option<&str>) -> String {
-        let mut out = String::new();
-        out.push_str(&header("enums:  shared definitions", schema_hash));
-        let _ = writeln!(out);
-
-        let exports = enum_exports(schema);
-        for (i, (name, export)) in exports.iter().enumerate() {
-            // `emitted_enums` already dropped empty enums.
-            let e = &schema.enums[*name];
-            if i > 0 {
-                let _ = writeln!(out);
-            }
-            match &e.description {
-                Some(desc) => {
-                    let _ = writeln!(out, "// {} — {}", e.name, desc);
+                let main_artifacts = engine
+                    .generate_official(schema, schema_hash, &mains, |_tera, _schema| {}, extras)
+                    .expect("official JavaScript templates are valid Tera");
+                if !self.emit_dts {
+                    return main_artifacts;
                 }
-                None => {
-                    let _ = writeln!(out, "// {}", e.name);
+                let decl_artifacts = engine
+                    .generate_official(schema, schema_hash, &decls, |_tera, _schema| {}, extras)
+                    .expect("official JavaScript declaration templates are valid Tera");
+                debug_assert_eq!(main_artifacts.len(), decl_artifacts.len());
+                let mut artifacts = Vec::with_capacity(main_artifacts.len() + decl_artifacts.len());
+                for pair in main_artifacts.into_iter().zip(decl_artifacts) {
+                    artifacts.push(pair.0);
+                    artifacts.push(pair.1);
                 }
-            }
-            // Numeric bucket only when every member carries an integral
-            // value; otherwise members are stringified (name as fallback).
-            let all_integral = e.values.iter().all(|v| {
-                matches!(&v.value, Some(serde_json::Value::Number(n)) if n.is_i64() || n.is_u64())
-            });
-            if self.mode == TsMode::TypeScript {
-                let _ = writeln!(out, "export const {export} = {{");
-                emit_enum_members(&mut out, e, all_integral, "  ");
-                let _ = writeln!(out, "}} as const;");
-                let _ = writeln!(
-                    out,
-                    "export type {export} = (typeof {export})[keyof typeof {export}];"
-                );
-            } else {
-                let _ = writeln!(out, "export const {export} = Object.freeze({{");
-                emit_enum_members(&mut out, e, all_integral, "  ");
-                let _ = writeln!(out, "}});");
-                let base = if all_integral { "number" } else { "string" };
-                let _ = writeln!(out, "/** @typedef {{{base}}} {export} */");
+                artifacts
             }
         }
-        out
     }
-}
-
-/// Tables in name order (deterministic emission order).
-fn sorted_tables(schema: &Schema) -> Vec<&TableSchema> {
-    let mut tables: Vec<&TableSchema> = schema.tables.values().collect();
-    tables.sort_by(|a, b| a.name.cmp(&b.name));
-    tables
-}
-
-/// JavaScript-mode enums declaration: literal object types per bucket.
-fn render_enums_dts(schema: &Schema, schema_hash: Option<&str>) -> String {
-    let mut out = String::new();
-    out.push_str(&header("enums:  shared definitions", schema_hash));
-    let _ = writeln!(out);
-
-    let exports = enum_exports(schema);
-    for (i, (name, export)) in exports.iter().enumerate() {
-        let e = &schema.enums[*name];
-        if i > 0 {
-            let _ = writeln!(out);
-        }
-        match &e.description {
-            Some(desc) => {
-                let _ = writeln!(out, "// {} — {}", e.name, desc);
-            }
-            None => {
-                let _ = writeln!(out, "// {}", e.name);
-            }
-        }
-        let all_integral = e.values.iter().all(
-            |v| matches!(&v.value, Some(serde_json::Value::Number(n)) if n.is_i64() || n.is_u64()),
-        );
-        // Literal object type built per member, matching the bucket.
-        let mut used: HashSet<String> = HashSet::new();
-        let members = e
-            .values
-            .iter()
-            .map(|v| {
-                let key = unique_ident(sanitize_ident(&v.name), &mut used);
-                let ty = if all_integral {
-                    match &v.value {
-                        Some(serde_json::Value::Number(n)) => n.to_string(),
-                        _ => ts_string_literal(&v.name),
-                    }
-                } else {
-                    ts_string_literal(&enum_string_value(v))
-                };
-                format!("readonly {key}: {ty}")
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        let _ = writeln!(out, "export declare const {export}: {{ {members} }};");
-        let _ = writeln!(
-            out,
-            "export type {export} = (typeof {export})[keyof typeof {export}];"
-        );
-    }
-    out
 }
 
 /// Emitted shared enums in name order; empty enums are skipped everywhere.
@@ -591,18 +296,6 @@ fn dts_path_for(js_path: &str) -> String {
         Some(stem) => format!("{stem}.d.ts"),
         None => format!("{js_path}.d.ts"),
     }
-}
-
-/// `//`-comment file header, identical shape to the other code targets.
-fn header(what: &str, schema_hash: Option<&str>) -> String {
-    let hash = schema_hash.unwrap_or("(unavailable)");
-    format!(
-        "// <auto-generated>\n\
-         //   Generated by Cage — do not edit.\n\
-         //   schema: {hash}\n\
-         //   {what}\n\
-         // </auto-generated>\n"
-    )
 }
 
 /// JS reserved + strict-mode reserved + TS-specific words that can appear
@@ -1157,28 +850,156 @@ fn enum_string_value(v: &EnumValue) -> String {
     }
 }
 
-/// Emit enum member rows (schema order) at `indent`; keys are property
-/// positions (sanitized + uniqued, never keyword-escaped).
-fn emit_enum_members(out: &mut String, e: &EnumSchema, all_integral: bool, indent: &str) {
-    let mut used: HashSet<String> = HashSet::new();
-    for v in &e.values {
-        let key = unique_ident(sanitize_ident(&v.name), &mut used);
-        let value = if all_integral {
-            match &v.value {
-                Some(serde_json::Value::Number(n)) => n.to_string(),
-                _ => v.name.clone(),
-            }
+/// Language precomputation for the official TypeScript/JavaScript
+/// templates (design §22 G2): every decision the legacy renderer made —
+/// import surface, both enum spellings (Local binding vs inline
+/// `import("…")`), `JSDoc` scanner safety, defaults and factory inlining —
+/// is computed here; the templates only express text shape. The context
+/// serves all registered flavors of one mode: `.ts` uses the Local `ty`,
+/// `.js` the braced `ty_jsdoc`, `.d.ts` the Local `ty` again.
+//
+// Contract: returns `Result` to match the `extras` hook signature even
+// though this precomputation is infallible.
+#[allow(clippy::unnecessary_wraps)]
+fn ts_extras(
+    enums_file: &str,
+    schema: &Schema,
+    table: Option<&TableSchema>,
+) -> Result<Value, String> {
+    if let Some(t) = table {
+        // Both enum spellings, so every registered flavor can pick its
+        // own: `.ts`/`.d.ts` render Local types, `.js` inline imports.
+        let plan_local = plan_table(schema, t, EnumStyle::Local, enums_file);
+        let plan_inline = plan_table(schema, t, EnumStyle::InlineImport, enums_file);
+
+        // Type-only import of the enums actually used (TS table files and
+        // `.d.ts`; JSDoc spells enums through inline `import("…")` types).
+        let import_line: Option<String> = if plan_local.import_rows.is_empty() {
+            None
         } else {
-            ts_string_literal(&enum_string_value(v))
+            let names = plan_local
+                .import_rows
+                .iter()
+                .map(|(export, local)| {
+                    if export == local {
+                        export.clone()
+                    } else {
+                        format!("{export} as {local}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!(
+                "import type {{ {names} }} from \"{}\";",
+                module_specifier(enums_file)
+            ))
         };
-        match &v.description {
-            Some(desc) => {
-                let _ = writeln!(out, "{indent}{key}: {value}, // {desc}");
-            }
-            None => {
-                let _ = writeln!(out, "{indent}{key}: {value},");
-            }
-        }
+
+        let members: Vec<Value> = plan_local
+            .members
+            .iter()
+            .zip(plan_inline.members.iter())
+            .map(|(m, mj)| {
+                let doc = m.doc.clone();
+                // Bracketed names re-lex the description's first
+                // character; unsafe starters move to a continuation line.
+                let doc_on_line = match &doc {
+                    Some(d) => !m.is_optional() || jsdoc_desc_safe(d),
+                    None => true,
+                };
+                json!({
+                    "prop": m.prop,
+                    "opt": if m.is_optional() { "?" } else { "" },
+                    "ty": ts_type(m.ft, schema, &plan_local.enum_ty),
+                    "ty_jsdoc": format!("{{{}}}", ts_type(mj.ft, schema, &plan_inline.enum_ty)),
+                    "jsdoc_name": m.jsdoc_name(),
+                    "doc": doc,
+                    "doc_on_line": doc_on_line,
+                })
+            })
+            .collect();
+
+        // Defaults const and factory are rendered from the same collection
+        // so they can never drift; the factory inlines fresh literals so
+        // rows never share arrays.
+        let default_rows: Vec<Value> = plan_local
+            .members
+            .iter()
+            .filter_map(|m| {
+                m.default
+                    .as_ref()
+                    .map(|d| json!({ "prop": m.prop, "expr": d }))
+            })
+            .collect();
+        let factory_inline = plan_local
+            .members
+            .iter()
+            .filter_map(|m| m.default.as_ref().map(|d| format!("{}: {d}", m.prop)))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        Ok(json!({
+            "header_what": format!("table:  {}", t.name),
+            "description": t.description,
+            "banner": banner_line(t),
+            "ident": plan_local.table_ident,
+            "import_line": import_line,
+            "interface_empty": plan_local.members.is_empty(),
+            "defaults_empty": default_rows.is_empty(),
+            "factory_inline": factory_inline,
+            "default_rows": default_rows,
+            "members": members,
+        }))
+    } else {
+        let enums: Vec<Value> = enum_exports(schema)
+            .into_iter()
+            .map(|(name, export)| {
+                // `emitted_enums` already dropped empty enums.
+                let e = &schema.enums[name];
+                // Numeric bucket only when every member carries an
+                // integral value; otherwise members are stringified (name
+                // as fallback). The bucket literal is shared by the
+                // runtime rows and the `.d.ts` readonly pairs (the only
+                // textual divergence, a non-number value in the integral
+                // bucket, is unreachable by construction).
+                let all_integral = e.values.iter().all(|v| {
+                    matches!(
+                        &v.value,
+                        Some(serde_json::Value::Number(n)) if n.is_i64() || n.is_u64()
+                    )
+                });
+                let mut used: HashSet<String> = HashSet::new();
+                let members: Vec<Value> = e
+                    .values
+                    .iter()
+                    .map(|v| {
+                        let key = unique_ident(sanitize_ident(&v.name), &mut used);
+                        let value = if all_integral {
+                            match &v.value {
+                                Some(serde_json::Value::Number(n)) => n.to_string(),
+                                _ => v.name.clone(),
+                            }
+                        } else {
+                            ts_string_literal(&enum_string_value(v))
+                        };
+                        json!({ "key": key, "value": value, "desc": v.description })
+                    })
+                    .collect();
+                let base = if all_integral { "number" } else { "string" };
+                let typedef_line = format!("/** @typedef {{{base}}} {export} */");
+                json!({
+                    "name": e.name,
+                    "export": export,
+                    "description": e.description,
+                    "typedef_line": typedef_line,
+                    "members": members,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "header_what": "enums:  shared definitions",
+            "emitted_enums": enums,
+        }))
     }
 }
 
