@@ -276,8 +276,13 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       summary_head+desc 转义、class_ident、members 名序含可选 `?` 与
       ref-init 解析、enum-vs-static-class 按全整型判定分流与 backing
       后缀选择），`templates/table.cs.tera` + `enums.cs.tera` 随包，
-      18 测试不改一字全绿
-- [ ] G2b 余量改写：Python → TS/JS → C++ → Go → Java 逐 crate
+      18 测试不改一字全绿。Python 第三签：render_table / render_enums /
+      header / path_for / sorted_tables 摘除，决策进 `py_extras`
+      （import 面预计算——field/Any/enum 三路按需、dataclass 分组排序
+      plain→defaulted 且成员行整体预拼、IntEnum-vs-plain-class 按全整型
+      判定、IntEnum/字符串桶字面量），`templates/table.py.tera` +
+      `enums.py.tera` 随包，18 测试不改一字全绿
+- [ ] G2b 余量改写：TS/JS → C++ → Go → Java 逐 crate
       复制 Lua/C# 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
       逐字节不变），全数落地后 G2 勾选收口
 - [ ] G3 自定义模板加载：CLI 接线——target 配置 `template_dir`
