@@ -256,7 +256,7 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       实装状态 G1 交付 / G2–G5 未开工）+ §23 决策更新段（论证留档 +
       反转理由写实）+ target.md 引用句同步。实现顺序后续四步：
       引擎接入（本轮）→ 官方模板改写 → 自定义模板加载 → 过滤器库
-- [ ] G2 官方模板改写（推进中，Lua / C# / Python / TS-JS / C++ / Go 已落地；余 Java 见 G2b）：各语言
+- [x] G2 官方模板改写（已交付，7 crate 全数落地）：各语言
       （C#/Python/Lua/TS/JS/C++/Go/Java，7 crate）生成器 render 层改写
       为随包官方 `.tera` 模板（crate 内 `templates/` 目录可复制可改 +
       `include_str!` 编译进二进制保无文件系统时可用）；plan 层决策沉淀
@@ -318,10 +318,39 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       gofmt 列对齐三形态（多字段 vtab 对齐 / 单字段空格分隔 / 空
       struct{} 一行壳）、构造器几何均值分节（44 字符 ident）、枚举
       三桶 backing 与单 spec 行内注释、包级名冲突后缀（表先于枚举）、
-      map 键序与跳项、未解析 enum 回退、确定性两跑一致
-- [ ] G2b 余量改写：Java 逐 crate
+      map 键序与跳项、未解析 enum 回退、确定性两跑一致。Java 第七签：
+      render_table / header 摘除（header 转 `#[cfg(test)]` 支撑遗留
+      renderer），render_enums 转 `#[cfg(test)]`
+      （test_render_enums_skips_unallocated_idents 直调「跳过未分配
+      ident」防御边界），push_javadoc 转 `#[cfg(test)]`（直调空 body
+      边界），path_for / enums_path 保留——generate 重写为
+      generate_official 调用（table.java.tera 恒在、enums.java.tera 仅
+      有非空 enum 时注册），**产物按发射序重 path**（Java file stem =
+      class ident 而非 schema name，引擎按 schema name 替换 {table}，
+      zip 回写 legacy 路径——同 TS 双遍先例零引擎改动）；决策进
+      `Self::java_extras`——表侧：rows 逐字段解析（member 唯一 ident、
+      default 内联、enum_text qualified Holder.Enum 判定——表类与枚举
+      同名走 `Holder.Enum` 免 import）、imports 四路收集（List /
+      ArrayList / Map / HashMap 含嵌套扫描 + holder 枚举 import 去重）
+      字典序排序、banner_head（裸名或主键列举）、members decl
+      （optionality 分组规则 + default 内联 + field_doc），枚举侧整包
+      返回预计算 context（None 分发；`java_enums_context` 三桶 payload
+      int/long/String 判定、integral_literal/string_bucket_value 字面量
+      与 note 预拼 decl 行、单行 javadoc banner、未分配 ident skip 语义
+      保留）。templates/table.java.tera + enums.java.tera 随包（头注释
+      即模板文档），Tera 空白控制逐字节复刻 legacy writeln 序列
+      （package 先 header 后、import 块按需、javadoc 两形态——多行
+      desc 在上单行 head、成员间单空行、空表类体单行闭合、枚举块
+      构造器空行形状、文件尾单换行）。验收：java 20 测试不改一字
+      全绿（含路径序 class ident stem、qualified 免 import、空表壳、
+      枚举三桶与 note、子目录 enums_file、确定性两跑一致）+
+      javac 真机编译回验（edge / sample 样本 javac 全过）。修正三处：
+      模板文件尾补换行（输出收尾 \n 丢失即断言崩）、rows 解析 used
+      集移出循环外（成员唯一性跨表共享）、uninlined_format_args 内联
+- [x] G2b 余量改写（已交付）：Go → Java 逐 crate
       复制 Lua/C# 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
-      逐字节不变），全数落地后 G2 勾选收口
+      逐字节不变）——六签全数落地（C# / Python / TS-JS / C++ / Go /
+      Java，Lua 首签在 G2 正条），G2 已勾选收口
 - [ ] G3 自定义模板加载：CLI 接线——target 配置 `template_dir`
       （`.cage/templates/` 惯例位置，相对项目根），`code_target_items`
       开 Result 分支承接模板渲染错误（现役口径不可失败），

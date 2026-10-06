@@ -55,9 +55,16 @@ use cage_core::{
         EnumSchema, EnumValue, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema,
     },
 };
+use cage_target_template::TemplateTargetGenerator;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+/// Official templates ship with the crate (design §22 G2): `include_str!`
+/// compiles them into the binary so rendering never touches the filesystem.
+const TABLE_JAVA_TEMPLATE: &str = include_str!("../templates/table.java.tera");
+const ENUMS_JAVA_TEMPLATE: &str = include_str!("../templates/enums.java.tera");
 
 /// Java Target Generator
 pub struct JavaTargetGenerator {
@@ -200,7 +207,6 @@ impl JavaTargetGenerator {
     /// `schema_hash` is the same hash `manifest.json` records for the schema
     /// (Build Manifest 口径); it is stamped into every file header.
     pub fn generate(&self, schema: &Schema, schema_hash: Option<&str>) -> Vec<(String, Vec<u8>)> {
-        let mut artifacts = Vec::new();
         let emitted = Self::emitted_enums(schema);
 
         // One package-level namespace: the enums holder claims its class name
@@ -239,20 +245,64 @@ impl JavaTargetGenerator {
             })
             .collect();
 
-        for (table, class) in &tables {
-            let content = self.render_table(
+        // Enums-unit context, precomputed once (the `extras` hook hands it
+        // to the shared unit render).
+        let enums_ctx = Self::java_enums_context(
+            &self.package,
+            &emitted,
+            enums_class.as_deref(),
+            &enum_idents,
+        );
+
+        // Official templates ship with this crate (design §22 G2): rendered
+        // from memory, registered in the legacy emission order (tables, then
+        // the shared enums unit when the schema has any).
+        let mut templates: Vec<(&str, &str)> =
+            vec![(self.file_template.as_str(), TABLE_JAVA_TEMPLATE)];
+        if !emitted.is_empty() {
+            templates.push((self.enums_file.as_str(), ENUMS_JAVA_TEMPLATE));
+        }
+        let engine = TemplateTargetGenerator {
+            output_dir: self.output_dir.clone(),
+            // Official mode renders from memory; the directory is unused.
+            template_dir: PathBuf::new(),
+        };
+        let package = self.package.clone();
+        let classes_by_name: HashMap<String, String> = tables
+            .iter()
+            .map(|(t, class)| (t.name.clone(), class.clone()))
+            .collect();
+        let holder_for_ctx = enums_class.clone();
+        let mut artifacts = engine
+            .generate_official(
                 schema,
-                table,
-                class,
-                enums_class.as_deref(),
-                &enum_idents,
                 schema_hash,
-            );
-            artifacts.push((self.path_for(class), content.into_bytes()));
+                &templates,
+                |_tera, _schema| {},
+                move |schema, table| {
+                    Self::java_extras(
+                        &package,
+                        &classes_by_name,
+                        holder_for_ctx.as_deref(),
+                        &enum_idents,
+                        &enums_ctx,
+                        schema,
+                        table,
+                    )
+                },
+            )
+            .expect("official Java templates are valid Tera");
+
+        // Java paths follow the allocated class idents, never the raw schema
+        // names (file stem = class ident); re-path the engine's artifacts in
+        // emission order (tables in name order, then the shared unit).
+        for ((path, _), (_, class)) in artifacts.iter_mut().zip(&tables) {
+            *path = self.path_for(class);
         }
         if let Some(holder) = &enums_class {
-            let content = self.render_enums(&emitted, holder, &enum_idents, schema_hash);
-            artifacts.push((self.enums_path(holder), content.into_bytes()));
+            if let Some((path, _)) = artifacts.last_mut() {
+                *path = self.enums_path(holder);
+            }
         }
         artifacts
     }
@@ -318,6 +368,9 @@ impl JavaTargetGenerator {
             .to_string()
     }
 
+    /// `//`-comment file header. Kept for the legacy renderer below; the
+    /// official templates spell the header themselves.
+    #[cfg(test)]
     fn header(what: &str, schema_hash: Option<&str>) -> String {
         let hash = schema_hash.unwrap_or("(unavailable)");
         format!(
@@ -329,28 +382,112 @@ impl JavaTargetGenerator {
         )
     }
 
-    fn render_table(
-        &self,
-        schema: &Schema,
-        table: &TableSchema,
-        class: &str,
+    /// Enums-unit context for the shared enums template: per-enum shape
+    /// decisions — nested `ident` allocation lookup, the single-line
+    /// declaration Javadoc body, payload bucket, and the full constant decl
+    /// lines. An enum whose allocated ident is missing from the map is
+    /// skipped rather than rendered with a broken name (the legacy
+    /// renderer's defensive rule).
+    fn java_enums_context(
+        package: &str,
+        emitted: &[&EnumSchema],
+        holder: Option<&str>,
+        enum_idents: &HashMap<String, String>,
+    ) -> Value {
+        let enums: Vec<Value> = emitted
+            .iter()
+            .filter_map(|e| {
+                let ident = enum_idents.get(e.name.as_str())?;
+
+                // Bucket: every member carries an integral value → int/long
+                // payload picked by value range; otherwise a String payload
+                // (Cage compares enums as strings — same rule as py/lua/cs).
+                let all_integral = !e.values.is_empty()
+                    && e.values.iter().all(|v| {
+                        matches!(&v.value, Some(serde_json::Value::Number(n)) if n.is_i64() || n.is_u64())
+                    });
+                let long_backing = all_integral && e.values.iter().any(|v| !value_fits_i32(v));
+                let payload = if !all_integral {
+                    "String"
+                } else if long_backing {
+                    "long"
+                } else {
+                    "int"
+                };
+
+                let mut used: HashSet<String> = HashSet::new();
+                let n = e.values.len();
+                let members: Vec<Value> = e
+                    .values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let member = unique_ident(java_ident(&v.name), &mut used);
+                        let sep = if i + 1 == n { ";" } else { "," };
+                        let decl = if all_integral {
+                            let (lit, note) = integral_literal(v, long_backing);
+                            match note {
+                                Some(note) => format!("{member}({lit}){sep} // {note}"),
+                                None => format!("{member}({lit}){sep}"),
+                            }
+                        } else {
+                            format!("{member}({}){sep}", string_bucket_value(v))
+                        };
+                        json!({ "decl": decl, "doc": v.description })
+                    })
+                    .collect();
+
+                // Declaration Javadoc body: name, plus description after an
+                // em dash.
+                let banner = match &e.description {
+                    Some(desc) => format!("{} — {}", e.name, desc),
+                    None => e.name.clone(),
+                };
+                Some(json!({
+                    "ident": ident,
+                    "banner": banner,
+                    "payload": payload,
+                    "members": members,
+                }))
+            })
+            .collect();
+        json!({
+            "header_what": "enums:  shared definitions",
+            "package": package,
+            "holder_ident": holder,
+            "emitted_enums": enums,
+        })
+    }
+
+    /// Language precomputation for the official Java templates (design §22
+    /// G2): every decision the legacy renderer made — member idents and
+    /// optionality, enum type text with the qualified-holder rule, the
+    /// sorted import surface, defaults, banner — is computed here; the
+    /// templates only express file shape.
+    //
+    // Contract: returns `Result` to match the `extras` hook signature even
+    // though this precomputation is infallible.
+    #[allow(clippy::unnecessary_wraps)]
+    fn java_extras(
+        package: &str,
+        classes_by_name: &HashMap<String, String>,
         enums_class: Option<&str>,
         enum_idents: &HashMap<String, String>,
-        schema_hash: Option<&str>,
-    ) -> String {
-        let mut out = String::new();
-        let _ = writeln!(out, "package {};", self.package);
-        let _ = writeln!(out);
-        out.push_str(&Self::header(
-            &format!("table:  {}", table.name),
-            schema_hash,
-        ));
-        let _ = writeln!(out);
+        enums_ctx: &Value,
+        schema: &Schema,
+        table: Option<&TableSchema>,
+    ) -> Result<Value, String> {
+        let Some(t) = table else {
+            return Ok(enums_ctx.clone());
+        };
+        let class = &classes_by_name[&t.name];
 
         // Member idents, defaults and enum type text resolved once — the
-        // import scan and the declarations both read this list.
+        // import scan and the declarations both read this list. One `used`
+        // set across the whole table: colliding field keys get suffixed
+        // members.
         let mut used: HashSet<String> = HashSet::new();
-        let rows: Vec<FieldRow> = Self::sorted_fields(table)
+        let rows: Vec<FieldRow> = Self::sorted_fields(t)
             .into_iter()
             .map(|(name, field)| {
                 let member = unique_ident(java_ident(name), &mut used);
@@ -360,8 +497,8 @@ impl JavaTargetGenerator {
                     .filter(|v| !v.is_null())
                     .and_then(|d| render_default(d, &field.field_type, schema));
                 // A table whose own class shares the enum's simple name
-                // must not import it (JLS §7.5.1) — use the qualified
-                // `Holder.Enum` form instead.
+                // must not import it (JLS 7.5.1) — use the qualified
+                // Holder.Enum form instead.
                 let enum_text = match (
                     enums_class,
                     resolve_enum(schema, &field.field_type, enum_idents),
@@ -385,8 +522,8 @@ impl JavaTargetGenerator {
         // Imports: only what the unit uses, one block sorted lexicographically
         // by full name (java.* and the holder's nested enums mixed together).
         // The collection scans walk the whole nested type — a map value may
-        // itself be an array or map, so `map<string, Array<Int32>>` spells
-        // `HashMap<String, List<Integer>>` and uses both imports.
+        // itself be an array or map, so a map of arrays spells
+        // HashMap<String, List<Integer>> and uses both imports.
         let mut imports: Vec<String> = Vec::new();
         if rows.iter().any(|r| uses_list(&r.field.field_type)) {
             imports.push("java.util.List".to_string());
@@ -409,10 +546,10 @@ impl JavaTargetGenerator {
         }
         if let Some(holder) = enums_class {
             for row in &rows {
-                // The qualified `Holder.Enum` form (class-name clash) needs
+                // The qualified Holder.Enum form (class-name clash) needs
                 // no import; idents never contain a dot.
                 if let Some(text) = row.enum_text.as_ref().filter(|t| !t.contains('.')) {
-                    let import = format!("{}.{}.{}", self.package, holder, text);
+                    let import = format!("{package}.{holder}.{text}");
                     if !imports.contains(&import) {
                         imports.push(import);
                     }
@@ -420,61 +557,48 @@ impl JavaTargetGenerator {
             }
         }
         imports.sort();
-        for import in &imports {
-            let _ = writeln!(out, "import {import};");
-        }
-        if !imports.is_empty() {
-            let _ = writeln!(out);
-        }
 
         // Class banner: description first, then name / primary-key head
         // (raw schema name, same 口径 as the Python generator).
-        let head = if table.primary_key.is_empty() {
-            table.name.clone()
+        let head = if t.primary_key.is_empty() {
+            t.name.clone()
         } else {
-            format!(
-                "{} — primary key: {}",
-                table.name,
-                table.primary_key.join(", ")
-            )
+            format!("{} — primary key: {}", t.name, t.primary_key.join(", "))
         };
-        let mut banner: Vec<String> = Vec::new();
-        if let Some(desc) = &table.description {
-            banner.push(desc.clone());
-        }
-        banner.push(head);
-        push_javadoc(&mut out, "", &banner);
-        let _ = writeln!(out, "public final class {class} {{");
-        if rows.is_empty() {
-            out.push_str("}\n");
-            return out;
-        }
 
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                let _ = writeln!(out);
-            }
-            if let Some(doc) = field_doc(schema, row.field) {
-                push_javadoc(&mut out, "    ", &[doc]);
-            }
-            // Optionality group rule: required OR renderable default keeps
-            // the present type; otherwise primitives widen to wrappers
-            // (references are nullable as-is).
-            let optional = !row.field.required && row.default.is_none();
-            let ty = java_type(&row.field.field_type, optional, row.enum_text.as_deref());
-            match &row.default {
-                Some(d) => {
-                    let _ = writeln!(out, "    public {ty} {} = {d};", row.member);
-                }
-                None => {
-                    let _ = writeln!(out, "    public {ty} {};", row.member);
-                }
-            }
-        }
-        out.push_str("}\n");
-        out
+        // Declarations: optionality group rule (required OR renderable
+        // default keeps the present type; otherwise primitives widen to
+        // wrappers, references are nullable as-is), default inlined.
+        let members: Vec<Value> = rows
+            .iter()
+            .map(|row| {
+                let optional = !row.field.required && row.default.is_none();
+                let ty = java_type(&row.field.field_type, optional, row.enum_text.as_deref());
+                let decl = match &row.default {
+                    Some(d) => format!("{ty} {} = {d};", row.member),
+                    None => format!("{ty} {};", row.member),
+                };
+                json!({ "decl": decl, "doc": field_doc(schema, row.field) })
+            })
+            .collect();
+
+        Ok(json!({
+            "header_what": format!("table:  {}", t.name),
+            "package": package,
+            "imports": imports,
+            "banner_head": head,
+            "banner_desc": t.description,
+            "class_ident": class,
+            "members": members,
+        }))
     }
 
+    /// Legacy renderer kept only for
+    /// `test_render_enums_skips_unallocated_idents` (direct call into the
+    /// skip-unallocated defensive boundary the official templates inherit
+    /// via `java_enums_context`'s `filter_map`); production rendering goes
+    /// through the official templates.
+    #[cfg(test)]
     fn render_enums(
         &self,
         emitted: &[&EnumSchema],
@@ -690,7 +814,9 @@ fn resolve_enum<'e>(
 }
 
 /// Javadoc block: one body line renders as `/** … */`, more as a block;
-/// an empty body writes nothing.
+/// an empty body writes nothing. Kept for the direct-call test of the
+/// empty-body boundary; the official templates spell Javadoc themselves.
+#[cfg(test)]
 fn push_javadoc(out: &mut String, indent: &str, lines: &[String]) {
     if lines.is_empty() {
         return;
