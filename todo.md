@@ -290,8 +290,15 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       仍锁定旧交错序；决策进 `ts_extras`（双 plan 预计算——Local 与
       InlineImport 两种枚举拼写同备、import type 整行、jsdoc 名称括号
       与扫描器安全分行判定、default_rows 与 factory_inline 同源、
-      枚举桶字面量 + typedef 行），28 测试不改一字全绿
-- [ ] G2b 余量改写：C++ → Go → Java 逐 crate
+      枚举桶字面量 + typedef 行），28 测试不改一字全绿。C++ 第五签：
+      render_table / path_for 摘除（render_enums + header 留
+      `#[cfg(test)]`——`test_render_enums_with_empty_slice` 直调空切片
+      防御边界，测试不改一字），generate 保留共享名分配（结构名先、
+      枚举名后跨文件一致）并预计算枚举头 context；决策进
+      `Self::cpp_extras`（include 面 Needs 收集、`{}` 初始化与
+      optional 分流、banner、双 context 分发），`templates/table.h.tera`
+      + `enums.h.tera` 随包，19 测试不改一字全绿（含 g++ 编译回验）
+- [ ] G2b 余量改写：Go → Java 逐 crate
       复制 Lua/C# 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
       逐字节不变），全数落地后 G2 勾选收口
 - [ ] G3 自定义模板加载：CLI 接线——target 配置 `template_dir`

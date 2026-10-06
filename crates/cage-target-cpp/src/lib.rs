@@ -53,9 +53,16 @@ use cage_core::{
         EnumSchema, EnumValue, FieldSchema, FieldType, MapField, MapKeyType, Schema, TableSchema,
     },
 };
+use cage_target_template::TemplateTargetGenerator;
+use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+
+/// Official templates ship with the crate (design §22 G2): `include_str!`
+/// compiles them into the binary so no filesystem is needed.
+const TABLE_H_TEMPLATE: &str = include_str!("../templates/table.h.tera");
+const ENUMS_H_TEMPLATE: &str = include_str!("../templates/enums.h.tera");
 
 /// C++ Target Generator
 pub struct CppTargetGenerator {
@@ -249,21 +256,53 @@ impl CppTargetGenerator {
             enum_render.push((e, alloc));
         }
 
-        let mut artifacts = Vec::new();
-        for (table, struct_name) in tables.iter().zip(&struct_names) {
-            let content = self.render_table(schema, table, schema_hash, struct_name, &enum_by_key);
-            artifacts.push((self.path_for(&table.name), content.into_bytes()));
-        }
+        // Shared-enums context, precomputed once (the `extras` hook hands
+        // it to the enums header render).
+        let enums_ctx = Self::cpp_enums_context(&self.namespace, &enum_render);
+
+        // Official templates ship with this crate (design §22 G2): rendered
+        // from memory, registered in the legacy emission order (tables,
+        // then the shared enums header when the schema has any).
+        let mut templates: Vec<(&str, &str)> =
+            vec![(self.file_template.as_str(), TABLE_H_TEMPLATE)];
         if !enum_render.is_empty() {
-            let content = self.render_enums(schema_hash, &enum_render);
-            let path = self
-                .output_dir
-                .join(&self.enums_file)
-                .to_string_lossy()
-                .to_string();
-            artifacts.push((path, content.into_bytes()));
+            templates.push((self.enums_file.as_str(), ENUMS_H_TEMPLATE));
         }
-        artifacts
+        let engine = TemplateTargetGenerator {
+            output_dir: self.output_dir.clone(),
+            // Official mode renders from memory; the directory is unused.
+            template_dir: PathBuf::new(),
+        };
+        let ns = self.namespace.clone();
+        let enums_file = self.enums_file.clone();
+        let struct_by_name: HashMap<String, String> = tables
+            .iter()
+            .zip(&struct_names)
+            .map(|(t, n)| (t.name.clone(), n.clone()))
+            .collect();
+        let enum_by_key: HashMap<String, EnumAlloc> = enum_by_key
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        engine
+            .generate_official(
+                schema,
+                schema_hash,
+                &templates,
+                |_tera, _schema| {},
+                move |schema, table| {
+                    Self::cpp_extras(
+                        &ns,
+                        &enums_file,
+                        &struct_by_name,
+                        &enum_by_key,
+                        &enums_ctx,
+                        schema,
+                        table,
+                    )
+                },
+            )
+            .expect("official C++ templates are valid Tera")
     }
 
     /// Tables in name order (deterministic emission order).
@@ -294,14 +333,9 @@ impl CppTargetGenerator {
         enums
     }
 
-    fn path_for(&self, table_name: &str) -> String {
-        let file_name = self.file_template.replace("{table}", table_name);
-        self.output_dir
-            .join(file_name)
-            .to_string_lossy()
-            .to_string()
-    }
-
+    /// `//`-comment file header. Kept for the legacy renderer below; the
+    /// official templates spell the header themselves.
+    #[cfg(test)]
     fn header(what: &str, schema_hash: Option<&str>) -> String {
         let hash = schema_hash.unwrap_or("(unavailable)");
         format!(
@@ -313,25 +347,95 @@ impl CppTargetGenerator {
         )
     }
 
-    fn render_table(
-        &self,
+    /// Shared-enums context for the enums header template: sorted system
+    /// includes, then per-enum shape decisions (`enum class` vs string
+    /// constants namespace, backing type, member decl lines).
+    fn cpp_enums_context(namespace: &str, enum_render: &[(&EnumSchema, EnumAlloc)]) -> Value {
+        let mut angle: BTreeSet<&'static str> = BTreeSet::new();
+        for (_, alloc) in enum_render {
+            if alloc.integral {
+                angle.insert("cstdint");
+            } else {
+                angle.insert("string_view");
+            }
+        }
+        let enums: Vec<Value> = enum_render
+            .iter()
+            .map(|(e, alloc)| {
+                let mut used_members: HashSet<String> = HashSet::new();
+                let members: Vec<Value> = e
+                    .values
+                    .iter()
+                    .map(|v| {
+                        let member = unique_ident(cpp_ident(&v.name), &mut used_members);
+                        let decl = if alloc.integral {
+                            format!("{member} = {},", integral_value_literal(v))
+                        } else {
+                            format!(
+                                "inline constexpr std::string_view {member}{{{}}};",
+                                string_bucket_value(v)
+                            )
+                        };
+                        json!({ "decl": decl, "desc": v.description })
+                    })
+                    .collect();
+                let backing = if alloc.integral {
+                    enum_backing(e).to_string()
+                } else {
+                    String::new()
+                };
+                json!({
+                    "ident": alloc.ident,
+                    "description": e.description,
+                    "integral": alloc.integral,
+                    "backing": backing,
+                    "members": members,
+                })
+            })
+            .collect();
+        json!({
+            "header_what": "enums:  shared definitions",
+            "namespace": namespace,
+            "angle": angle.into_iter().collect::<Vec<_>>(),
+            "emitted_enums": enums,
+        })
+    }
+
+    /// Language precomputation for the official C++ templates (design §22
+    /// G2): every decision the legacy renderer made — include surface,
+    /// optionality, `{}`-initialization, shared name allocation — is
+    /// computed here; the templates only express text shape.
+    //
+    // Contract: returns `Result` to match the `extras` hook signature even
+    // though this precomputation is infallible.
+    #[allow(clippy::unnecessary_wraps)]
+    fn cpp_extras(
+        namespace: &str,
+        enums_file: &str,
+        struct_by_name: &HashMap<String, String>,
+        enum_by_key: &HashMap<String, EnumAlloc>,
+        enums_ctx: &Value,
         schema: &Schema,
-        table: &TableSchema,
-        schema_hash: Option<&str>,
-        struct_name: &str,
-        enums: &HashMap<&str, EnumAlloc>,
-    ) -> String {
-        let ns = &self.namespace;
-        let fields = Self::sorted_fields(table);
+        table: Option<&TableSchema>,
+    ) -> Result<Value, String> {
+        let Some(t) = table else {
+            return Ok(enums_ctx.clone());
+        };
+        let struct_name = &struct_by_name[&t.name];
+        let enum_map: HashMap<&str, EnumAlloc> = enum_by_key
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        let fields = CppTargetGenerator::sorted_fields(t);
         let mut used_members: HashSet<String> = HashSet::new();
         let mut needs = Needs::default();
-        let mut members: Vec<(String, Option<String>)> = Vec::new();
+        let mut members: Vec<Value> = Vec::new();
 
         // Members first (name order), so the include set reflects exactly
         // what this file ends up using.
-        for (field_name, field) in &fields {
+        for (field_name, field) in fields {
             let member = unique_ident(cpp_ident(field_name), &mut used_members);
-            let ty = cpp_type(&field.field_type, enums, &mut needs);
+            let ty = cpp_type(&field.field_type, &enum_map, &mut needs);
             let default = field
                 .default
                 .as_ref()
@@ -360,56 +464,32 @@ impl CppTargetGenerator {
                 needs.angle.insert("optional");
                 format!("std::optional<{ty}> {member};")
             };
-            members.push((decl, field_doc(schema, field)));
+            members.push(json!({ "decl": decl, "doc": field_doc(schema, field) }));
         }
 
-        let mut out = String::new();
-        out.push_str(&Self::header(
-            &format!("table:  {}", table.name),
-            schema_hash,
-        ));
-        let _ = writeln!(out);
-        let _ = writeln!(out, "#pragma once");
-        let _ = writeln!(out);
-        if !needs.angle.is_empty() {
-            for inc in &needs.angle {
-                let _ = writeln!(out, "#include <{inc}>");
-            }
-            let _ = writeln!(out);
-        }
-        if needs.enums_header {
-            let _ = writeln!(out, "#include \"{}\"", self.enums_file);
-            let _ = writeln!(out);
-        }
-        let _ = writeln!(out, "namespace {ns} {{");
-        let _ = writeln!(out);
-
-        let banner = if table.primary_key.is_empty() {
-            format!("// {struct_name}")
+        let banner_head = if t.primary_key.is_empty() {
+            struct_name.clone()
         } else {
-            format!(
-                "// {struct_name} — primary key: {}",
-                table.primary_key.join(", ")
-            )
+            format!("{struct_name} — primary key: {}", t.primary_key.join(", "))
         };
-        let _ = writeln!(out, "{banner}");
-        if let Some(desc) = &table.description {
-            let _ = writeln!(out, "// {desc}");
-        }
-        let _ = writeln!(out, "struct {struct_name} {{");
-        for (decl, doc) in &members {
-            if let Some(d) = doc {
-                let _ = writeln!(out, "    // {d}");
-            }
-            let _ = writeln!(out, "    {decl}");
-        }
-        let _ = writeln!(out, "}};");
-        let _ = writeln!(out);
-        let _ = writeln!(out, "}}  // namespace {ns}");
 
-        out
+        Ok(json!({
+            "header_what": format!("table:  {}", t.name),
+            "includes": needs.angle.iter().copied().collect::<Vec<_>>(),
+            "enums_file": enums_file,
+            "enums_header": needs.enums_header,
+            "namespace": namespace,
+            "banner_head": banner_head,
+            "banner_desc": t.description,
+            "struct_name": struct_name,
+            "members": members,
+        }))
     }
 
+    // Legacy renderer kept only for `test_render_enums_with_empty_slice`
+    // (the production path is the official template above; generate never
+    // calls this shape).
+    #[cfg(test)]
     fn render_enums(
         &self,
         schema_hash: Option<&str>,

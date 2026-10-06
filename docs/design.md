@@ -1091,12 +1091,13 @@ Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义�
   from_config 读 `options.template_dir`、10 单测）
 - G2 官方模板改写：推进中——引擎新增 `generate_official`（内存模板 +
   双 hook：`setup` 注册语言过滤器、`extras` 按 context 合并语言预计算
-  决策，产出顺序 = 传入序 × 表名序）；Lua / C# / Python / TS-JS 已改写
-  （`templates/table.{lua,cs,py}.tera` + `enums.{lua,cs,py}.tera` 随包
-  `include_str!`，各 18 测试逐字节不变；TS/JS 一 crate 双形态 6 模板
-  `table.{ts,js,d.ts}.tera` + `enums.{ts,js,d.ts}.tera`，28 测试逐字节
-  不变，.js+.d.ts 交错序由两次调用按序 zip 复刻），余
-  C++ / Go / Java 未开工
+  决策，产出顺序 = 传入序 × 表名序）；Lua / C# / Python / TS-JS / C++
+  已改写（`templates/table.{lua,cs,py}.tera` + `enums.{lua,cs,py}.tera`
+  随包 `include_str!`，各 18 测试逐字节不变；TS/JS 一 crate 双形态
+  6 模板 `table.{ts,js,d.ts}.tera` + `enums.{ts,js,d.ts}.tera`，28 测试
+  逐字节不变，.js+.d.ts 交错序由两次调用按序 zip 复刻；C++
+  `table.h.tera` + `enums.h.tera`，19 测试逐字节不变），余
+  Go / Java 未开工
 - G3 自定义模板加载：未开工——CLI 接线（target 配置 `template_dir`，
   `.cage/templates/` 惯例位置）+ 模板渲染错误通道（现役
   `code_target_items` 是不可失败口径，需开 Result 分支）
