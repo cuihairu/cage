@@ -256,7 +256,7 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       实装状态 G1 交付 / G2–G5 未开工）+ §23 决策更新段（论证留档 +
       反转理由写实）+ target.md 引用句同步。实现顺序后续四步：
       引擎接入（本轮）→ 官方模板改写 → 自定义模板加载 → 过滤器库
-- [ ] G2 官方模板改写（推进中，Lua / C# 已落地；余 5 crate 见 G2b）：各语言
+- [ ] G2 官方模板改写（推进中，Lua / C# / Python / TS-JS / C++ / Go 已落地；余 Java 见 G2b）：各语言
       （C#/Python/Lua/TS/JS/C++/Go/Java，7 crate）生成器 render 层改写
       为随包官方 `.tera` 模板（crate 内 `templates/` 目录可复制可改 +
       `include_str!` 编译进二进制保无文件系统时可用）；plan 层决策沉淀
@@ -297,8 +297,29 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       枚举名后跨文件一致）并预计算枚举头 context；决策进
       `Self::cpp_extras`（include 面 Needs 收集、`{}` 初始化与
       optional 分流、banner、双 context 分发），`templates/table.h.tera`
-      + `enums.h.tera` 随包，19 测试不改一字全绿（含 g++ 编译回验）
-- [ ] G2b 余量改写：Go → Java 逐 crate
+      + `enums.h.tera` 随包，19 测试不改一字全绿（含 g++ 编译回验）。
+      Go 第六签：render_table / render_enums / header_lines / path_for
+      摘除，generate 重写为 generate_official 调用（table.go.tera 恒在、
+      enums.go.tera 仅在有非空 enum 时注册，file_template / enums_file
+      运行时作模板名，package 闭包捕获传入 extras）；gofmt 对齐数学
+      原样留 Rust——Doc/Cell/Term tabwriter 移植与 go/printer exprList
+      换行分节启发不动，extras 把每个对齐块渲染成最终行（struct_lines /
+      new_lines / 逐枚举 const_lines），模板只表达文件形状；决策进
+      `Self::go_extras`——表侧：sorted_fields 名序、member 唯一 ident、
+      field_go_type / render_default（enum 类型表克隆视图签名零改动）、
+      needs_math 侦测、banner_head（裸名或主键列举）、new_doc 构造器
+      文档行，枚举侧整包返回预计算 context（None 分发；emitted_enums
+      键避开 schema IR 的 enums 键——extras 键不覆盖 IR 键）。
+      `templates/table.go.tera` + `enums.go.tera` 随包（头注释即模板
+      文档），Tera 空白控制逐字节复刻原 Doc 发射序列（header 六行、
+      package 前后空行、math import 按需、banner 单/双行、struct 块与
+      构造器块间空行、逐枚举空行与 type decl 后空行、文件收尾单换行）。
+      验收：go 20 测试不改一字全绿——含路径序（表名序 + enums 收尾）、
+      gofmt 列对齐三形态（多字段 vtab 对齐 / 单字段空格分隔 / 空
+      struct{} 一行壳）、构造器几何均值分节（44 字符 ident）、枚举
+      三桶 backing 与单 spec 行内注释、包级名冲突后缀（表先于枚举）、
+      map 键序与跳项、未解析 enum 回退、确定性两跑一致
+- [ ] G2b 余量改写：Java 逐 crate
       复制 Lua/C# 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
       逐字节不变），全数落地后 G2 勾选收口
 - [ ] G3 自定义模板加载：CLI 接线——target 配置 `template_dir`

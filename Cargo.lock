@@ -375,6 +375,7 @@ name = "cage-target-go"
 version = "0.1.0"
 dependencies = [
  "cage-core",
+ "cage-target-template",
  "indexmap",
  "serde_json",
  "serde_yaml",
@@ -385,6 +386,7 @@ name = "cage-target-java"
 version = "0.1.0"
 dependencies = [
  "cage-core",
+ "cage-target-template",
  "indexmap",
  "serde_json",
  "serde_yaml",

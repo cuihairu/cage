@@ -11,6 +11,7 @@ description = "Go code generator for Cage"
 
 [dependencies]
 cage-core = { path = "../cage-core" }
+cage-target-template = { path = "../cage-target-template" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
