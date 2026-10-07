@@ -420,6 +420,7 @@ output_dir = "build/tpl"
 
 [profiles.client.targets.options]
 template_dir = "my_templates"   # 默认 .cage/templates（相对项目根）
+lang_filters = "py,go"          # 挂载语言过滤器库（见下），缺省不挂载
 ```
 
 模板文件约定：
@@ -444,13 +445,36 @@ template_dir = "my_templates"   # 默认 .cage/templates（相对项目根）
 
 `fields` 是字段名 → 字段的映射（`name` / `type` / `description` /
 `required` / `default` / `min` / `max` / `min_length` / `max_length`）。
-Tera 内置过滤器全量可用，另附三个命名约定过滤器：`snake_case` /
-`camelCase` / `PascalCase`。
+
+### 过滤器
+
+Tera 内置过滤器全量可用。约定过滤器恒注册（语言无关层）：
+
+| 过滤器 | 输入 | 输出 |
+|--------|------|------|
+| `snake_case` / `camelCase` / `PascalCase` | 字符串 | 按词边界归一的标识符 |
+| `kebab_case` | 字符串 | `http-server` 形 |
+| `SCREAMING_CASE` | 字符串 | `HTTP_SERVER` 形 |
+| `field_order` | `fields` 映射 | 按字段名排序的数组（官方各语言统一的发射序） |
+
+语言过滤器经 `options.lang_filters` 挂载（逗号分隔多语言，如
+`"py,go"`；未知键构建报错退出码 2）。决策仍在 Rust——过滤器调用的是
+官方生成器同一套映射函数，模板里拿到的类型名 / 字面量与官方产物一致：
+
+| 过滤器 | 输入 | 输出 |
+|--------|------|------|
+| `py_type` / `cs_type` / `ts_type` / `go_type` / `java_type` / `cpp_type` / `lua_type` | 字段对象 | 该语言的类型文本（枚举引用带官方分配后的标识符；`go_type` 含指针可选形，`java_type` 含包装类升级） |
+| `py_default` / `cs_default` / `ts_default` / `go_default` / `java_default` / `cpp_default` / `lua_default` | 字段对象 | 字段默认值的语言字面量；无默认或不可渲染 → null |
+
+（`lua_type` 输出官方 Lua 面的类型标签；`cpp_type` 不做每文件 include
+聚合——那是生成器级关注点。）
 
 ```text
 .cage/templates/{table}.tpl.tera   →   build/tpl/Item.tpl
 ────────────────────────────────────────────────────────────
 table={{ table.name }} pk-snake={{ table.name | snake_case }}
+{% for f in table.fields | field_order %}{{ f.name }}: {{ f | py_type }}
+{% endfor %}
 ```
 
 ## Profile：前端 / 后端

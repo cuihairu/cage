@@ -47,9 +47,10 @@ use cage_core::{
 };
 use cage_target_template::TemplateTargetGenerator;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use tera::Tera;
 
 /// Python Target Generator
 pub struct PyTargetGenerator {
@@ -633,8 +634,95 @@ fn field_doc(schema: &Schema, field: &FieldSchema) -> Option<String> {
     }
 }
 
+// ————— G4 filter library (design §22): `py_type` / `py_default` —————
+
+fn parse_field_type(ty: &serde_json::Value) -> tera::Result<FieldType> {
+    serde_json::from_value(ty.clone()).map_err(|e| tera::Error::msg(e.to_string()))
+}
+
+/// `{{ field | py_type }}` — the Python annotation the official generator
+/// would emit for this field.
+struct PyTypeFilter {
+    schema: Schema,
+}
+
+impl tera::Filter for PyTypeFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, _field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        Ok(Value::String(py_type(&ft, &self.schema)))
+    }
+}
+
+/// `{{ field | py_default }}` — the Python literal for the field's
+/// default, or null when the field has no renderable default.
+struct PyDefaultFilter {
+    schema: Schema,
+}
+
+impl tera::Filter for PyDefaultFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        let Some(d) = cage_target_template::field_default(field) else {
+            return Ok(Value::Null);
+        };
+        Ok(render_default(d, &ft, &self.schema).map_or(Value::Null, Value::String))
+    }
+}
+
+/// Register the Python filter library for user templates
+/// (`options.lang_filters = "py"`).
+pub fn register_filters(tera: &mut Tera, schema: &Schema) {
+    tera.register_filter(
+        "py_type",
+        PyTypeFilter {
+            schema: schema.clone(),
+        },
+    );
+    tera.register_filter(
+        "py_default",
+        PyDefaultFilter {
+            schema: schema.clone(),
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn filter_library_renders_type_and_default() {
+        let schema: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      price: { name: price, type: { kind: Int32 }, default: 10 }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+",
+        )
+        .unwrap();
+
+        let mut tera = Tera::default();
+        register_filters(&mut tera, &schema);
+        let mut ctx = tera::Context::new();
+        ctx.insert("tables", &schema.tables);
+        let out = tera
+            .render_str(
+                "{{ tables.Item.fields.price | py_type }}|{{ tables.Item.fields.price | py_default }}|{{ tables.Item.fields.kind | py_type }}",
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(out, "int|10|ItemKind");
+    }
+
     use super::*;
 
     fn test_schema() -> Schema {

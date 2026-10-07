@@ -58,6 +58,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use tera::Tera;
 
 /// Official templates ship with the crate (design §22 G2): `include_str!`
 /// compiles them into the binary so no filesystem is needed.
@@ -203,6 +204,15 @@ struct Needs {
     enums_header: bool,
 }
 
+/// Allocation result shared by `generate` and the G4 filter library:
+/// struct idents in table order, enum allocations by schema key, and the
+/// same allocations paired with their schemas for the header render.
+type CppAllocations<'a> = (
+    Vec<String>,
+    HashMap<&'a str, EnumAlloc>,
+    Vec<(&'a EnumSchema, EnumAlloc)>,
+);
+
 impl CppTargetGenerator {
     /// Create from target config
     pub fn from_config(config: &TargetConfig) -> Self {
@@ -231,30 +241,11 @@ impl CppTargetGenerator {
     /// (Build Manifest 口径); it is stamped into every file header.
     pub fn generate(&self, schema: &Schema, schema_hash: Option<&str>) -> Vec<(String, Vec<u8>)> {
         let tables = Self::sorted_tables(schema);
-        let emitted = Self::emitted_enums(schema);
 
-        // ONE shared set for every type name in the generated namespace:
-        // struct names first (tables in name order), then enum class /
-        // namespace names (enums in name order). Allocated before any
-        // rendering so file content and paths can never drift.
-        let mut used: HashSet<String> = HashSet::new();
-        let struct_names: Vec<String> = tables
-            .iter()
-            .map(|t| unique_ident(cpp_ident(&t.name), &mut used))
-            .collect();
-
-        // Field types resolve enums through the schema key (same lookup the
-        // other code targets use); the header renders them in name order.
-        let mut enum_by_key: HashMap<&str, EnumAlloc> = HashMap::new();
-        let mut enum_render: Vec<(&EnumSchema, EnumAlloc)> = Vec::new();
-        for &(key, e) in &emitted {
-            let alloc = EnumAlloc {
-                ident: unique_ident(cpp_ident(&e.name), &mut used),
-                integral: is_integral_enum(e),
-            };
-            enum_by_key.insert(key, alloc.clone());
-            enum_render.push((e, alloc));
-        }
+        // ONE shared set for every type name (see `allocate_names`):
+        // struct names first, then enum names — file content and paths
+        // can never drift.
+        let (struct_names, enum_by_key, enum_render) = Self::allocate_names(schema);
 
         // Shared-enums context, precomputed once (the `extras` hook hands
         // it to the enums header render).
@@ -303,6 +294,36 @@ impl CppTargetGenerator {
                 },
             )
             .expect("official C++ templates are valid Tera")
+    }
+
+    /// Package-level name allocation, shared by `generate` and the G4
+    /// filter library (`register_filters`): ONE shared set for every type
+    /// name in the generated namespace — struct names first (tables in
+    /// name order), then enum class / namespace names (enums in name
+    /// order). Allocated before any rendering so file content and paths
+    /// can never drift.
+    fn allocate_names(schema: &Schema) -> CppAllocations<'_> {
+        let tables = Self::sorted_tables(schema);
+        let emitted = Self::emitted_enums(schema);
+        let mut used: HashSet<String> = HashSet::new();
+        let struct_names: Vec<String> = tables
+            .iter()
+            .map(|t| unique_ident(cpp_ident(&t.name), &mut used))
+            .collect();
+
+        // Field types resolve enums through the schema key (same lookup the
+        // other code targets use); the header renders them in name order.
+        let mut enum_by_key: HashMap<&str, EnumAlloc> = HashMap::new();
+        let mut enum_render: Vec<(&EnumSchema, EnumAlloc)> = Vec::new();
+        for &(key, e) in &emitted {
+            let alloc = EnumAlloc {
+                ident: unique_ident(cpp_ident(&e.name), &mut used),
+                integral: is_integral_enum(e),
+            };
+            enum_by_key.insert(key, alloc.clone());
+            enum_render.push((e, alloc));
+        }
+        (struct_names, enum_by_key, enum_render)
     }
 
     /// Tables in name order (deterministic emission order).
@@ -997,8 +1018,102 @@ fn field_doc(schema: &Schema, field: &FieldSchema) -> Option<String> {
     }
 }
 
+// ————— G4 filter library (design §22): `cpp_type` / `cpp_default` —————
+
+fn parse_field_type(ty: &serde_json::Value) -> tera::Result<FieldType> {
+    serde_json::from_value(ty.clone()).map_err(|e| tera::Error::msg(e.to_string()))
+}
+
+/// `{{ field | cpp_type }}` — the C++ type text the official generator
+/// would emit (`std::optional<…>` shapes included). The per-file include
+/// aggregation is a generator concern: each filter call sees a fresh
+/// `Needs`, and the type text itself is unaffected.
+struct CppTypeFilter {
+    enum_by_key: HashMap<String, EnumAlloc>,
+}
+
+impl tera::Filter for CppTypeFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, _field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        let view: HashMap<&str, EnumAlloc> = self
+            .enum_by_key
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        Ok(Value::String(cpp_type(&ft, &view, &mut Needs::default())))
+    }
+}
+
+/// `{{ field | cpp_default }}` — the C++ initializer for the field's
+/// default, or null when the field has no renderable default.
+struct CppDefaultFilter {
+    schema: Schema,
+}
+
+impl tera::Filter for CppDefaultFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        let Some(d) = cage_target_template::field_default(field) else {
+            return Ok(Value::Null);
+        };
+        Ok(render_default(d, &ft, &self.schema).map_or(Value::Null, Value::String))
+    }
+}
+
+/// Register the C++ filter library for user templates
+/// (`options.lang_filters = "cpp"`).
+pub fn register_filters(tera: &mut Tera, schema: &Schema) {
+    let enum_by_key: HashMap<String, EnumAlloc> = CppTargetGenerator::allocate_names(schema)
+        .1
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    tera.register_filter("cpp_type", CppTypeFilter { enum_by_key });
+    tera.register_filter(
+        "cpp_default",
+        CppDefaultFilter {
+            schema: schema.clone(),
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn filter_library_renders_type_and_default() {
+        let schema: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      price: { name: price, type: { kind: Int32 }, default: 10 }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+",
+        )
+        .unwrap();
+
+        let mut tera = Tera::default();
+        register_filters(&mut tera, &schema);
+        let mut ctx = tera::Context::new();
+        ctx.insert("tables", &schema.tables);
+        let out = tera
+            .render_str(
+                "{{ tables.Item.fields.price | cpp_type }}|{{ tables.Item.fields.price | cpp_default }}|{{ tables.Item.fields.kind | cpp_type }}",
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(out, "std::int32_t|10|ItemKind");
+    }
+
     use super::*;
     use std::path::Path;
 

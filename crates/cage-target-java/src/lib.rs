@@ -60,6 +60,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use tera::Tera;
 
 /// Official templates ship with the crate (design §22 G2): `include_str!`
 /// compiles them into the binary so rendering never touches the filesystem.
@@ -1171,8 +1172,130 @@ fn string_bucket_value(v: &EnumValue) -> String {
     }
 }
 
+// ————— G4 filter library (design §22): `java_type` / `java_default` —————
+
+fn parse_field_type(ty: &serde_json::Value) -> tera::Result<FieldType> {
+    serde_json::from_value(ty.clone()).map_err(|e| tera::Error::msg(e.to_string()))
+}
+
+/// The nested enum idents a user-template filter sees: allocated against
+/// the holder's namespace seeded with the holder name — the same rule
+/// `generate` applies (allocation runs in name order over the emitted
+/// enums).
+fn filter_enum_idents(schema: &Schema, holder: Option<&str>) -> HashMap<String, String> {
+    let mut used: HashSet<String> = HashSet::new();
+    if let Some(h) = holder {
+        used.insert(h.to_string());
+    }
+    JavaTargetGenerator::emitted_enums(schema)
+        .into_iter()
+        .map(|e| {
+            let ident = unique_ident(java_ident(&e.name), &mut used);
+            (e.name.clone(), ident)
+        })
+        .collect()
+}
+
+/// `{{ field | java_type }}` — the Java type text the official generator
+/// would emit: optionality resolved from the field itself (not required,
+/// no default), enum references qualified `Holder.Enum` where needed.
+struct JavaTypeFilter {
+    schema: Schema,
+    enum_idents: HashMap<String, String>,
+}
+
+impl tera::Filter for JavaTypeFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        let optional = !field
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && cage_target_template::field_default(field).is_none();
+        let enum_text = resolve_enum(&self.schema, &ft, &self.enum_idents).map(str::to_string);
+        Ok(Value::String(java_type(
+            &ft,
+            optional,
+            enum_text.as_deref(),
+        )))
+    }
+}
+
+/// `{{ field | java_default }}` — the Java literal for the field's
+/// default, or null when the field has no renderable default.
+struct JavaDefaultFilter {
+    schema: Schema,
+}
+
+impl tera::Filter for JavaDefaultFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        let Some(d) = cage_target_template::field_default(field) else {
+            return Ok(Value::Null);
+        };
+        Ok(render_default(d, &ft, &self.schema).map_or(Value::Null, Value::String))
+    }
+}
+
+/// Register the Java filter library for user templates
+/// (`options.lang_filters = "java"`). `holder` is the shared-enums holder
+/// class name (the CLI derives it from `options.enums_file`'s stem) — it
+/// seeds the nested-enum ident namespace, and enum type text spells
+/// `Holder.Enum` where the official generator would.
+pub fn register_filters(tera: &mut Tera, schema: &Schema, holder: Option<&str>) {
+    let enum_idents = filter_enum_idents(schema, holder);
+    tera.register_filter(
+        "java_type",
+        JavaTypeFilter {
+            schema: schema.clone(),
+            enum_idents,
+        },
+    );
+    tera.register_filter(
+        "java_default",
+        JavaDefaultFilter {
+            schema: schema.clone(),
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn filter_library_renders_type_and_default() {
+        let schema: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      price: { name: price, type: { kind: Int32 }, default: 10 }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+",
+        )
+        .unwrap();
+
+        let mut tera = Tera::default();
+        register_filters(&mut tera, &schema, Some("CageEnums"));
+        let mut ctx = tera::Context::new();
+        ctx.insert("tables", &schema.tables);
+        let out = tera
+            .render_str(
+                "{{ tables.Item.fields.price | java_type }}|{{ tables.Item.fields.price | java_default }}|{{ tables.Item.fields.kind | java_type }}",
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(out, "int|10|ItemKind");
+    }
+
     use super::*;
 
     fn test_schema() -> Schema {

@@ -54,9 +54,10 @@ use cage_core::{
 };
 use cage_target_template::TemplateTargetGenerator;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use tera::Tera;
 
 /// Emitted language flavor of the ts crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1003,8 +1004,102 @@ fn ts_extras(
     }
 }
 
+// ————— G4 filter library (design §22): `ts_type` / `ts_default` —————
+
+fn parse_field_type(ty: &serde_json::Value) -> tera::Result<FieldType> {
+    serde_json::from_value(ty.clone()).map_err(|e| tera::Error::msg(e.to_string()))
+}
+
+/// `{{ field | ts_type }}` — the TypeScript type text (Local enum
+/// spellings, as on the `.ts` / `.d.ts` surface); enum references resolve
+/// through the shared export names.
+struct TsTypeFilter {
+    schema: Schema,
+    enum_ty: HashMap<String, String>,
+}
+
+impl tera::Filter for TsTypeFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, _field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        Ok(Value::String(ts_type(&ft, &self.schema, &self.enum_ty)))
+    }
+}
+
+/// `{{ field | ts_default }}` — the TypeScript literal for the field's
+/// default, or null when the field has no renderable default.
+struct TsDefaultFilter {
+    schema: Schema,
+}
+
+impl tera::Filter for TsDefaultFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        let Some(d) = cage_target_template::field_default(field) else {
+            return Ok(Value::Null);
+        };
+        Ok(render_default(d, &ft, &self.schema).map_or(Value::Null, Value::String))
+    }
+}
+
+/// Register the TypeScript filter library for user templates
+/// (`options.lang_filters = "ts"`).
+pub fn register_filters(tera: &mut Tera, schema: &Schema) {
+    let enum_ty: HashMap<String, String> = enum_exports(schema)
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    tera.register_filter(
+        "ts_type",
+        TsTypeFilter {
+            schema: schema.clone(),
+            enum_ty,
+        },
+    );
+    tera.register_filter(
+        "ts_default",
+        TsDefaultFilter {
+            schema: schema.clone(),
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn filter_library_renders_type_and_default() {
+        let schema: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      price: { name: price, type: { kind: Int32 }, default: 10 }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+",
+        )
+        .unwrap();
+
+        let mut tera = Tera::default();
+        register_filters(&mut tera, &schema);
+        let mut ctx = tera::Context::new();
+        ctx.insert("tables", &schema.tables);
+        let out = tera
+            .render_str(
+                "{{ tables.Item.fields.price | ts_type }}|{{ tables.Item.fields.price | ts_default }}|{{ tables.Item.fields.kind | ts_type }}",
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(out, "number|10|ItemKind");
+    }
+
     use super::*;
 
     fn test_schema() -> Schema {

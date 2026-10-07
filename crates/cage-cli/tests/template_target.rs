@@ -32,6 +32,7 @@ name = "client"
 [[profiles.client.targets]]
 format = "template"
 output_dir = "build/tpl"
+options = { lang_filters = "py,go" }
 
 [profiles.custom]
 name = "custom"
@@ -53,6 +54,8 @@ options = { template_dir = "my_templates" }
     fields:
       id: { name: id, type: { kind: Int32 }, required: true }
       name: { name: name, type: { kind: String }, required: true }
+      price: { name: price, type: { kind: Int32 }, default: 10 }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
 enums:
   ItemKind:
     name: ItemKind
@@ -76,6 +79,11 @@ enums:
     fs::write(
         root.join(".cage/templates/defs.tera"),
         "tables={{ tables | length }} hash={{ schema_hash | default(value=\"(unavailable)\") }}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".cage/templates/filters.tera"),
+        "py={{ tables.Item.fields.price | py_type }}={{ tables.Item.fields.price | py_default }} go={{ tables.Item.fields.kind | go_type }}\n",
     )
     .unwrap();
 
@@ -141,7 +149,7 @@ fn build_writes_template_artifacts_into_the_manifest() {
     let out = run_cage(&["build", root.to_str().unwrap(), "--profile", "custom"]);
     assert_success(&out, "build custom");
     let custom = fs::read_to_string(root.join("build/custom/Item.tpl")).unwrap();
-    assert_eq!(custom, "custom table=Item fields=2\n");
+    assert_eq!(custom, "custom table=Item fields=4\n");
 }
 
 #[test]
@@ -197,4 +205,41 @@ fn template_render_is_byte_deterministic_across_runs() {
     let second = fs::read_to_string(root.join("build/tpl/Item.tpl")).unwrap();
 
     assert_eq!(first, second);
+}
+
+#[test]
+fn lang_filters_mount_type_and_default_filters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project(root);
+
+    let out = run_cage(&["gen", root.to_str().unwrap(), "--profile", "client"]);
+    assert_success(&out, "gen");
+
+    // py_type / py_default reuse the official Python decisions; go_type
+    // sees the allocated enum ident and the pointer-optional shape.
+    let filters = fs::read_to_string(root.join("build/tpl/filters")).unwrap();
+    assert_eq!(filters, "py=int=10 go=*ItemKind\n");
+}
+
+#[test]
+fn unknown_lang_filters_entry_fails_up_front() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project(root);
+    fs::write(
+        root.join("cage.toml"),
+        fs::read_to_string(root.join("cage.toml"))
+            .unwrap()
+            .replace("lang_filters = \"py,go\"", "lang_filters = \"py,bogus\""),
+    )
+    .unwrap();
+
+    let out = run_cage(&["gen", root.to_str().unwrap(), "--profile", "client"]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown lang_filters entry 'bogus'"),
+        "{stderr}"
+    );
 }

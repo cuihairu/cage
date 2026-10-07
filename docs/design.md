@@ -1118,7 +1118,25 @@ Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义�
   format "template" + 缺目录/空目录两形态 + 语法错指到模板文件 +
   两跑逐字节一致）；from_config 默认值随惯例位置收敛
   （`templates` → `.cage/templates`）
-- G4 过滤器库：未开工——类型映射 / 字面量 / 排序过滤器成库 + 文档表
+- G4 过滤器库：已交付——决策函数成库，模板里不写逻辑。语言无关层
+  （`cage-target-template`，恒注册）：约定过滤器补 `kebab_case` /
+  `SCREAMING_CASE`，新增 `field_order`（`fields` 映射 → 字段名序数组，
+  官方各语言统一的发射序）；`generate_with_setup` 开出 setup 钩子
+  （`generate` = 无钩子特例）。语言层（各 `cage-target-*` crate 暴露
+  `pub fn register_filters(tera, schema[, holder])`）：七语言
+  `{lang}_type`（字段对象 → 官方同款类型文本，枚举引用带分配后标识符）
+  + 六语言 `{lang}_default`（字段对象 → 官方同款字面量，无默认 / 不可
+  渲染 → null；lua 的类型面是标签）；CLI `options.lang_filters`
+  （逗号分隔，未知键渲染前报错退码 2）挂载，java 的 holder 从
+  `options.enums_file` stem 推导（与 from_config 同源）。枚举分配
+  重构为零行为变化提取：go `allocate_names` / cpp `allocate_names`
+  （包级共享集，generate 与过滤器同源），java 过滤器侧
+  `filter_enum_idents`（holder 种子集），ts 复用 `enum_exports`。
+  输入约定统一字段对象（序列化 `FieldSchema`），crate 公共助手
+  `field_parts` / `field_default`。测试 11 新增（七 crate
+  type/default smoke + 约定过滤器与 field_order + setup 钩子 +
+  CLI 挂载与未知键两形态），workspace 545 全绿；过滤器表进
+  target.md Template 小节
 - G5 文档收口：未开工——§22/§23 与实装对账复查、target.md 模板小节
   （模板变量表 / 过滤器表 / 自定义指南）、需求整理.md 状态
 

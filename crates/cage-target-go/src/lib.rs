@@ -60,6 +60,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use tera::Tera;
 
 /// Official templates ship with the crate (design §22 G2): `include_str!`
 /// compiles them into the binary so rendering never touches the filesystem.
@@ -154,36 +155,11 @@ struct Member {
 }
 
 impl GoTargetGenerator {
-    /// Create from target config
-    pub fn from_config(config: &TargetConfig) -> Self {
-        let mut gen = Self {
-            output_dir: PathBuf::from(&config.output_dir),
-            file_template: config
-                .file_template
-                .clone()
-                .unwrap_or_else(|| "{table}.go".to_string()),
-            ..Self::default()
-        };
-        if let Some(opts) = &config.options {
-            if let Some(s) = opts.get("enums_file").and_then(|v| v.as_str()) {
-                gen.enums_file = s.to_string();
-            }
-            if let Some(s) = opts.get("package").and_then(|v| v.as_str()) {
-                gen.package = s.to_string();
-            }
-        }
-        gen
-    }
-
-    /// Generate one file per table (name order) plus a shared enums file.
-    ///
-    /// `schema_hash` is the same hash `manifest.json` records for the schema
-    /// (Build Manifest 口径); it is stamped into every file header.
-    pub fn generate(&self, schema: &Schema, schema_hash: Option<&str>) -> Vec<(String, Vec<u8>)> {
-        // Package-level names are allocated from ONE shared set, in emission
-        // order (tables by name: struct type, then New func; then enums by
-        // name: type, then member consts in schema order) so a `type Item`
-        // can never collide with a `func NewItem` or an enum type.
+    /// Package-level name allocation, shared by `generate` and the G4
+    /// filter library (`register_filters`): ONE shared set, in emission
+    /// order (tables by name: struct type, then New func; then enums by
+    /// name: type, then member consts in schema order).
+    fn allocate_names(schema: &Schema) -> (Vec<TableNames<'_>>, Vec<EnumInfo<'_>>) {
         let mut used: HashSet<String> = HashSet::new();
         let tables: Vec<TableNames> = Self::sorted_tables(schema)
             .into_iter()
@@ -223,6 +199,40 @@ impl GoTargetGenerator {
                 }
             })
             .collect();
+        (tables, enums)
+    }
+
+    /// Create from target config
+    pub fn from_config(config: &TargetConfig) -> Self {
+        let mut gen = Self {
+            output_dir: PathBuf::from(&config.output_dir),
+            file_template: config
+                .file_template
+                .clone()
+                .unwrap_or_else(|| "{table}.go".to_string()),
+            ..Self::default()
+        };
+        if let Some(opts) = &config.options {
+            if let Some(s) = opts.get("enums_file").and_then(|v| v.as_str()) {
+                gen.enums_file = s.to_string();
+            }
+            if let Some(s) = opts.get("package").and_then(|v| v.as_str()) {
+                gen.package = s.to_string();
+            }
+        }
+        gen
+    }
+
+    /// Generate one file per table (name order) plus a shared enums file.
+    ///
+    /// `schema_hash` is the same hash `manifest.json` records for the schema
+    /// (Build Manifest 口径); it is stamped into every file header.
+    pub fn generate(&self, schema: &Schema, schema_hash: Option<&str>) -> Vec<(String, Vec<u8>)> {
+        // Package-level names are allocated from ONE shared set, in emission
+        // Package-level names are allocated from ONE shared set, in emission
+        // order (see `allocate_names`): so a `type Item` can never collide
+        // with a `func NewItem` or an enum type.
+        let (tables, enums) = Self::allocate_names(schema);
         // Field types reference enums by their ALLOCATED (possibly suffixed)
         // type ident; unresolved or empty enums fall back to `string`.
         let enum_types: HashMap<String, String> = enums
@@ -1226,8 +1236,116 @@ fn field_doc(schema: &Schema, field: &FieldSchema) -> Option<String> {
     }
 }
 
+// ————— G4 filter library (design §22): `go_type` / `go_default` —————
+
+fn parse_field_type(ty: &serde_json::Value) -> tera::Result<FieldType> {
+    serde_json::from_value(ty.clone()).map_err(|e| tera::Error::msg(e.to_string()))
+}
+
+/// Borrowed `&str` view of the allocated enum types, as `field_go_type`
+/// and `render_default` consume them.
+fn enum_view(enum_types: &HashMap<String, String>) -> HashMap<&str, String> {
+    enum_types
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect()
+}
+
+/// `{{ field | go_type }}` — the Go type text, enum references carrying
+/// the ALLOCATED idents (the same names `generate` emits).
+struct GoTypeFilter {
+    enum_types: HashMap<String, String>,
+}
+
+impl tera::Filter for GoTypeFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        let required = field
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let has_default = cage_target_template::field_default(field).is_some();
+        Ok(Value::String(field_go_type(
+            &ft,
+            &enum_view(&self.enum_types),
+            required,
+            has_default,
+        )))
+    }
+}
+
+/// `{{ field | go_default }}` — the Go literal for the field's default,
+/// or null when the field has no renderable default.
+struct GoDefaultFilter {
+    enum_types: HashMap<String, String>,
+}
+
+impl tera::Filter for GoDefaultFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let (ty, field) = cage_target_template::field_parts(value)?;
+        let ft = parse_field_type(ty)?;
+        let Some(d) = cage_target_template::field_default(field) else {
+            return Ok(Value::Null);
+        };
+        Ok(render_default(d, &ft, &enum_view(&self.enum_types)).map_or(Value::Null, Value::String))
+    }
+}
+
+/// Register the Go filter library for user templates
+/// (`options.lang_filters = "go"`). Enum references resolve through the
+/// package-level allocation, so a filter sees the same type names the
+/// official generator emits.
+pub fn register_filters(tera: &mut Tera, schema: &Schema) {
+    let enum_types: HashMap<String, String> = GoTargetGenerator::allocate_names(schema)
+        .1
+        .iter()
+        .map(|e| (e.schema.name.clone(), e.type_ident.clone()))
+        .collect();
+    tera.register_filter(
+        "go_type",
+        GoTypeFilter {
+            enum_types: enum_types.clone(),
+        },
+    );
+    tera.register_filter("go_default", GoDefaultFilter { enum_types });
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn filter_library_renders_type_and_default() {
+        let schema: Schema = serde_yaml::from_str(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      price: { name: price, type: { kind: Int32 }, default: 10 }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+",
+        )
+        .unwrap();
+
+        let mut tera = Tera::default();
+        register_filters(&mut tera, &schema);
+        let mut ctx = tera::Context::new();
+        ctx.insert("tables", &schema.tables);
+        let out = tera
+            .render_str(
+                "{{ tables.Item.fields.price | go_type }}|{{ tables.Item.fields.price | go_default }}|{{ tables.Item.fields.kind | go_type }}",
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(out, "int32|10|*ItemKind");
+    }
+
     use super::*;
 
     fn test_schema() -> Schema {

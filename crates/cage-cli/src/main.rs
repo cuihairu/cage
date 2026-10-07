@@ -1608,10 +1608,80 @@ fn code_target_items(
             if gen.template_dir.is_relative() {
                 gen.template_dir = root.join(&gen.template_dir);
             }
-            Some(gen.generate(schema, Some(schema_hash)))
+            // G4 filter libraries: `options.lang_filters = "py,go"` mounts
+            // the named languages' type/default filters so user templates
+            // can reuse the exact decisions the official generators make.
+            let langs = match lang_filters(target) {
+                Ok(langs) => langs,
+                Err(e) => return Some(Err(e)),
+            };
+            let holder = java_holder(target);
+            Some(
+                gen.generate_with_setup(schema, Some(schema_hash), |tera, schema| {
+                    for lang in &langs {
+                        match lang.as_str() {
+                            "py" | "python" => cage_target_py::register_filters(tera, schema),
+                            "cs" | "csharp" => cage_target_cs::register_filters(tera, schema),
+                            "ts" | "typescript" => cage_target_ts::register_filters(tera, schema),
+                            "go" | "golang" => cage_target_go::register_filters(tera, schema),
+                            "java" => cage_target_java::register_filters(
+                                tera,
+                                schema,
+                                Some(holder.as_str()),
+                            ),
+                            "cpp" | "c++" | "cxx" => {
+                                cage_target_cpp::register_filters(tera, schema);
+                            }
+                            "lua" => cage_target_lua::register_filters(tera, schema),
+                            _ => {}
+                        }
+                    }
+                }),
+            )
         }
         _ => None,
     }
+}
+
+/// `options.lang_filters` (design §22 G4): comma-separated language keys
+/// whose filter libraries mount into the user-template engine. Unknown
+/// keys fail up front, before any rendering.
+fn lang_filters(target: &TargetConfig) -> Result<Vec<String>, String> {
+    let Some(v) = target.options.as_ref().and_then(|o| o.get("lang_filters")) else {
+        return Ok(Vec::new());
+    };
+    let s = v
+        .as_str()
+        .ok_or_else(|| "template target: options.lang_filters must be a string".to_string())?;
+    let mut langs = Vec::new();
+    for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match part {
+            "py" | "python" | "cs" | "csharp" | "ts" | "typescript" | "go" | "golang" | "java"
+            | "cpp" | "c++" | "cxx" | "lua" => langs.push(part.to_string()),
+            other => {
+                return Err(format!(
+                    "template target: unknown lang_filters entry '{other}' \
+                     (supported: py/cs/ts/go/java/cpp/lua)"
+                ));
+            }
+        }
+    }
+    Ok(langs)
+}
+
+/// The shared-enums holder class stem for the Java filter library — the
+/// same derivation `JavaTargetGenerator::from_config` applies
+/// (`options.enums_file`'s file stem, default `CageEnums`).
+fn java_holder(target: &TargetConfig) -> String {
+    let f = target
+        .options
+        .as_ref()
+        .and_then(|o| o.get("enums_file"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("CageEnums.java");
+    Path::new(f)
+        .file_stem()
+        .map_or_else(|| f.to_string(), |s| s.to_string_lossy().into_owned())
 }
 
 /// Write generated artifacts under `root`, recording manifest entries

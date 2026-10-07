@@ -93,6 +93,23 @@ impl TemplateTargetGenerator {
         schema: &Schema,
         schema_hash: Option<&str>,
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        self.generate_with_setup(schema, schema_hash, |_, _| {})
+    }
+
+    /// Like [`generate`](Self::generate), with a `setup` hook that runs
+    /// once after the convention filters are registered — the seam for
+    /// per-language filter libraries (`register_filters` in each
+    /// `cage-target-*` crate): user templates opt in via the CLI's
+    /// `options.lang_filters`.
+    pub fn generate_with_setup<F>(
+        &self,
+        schema: &Schema,
+        schema_hash: Option<&str>,
+        setup: F,
+    ) -> Result<Vec<(String, Vec<u8>)>, String>
+    where
+        F: FnOnce(&mut Tera, &Schema),
+    {
         let mut tera = base_tera();
 
         let mut files = Vec::new();
@@ -116,6 +133,7 @@ impl TemplateTargetGenerator {
             names.push(rel);
         }
         register_convention_filters(&mut tera);
+        setup(&mut tera, schema);
         self.render_registered(&tera, &names, schema, schema_hash, &no_extras)
     }
 
@@ -198,6 +216,27 @@ impl TemplateTargetGenerator {
     fn join_output(&self, rel: &str) -> String {
         self.output_dir.join(rel).to_string_lossy().into_owned()
     }
+}
+
+/// Field-object input convention for the per-language filter libraries
+/// (design §22 G4): the piped value is a serialized `FieldSchema`, and a
+/// filter pulls the `type` object out of it. Returns `(type object, field
+/// object)`; language crates deserialize the former into their
+/// `FieldType`.
+pub fn field_parts(value: &Value) -> tera::Result<(&Value, &serde_json::Map<String, Value>)> {
+    let obj = value
+        .as_object()
+        .ok_or("language filters expect a field object (the serialized FieldSchema)")?;
+    let ty = obj
+        .get("type")
+        .ok_or("field object is missing its `type`")?;
+    Ok((ty, obj))
+}
+
+/// The non-null `default` of a field object, if any — the same presence
+/// rule the official generators use (`filter(|v| !v.is_null())`).
+pub fn field_default(field: &serde_json::Map<String, Value>) -> Option<&Value> {
+    field.get("default").filter(|v| !v.is_null())
 }
 
 /// Fresh engine: no autoescaping (code templates are text), convention
@@ -378,12 +417,63 @@ impl tera::Filter for PascalCaseFilter {
     }
 }
 
-/// Register the naming-convention filters (G4 grows this into the full
-/// per-language library).
+struct KebabCaseFilter;
+
+impl tera::Filter for KebabCaseFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let s = as_identifier(value)?;
+        Ok(Value::String(
+            words(&s)
+                .iter()
+                .map(|w| w.to_lowercase())
+                .collect::<Vec<_>>()
+                .join("-"),
+        ))
+    }
+}
+
+struct ScreamingCaseFilter;
+
+impl tera::Filter for ScreamingCaseFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let s = as_identifier(value)?;
+        Ok(Value::String(
+            words(&s)
+                .iter()
+                .map(|w| w.to_uppercase())
+                .collect::<Vec<_>>()
+                .join("_"),
+        ))
+    }
+}
+
+/// Field-map ordering: `{% for f in table.fields | field_order %}` yields
+/// the fields as an array sorted by field name — the canonical order every
+/// official generator emits (per-language `sorted_fields`).
+struct FieldOrderFilter;
+
+impl tera::Filter for FieldOrderFilter {
+    fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
+        let obj = value
+            .as_object()
+            .ok_or("field_order expects the fields map of a table")?;
+        let mut names: Vec<&String> = obj.keys().collect();
+        names.sort();
+        Ok(Value::Array(
+            names.iter().map(|n| obj[*n].clone()).collect::<Vec<_>>(),
+        ))
+    }
+}
+
+/// Register the naming-convention filters plus the field-order canonical
+/// sort — the language-independent layer of the G4 filter library.
 fn register_convention_filters(tera: &mut Tera) {
     tera.register_filter("snake_case", SnakeCaseFilter);
     tera.register_filter("camelCase", CamelCaseFilter);
     tera.register_filter("PascalCase", PascalCaseFilter);
+    tera.register_filter("kebab_case", KebabCaseFilter);
+    tera.register_filter("SCREAMING_CASE", ScreamingCaseFilter);
+    tera.register_filter("field_order", FieldOrderFilter);
 }
 
 #[cfg(test)]
@@ -642,6 +732,56 @@ enums:
         let gen = TemplateTargetGenerator::from_config(&config);
         assert_eq!(gen.output_dir, PathBuf::from("build/gen"));
         assert_eq!(gen.template_dir, PathBuf::from(".cage/templates"));
+    }
+
+    #[test]
+    fn extended_convention_filters_and_field_order() {
+        let mut tera = Tera::default();
+        register_convention_filters(&mut tera);
+        let mut ctx = TeraContext::new();
+        ctx.insert("name", "HTTPServer");
+        ctx.insert(
+            "fields",
+            &serde_json::json!({ "zeta": 1, "alpha": 2, "Mid": 3 }),
+        );
+        let out = tera
+            .render_str(
+                "{{ name | kebab_case }}|{{ name | SCREAMING_CASE }}|\
+                 {% for f in fields | field_order %}[{{ f }}]{% endfor %}",
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(out, "http-server|HTTP_SERVER|[3][2][1]");
+    }
+
+    #[test]
+    fn generate_with_setup_mounts_extra_filters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tpl");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("one.tera"), "x={{ \"ok\" | setup_shout }}").unwrap();
+        let schema = test_schema();
+        let gen = TemplateTargetGenerator {
+            output_dir: PathBuf::from("build/out"),
+            template_dir: dir,
+        };
+        let artifacts = gen
+            .generate_with_setup(&schema, None, |tera, _schema| {
+                struct ShoutFilter;
+                impl tera::Filter for ShoutFilter {
+                    fn filter(
+                        &self,
+                        value: &Value,
+                        _args: &HashMap<String, Value>,
+                    ) -> tera::Result<Value> {
+                        Ok(Value::String(format!("{}!", value.as_str().unwrap_or(""))))
+                    }
+                }
+                tera.register_filter("setup_shout", ShoutFilter);
+            })
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(std::str::from_utf8(&artifacts[0].1).unwrap(), "x=ok!");
     }
 
     #[test]

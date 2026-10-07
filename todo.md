@@ -362,10 +362,13 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       缺目录 / 空目录 / 语法错诊断指到模板文件路径；CLI 测试 5 新增
       （惯例目录 + options 覆盖 + build/manifest + 缺失两形态 + 语法错
       + 确定性），workspace 534 全绿
-- [ ] G4 过滤器库：G2 改写中沉淀的过滤器整理成库——各语言类型映射
-      （py_type / cs_type / ts_type / …）、默认值字面量
-      （*_literal）、语言字段排序（*_field_order）、命名约定扩展
-      （kebab_case / SCREAMING_CASE 等），过滤器表进 target.md
+- [x] G4 过滤器库（已交付）：决策函数成库、模板里不写逻辑——语言
+      无关层恒注册（kebab_case / SCREAMING_CASE 补齐 + field_order
+      字段名序 + generate_with_setup 钩子），语言层各 crate pub
+      register_filters（七语言 {lang}_type + 六语言 {lang}_default，
+      枚举引用带官方分配标识符），CLI options.lang_filters 挂载
+      （未知键渲染前报错），go/cpp allocate_names 零行为提取同源
+      复用；测试 11 新增，workspace 545 全绿，过滤器表进 target.md
 - [ ] G5 文档收口：§22/§23 与实装对账复查、target.md 新增模板小节
       （模板变量表 / 过滤器表 / 自定义模板指南）、需求整理.md 状态行、
       architecture.md 结构树补 cage-target-template、README Target
