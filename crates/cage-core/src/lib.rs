@@ -42,6 +42,7 @@ pub mod diagnostics;
 pub mod edit;
 pub mod error;
 pub mod manifest;
+pub mod migrate;
 pub mod normalize;
 pub mod reference;
 pub mod registry;

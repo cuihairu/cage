@@ -163,6 +163,30 @@ pub mod distribution {
     pub const E2105: &str = "E2105";
 }
 
+/// Migration errors (M series, design §46): declarative data migration
+/// under schema evolution. Wired per sign — E2001/E2002 at rule parse /
+/// reference validation (`cage-core::migrate` M1), E2003/E2004 in the
+/// apply executor (M2, reserved until wiring); each doc note marks where
+/// it lands.
+pub mod migration {
+    /// E2001 - Migration rule file invalid: unreadable, not valid YAML,
+    /// missing `from`/`to`/`steps`, or an unknown step kind (M1,
+    /// `parse_spec` / `parse_migration_dir`)
+    pub const E2001: &str = "E2001";
+    /// E2002 - Migration rule reference invalid: a step names a table or
+    /// field the from-schema does not have, a rename target already
+    /// exists, or a rule names a table neither side knows (M1,
+    /// `validate_spec`)
+    pub const E2002: &str = "E2002";
+    /// E2003 - Migration step not satisfiable by the data: an unsafe type
+    /// narrowing passed to `widen_type`, or `required` without a default
+    /// where the source rows have no value (reserved until M2 wiring)
+    pub const E2003: &str = "E2003";
+    /// E2004 - Post-migration verification failed: the migrated document
+    /// does not validate under the new schema (reserved until M2 wiring)
+    pub const E2004: &str = "E2004";
+}
+
 /// Remote Source errors (S series, design §45): read-only fetch of
 /// Google Sheets / MySQL / PostgreSQL / HTTP API sources. All six are
 /// wired: E1901/E1902 at the fetch stage of every adapter, E1903 in the
@@ -277,6 +301,11 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         distribution::E2103 => Some("Bundle Verification Failed"),
         distribution::E2104 => Some("Distribution Write Refused"),
         distribution::E2105 => Some("Distribution Credential Missing"),
+        // Migration
+        migration::E2001 => Some("Migration Rule Invalid"),
+        migration::E2002 => Some("Migration Rule Reference Invalid"),
+        migration::E2003 => Some("Migration Step Not Applicable"),
+        migration::E2004 => Some("Post-Migration Verification Failed"),
         // Remote Source
         remote::E1901 => Some("Remote Source Fetch Failed"),
         remote::E1902 => Some("Remote Source Auth Rejected"),

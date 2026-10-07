@@ -343,10 +343,21 @@ build + publish，不新造通道。决策记录（定了什么 / 为什么 / �
       （MigrationSpec / Step / parse_spec / apply + cage migrate）/
       E20xx 四码规划（E2001 解析 / E2002 引用 / E2003 变换 / E2004
       回验）/ 留待实现期清单——本轮交付，勾选
-- [ ] M1 规则模型与解析：`cage-core::migrate`（MigrationSpec / Step /
+- [x] M1 规则模型与解析：`cage-core::migrate`（MigrationSpec / Step /
       parse_spec，版本步进链文件名序）+ E2001/E2002 注册与 validation.md
-      预留标注；验收：单测（六类 Step 解析、链序、引用不合法 E2002、
-      坏文件 E2001）+ 本勾选
+      预留标注；实装细化：Step 六变体 wire 格式 = 每步单键映射
+      （`- rename_field: {…}`，未知变换名解析即拒）、serde_yaml 无
+      externally-tagged 枚举支持故 Step 手写 Deserialize（单键映射
+      手工分派，payload 经 serde_yaml::from_value；set_default 的值走
+      yaml_to_value 裸 YAML 转换——canonical Value 是 adjacently
+      tagged serde_yaml 解不了，Bytes/自定义 tag 不支持）；结构自检
+      （from/to 非空且不等、steps 非空）；validate_spec 对 from-schema
+      校验引用（表/字段存在性 + rename 目标撞名）；验收已过：单测×4
+      （六类 Step 全解析顺序保持、目录文件名序链 + 非迁移文件忽略、
+      坏文件六路 E2001——读不到/坏 YAML/空 steps/未知变换/缺 to/
+      from==to、引用校验——表不存在/字段不存在/rename 撞字段/
+      rename_table 撞表与合法改名）+ validation.md E20xx 新表节
+      （E2001/E2002 已接线、E2003/E2004 预留 M2）——本轮交付，勾选
 - [ ] M2 执行器与报告：`apply` 对 Canonical Model 变换 + 逐变更报告 +
       E2003/E2004；验收：单测（六类 Step 变换语义、加宽不安全 E2003、
       回验失败 E2004、确定性两跑一致）+ 本勾选
