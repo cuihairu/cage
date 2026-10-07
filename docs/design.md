@@ -2309,6 +2309,40 @@ Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构
 
 # 46. Migration（M 系列，2026-10 立项拍板）
 
+**实装状态**：M1 迁移规则模型与解析（`parse_spec` / `validate_spec` /
+`parse_migration_dir`，E2001/E2002）、M2 迁移执行器与回验（`apply` 六类
+变换语义 + `reverify` L0–L6 回验，E2003/E2004）、M3 CLI 与落盘
+（`cage migrate` dry-run/`--write`/`--all`/`--to`，本地文本源原路写回）
+均已交付，E20xx 四码全数接线（validation.md E20xx 表为准）；下方接口块
+与签名以实装为准——`apply` 实带 `from_schema` 参数（`widen_type` 方向
+检查用），`reverify(doc, schema)` 为独立入口。
+
+**实装决策记录（M3，随码补充）**：
+
+- **widen 双路径**：CLI 载入的 schema 恒是**新版**（工作流是先改
+  schema 再写规则迁数据），`widen_type` 的 `to` 与 schema 当前类型
+  相同——若仍走方向表会被 `X → X` 非「安全加宽」误拒。定案：`current
+  == to` 时跳过方向表、只跑逐行值域检查（值域是安全网，两条路径都
+  跑）；`current != to` 才按方向表（库调用方持旧 schema 的场景不变）。
+- **CLI 不跑 `validate_spec`**：其 from-schema 引用校验需要**旧版
+  schema**，而磁盘上只有一份新 schema（历史 schema 不入库）。定案：
+  from-schema 校验留作库 API 能力（编辑器/工具链持有两份 schema 时
+  用）；CLI 路径的坏引用由 apply 层防线接力——rename 目标已被占用
+  （行内同存 from/to、表名同存 from/to 都直接 `E2003` 拒绝，绝不合并
+  两个值）、引用的表文档里没有（`E2003`）、字段级残留在回验 `E2004`
+  兜底。失败即失败，无静默通道。
+- **幂等**：`apply` 的 `rows_changed` 只计字节真正改变的行——重跑
+  已迁移文档每步都是 no-op（改名目标已就位 / 默认值已补 / 值已映射 /
+  表已改名），`--write` 前逐文件字节比对，相同跳过。第二次 `migrate
+  --write` = 0 行变更 + 全部 unchanged。
+- **落盘渲染序**：JSON 源读取不保文件内键序，原序不可作为再渲染依据；
+  定案按 **schema 字段声明序**渲染行（契约序、稳定），schema 外字段
+  按 load 序尾插。首次 `--write` 是一次性格式规范化（报告为 wrote），
+  自第二轮起字节恒定。
+- **多段链回验**：回验永远对磁盘上那一份（最终版）schema 跑——链上
+  每个中间态必须自洽满足当前 schema；跨到中间态停住的链（中间态不满足
+  最终 schema）应 `--all` 一次到位。
+
 **决策记录（2026-10 拍板，依「待拍板项按建议方案自行定 + 记录，用户
 后续审核再调」授权）**
 
@@ -2336,8 +2370,8 @@ Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构
   编辑器」——按报告手工改，改完重跑 migrate 校验收敛）；迁移后的注册表
   条目 = 重跑 build + `cage registry publish`（复用 R 系列，不新造通道）。
 - 不做的：自动推断（规则必须显式）；schema 自身的演进（schema 编辑走
-  Schema Editor / 手编，迁移只管数据）；跨多段自动跳迁（首期显式逐段执行，
-  `--to` 链式留待实现期）。
+  Schema Editor / 手编，迁移只管数据）；`--to latest` 自动沿链跳迁
+  （首期显式：默认单段逐次推进，`--all` 全链、`--to <ver>` 前缀）。
 
 **接口**：
 
@@ -2346,15 +2380,21 @@ cage-core::migrate
 ├── MigrationSpec      # 一段迁移：from / to / steps[]
 ├── Step               # rename_field / set_default / remove_field /
 │                      # widen_type / remap_values / rename_table
-├── parse_spec(...)    # 迁移文件 → MigrationSpec（E2001 解析失败、
-│                      # E2002 规则引用不合法——新旧 schema 均无此表/字段）
-└── apply(spec, doc)   # Canonical Model 变换 + 逐变更报告
-                       # （E2003 变换不满足：加宽不安全、required 缺默认值）
+├── parse_spec(...)    # 迁移文件 → MigrationSpec（E2001 解析失败）
+├── validate_spec(...) # 规则引用对 schema 校验（E2002——表/字段存在性、
+│                      # rename 撞名；库 API，持 from-schema 的调用方用）
+├── parse_migration_dir(...)  # 目录 → 文件名序版本步进链
+├── apply(spec, doc, from_schema)  # Canonical Model 原位变换 + 逐步骤
+│                      # 行数报告（E2003 变换不满足：方向不安全、值超
+│                      # 域、表/行字段缺失、rename 目标撞名；幂等——
+│                      # 重跑已迁移文档 0 行变更）
+└── reverify(doc, schema)  # 迁移产物对新 schema L0–L6 回验（E2004 附诊断）
 
 cage migrate [--all | --to <ver>] [--write]   # 默认 dry-run 只报告
-└── 载入工程 → 按文件名序逐段应用 → 新 schema 回验（E2004 迁移后
-    校验失败，定位到段）→ 报告（每表变更行数 / 跳过原因）；
-    --write 对可写源落盘，Excel 源恒报告
+└── 载入工程 → 按文件名序逐段应用 → 当前 schema 回验（E2004 迁移后
+    校验失败不落盘）→ 报告（每步骤行数 / 每源文件处置）；
+    --write 对本地 JSON/YAML/CSV 源按 source_file 原路写回（schema
+    字段序渲染、字节未变跳过），Excel 源与 registry/远程源恒报告
 ```
 
 **错误码（E20xx 族）**：E2001 迁移规则文件解析失败 / E2002 规则引用
@@ -2362,7 +2402,7 @@ cage migrate [--all | --to <ver>] [--write]   # 默认 dry-run 只报告
 `codes.rs` 的 `error::codes::migration` 模块 + validation.md，每码一
 doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
 
-**留待实现期**：链式自动跳迁（`--to latest` 沿版本链逐段）、schema diff
+**留待实现期**：`--to latest` 自动沿版本链跳迁、schema diff
 辅助生成规则草稿、Excel 报告的单元格级定位、迁移规则与 `[dependencies]`
 版本 pin 的联动校验。
 

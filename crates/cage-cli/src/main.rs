@@ -157,6 +157,25 @@ enum Commands {
         #[command(subcommand)]
         cmd: RegistryCmd,
     },
+    /// Apply the migration chain in `migrations/` to the project's source
+    /// data under the current schema — declarative segment steps, then a
+    /// full L0-L6 reverification. Dry-run by default: nothing is written
+    /// until --write, and the write only touches local text sources
+    /// (JSON/YAML/CSV); Excel and registry/remote sources stay report-only
+    Migrate {
+        /// Configuration project root directory
+        path: PathBuf,
+        /// Apply the whole migration chain instead of just the first segment
+        #[arg(long, conflicts_with = "to")]
+        all: bool,
+        /// Apply the chain prefix up to and including the segment whose
+        /// target version matches
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+        /// Rewrite the migrated data back into the local text sources
+        #[arg(long)]
+        write: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -385,6 +404,12 @@ fn main() {
                 dry_run,
             ),
         },
+        Commands::Migrate {
+            path,
+            all,
+            to,
+            write,
+        } => run_migrate(&path, all, to.as_deref(), write),
     };
     std::process::exit(code);
 }
@@ -835,6 +860,416 @@ fn run_check(path: &Path, level: &str, profile: &str, no_cache: bool) -> i32 {
         );
         0
     }
+}
+
+/// `cage migrate [--all | --to <ver>] [--write]` — apply the migration
+/// chain in `<root>/migrations/` (file-name order = version step chain)
+/// to the loaded document, then reverify it under the current schema.
+/// The CLI always holds the post-migration schema (rules migrate data;
+/// the schema was already edited), so no historical from-schema exists on
+/// disk: `validate_spec`'s from-schema reference check stays a library
+/// capability, and a bad reference surfaces here as E2003 at apply time
+/// (missing table, rename target already taken) or E2004 at reverification.
+/// Dry-run by default; `--write` rewrites the local text sources in place,
+/// byte-identically skipping unchanged files.
+fn run_migrate(path: &Path, all: bool, to: Option<&str>, write: bool) -> i32 {
+    let project = match load_project(path, false) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let migrations_dir = path.join("migrations");
+    if !migrations_dir.is_dir() {
+        println!(
+            "cage migrate: nothing to migrate (no {} directory)",
+            migrations_dir.display()
+        );
+        return 0;
+    }
+    let chain = match cage_core::migrate::parse_migration_dir(&migrations_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    if chain.is_empty() {
+        println!(
+            "cage migrate: nothing to migrate (empty {} directory)",
+            migrations_dir.display()
+        );
+        return 0;
+    }
+    let selected: Vec<(String, cage_core::migrate::MigrationSpec)> = if all {
+        chain
+    } else if let Some(target) = to {
+        let mut picked = Vec::new();
+        for (file, spec) in chain {
+            let at_target = spec.to == target;
+            picked.push((file, spec));
+            if at_target {
+                break;
+            }
+        }
+        if picked.last().is_none_or(|(_, s)| s.to != target) {
+            eprintln!(
+                "error: --to {target}: no segment on the migration chain ends at that version"
+            );
+            return 2;
+        }
+        picked
+    } else {
+        // Explicit step-by-step evolution: one segment per run by default.
+        vec![chain.into_iter().next().expect("non-empty chain")]
+    };
+
+    let mut doc = project.document;
+    let mut migrated_rows = 0usize;
+    for (file, spec) in &selected {
+        let report = match cage_core::migrate::apply(spec, &mut doc, &project.schema) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
+        println!("cage migrate: segment {file} ({} → {})", spec.from, spec.to);
+        for step in &report.steps {
+            println!("  {}: {} row(s)", step.step, step.rows_changed);
+            migrated_rows += step.rows_changed;
+        }
+    }
+
+    // Post-migration reverification (L0-L6) under the current schema —
+    // a failure means nothing is written.
+    if let Err(e) = cage_core::migrate::reverify(&doc, &project.schema) {
+        eprintln!("error: {e}");
+        eprintln!("cage migrate: verification failed — nothing written");
+        return 1;
+    }
+
+    let lines = match write_migrated_sources(&doc, path, &project.config, &project.schema, write) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    for line in &lines {
+        println!("{line}");
+    }
+    println!(
+        "cage migrate: OK ({} segment(s), {} row(s) migrated, schema {}){}",
+        selected.len(),
+        migrated_rows,
+        project
+            .schema
+            .metadata
+            .as_ref()
+            .map_or("(unversioned)", |m| m.version.as_str()),
+        if write {
+            ""
+        } else {
+            " — dry run, nothing written"
+        }
+    );
+    0
+}
+
+/// Group tables by source file and rewrite each local text source
+/// (JSON/YAML/CSV) with its migrated tables. Excel sources and anything
+/// outside the project's local source roots (registry entries, remote
+/// caches) are never written — they are reported instead. Rows render in
+/// schema field order (the stable contract order — the JSON reader loses
+/// the file's original key order, so that would not be stable to re-render
+/// against), which is what makes a second `--write` run byte-identical.
+/// Byte-identical renders are skipped outright.
+fn write_migrated_sources(
+    doc: &Document,
+    root: &Path,
+    config: &ProjectConfig,
+    schema: &Schema,
+    write: bool,
+) -> Result<Vec<String>, String> {
+    let writable: Vec<PathBuf> = config
+        .source_roots
+        .values()
+        .filter(|rel| {
+            !rel.starts_with("registry:")
+                && !rel.starts_with("mysql:")
+                && !rel.starts_with("pg:")
+                && !rel.starts_with("gsheet:")
+                && !remote::is_remote_root(rel)
+        })
+        .map(|rel| root.join(rel))
+        .collect();
+    let mut groups: std::collections::BTreeMap<String, Vec<&cage_core::value::Table>> =
+        std::collections::BTreeMap::new();
+    for table in doc.tables.values() {
+        if !table.source_file.is_empty() {
+            groups
+                .entry(table.source_file.clone())
+                .or_default()
+                .push(table);
+        }
+    }
+    let mut lines = Vec::new();
+    for (source, tables) in &groups {
+        let file = PathBuf::from(source);
+        let ext = file
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        match ext.as_str() {
+            "xlsx" | "xls" => {
+                let rows: usize = tables.iter().map(|t| t.rows.len()).sum();
+                lines.push(format!(
+                    "  skip {source} (Excel source: report only — {} table(s), {rows} row(s))",
+                    tables.len()
+                ));
+                continue;
+            }
+            "json" | "yaml" | "yml" | "csv" => {}
+            _ => {
+                lines.push(format!("  skip {source} (not a text source)"));
+                continue;
+            }
+        }
+        if !writable.iter().any(|w| file.starts_with(w)) {
+            lines.push(format!(
+                "  skip {source} (registry/remote source: read-only, {} table(s))",
+                tables.len()
+            ));
+            continue;
+        }
+        let new_bytes = render_source_file(&ext, tables, source, schema)?;
+        let old_bytes = std::fs::read(&file)
+            .map_err(|e| format!("cannot read back source file {source}: {e}"))?;
+        if old_bytes == new_bytes {
+            lines.push(format!("  unchanged {source}"));
+            continue;
+        }
+        if write {
+            std::fs::write(&file, &new_bytes)
+                .map_err(|e| format!("cannot write source file {source}: {e}"))?;
+            lines.push(format!("  wrote {source} ({} table(s))", tables.len()));
+        } else {
+            lines.push(format!(
+                "  would write {source} ({} table(s))",
+                tables.len()
+            ));
+        }
+    }
+    Ok(lines)
+}
+
+/// Render one source file's tables back into their original format:
+/// JSON/YAML as `{ table: [row objects] }` in document order, CSV as a
+/// single-table file (the reader's own convention). Row fields render in
+/// schema declaration order when the table is defined in the schema —
+/// the JSON source reader does not preserve the file's original key
+/// order, so the schema order is the only stable one to re-render — with
+/// any off-schema fields appended in load order.
+fn render_source_file(
+    ext: &str,
+    tables: &[&cage_core::value::Table],
+    source: &str,
+    schema: &Schema,
+) -> Result<Vec<u8>, String> {
+    match ext {
+        "json" => {
+            let mut outer = IndexMap::new();
+            for table in tables {
+                outer.insert(table.name.clone(), rows_to_json(table, source, schema)?);
+            }
+            let mut buf = Vec::new();
+            serde_json::to_writer_pretty(&mut buf, &outer)
+                .map_err(|e| format!("cannot render {source}: {e}"))?;
+            buf.push(b'\n');
+            Ok(buf)
+        }
+        "yaml" | "yml" => {
+            let mut outer = IndexMap::new();
+            for table in tables {
+                outer.insert(table.name.clone(), rows_to_json(table, source, schema)?);
+            }
+            let text = serde_yaml::to_string(&outer)
+                .map_err(|e| format!("cannot render {source}: {e}"))?;
+            Ok(text.into_bytes())
+        }
+        "csv" => render_csv(tables, source, schema),
+        _ => Err(format!(
+            "cannot render {source}: unsupported text format '{ext}'"
+        )),
+    }
+}
+
+/// Column order for one table: schema-declared fields that actually appear
+/// in the data (in schema order), then any off-schema fields in
+/// first-appearance order.
+fn ordered_columns(table: &cage_core::value::Table, schema: &Schema) -> Vec<String> {
+    let mut columns: Vec<String> = Vec::new();
+    if let Some(defined) = schema.tables.get(&table.name) {
+        for name in defined.fields.keys() {
+            if table.rows.iter().any(|r| r.fields.contains_key(name)) {
+                columns.push(name.clone());
+            }
+        }
+    }
+    let seen: HashSet<String> = columns.iter().cloned().collect();
+    let mut extra: Vec<String> = Vec::new();
+    for row in &table.rows {
+        for name in row.fields.keys() {
+            if !seen.contains(name) && !extra.contains(name) {
+                extra.push(name.clone());
+            }
+        }
+    }
+    columns.extend(extra);
+    columns
+}
+
+/// Rows of one table as ordered JSON objects (schema field order; the
+/// nested payload goes through `serde_json`'s own map, which sorts deep
+/// keys — order there carries no meaning, the top level does).
+fn rows_to_json(
+    table: &cage_core::value::Table,
+    source: &str,
+    schema: &Schema,
+) -> Result<Vec<IndexMap<String, serde_json::Value>>, String> {
+    let columns = ordered_columns(table, schema);
+    let mut rows = Vec::with_capacity(table.rows.len());
+    for row in &table.rows {
+        let mut obj = IndexMap::with_capacity(row.fields.len());
+        for name in &columns {
+            if let Some(tv) = row.fields.get(name) {
+                obj.insert(
+                    name.clone(),
+                    value_to_json(&tv.value, source, &table.name, name)?,
+                );
+            }
+        }
+        rows.push(obj);
+    }
+    Ok(rows)
+}
+
+fn value_to_json(
+    value: &cage_core::value::Value,
+    source: &str,
+    table: &str,
+    field: &str,
+) -> Result<serde_json::Value, String> {
+    use cage_core::value::Value;
+    Ok(match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(i) => serde_json::Value::from(*i),
+        Value::UInt(u) => serde_json::Value::from(*u),
+        Value::Float(f) => serde_json::Value::from(*f),
+        Value::String(s) => serde_json::Value::from(s.clone()),
+        // A text source never carries bytes — a base64 write would not
+        // read back the same, so refuse instead of mangling the value.
+        Value::Bytes(_) => {
+            return Err(format!(
+                "cannot write {table}.{field}: bytes value has no text-source form ({source})"
+            ));
+        }
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(value_to_json(item, source, table, field)?);
+            }
+            serde_json::Value::from(out)
+        }
+        Value::Object(entries) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in entries {
+                map.insert(k.clone(), value_to_json(v, source, table, field)?);
+            }
+            serde_json::Value::Object(map)
+        }
+    })
+}
+
+/// One CSV file = one table, headers in schema declaration order (see
+/// [`ordered_columns`]), cells formatted so each value reads back as
+/// itself.
+fn render_csv(
+    tables: &[&cage_core::value::Table],
+    source: &str,
+    schema: &Schema,
+) -> Result<Vec<u8>, String> {
+    if tables.len() != 1 {
+        return Err(format!(
+            "cannot render {source}: a CSV file carries exactly one table, found {}",
+            tables.len()
+        ));
+    }
+    let table = tables[0];
+    let headers = ordered_columns(table, schema);
+    let headers = if headers.is_empty() && !table.primary_key_fields.is_empty() {
+        table.primary_key_fields.clone()
+    } else {
+        headers
+    };
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    if !headers.is_empty() {
+        writer
+            .write_record(&headers)
+            .map_err(|e| format!("cannot render {source}: {e}"))?;
+    }
+    for row in &table.rows {
+        let mut record = Vec::with_capacity(headers.len());
+        for header in &headers {
+            match row.fields.get(header) {
+                Some(tv) => record.push(csv_cell(&tv.value, source, &table.name, header)?),
+                None => record.push(String::new()),
+            }
+        }
+        writer
+            .write_record(&record)
+            .map_err(|e| format!("cannot render {source}: {e}"))?;
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("cannot render {source}: {e}"))?;
+    writer
+        .into_inner()
+        .map_err(|e| format!("cannot render {source}: {e}"))
+}
+
+/// One CSV cell: the source reader's inference rules inverted, so a
+/// written cell parses back as the same value — bool before number,
+/// integral floats carry a `.0` to stay clear of the integer branches,
+/// an empty cell is null.
+fn csv_cell(
+    value: &cage_core::value::Value,
+    source: &str,
+    table: &str,
+    field: &str,
+) -> Result<String, String> {
+    use cage_core::value::Value;
+    Ok(match value {
+        Value::Null => String::new(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::UInt(u) => u.to_string(),
+        Value::Float(f) if f.fract() == 0.0 => format!("{f}.0"),
+        Value::Float(f) => f.to_string(),
+        Value::String(s) => s.clone(),
+        // No round-trippable cell form: refusing beats writing something
+        // that silently reads back as a string.
+        Value::Bytes(_) | Value::Array(_) | Value::Object(_) => {
+            return Err(format!(
+                "cannot write {table}.{field}: {} value has no CSV cell form ({source})",
+                value.type_name()
+            ));
+        }
+    })
 }
 
 /// Everything `build_project` produced — shared by `cage build` and
@@ -2264,6 +2699,16 @@ mod tests {
                     auth_env.as_deref().unwrap_or("<no auth_env>")
                 ),
             },
+            Commands::Migrate {
+                path,
+                all,
+                to,
+                write,
+            } => format!(
+                "migrate {} {all} {} {write}",
+                path.display(),
+                to.as_deref().unwrap_or("<chain end>")
+            ),
         }
     }
 
@@ -2306,6 +2751,25 @@ mod tests {
         let cli =
             Cli::try_parse_from(["cage", "gen", "proj", "--profile", "server"]).expect("parse gen");
         assert_eq!(describe(&cli.command), "gen proj server false");
+    }
+
+    #[test]
+    fn parse_migrate_subcommand() {
+        // Defaults: single segment, dry-run.
+        let cli = Cli::try_parse_from(["cage", "migrate", "proj"]).expect("parse migrate");
+        assert_eq!(
+            describe(&cli.command),
+            "migrate proj false <chain end> false"
+        );
+        let cli = Cli::try_parse_from(["cage", "migrate", "proj", "--all", "--write"])
+            .expect("parse migrate all");
+        assert_eq!(describe(&cli.command), "migrate proj true <chain end> true");
+        let cli = Cli::try_parse_from(["cage", "migrate", "proj", "--to", "1.2.0"])
+            .expect("parse migrate to");
+        assert_eq!(describe(&cli.command), "migrate proj false 1.2.0 false");
+        // --all and --to are mutually exclusive segment selectors.
+        let cli = Cli::try_parse_from(["cage", "migrate", "proj", "--all", "--to", "1.2.0"]);
+        assert!(cli.is_err(), "--all and --to must conflict");
     }
 
     #[test]

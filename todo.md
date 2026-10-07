@@ -70,9 +70,9 @@
       收官（2026-10，见下方「S 系列：Remote Source」：S1 HTTP API 源 /
       S2 MySQL / PostgreSQL 源 / S3 Google Sheets 源 / S4 确定性与
       离线语义收口 / S5 错误码接线收口 / S6 文档收口）
-- [ ] Artifact 分发与迁移——已立项开工（2026-10 拍板：A 系列注册表分发 +
-      M 系列声明式数据迁移，见下方两节；设计定稿 design §46/§47，决策
-      记录随稿——定了什么 / 为什么 / 备选）
+- [x] Artifact 分发与迁移——全数交付（2026-10 拍板：A 系列注册表分发
+      A1–A4 收官 + M 系列声明式数据迁移 M0–M3 收官，见下方两节；设计
+      定稿 design §46/§47，决策记录随稿——定了什么 / 为什么 / 备选）
 
 ### R 系列：Configuration Registry（2026-10 开工，design §29）
 
@@ -373,11 +373,34 @@ build + publish，不新造通道。决策记录（定了什么 / 为什么 / �
       迁移产物回验全绿而未迁移产物 required 缺失 E2004、serde_json
       序列化两跑逐字节一致）+ validation.md E2003/E2004 转已接线 +
       codes.rs 两码 doc 转接线——本轮交付，勾选
-- [ ] M3 CLI 与文档收口：`cage migrate`（--all/--to/--write，默认
+- [x] M3 CLI 与文档收口：`cage migrate`（--all/--to/--write，默认
       dry-run）+ 可写源落盘 / Excel 只报告 + CLI 集成测试（json 工程
       dry-run → write → check 全绿 → 再跑无变更；excel 工程 E2004
       路径与报告形态）+ design §46 实装状态 + cli.md migrate 章节 +
-      validation.md E20xx 转已接线 + 需求整理.md 迁移行同步 + 本勾选
+      validation.md E20xx 转已接线 + 需求整理.md 迁移行同步 + 本勾选。
+      实装细化：Commands::Migrate + run_migrate——目录缺失/空链提示
+      nothing to migrate 退出 0，段选择默认首段（显式逐段推进）/ --all
+      全链 / --to <ver> 链前缀（互斥，链外版本退出 2），逐段 apply 后
+      当前 schema 一次回验（E2004 不落盘），CLI 不跑 validate_spec
+      （无历史 from-schema，E2002 留库 API；apply 防线接力——rename
+      目标行内/表级同存即 E2003 拒绝不合并两值）；落盘 write_migrated_
+      sources 按表 source_file 分组、只写本地 source roots 内文本源
+      （Excel 恒报告、registry/远程源只读报告、字节未变跳过 unchanged），
+      JSON/YAML 写 {Table: [rows]}、CSV 单表按 schema 字段声明序渲染
+      （JSON 读取不保文件键序，schema 序是唯一稳定渲染序——第二次
+      --write 起字节恒定）、单元格按读取推断规则反写（整值 Float 带
+      .0 防落回整数分支、数组/对象/Bytes 拒写）；apply 双路径——
+      widen_type 的 current==to（CLI 恒载新 schema）跳方向表只跑值域、
+      current!=to 走方向表，rows_changed 只计真实改变行（Int32→Int64
+      canonical 表示不变 0 行）；验收已过：core 单测×3 增量（幂等重跑
+      0 行字节不变、current==to 双路径、rename 撞名两路 E2003）+
+      CLI 集成×6（dry-run 报告与零字节、write→check 绿→再跑 0 行
+      unchanged、目录缺失 0/坏规则 E2001、--all/--to/链外版本 2、
+      excel E2004 不落盘、excel 成功 skip 报告恒不写）+ parse_migrate
+      单测（默认/--all/--write/--to/互斥）+ design §46 实装状态与
+      实装决策记录（widen 双路径/validate_spec 取舍/幂等/渲染序/多段
+      链回验）+ cli.md migrate 章节与顶部标注 + 需求整理.md 迁移行
+      勾选——本轮交付，勾选；M 系列全数收官
 
 ### G 系列：Template Target（2026-10 立项，design §22；G1 随立项交付）
 

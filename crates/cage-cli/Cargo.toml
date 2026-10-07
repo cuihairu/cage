@@ -39,6 +39,9 @@ indexmap = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toml = { workspace = true }
+# `cage migrate --write` rewrites CSV sources in place (same crate the
+# source/target adapters use, so quoting round-trips)
+csv = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

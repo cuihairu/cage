@@ -476,9 +476,17 @@ impl MigrateReport {
 /// the widened type — fails the whole segment (E2003): migration never
 /// silently drops or mangles rows.
 ///
+/// `rows_changed` counts rows whose bytes actually changed: re-applying an
+/// already-migrated document reports 0 for every step (rename targets that
+/// are already in place, defaults already filled, values already remapped
+/// are all no-ops), which is what makes `cage migrate --write` idempotent.
+///
 /// `from_schema` supplies the pre-migration field types for `widen_type`'s
 /// direction check; reference validity against it is [`validate_spec`]'s
-/// job (run before apply).
+/// job (run before apply). The CLI loads the current (already-bumped)
+/// schema, so a step whose target type equals the schema's type takes the
+/// `current == to` path — the direction table has nothing to say about a
+/// type that did not move; only the value-domain check runs.
 pub fn apply(
     spec: &MigrationSpec,
     doc: &mut Document,
@@ -505,8 +513,23 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
             let rows = need_table_rows(doc, table, step)?;
             let mut changed = 0;
             for row in rows {
-                rename_row_field(&mut row.fields, from, to);
-                changed += 1;
+                // Rows already carrying the target name are a no-op — a
+                // second run over a migrated document reports 0.
+                if row.fields.contains_key(from) {
+                    // Source and target present at once: renaming would
+                    // collapse two values into one key (silent data loss).
+                    // `validate_spec` catches this against a from-schema
+                    // when the caller has one; here it is the guarantee.
+                    if row.fields.contains_key(to) {
+                        return Err(format!(
+                            "{E2003}: {} — row {} already has target field `{to}`",
+                            step.describe(),
+                            row.index
+                        ));
+                    }
+                    rename_row_field(&mut row.fields, from, to);
+                    changed += 1;
+                }
             }
             Ok(changed)
         }
@@ -562,7 +585,14 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                         step.describe()
                     )
                 })?;
-            if !is_widening(current, to) {
+            // The direction table only speaks when the type actually moves
+            // (`current != to`). The CLI always loads the post-migration
+            // schema — rules migrate data, the schema was already edited —
+            // so `current == to` is the normal CLI path and would otherwise
+            // be misread as a narrowing (X → X is not on the widening list).
+            // The value-domain check below runs either way: it is the net
+            // that catches a value the schema's own type cannot hold.
+            if current != to && !is_widening(current, to) {
                 return Err(format!(
                     "{E2003}: {} — {current:?} → {to:?} is not a safe widening",
                     step.describe()
@@ -578,7 +608,7 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                         row.index
                     )
                 })?;
-                slot.value = widen_value(&slot.value, to).ok_or_else(|| {
+                let widened = widen_value(&slot.value, to).ok_or_else(|| {
                     format!(
                         "{E2003}: {} — row {} value {} does not fit {to:?}",
                         step.describe(),
@@ -586,7 +616,10 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                         slot.value.type_name()
                     )
                 })?;
-                changed += 1;
+                if widened != slot.value {
+                    slot.value = widened;
+                    changed += 1;
+                }
             }
             Ok(changed)
         }
@@ -607,8 +640,22 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
         }
         Step::RenameTable { from, to } => {
             if !doc.tables.contains_key(from) {
+                // Already renamed by a previous run: the target table is in
+                // place, nothing to do. Neither name present is still an
+                // error — the rule points at a table this document lacks.
+                if doc.tables.contains_key(to) {
+                    return Ok(0);
+                }
                 return Err(format!(
                     "{E2003}: {} — document has no table `{from}`",
+                    step.describe()
+                ));
+            }
+            // Both names present: the rebuild below would collapse the two
+            // tables into one key (silent data loss) — refused.
+            if doc.tables.contains_key(to) {
+                return Err(format!(
+                    "{E2003}: {} — document already has table `{to}`",
                     step.describe()
                 ));
             }
@@ -1421,7 +1468,10 @@ steps:
             }],
         };
         let report = apply(&spec, &mut doc2, &from_schema).unwrap();
-        assert_eq!(report.steps[0].rows_changed, 2);
+        // rows_changed counts rows whose bytes moved: canonical Int has no
+        // width, so Int32 → Int64 rewrites no value — 0 changed, value
+        // intact.
+        assert_eq!(report.steps[0].rows_changed, 0);
         assert_eq!(doc2.tables["Item"].rows[0].fields["id"].value, V::Int(1));
 
         // A document without the table fails as E2003 too.
@@ -1506,5 +1556,104 @@ steps:
         let a = serde_json::to_string(&first).unwrap();
         let b = serde_json::to_string(&second).unwrap();
         assert_eq!(a, b, "same rules over same data = same document");
+    }
+
+    #[test]
+    fn apply_over_migrated_document_is_a_zero_change_noop() {
+        // Second run over already-migrated data: every step finds its
+        // target already in place (renamed fields, filled defaults, removed
+        // fields, remapped values, renamed table) — 0 rows changed, bytes
+        // untouched. This is the guarantee `cage migrate --write` leans on
+        // for idempotence.
+        let from_schema = schema_for_document("1.0.0");
+        let mut doc = make_document();
+        apply(&full_spec(), &mut doc, &from_schema).unwrap();
+        let before = serde_json::to_string(&doc).unwrap();
+
+        let again = apply(&full_spec(), &mut doc, &from_schema).unwrap();
+        assert_eq!(
+            again.total_rows_changed(),
+            0,
+            "every step is a no-op over migrated data: {:?}",
+            again.steps
+        );
+        let after = serde_json::to_string(&doc).unwrap();
+        assert_eq!(before, after, "second run writes nothing");
+    }
+
+    #[test]
+    fn rename_collisions_fail_as_e2003_instead_of_collapsing() {
+        // The CLI validates against the post-migration schema only (no
+        // historical from-schema on disk), so `validate_spec` cannot run
+        // there — the apply layer refuses a rename whose target is already
+        // taken rather than collapsing two values into one key.
+        let from_schema = schema_for_document("1.0.0");
+
+        // Field collision: both `name` and `title` present on a row.
+        let mut doc = make_document();
+        doc.tables["Item"].rows[0]
+            .fields
+            .insert("title".into(), tv(V::String("Already".into())));
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::RenameField {
+                table: "Item".into(),
+                from: "name".into(),
+                to: "title".into(),
+            }],
+        };
+        let out = apply(&spec, &mut doc, &from_schema).unwrap_err();
+        assert!(out.starts_with("E2003"), "{out}");
+        assert!(out.contains("already has target field `title`"), "{out}");
+
+        // Table collision: `Monster` exists alongside `Mob`.
+        let mut doc = make_document();
+        doc.tables
+            .insert("Monster".into(), doc.tables["Mob"].clone());
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::RenameTable {
+                from: "Mob".into(),
+                to: "Monster".into(),
+            }],
+        };
+        let out = apply(&spec, &mut doc, &from_schema).unwrap_err();
+        assert!(out.starts_with("E2003"), "{out}");
+        assert!(out.contains("already has table `Monster`"), "{out}");
+    }
+
+    #[test]
+    fn widen_type_current_equals_to_skips_direction_table_keeps_domain_check() {
+        // CLI shape: the loaded schema is already the post-migration one,
+        // so the schema's type equals the step's target (`current == to`).
+        // The direction table would refuse X → X as a non-widening; the
+        // dual path skips it and still runs the value-domain net.
+        let mut new_schema = schema_for_document("1.0.0");
+        new_schema.tables["Item"].fields["level"].field_type = FieldType::Int64;
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::WidenType {
+                table: "Item".into(),
+                field: "level".into(),
+                to: FieldType::Int64,
+            }],
+        };
+
+        // Clean values: direction not consulted, domain holds, bytes
+        // unchanged → 0 rows changed.
+        let mut doc = make_document();
+        let report = apply(&spec, &mut doc, &new_schema).unwrap();
+        assert_eq!(report.steps[0].rows_changed, 0);
+
+        // A value the target type cannot hold still fails as E2003 — the
+        // domain check is the safety net on this path too.
+        let mut bad = make_document();
+        bad.tables["Item"].rows[0].fields["level"].value = V::String("ten".into());
+        let out = apply(&spec, &mut bad, &new_schema).unwrap_err();
+        assert!(out.starts_with("E2003"), "{out}");
+        assert!(out.contains("does not fit"), "{out}");
     }
 }

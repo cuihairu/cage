@@ -11,13 +11,15 @@ cage diff
 cage snapshot
 cage web
 cage registry
+cage migrate
 ```
 
 MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`gen` / `snapshot`
 为第二阶段（均已实装），`web` 为第三阶段（Schema 编辑器本地服务），
 `registry` 为第三阶段 R 系列（本地 Configuration Registry 发布/列表，
 R1–R4 均已实装），A 系列分发（bundle 导出/导入、直推远端，design §47）
-已随 A1–A3 实装。`cage verify runtime/`（验证已生成产物）与
+已随 A1–A3 实装，M 系列迁移（`cage migrate`，design §46）已随 M1–M3
+实装。`cage verify runtime/`（验证已生成产物）与
 `cage graph`（读依赖图）在 [design §30](https://github.com/cuihairu/cage/blob/main/docs/design.md#30-cli) 是规划命令，
 尚未实装：配置依赖图经 `cage build --incremental` 实时参与构建决策。
 
@@ -327,6 +329,42 @@ PUT（`Authorization: Bearer $TOKEN` 只随 PUT，探针不带）→ index 与�
 publish + 静态托管」的部署形态）。`--dry-run` 跑完整本地读取与状态
 探针，零 PUT。
 
+## migrate（M 系列）
+
+```bash
+# 先改 schema.yaml 到新版，再写 migrations/0001-xxx.yaml（from/to/steps）
+cage migrate .                    # 单段 dry-run 预演（默认：只报告，不落盘）
+cage migrate . --write            # 单段执行：数据变换 + 落盘本地文本源
+cage migrate . --all --write      # 整条链一次跑完
+cage migrate . --to 1.2.0 --write # 链前缀：跑到指定目标版本（含）为止
+```
+
+对存量源数据执行声明式迁移（design §46）：`migrations/` 目录按文件名
+序构成版本步进链（`0001-…`、`0002-…`，非 `.yaml`/`.yml` 文件忽略），
+每段声明 `from`/`to`/`steps`，六类步骤——`rename_field`（保序改名）、
+`set_default`（只补缺失或 null）、`remove_field`、`widen_type`（安全
+加宽方向表 + 逐行值域）、`remap_values`（未映射值原样通过）、
+`rename_table`（表序保持）。执行完对**当前 schema**（L0–L6 全栈）回验。
+
+- **流程**：载入工程 → 逐段 apply（每步报行数，失败即失败整段中止，
+  `E2003`）→ 回验（`E2004` 附完整诊断，失败**不落盘**）→ 报告每个
+  源文件的处置。`migrations/` 目录缺失或空链 → 提示 nothing to migrate
+  并以 0 退出；坏规则文件 → `E2001`；规则引用不合法 → `E2002`（库侧
+  `validate_spec`，CLI 路径由 apply 的 `E2003` 防线接力——rename 目标
+  已被占用、引用的表文档里没有，都在变换时拒绝）。
+- **段选择**：默认跑文件名序**首段**（显式逐段推进）；`--all` 整链；
+  `--to <ver>` 取链前缀（到目标版本含）。`--all` 与 `--to` 互斥；
+  `--to` 给了链上不存在的版本 → 用法错误退出 2。链上每个中间态都要
+  自洽满足当前 schema——回验永远对磁盘上那一份 schema 跑。
+- **默认 dry-run**：完整跑 apply + 回验并报告「将写哪些文件」，
+  一个字节不动；`--write` 才落盘。
+- **落盘边界**：只写项目本地 source roots 内的 JSON/YAML/CSV（按表
+  的 `source_file` 分组原路写回，行字段按 schema 声明序渲染，字节无
+  变化跳过——重复 `--write` 是 no-op）；Excel 源**恒只报告不落盘**
+  （红线「不做 Excel 编辑器」——按报告手工改，改完重跑 migrate 校验
+  收敛）；registry 条目与远程源（registry:/mysql:/pg:/gsheet:/http）
+  是只读构建输入，同样只报告。
+
 ## 快速开始
 
 ```bash
@@ -335,4 +373,5 @@ cage build config/ --profile client  # 验证并生成目标产物
 cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
 cage diff build/a build/b          # 比较两个配置版本
 cage inspect Item                  # 查看 Schema 与配置结构
+cage migrate .                     # 迁移预演（dry-run，不改任何文件）
 ```
