@@ -66,8 +66,10 @@
       「R 系列：Configuration Registry」：本地多版本仓库 / `[dependencies]`
       版本 pin / 远程 http(s) 只读解析 / verify 全册审计 + gc 滚动窗口 +
       remove 显式移除）；遗留的注册表鉴权与远程发布协议不在本项
-- [ ] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——已立项
-      （2026-10），设计定稿 design §45，实现拆解见下方「S 系列」
+- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——S1–S6
+      收官（2026-10，见下方「S 系列：Remote Source」：S1 HTTP API 源 /
+      S2 MySQL / PostgreSQL 源 / S3 Google Sheets 源 / S4 确定性与
+      离线语义收口 / S5 错误码接线收口 / S6 文档收口）
 - [ ] Artifact 分发与迁移
 
 ### R 系列：Configuration Registry（2026-10 开工，design §29）
