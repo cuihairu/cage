@@ -320,8 +320,12 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       E2102 / 405 E2104 / 本地路径拒 exit 2）+ design §47 接口块按
       实装细化 + cli.md「直推远端」小节 + validation.md/codes.rs
       三码转已接线——本轮交付，勾选
-- [ ] A4 文档收口：design §47 实装状态、validation.md E21xx 全族转
-      已接线、architecture.md 对账、需求整理.md Artifact 分发行同步
+- [x] A4 文档收口：design §47 加实装状态段（A1–A3 交付、E21xx 五码
+      全接线、接口以实装为准）、validation.md E21xx 全族转已接线
+      （E2101 补 push 传输语义、E2102/E2104/E2105 本系前签转正）、
+      architecture.md 工程树 registry.rs/remote.rs 注释与 Snapshot 行
+      补 A 系列分发、需求整理.md 状态行与 Artifact 分发行转已交付
+      ——本轮交付，A 系列收官，勾选
 
 ### M 系列：Migration（2026-10 立项，design §46）
 

@@ -2370,6 +2370,12 @@ doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
 
 # 47. Artifact Distribution（A 系列，2026-10 拍板）
 
+**实装状态**：A1 bundle 导出（`cage registry export`，确定性 tar）、A2
+bundle 导入（`cage registry import`，信任门入册）、A3 直推（`cage
+registry push`，探针 + 逐文件 PUT + index 远端合并）均已交付，E21xx
+五码全数接线（validation.md E21xx 表为准）；下方接口块与签名以实装
+为准。
+
 **决策记录（2026-10 拍板，同 §46 授权口径）**
 
 - **定了什么**：注册表条目的两条分发路——① **离线 bundle**：
