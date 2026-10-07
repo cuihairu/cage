@@ -79,6 +79,10 @@ enum Commands {
         /// Build profile to check against
         #[arg(long, default_value = "client")]
         profile: String,
+        /// Refuse the remote-source offline fallback: an unreachable
+        /// remote source is a hard error even with a cached copy
+        #[arg(long)]
+        no_cache: bool,
     },
     /// Validate and generate target artifacts
     Build {
@@ -93,6 +97,10 @@ enum Commands {
         /// Skip rebuilding if hashes match last build's manifest
         #[arg(long)]
         incremental: bool,
+        /// Refuse the remote-source offline fallback: an unreachable
+        /// remote source is a hard error even with a cached copy
+        #[arg(long)]
+        no_cache: bool,
     },
     /// View Schema and configuration structure
     Inspect {
@@ -100,6 +108,10 @@ enum Commands {
         path: PathBuf,
         /// Table name (lists all tables when omitted)
         table: Option<String>,
+        /// Refuse the remote-source offline fallback: an unreachable
+        /// remote source is a hard error even with a cached copy
+        #[arg(long)]
+        no_cache: bool,
     },
     /// Generate code-target artifacts only (cs/python/lua/ts/js/cpp/go/java), no data validation
     Gen {
@@ -108,6 +120,10 @@ enum Commands {
         /// Build profile to generate code for
         #[arg(long, default_value = "client")]
         profile: String,
+        /// Refuse the remote-source offline fallback: an unreachable
+        /// remote source is a hard error even with a cached copy
+        #[arg(long)]
+        no_cache: bool,
     },
     /// Compare artifacts of two configuration builds
     Diff {
@@ -226,15 +242,25 @@ fn main() {
             path,
             level,
             profile,
-        } => run_check(&path, &level, &profile),
+            no_cache,
+        } => run_check(&path, &level, &profile, no_cache),
         Commands::Build {
             path,
             level,
             profile,
             incremental,
-        } => run_build(&path, &level, &profile, incremental),
-        Commands::Inspect { path, table } => run_inspect(&path, table.as_deref()),
-        Commands::Gen { path, profile } => run_gen(&path, &profile),
+            no_cache,
+        } => run_build(&path, &level, &profile, incremental, no_cache),
+        Commands::Inspect {
+            path,
+            table,
+            no_cache,
+        } => run_inspect(&path, table.as_deref(), no_cache),
+        Commands::Gen {
+            path,
+            profile,
+            no_cache,
+        } => run_gen(&path, &profile, no_cache),
         Commands::Diff { baseline, target } => run_diff(&baseline, &target),
         Commands::Snapshot {
             path,
@@ -288,7 +314,7 @@ fn main() {
 
 /// Load project config (cage.toml / cage.yaml / cage.yml / cage.json), merge
 /// all schema files and parse all declared source roots into one Document.
-fn load_project(root: &Path) -> Result<Project, String> {
+fn load_project(root: &Path, no_cache: bool) -> Result<Project, String> {
     let config = load_project_config(root)?;
 
     let schema = load_schema_for_config(root, &config)?;
@@ -311,19 +337,19 @@ fn load_project(root: &Path) -> Result<Project, String> {
             // `pg:<表|具名查询>` — static read-only whitelist (E1905) +
             // session read-only pin, DSN from env (E1904), row set
             // materialized through the same cache-and-parse path.
-            cage_source_db::DbSourceAdapter::load(root, &config, rel)?
+            cage_source_db::DbSourceAdapter::load(root, &config, rel, no_cache)?
         } else if rel.starts_with("gsheet:") {
             // Remote Source Sheets (S3, design §45): `gsheet:<id>/<tab>`
             // via Sheets API v4 values (UNFORMATTED_VALUE), first row =
             // header, credential from env (E1904), shape gate (E1903),
             // canonical JSON through the same cache-and-parse path.
-            cage_source_sheets::SheetsSourceAdapter::load(root, &config, rel)?
+            cage_source_sheets::SheetsSourceAdapter::load(root, &config, rel, no_cache)?
         } else if remote::is_remote_root(rel) {
             // Remote Source (S1, design §45): an http(s) URL is fetched,
             // materialized under `.cage-cache/source/`, and parsed by the
             // standard JSON adapter — same shapes, same L0-L7 pipeline,
             // no bypass for remote bytes.
-            cage_source_http::HttpSourceAdapter::load(root, rel)?
+            cage_source_http::HttpSourceAdapter::load(root, rel, no_cache)?
         } else {
             load_sources(&root.join(rel))?
         };
@@ -680,7 +706,7 @@ fn filter_by_profile<'a>(
     (filtered_schema, filtered_doc)
 }
 
-fn run_check(path: &Path, level: &str, profile: &str) -> i32 {
+fn run_check(path: &Path, level: &str, profile: &str, no_cache: bool) -> i32 {
     let level = match level.parse::<ValidationLevel>() {
         Ok(l) => l,
         Err(e) => {
@@ -688,7 +714,7 @@ fn run_check(path: &Path, level: &str, profile: &str) -> i32 {
             return 2;
         }
     };
-    let project = match load_project(path) {
+    let project = match load_project(path, no_cache) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
@@ -772,12 +798,13 @@ fn build_project(
     level: &str,
     profile: &str,
     incremental: bool,
+    no_cache: bool,
 ) -> Result<BuildOutput, BuildFailure> {
     let level = match level.parse::<ValidationLevel>() {
         Ok(l) => l,
         Err(e) => return Err(BuildFailure::Io(e)),
     };
-    let project = match load_project(path) {
+    let project = match load_project(path, no_cache) {
         Ok(p) => p,
         Err(e) => return Err(BuildFailure::Io(e)),
     };
@@ -980,8 +1007,8 @@ fn build_project(
     })
 }
 
-fn run_build(path: &Path, level: &str, profile: &str, incremental: bool) -> i32 {
-    match build_project(path, level, profile, incremental) {
+fn run_build(path: &Path, level: &str, profile: &str, incremental: bool, no_cache: bool) -> i32 {
+    match build_project(path, level, profile, incremental, no_cache) {
         Ok(out) => {
             if out.layer2 {
                 println!(
@@ -1069,7 +1096,7 @@ fn pack_snapshot(path: &Path, out: &BuildOutput) -> Result<(PathBuf, usize), Str
 /// identical snapshot bytes (the determinism contract).
 fn run_snapshot(path: &Path, profile: &str) -> i32 {
     // A snapshot packages a fresh full build — no incremental carry-over.
-    match build_project(path, "gamerule", profile, false) {
+    match build_project(path, "gamerule", profile, false, false) {
         Ok(out) => match pack_snapshot(path, &out) {
             Ok((snap_dir, files)) => {
                 println!(
@@ -1221,7 +1248,7 @@ fn run_registry_publish(
     }
 
     // A publish is a fresh full build — no incremental carry-over.
-    match build_project(path, "gamerule", profile, false) {
+    match build_project(path, "gamerule", profile, false, false) {
         Ok(out) => match pack_snapshot(path, &out) {
             Ok((snap_dir, files)) => {
                 match cage_core::registry::publish(&reg_root, &package, &version, &snap_dir) {
@@ -1467,8 +1494,8 @@ fn run_registry_remove(
 /// needed. Data targets (json/csv) in the profile are skipped — run
 /// `cage build` for those. The manifest is written like a build's, so gen
 /// and build manifests share the same 口径 (schema/source/content hashes).
-fn run_gen(path: &Path, profile: &str) -> i32 {
-    let project = match load_project(path) {
+fn run_gen(path: &Path, profile: &str, no_cache: bool) -> i32 {
+    let project = match load_project(path, no_cache) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1723,8 +1750,8 @@ fn write_manifest(manifest_dir: &Path, manifest: &BuildManifest) -> Result<PathB
     Ok(manifest_path)
 }
 
-fn run_inspect(path: &Path, table: Option<&str>) -> i32 {
-    let project = match load_project(path) {
+fn run_inspect(path: &Path, table: Option<&str>, no_cache: bool) -> i32 {
+    let project = match load_project(path, no_cache) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1869,21 +1896,34 @@ mod tests {
                 path,
                 level,
                 profile,
+                no_cache,
             } => {
-                format!("check {} {level} {profile}", path.display())
+                format!("check {} {level} {profile} {no_cache}", path.display())
             }
             Commands::Build {
                 path,
                 level,
                 profile,
                 incremental,
-            } => format!("build {} {level} {profile} {incremental}", path.display()),
-            Commands::Inspect { path, table } => format!(
-                "inspect {} {}",
+                no_cache,
+            } => format!(
+                "build {} {level} {profile} {incremental} {no_cache}",
+                path.display()
+            ),
+            Commands::Inspect {
+                path,
+                table,
+                no_cache,
+            } => format!(
+                "inspect {} {} {no_cache}",
                 path.display(),
                 table.as_deref().unwrap_or("<all>")
             ),
-            Commands::Gen { path, profile } => format!("gen {} {profile}", path.display()),
+            Commands::Gen {
+                path,
+                profile,
+                no_cache,
+            } => format!("gen {} {profile} {no_cache}", path.display()),
             Commands::Diff { baseline, target } => {
                 format!("diff {} {}", baseline.display(), target.display())
             }
@@ -1949,14 +1989,20 @@ mod tests {
     #[test]
     fn parse_check_subcommand() {
         let cli = Cli::try_parse_from(["cage", "check", "proj"]).expect("parse check");
-        assert_eq!(describe(&cli.command), "check proj semantic client");
+        assert_eq!(describe(&cli.command), "check proj semantic client false");
+        // The offline-strictness flag round-trips (S4).
+        let cli = Cli::try_parse_from(["cage", "check", "proj", "--no-cache"]).expect("parse flag");
+        assert_eq!(describe(&cli.command), "check proj semantic client true");
     }
 
     #[test]
     fn parse_build_subcommand() {
         let cli = Cli::try_parse_from(["cage", "build", "proj", "--level", "table"])
             .expect("parse build");
-        assert_eq!(describe(&cli.command), "build proj table client false");
+        assert_eq!(
+            describe(&cli.command),
+            "build proj table client false false"
+        );
     }
 
     #[test]
@@ -1968,17 +2014,17 @@ mod tests {
     #[test]
     fn parse_inspect_subcommand() {
         let cli = Cli::try_parse_from(["cage", "inspect", "proj"]).expect("parse inspect");
-        assert_eq!(describe(&cli.command), "inspect proj <all>");
+        assert_eq!(describe(&cli.command), "inspect proj <all> false");
         // The optional table argument round-trips too.
         let cli = Cli::try_parse_from(["cage", "inspect", "proj", "Item"]).expect("parse table");
-        assert_eq!(describe(&cli.command), "inspect proj Item");
+        assert_eq!(describe(&cli.command), "inspect proj Item false");
     }
 
     #[test]
     fn parse_gen_subcommand() {
         let cli =
             Cli::try_parse_from(["cage", "gen", "proj", "--profile", "server"]).expect("parse gen");
-        assert_eq!(describe(&cli.command), "gen proj server");
+        assert_eq!(describe(&cli.command), "gen proj server false");
     }
 
     #[test]

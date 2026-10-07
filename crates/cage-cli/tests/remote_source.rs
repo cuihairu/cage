@@ -308,3 +308,55 @@ fn remote_source_failures_report_their_codes() {
     assert!(stderr(&out).contains("E0001"), "{}", stderr(&out));
     assert!(stderr(&out).contains("failed to parse"), "{}", stderr(&out));
 }
+
+/// S4 offline semantics, end to end: once a first build has materialized
+/// the remote bytes, killing the server no longer fails the build — the
+/// cached copy is served behind an E1906 WARNING — while `--no-cache`
+/// turns the same scenario back into the hard E1901.
+#[test]
+fn offline_build_falls_back_to_the_cache_and_no_cache_refuses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let srv_dir = tmp.path().join("srv");
+    fs::create_dir_all(&srv_dir).unwrap();
+    write(&srv_dir.join("data.json"), DATA_V1);
+    let server = start_server(&srv_dir);
+    let base = format!("http://127.0.0.1:{}", server.port);
+
+    let proj = tmp.path().join("consumer").to_str().unwrap().to_string();
+    write_consumer(tmp.path(), "consumer", &format!("{base}/data.json"));
+
+    // First build: online, materializes the cache copy.
+    let out = run_cage(&["build", &proj]);
+    assert_code(&out, 0, "online build");
+    drop(server);
+
+    // Offline rebuild: served from the cache, WARNING on stderr.
+    let out = run_cage(&["build", &proj]);
+    assert_code(&out, 0, "offline build falls back to the cache");
+    assert!(
+        stderr(&out).contains("E1906"),
+        "expected the E1906 fallback warning\nstderr:\n{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("warning:"),
+        "fallback must be a warning, not silent\nstderr:\n{}",
+        stderr(&out)
+    );
+
+    // check agrees (the fallback lives in load_project, shared).
+    let out = run_cage(&["check", &proj]);
+    assert_code(&out, 0, "offline check falls back too");
+
+    // --no-cache refuses the fallback: hard E1901, exit 2.
+    let out = run_cage(&["build", &proj, "--no-cache"]);
+    assert_code(&out, 2, "no-cache build refuses the fallback");
+    assert!(
+        stderr(&out).contains("E1901"),
+        "expected E1901\nstderr:\n{}",
+        stderr(&out)
+    );
+    let out = run_cage(&["check", &proj, "--no-cache"]);
+    assert_code(&out, 2, "no-cache check refuses the fallback");
+    assert!(stderr(&out).contains("E1901"), "{}", stderr(&out));
+}

@@ -32,26 +32,46 @@ impl HttpSourceAdapter {
     /// returning the cached file path. Errors: E1901 when the fetch
     /// fails (transport after bounded retries, 404, or any other
     /// non-auth status), E1902 on 401/403, E9902 when the cache cannot
-    /// be written.
-    pub fn fetch(project_root: &Path, url: &str) -> Result<PathBuf, String> {
+    /// be written. A transport failure with a previous copy on disk
+    /// falls back to it instead (E1906 WARNING) unless `strict`
+    /// (`--no-cache`) is set; 404 and 401/403 never fall back — stale
+    /// bytes must not mask a deleted source or revoked access.
+    pub fn fetch(project_root: &Path, url: &str, strict: bool) -> Result<PathBuf, String> {
         if !is_http_url(url) {
             return Err(format!("{E1901} not an http(s) remote source URL: {url}"));
         }
-        let bytes = remote::http_get(url).map_err(|failure| match &failure {
-            FetchFailure::Status(code @ (401 | 403)) => {
-                format!("{E1902} remote source rejected access (HTTP {code}): {url}")
+        // The cache slot is keyed by the URL alone, so it resolves
+        // before any bytes move — the offline fallback needs it too.
+        let cache_dir = remote::source_cache_dir(project_root, url);
+        let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(url)));
+        let bytes = match remote::http_get(url) {
+            Ok(bytes) => bytes,
+            Err(FetchFailure::Transport(e)) => {
+                if let Some(path) = remote::source_cache_fallback(&cache_file, url, strict) {
+                    return Ok(path);
+                }
+                return Err(format!(
+                    "{E1901} remote source fetch failed: transport failure: {e} ({url})"
+                ));
             }
-            FetchFailure::NotFound(_) => {
-                format!("{E1901} remote source not found (HTTP 404): {url}")
+            Err(FetchFailure::Status(code @ (401 | 403))) => {
+                return Err(format!(
+                    "{E1902} remote source rejected access (HTTP {code}): {url}"
+                ));
             }
-            other => format!("{E1901} remote source fetch failed: {other} ({url})"),
-        })?;
+            Err(FetchFailure::NotFound(_)) => {
+                return Err(format!("{E1901} remote source not found (HTTP 404): {url}"));
+            }
+            Err(FetchFailure::Status(code)) => {
+                return Err(format!(
+                    "{E1901} remote source fetch failed: http status {code} ({url})"
+                ));
+            }
+        };
 
         // The byte anchor: whatever the server said is written verbatim
         // before anything parses it — later stages always see the same
         // file a re-run would.
-        let cache_dir = remote::source_cache_dir(project_root, url);
-        let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(url)));
         std::fs::create_dir_all(&cache_dir).map_err(|e| {
             format!(
                 "{E9902} cannot create source cache {}: {e}",
@@ -71,8 +91,8 @@ impl HttpSourceAdapter {
     /// identical shapes, identical diagnostics (E0001 with line/column
     /// on a malformed body). Parse diagnostics render to stderr and the
     /// error carries the URL, mirroring how local source files report.
-    pub fn load(project_root: &Path, url: &str) -> Result<Document, String> {
-        let cache_file = Self::fetch(project_root, url)?;
+    pub fn load(project_root: &Path, url: &str, strict: bool) -> Result<Document, String> {
+        let cache_file = Self::fetch(project_root, url, strict)?;
         JsonSourceAdapter::parse_file(&cache_file).map_err(|diags| {
             eprintln!("{}", diags.render(false));
             format!("failed to parse remote source {url}")
@@ -179,7 +199,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let url = format!("http://127.0.0.1:{}/items.json", server.port);
 
-        let doc = HttpSourceAdapter::load(tmp.path(), &url).unwrap();
+        let doc = HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
         assert_eq!(doc.tables.len(), 2, "both tables load: {doc:?}");
         let item = doc.tables.get("Item").expect("Item table");
         assert_eq!(item.rows.len(), 2);
@@ -208,6 +228,7 @@ mod tests {
         let err = HttpSourceAdapter::load(
             tmp.path(),
             &format!("http://127.0.0.1:{}/items.json", server.port),
+            false,
         )
         .unwrap_err();
         assert!(err.contains("E1902"), "{err}");
@@ -220,6 +241,7 @@ mod tests {
         let err = HttpSourceAdapter::load(
             tmp.path(),
             &format!("http://127.0.0.1:{}/items.json", server.port),
+            false,
         )
         .unwrap_err();
         assert!(err.contains("E1901"), "{err}");
@@ -232,6 +254,7 @@ mod tests {
         let err = HttpSourceAdapter::load(
             tmp.path(),
             &format!("http://127.0.0.1:{}/items.json", dead_port()),
+            false,
         )
         .unwrap_err();
         assert!(err.contains("E1901"), "{err}");
@@ -244,6 +267,7 @@ mod tests {
         let err = HttpSourceAdapter::load(
             tmp.path(),
             &format!("http://127.0.0.1:{}/items.json", server.port),
+            false,
         )
         .unwrap_err();
         assert!(err.contains("failed to parse"), "{err}");
@@ -252,7 +276,68 @@ mod tests {
     #[test]
     fn non_http_url_is_rejected_without_fetching() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = HttpSourceAdapter::load(tmp.path(), "ftp://example.com/x.json").unwrap_err();
+        let err =
+            HttpSourceAdapter::load(tmp.path(), "ftp://example.com/x.json", false).unwrap_err();
         assert!(err.contains("E1901"), "{err}");
+    }
+
+    /// S4 offline semantics: a transport failure with a previous copy in
+    /// the cache slot serves that copy (the WARNING line goes to stderr,
+    /// unasserted here), and `strict` turns the same scenario back into
+    /// the plain transport error.
+    #[test]
+    fn offline_build_falls_back_to_the_cached_copy_strict_refuses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = start_server(200, "OK", BODY);
+        let url = format!("http://127.0.0.1:{}/items.json", server.port);
+        let first = HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        drop(server);
+
+        let offline = HttpSourceAdapter::load(tmp.path(), &url, false)
+            .expect("offline fallback must serve the cached copy");
+        assert_eq!(offline.tables.len(), first.tables.len());
+        assert_eq!(
+            offline.tables.get("Item").unwrap().rows.len(),
+            first.tables.get("Item").unwrap().rows.len(),
+            "cached bytes produce the same document"
+        );
+
+        let err = HttpSourceAdapter::load(tmp.path(), &url, true).unwrap_err();
+        assert!(err.contains("E1901"), "{err}");
+        assert!(err.contains("transport failure"), "{err}");
+    }
+
+    /// A definitive server answer — deleted source (404) or revoked
+    /// access (401) — never falls back, cache present or not: stale
+    /// bytes must not mask those.
+    #[test]
+    fn deleted_source_and_revoked_access_never_fall_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = start_server(200, "OK", BODY);
+        let url = format!("http://127.0.0.1:{}/items.json", server.port);
+        HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        drop(server);
+
+        let gone = start_server(404, "Not Found", "nope");
+        let gone_url = format!("http://127.0.0.1:{}/items.json", gone.port);
+        let cache_file = remote::source_cache_dir(tmp.path(), &gone_url)
+            .join(format!("{}.json", remote::cache_key(&gone_url)));
+        std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
+        std::fs::write(&cache_file, BODY).unwrap();
+
+        let err = HttpSourceAdapter::load(tmp.path(), &gone_url, false).unwrap_err();
+        assert!(err.contains("E1901"), "{err}");
+        assert!(err.contains("404"), "{err}");
+        drop(gone);
+
+        let forbidden = start_server(401, "Unauthorized", r#"{"error":"no key"}"#);
+        let forbidden_url = format!("http://127.0.0.1:{}/items.json", forbidden.port);
+        let cache_file = remote::source_cache_dir(tmp.path(), &forbidden_url)
+            .join(format!("{}.json", remote::cache_key(&forbidden_url)));
+        std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
+        std::fs::write(&cache_file, BODY).unwrap();
+
+        let err = HttpSourceAdapter::load(tmp.path(), &forbidden_url, false).unwrap_err();
+        assert!(err.contains("E1902"), "{err}");
     }
 }

@@ -67,6 +67,19 @@ cage inspect Item
 
 查看 Schema 和配置结构。
 
+## `--no-cache`：远程源离线回退开关
+
+```bash
+cage build config/ --no-cache    # check / build / gen / inspect 通用
+```
+
+`check` / `build` / `gen` / `inspect` 四命令都带 `--no-cache`：关闭
+远程源（HTTP / MySQL / PostgreSQL / Google Sheets，见
+[source](/source#离线回退与-no-cache远程源通用s4)）的离线回退——
+默认传输类取数失败会回退上一份缓存副本并发 `E1906` WARNING，
+`--no-cache` 下取不到远端即失败（`E1901`，退出码 2），即使有缓存
+副本。适合发布前「必须以远端最新字节构建」的核对。
+
 ## diff
 
 ```bash

@@ -121,6 +121,23 @@ majorDimension 非 ROWS）报 `E1903`；401/403 报 `E1902`，取数失败报
 `.cage-cache/source/<gsheets+id+tab 指纹>/`（API key 不进指纹——
 它不改变字节语义），再走标准 JSON 解析。
 
+### 离线回退与 `--no-cache`（远程源通用，S4）
+
+三个远程源共享同一条离线语义：**传输类**取数失败（连接拒绝 / DNS /
+超时 / 服务不可达）时，若上一份缓存副本还在
+`.cage-cache/source/`，构建不失败——回退解析那份副本，stderr 打
+`E1906` WARNING（`warning: E1906 remote source unreachable, serving
+the previous cached copy: <spec> (cache: <路径>)`）。两类失败**永不
+回退**：404（远端已删除）与 401/403（访问可能已被吊销）——旧字节会
+静默出错，保持硬失败（`E1901` / `E1902`）。DB 源的连接 / 语句失败
+按传输类回退；凭据（`E1904`）与查询白名单（`E1905`）在任何网络触达
+之前发生，旧字节不掩盖配置错误。回退出的缓存文件走与在线路径同一条
+标准 JSON 解析与全量校验，无旁路。
+
+`--no-cache`（`check` / `build` / `gen` / `inspect` 四命令）关闭
+回退：远端取不到即失败，即使有缓存副本。适合「必须以远端最新字节
+构建」的发布前核对。
+
 ## 后续扩展
 
 ```text

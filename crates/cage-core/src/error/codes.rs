@@ -133,9 +133,10 @@ pub mod registry {
 }
 
 /// Remote Source errors (S series, design §45): read-only fetch of
-/// Google Sheets / MySQL / PostgreSQL / HTTP API sources. E1901/E1902
-/// are wired today (HTTP API source); the rest are defined and reserved
-/// until their source lands — no code path throws them yet.
+/// Google Sheets / MySQL / PostgreSQL / HTTP API sources. All six are
+/// wired: E1901/E1902 at the fetch stage of every adapter, E1903 in the
+/// Sheets shape gate, E1904 in credential resolution, E1905 in the DB
+/// query whitelist, E1906 as the offline-fallback warning.
 pub mod remote {
     /// E1901 - Remote source fetch failed: network / DNS / timeout after
     /// bounded retries, or a non-auth HTTP error status
@@ -151,8 +152,12 @@ pub mod remote {
     /// Sheets sources land
     pub const E1904: &str = "E1904";
     /// E1905 - Remote source query invalid (non-SELECT / multi-statement
-    /// named query) — reserved until the DB sources land
+    /// named query)
     pub const E1905: &str = "E1905";
+    /// E1906 - Remote source unreachable but a previous cached copy was
+    /// served instead (offline fallback warning — not fatal; `--no-cache`
+    /// disables the fallback and turns it back into a hard E1901)
+    pub const E1906: &str = "E1906";
 }
 
 /// Build/Transform errors (Target generation)

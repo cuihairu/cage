@@ -9,6 +9,7 @@
 //! hex chars of the source URL's blake3 — deterministic for a given URL
 //! and isolated between distinct URLs.
 
+use crate::error::codes::remote::E1906;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,6 +30,29 @@ pub fn source_cache_dir(project_root: &Path, source_url: &str) -> PathBuf {
         .join(".cage-cache")
         .join("source")
         .join(cache_key(source_url))
+}
+
+/// Offline fallback gate (S4, design §45): a transport-class fetch
+/// failure may fall back to the previously materialized cache copy
+/// instead of failing the build — an offline machine keeps building off
+/// the last fetched bytes. Only transport-class failures fall back: a
+/// 404 means the source was deleted remotely and 401/403 mean access
+/// may have been revoked, so serving stale bytes there would be
+/// silently wrong — those stay hard errors. `strict` (`--no-cache`)
+/// disables the fallback entirely. Returns the cache path after
+/// printing the E1906 WARNING line, or `None` to keep the original
+/// transport error. `context` lands in the warning verbatim — callers
+/// pass the spec/URL only, never anything carrying credentials.
+pub fn source_cache_fallback(cache_file: &Path, context: &str, strict: bool) -> Option<PathBuf> {
+    if strict || !cache_file.is_file() {
+        return None;
+    }
+    eprintln!(
+        "warning: {E1906} remote source unreachable, serving the previous cached copy: \
+         {context} (cache: {})",
+        cache_file.display()
+    );
+    Some(cache_file.to_path_buf())
 }
 
 /// One failed HTTP GET, kind-tagged so callers attach the right error

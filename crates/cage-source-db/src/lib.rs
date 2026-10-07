@@ -210,15 +210,38 @@ pub fn canonical_json(table_name: &str, row_set: &RowSet, preserve_row_order: bo
 /// canonical JSON → cache file → standard JSON parse. `key_input`
 /// fingerprints the byte source (scheme, DSN, SQL) into the cache path,
 /// so distinct servers/queries never share a slot. `fetch` is the thin
-/// backend glue — everything around it is shared and tested.
+/// backend glue — everything around it is shared and tested. A fetch
+/// failure is transport-class by construction (connect/query against a
+/// live server), so with a previous copy in the cache slot it falls
+/// back to that copy (E1906 WARNING) unless `strict` (`--no-cache`);
+/// credential (E1904) and query-shape (E1905) problems never reach
+/// here — they fire in `load` before any connection, where stale bytes
+/// must not mask a configuration error.
 pub fn materialize(
     project_root: &Path,
     table_name: &str,
     sql: &str,
     key_input: &str,
     mut fetch: impl FnMut(&str) -> Result<RowSet, String>,
+    strict: bool,
 ) -> Result<Document, String> {
-    let row_set = fetch(sql)?;
+    let row_set = match fetch(sql) {
+        Ok(row_set) => row_set,
+        Err(e) => {
+            // The warning carries the table name only — `key_input`
+            // embeds the one-way-hashed DSN's source string, which may
+            // include credentials.
+            let cache_dir = remote::source_cache_dir(project_root, key_input);
+            let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(key_input)));
+            if let Some(path) = remote::source_cache_fallback(&cache_file, table_name, strict) {
+                return JsonSourceAdapter::parse_file(&path).map_err(|diags| {
+                    eprintln!("{}", diags.render(false));
+                    format!("failed to parse row set for {table_name}")
+                });
+            }
+            return Err(e);
+        }
+    };
     let bytes = canonical_json(table_name, &row_set, has_order_by(sql));
 
     let cache_dir = remote::source_cache_dir(project_root, key_input);
@@ -252,12 +275,14 @@ pub struct DbSourceAdapter;
 impl DbSourceAdapter {
     /// Load `mysql:<name>` / `pg:<name>` against `config`'s
     /// `[remote.<scheme>]` settings: resolve query (E1905) → resolve DSN
-    /// (E1904) → connect + read-only pin + fetch (E1901) → materialize
-    /// through the shared cache-and-parse path.
+    /// (E1904) → connect + read-only pin + fetch (E1901, with the S4
+    /// offline fallback to the previous cache copy unless `strict`) →
+    /// materialize through the shared cache-and-parse path.
     pub fn load(
         project_root: &Path,
         config: &ProjectConfig,
         spec: &str,
+        strict: bool,
     ) -> Result<Document, String> {
         let (scheme, name) = parse_spec(spec)
             .ok_or_else(|| format!("{E1905} not a mysql:/pg: source spec: {spec}"))?;
@@ -273,7 +298,7 @@ impl DbSourceAdapter {
             "mysql" => Box::new(mysql::fetcher(&dsn)),
             _ => Box::new(pg::fetcher(&dsn)),
         };
-        materialize(project_root, &table, &sql, &key_input, fetcher)
+        materialize(project_root, &table, &sql, &key_input, fetcher, strict)
     }
 }
 
@@ -475,6 +500,7 @@ mod tests {
             "SELECT * FROM Items",
             "mysql\ndsn\nsql",
             |_| Ok(row_set.clone()),
+            false,
         )
         .unwrap();
         let table = doc.tables.get("Items").expect("Items table");
@@ -493,7 +519,7 @@ mod tests {
         let mut config = ProjectConfig::default();
 
         // Not a DB spec at all
-        let err = DbSourceAdapter::load(tmp.path(), &config, "sqlite:x").unwrap_err();
+        let err = DbSourceAdapter::load(tmp.path(), &config, "sqlite:x", false).unwrap_err();
         assert!(err.contains("E1905"), "{err}");
 
         // Named query failing the whitelist fires before any connection
@@ -501,14 +527,73 @@ mod tests {
             "mysql".to_string(),
             config_with(&[("bad", "UPDATE items SET price = 0")], None),
         );
-        let err = DbSourceAdapter::load(tmp.path(), &config, "mysql:bad").unwrap_err();
+        let err = DbSourceAdapter::load(tmp.path(), &config, "mysql:bad", false).unwrap_err();
         assert!(err.contains("E1905"), "{err}");
 
         // Whitelist-clean query, but no DSN env declared
         config
             .remote
             .insert("mysql".to_string(), config_with(&[], None));
-        let err = DbSourceAdapter::load(tmp.path(), &config, "mysql:items").unwrap_err();
+        let err = DbSourceAdapter::load(tmp.path(), &config, "mysql:items", false).unwrap_err();
         assert!(err.contains("E1904"), "{err}");
+    }
+
+    /// S4 offline semantics: a failed fetch (transport-class by the time
+    /// it reaches `materialize`) with a previous copy in the cache slot
+    /// serves that copy; `strict` refuses and keeps the original error.
+    #[test]
+    fn failed_fetch_falls_back_to_the_cache_strict_refuses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let row_set = row_set(vec![vec![DbValue::Int(7), DbValue::Text("potion".into())]]);
+
+        // A successful run leaves the canonical bytes in the slot.
+        materialize(
+            tmp.path(),
+            "Items",
+            "SELECT * FROM Items",
+            "mysql\ndsn\nsql",
+            |_| Ok(row_set.clone()),
+            false,
+        )
+        .unwrap();
+
+        let offline = materialize(
+            tmp.path(),
+            "Items",
+            "SELECT * FROM Items",
+            "mysql\ndsn\nsql",
+            |_| Err("connect refused".to_string()),
+            false,
+        )
+        .expect("offline fallback must serve the cached copy");
+        assert_eq!(offline.tables.get("Items").unwrap().rows.len(), 1);
+
+        let err = materialize(
+            tmp.path(),
+            "Items",
+            "SELECT * FROM Items",
+            "mysql\ndsn\nsql",
+            |_| Err("connect refused".to_string()),
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("connect refused"), "{err}");
+    }
+
+    /// With no previous copy in the slot the fetch error stands as-is —
+    /// the fallback never invents an empty document.
+    #[test]
+    fn no_cache_copy_means_the_transport_error_stands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = materialize(
+            tmp.path(),
+            "Items",
+            "SELECT * FROM Items",
+            "mysql\ndsn\nsql",
+            |_| Err("connect refused".to_string()),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("connect refused"), "{err}");
     }
 }

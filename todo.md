@@ -146,7 +146,7 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1–S3 已交付，S4 起未开工）
+### S 系列：Remote Source（2026-10 立项，design §45；S1–S4 已交付，S5 起未开工）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
 纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
@@ -218,8 +218,27 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       validation.md E1903 转已接线与 Sheets 装载顺序、architecture.md
       结构树、source.md Google Sheets 小节与 crate 表行 + 后续扩展
       清单移除）+ 本勾选
-- [ ] S4 确定性与离线语义收口：远端变更 → source_hash / build_id 旋转
-      的端到端测试；断网缓存回退 + WARNING 诊断；`--no-cache` 严格模式
+- [x] S4 确定性与离线语义收口：远端变更 → source_hash / build_id 旋转
+      的端到端测试（`remote_source_fetch_build_and_rotate` 随 S1 已锚定
+      ——identical rebuild manifest 逐字节一致 + 数据变更双哈希旋转）；
+      断网缓存回退 + WARNING 诊断（E1906 新码：三适配器传输类失败 →
+      `cage_core::remote::source_cache_fallback` 共享门 → 缓存副本存在
+      则 eprintln warning 并解析副本，404 / 401/403 永不回退——旧字节
+      不掩盖远端删除或访问吊销，DB 的 E1904/E1905 在网络触达前发生同样
+      不回退；回退出的缓存文件走与在线路径同一条标准 JSON 解析无旁路；
+      WARNING 只带 spec / 表名 / URL，凭据永不落日志）；`--no-cache`
+      严格模式（check / build / gen / inspect 四子命令，load_project
+      透传 strict，回退关闭还原硬 E1901）。测试 6 新增——http crate
+      回退 / strict / 404+401 不回退（2）、db materialize 闭包注入
+      回退 / strict / 无缓存原错误（2）、sheets mock server 回退三态
+      （1）、CLI 进程级 build 落缓存 → 杀 server → 离线 build E1906
+      WARNING → `--no-cache` 退码 2 E1901（1），现有测试不改语义全绿，
+      workspace 551（545 + 6）。文档对账：design §45 断网语义段转已
+      收口（仅传输类回退 / E1906 / DB 全传输类口径）、E19xx 表补
+      E1906、实装状态补 S4；validation.md E1906 行 + 三源段落补回退
+      口径；source.md 新增「离线回退与 --no-cache」小节；cli.md 新增
+      `--no-cache` 小节；需求整理.md Remote Source 行更新 S4 已交付
+      + 本勾选
 - [ ] S5 错误码接线收口：E1901–E1905 已于 S1 全族注册（`codes.rs` +
       validation.md）并已全部接线生效（E1901/E1902 随 S1、E1904/E1905
       随 S2、E1903 随 S3），本项核对全族「预留」标注清零、诊断渲染

@@ -199,14 +199,16 @@ pub struct SheetsSourceAdapter;
 impl SheetsSourceAdapter {
     /// Load `gsheet:<id>/<tab>` against `config`'s `[remote.gsheets]`
     /// settings: validate spec → resolve credential (E1904) → fetch
-    /// (E1901 / E1902) → shape gate (E1903) → canonical JSON → cache
-    /// file → standard JSON parse.
+    /// (E1901 / E1902, with the S4 offline fallback to the previous
+    /// cache copy on transport failures unless `strict`) → shape gate
+    /// (E1903) → canonical JSON → cache file → standard JSON parse.
     pub fn load(
         project_root: &Path,
         config: &ProjectConfig,
         spec: &str,
+        strict: bool,
     ) -> Result<Document, String> {
-        Self::load_with_base(project_root, config, spec, API_BASE)
+        Self::load_with_base(project_root, config, spec, API_BASE, strict)
     }
 
     /// Same pipeline against an injected API root — the seam tests use
@@ -217,6 +219,7 @@ impl SheetsSourceAdapter {
         config: &ProjectConfig,
         spec: &str,
         api_base: &str,
+        strict: bool,
     ) -> Result<Document, String> {
         let (id, tab) =
             parse_spec(spec).ok_or_else(|| format!("{E1901} not a gsheet: source spec: {spec}"))?;
@@ -228,28 +231,41 @@ impl SheetsSourceAdapter {
         let key = resolve_credential(config.remote.get(CONFIG_KEY))?;
         let url = build_url(api_base, id, tab, &key);
 
-        let body = remote::http_get(&url).map_err(|failure| fetch_error(failure, spec))?;
-        let bytes = sheets_json_to_canonical(tab, &body)?;
-
         // The cache key covers what identifies the bytes (spreadsheet +
         // tab); the API key does not change the payload and never lands
-        // in a path.
+        // in a path. Resolved before any bytes move — the offline
+        // fallback needs it too.
         let key_input = format!("{CONFIG_KEY}\n{id}\n{tab}");
         let cache_dir = remote::source_cache_dir(project_root, &key_input);
         let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(&key_input)));
-        std::fs::create_dir_all(&cache_dir).map_err(|e| {
-            format!(
-                "{E9902} cannot create source cache {}: {e}",
-                cache_dir.display()
-            )
-        })?;
-        std::fs::write(&cache_file, &bytes).map_err(|e| {
-            format!(
-                "{E9902} cannot write source cache {}: {e}",
-                cache_file.display()
-            )
-        })?;
-        JsonSourceAdapter::parse_file(&cache_file).map_err(|diags| {
+
+        let cache = match remote::http_get(&url) {
+            Ok(body) => {
+                let bytes = sheets_json_to_canonical(tab, &body)?;
+                std::fs::create_dir_all(&cache_dir).map_err(|e| {
+                    format!(
+                        "{E9902} cannot create source cache {}: {e}",
+                        cache_dir.display()
+                    )
+                })?;
+                std::fs::write(&cache_file, &bytes).map_err(|e| {
+                    format!(
+                        "{E9902} cannot write source cache {}: {e}",
+                        cache_file.display()
+                    )
+                })?;
+                cache_file
+            }
+            Err(FetchFailure::Transport(e)) => {
+                // Offline with a previous copy → serve it (E1906
+                // WARNING). The warning carries the spec only — never
+                // the URL, which carries the API key.
+                remote::source_cache_fallback(&cache_file, spec, strict)
+                    .ok_or_else(|| fetch_error(FetchFailure::Transport(e), spec))?
+            }
+            Err(failure) => return Err(fetch_error(failure, spec)),
+        };
+        JsonSourceAdapter::parse_file(&cache).map_err(|diags| {
             eprintln!("{}", diags.render(false));
             format!("failed to parse row set for {spec}")
         })
@@ -407,16 +423,17 @@ mod tests {
         let config = ProjectConfig::default();
 
         // Not a Sheets spec at all
-        let err = SheetsSourceAdapter::load(tmp.path(), &config, "https://x/y").unwrap_err();
+        let err = SheetsSourceAdapter::load(tmp.path(), &config, "https://x/y", false).unwrap_err();
         assert!(err.contains("E1901"), "{err}");
 
         // A traversal-shaped id never reaches a URL
-        let err =
-            SheetsSourceAdapter::load(tmp.path(), &config, "gsheet:../etc/passwd").unwrap_err();
+        let err = SheetsSourceAdapter::load(tmp.path(), &config, "gsheet:../etc/passwd", false)
+            .unwrap_err();
         assert!(err.contains("E1901"), "{err}");
 
         // Valid spec, no credential section → E1904 before any fetch
-        let err = SheetsSourceAdapter::load(tmp.path(), &config, "gsheet:abc/Tab").unwrap_err();
+        let err =
+            SheetsSourceAdapter::load(tmp.path(), &config, "gsheet:abc/Tab", false).unwrap_err();
         assert!(err.contains("E1904"), "{err}");
     }
 
@@ -507,6 +524,7 @@ mod tests {
             &config,
             "gsheet:1AbC/Levels",
             &server.base,
+            false,
         )
         .unwrap();
         let table = doc.tables.get("Levels").expect("Levels table");
@@ -534,6 +552,7 @@ mod tests {
             &config,
             "gsheet:1AbC/Levels",
             &server.base,
+            false,
         )
         .unwrap();
         assert_eq!(doc.tables.len(), doc2.tables.len());
@@ -557,15 +576,17 @@ mod tests {
 
         // 403 (bad key / no access) → E1902
         let server = start_server(403, r#"{"error": {"message": "bad key"}}"#);
-        let err = SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &server.base)
-            .unwrap_err();
+        let err =
+            SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &server.base, false)
+                .unwrap_err();
         assert!(err.contains("E1902"), "{err}");
         drop(server);
 
         // 404 (no such spreadsheet) → E1901
         let server = start_server(404, r#"{"error": "not found"}"#);
-        let err = SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &server.base)
-            .unwrap_err();
+        let err =
+            SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &server.base, false)
+                .unwrap_err();
         assert!(err.contains("E1901"), "{err}");
         drop(server);
 
@@ -575,16 +596,55 @@ mod tests {
             &config,
             spec,
             &format!("http://127.0.0.1:{}", dead_port()),
+            false,
         )
         .unwrap_err();
         assert!(err.contains("E1901"), "{err}");
 
         // A 200 body that is not a row set → E1903 (the shape gate)
         let server = start_server(200, r#"{"error": {"message": "API key not valid"}}"#);
-        let err = SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &server.base)
-            .unwrap_err();
+        let err =
+            SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &server.base, false)
+                .unwrap_err();
         assert!(err.contains("E1903"), "{err}");
         drop(server);
+
+        std::env::remove_var(var);
+    }
+
+    /// S4 offline semantics: a transport failure with a previous copy in
+    /// the cache slot serves that copy (the WARNING line carries the
+    /// spec, never the keyed URL); `strict` refuses and keeps E1901.
+    #[test]
+    fn offline_transport_failure_falls_back_to_the_cached_copy() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let var = "CAGE_TEST_SHEETS_KEY_OFFLINE";
+        std::env::set_var(var, "test-key");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfig::default();
+        config
+            .remote
+            .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
+
+        let spec = "gsheet:1AbC/Levels";
+        let server = start_server(200, VALUES_OK);
+        let base = server.base.clone();
+        let first =
+            SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &base, false).unwrap();
+        drop(server);
+
+        let offline = SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &base, false)
+            .expect("offline fallback must serve the cached copy");
+        assert_eq!(offline.tables.get("Levels").unwrap().rows.len(), 2);
+        assert_eq!(
+            offline.tables.get("Levels").unwrap().rows.len(),
+            first.tables.get("Levels").unwrap().rows.len(),
+        );
+
+        let err = SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &base, true)
+            .unwrap_err();
+        assert!(err.contains("E1901"), "{err}");
 
         std::env::remove_var(var);
     }

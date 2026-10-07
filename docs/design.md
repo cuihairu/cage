@@ -2232,9 +2232,16 @@ blake3 前 12 hex），取数、重试、缓存路径抽一处共享 helper
 （`cage_core::remote`，R3 registry 与各源适配器同源复用），不搞四份
 实现。
 
-断网语义与 R3 对齐：取不到远端时回退缓存并发 WARNING 诊断，缓存字节
-同样先过校验门才可用；`--no-cache` 关闭回退，取不到即失败（回退在
-S4 收口，S1 当前取不到即失败）。新鲜度上限（max_age）留待实现期。
+断网语义（S4 已收口）：只有传输类失败（连接 / DNS / 超时——连接拒绝、
+断网、服务不可达）回退缓存并发 `E1906` WARNING；404（远端已删除）与
+401/403（访问可能已被吊销）不回退——旧字节会静默出错，保持硬失败。
+DB 源的取数失败全部按传输类处理（凭据 E1904 / 查询白名单 E1905 在
+任何网络触达之前发生，旧字节不掩盖配置错误）。回退出的缓存文件走与
+在线路径同一条标准 JSON 解析（缓存字节同样过校验门）。三源共享
+`cage_core::remote::source_cache_fallback` 一个门；WARNING 只带
+spec / 表名（http 为 URL），凭据永不落日志。`--no-cache`（check /
+build / gen / inspect 四命令）关闭回退，取不到即失败。新鲜度上限
+（max_age）留待实现期。
 
 ## 错误码（E19xx 族）
 
@@ -2245,9 +2252,11 @@ S4 收口，S1 当前取不到即失败）。新鲜度上限（max_age）留待�
 | `E1903` | 响应形状不合法（非行集 / 缺表头） | 已实装（Sheets 源形状门） |
 | `E1904` | 凭据缺失（env 未设置或凭据文件不可读） | 已实装（DB 源 dsn_env、Sheets 源 credential_env） |
 | `E1905` | 查询非法（配置了非只读语句） | 已实装（DB 源：SELECT 白名单 + 表名校验） |
+| `E1906` | 远端不可达但已回退上一份缓存副本（离线回退 WARNING，非致命；`--no-cache` 关闭回退还原为硬 E1901） | 已实装（三源共享 `source_cache_fallback` 门） |
 
-E1901–E1905 已全族注册进 `codes.rs` 与 validation.md 并全部接线生效
-（E1901/E1902 随 S1、E1904/E1905 随 S2、E1903 随 S3）。HTTP 源的
+E1901–E1906 已全族注册进 `codes.rs` 与 validation.md 并全部接线生效
+（E1901/E1902 随 S1、E1904/E1905 随 S2、E1903 随 S3、E1906 随 S4）。
+HTTP 源的
 坏 JSON 不走 E1903——它走与本地文件同一条 Parse 诊断（E0001 带行列
 定位）；DB 源的行集由适配器自产 canonical JSON，形状不可能非法，
 同样不经 E1903；E1903 由 Sheets 源的形状门消费（非行集 / 缺表头 /
@@ -2276,5 +2285,9 @@ E1901 / E1904 / E1905 接线生效）。S3 已交付——Google Sheets 源实�
 （`cage-source-sheets`，`gsheet:<id>/<tab>`，UNFORMATTED_VALUE、
 首行表头同 Excel 惯例、初值字符串口径、tab 自然行序保留，API key
 经 credential_env，E1902 / E1903 / E1904 接线生效；service account
-留待实现期）。缓存复用回退与 `--no-cache` 严格模式在 S4 收口（当前
-取不到远端即失败）。S4–S6 未开工。
+留待实现期）。S4 已交付——离线语义收口：三适配器传输类取数失败回退
+上一份缓存副本（E1906 WARNING，404 / 401/403 永不回退），`--no-cache`
+（check / build / gen / inspect）关闭回退还原硬失败；远端变更 →
+source_hash / build_id 旋转的端到端测试随 S1 已锚定（identical
+rebuild manifest 逐字节一致 + 数据变更双哈希旋转），本签补三适配器
+与 CLI 进程级回退 / 严格两形态测试。S5–S6 未开工。
