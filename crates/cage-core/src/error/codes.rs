@@ -145,11 +145,11 @@ pub mod remote {
     /// (HTTP 401 / 403)
     pub const E1902: &str = "E1902";
     /// E1903 - Remote source response shape invalid (not a row set /
-    /// missing header) — reserved until a source adapter needs it
+    /// missing header) — consumed by the Sheets shape gate
     pub const E1903: &str = "E1903";
     /// E1904 - Remote source credential missing (configured env var
-    /// unset, credential file unreadable) — reserved until the DB /
-    /// Sheets sources land
+    /// unset, credential file unreadable) — wired by the DB `dsn_env`
+    /// and Sheets `credential_env` resolvers
     pub const E1904: &str = "E1904";
     /// E1905 - Remote source query invalid (non-SELECT / multi-statement
     /// named query)

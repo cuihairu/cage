@@ -2290,4 +2290,15 @@ E1901 / E1904 / E1905 接线生效）。S3 已交付——Google Sheets 源实�
 （check / build / gen / inspect）关闭回退还原硬失败；远端变更 →
 source_hash / build_id 旋转的端到端测试随 S1 已锚定（identical
 rebuild manifest 逐字节一致 + 数据变更双哈希旋转），本签补三适配器
-与 CLI 进程级回退 / 严格两形态测试。S5–S6 未开工。
+与 CLI 进程级回退 / 严格两形态测试。S5 已交付——错误码接线收口对账：
+全仓（codes.rs / validation.md / design.md）E19xx 族「预留 / reserved」
+标注清零，四源错误路径的码覆盖系统盘点在案——HTTP：E1901（传输 /
+404 / 其他状态 / 非 http URL）+ E1902（401/403）+ E0001（坏 JSON 走
+本地同款 parse 诊断）+ E9902（缓存写）+ E1906（回退 WARNING）；
+DB：E1905（spec / 白名单 / 表名）+ E1904（dsn_env）+ E1901（DSN
+非法 / 连接 / 会话只读 pin / prepare / 查询——mysql.rs 与 pg.rs 全
+带码）+ E9902；Sheets：E1901（spec / id / 传输）+ E1904
+（credential_env）+ E1902 + E1903（形状门）+ E9902 + E1906——每条
+路径既存测试逐码断言（crate 级 assert contains + CLI 进程级 stderr
+断言），诊断渲染经 `load_project` Err → `error: {e}` 全覆盖。S6
+未开工。

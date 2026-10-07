@@ -146,7 +146,7 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1–S4 已交付，S5 起未开工）
+### S 系列：Remote Source（2026-10 立项，design §45；S1–S5 已交付，S6 未开工）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
 纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
@@ -239,10 +239,22 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       口径；source.md 新增「离线回退与 --no-cache」小节；cli.md 新增
       `--no-cache` 小节；需求整理.md Remote Source 行更新 S4 已交付
       + 本勾选
-- [ ] S5 错误码接线收口：E1901–E1905 已于 S1 全族注册（`codes.rs` +
+- [x] S5 错误码接线收口：E1901–E1905 已于 S1 全族注册（`codes.rs` +
       validation.md）并已全部接线生效（E1901/E1902 随 S1、E1904/E1905
       随 S2、E1903 随 S3），本项核对全族「预留」标注清零、诊断渲染
-      覆盖四源后收口
+      覆盖四源后收口——已交付：codes.rs E1903/E1904 doc 尾「reserved
+      until」措辞清零（E1906 随 S4 入族时模块头已转全族 wired，本签
+      收尾两处常量注释），全仓 grep E19xx×预留/reserved 零残留；
+      四源错误路径码覆盖系统盘点——HTTP：E1901（传输 / 404 / 其他
+      状态 / 非 http URL）+ E1902 + E0001（坏 JSON 本地同款 parse
+      诊断）+ E9902 + E1906；DB：E1905（spec / 白名单 / 表名）+
+      E1904 + E1901（DSN 非法 / 连接 / 只读 pin / prepare / 查询，
+      mysql.rs / pg.rs 全带码）+ E9902；Sheets：E1901 + E1904 +
+      E1902 + E1903（形状门）+ E9902 + E1906；每条路径既存测试逐码
+      断言（crate 级 err.contains + CLI 进程级 stderr contains），
+      诊断渲染经 load_project Err → `error: {e}` 全覆盖，无吞码路径
+      ——零代码行为变化，纯措辞与文档签。design §45 实装状态补 S5
+      对账详述、todo 勾选、需求整理.md 行同步
 - [ ] S6 文档收口：source.md 后续扩展清单转正、cli.md 远程源章节、
       需求整理.md Remote Source 勾选、architecture.md 工程结构树补三 crate
 
