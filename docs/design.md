@@ -1844,8 +1844,8 @@ Configuration Registry ← 已实装（R1–R4）
 Remote Source          ← 三源已实装（S1–S3：HTTP / DB / Sheets）（§45）
 Google Sheets          ← 已实装（§45，S3 cage-source-sheets）
 Database Source        ← 已实装（§45，S2 cage-source-db）
-Migration
-Artifact Distribution
+Migration              ← 已立项（2026-10 拍板，M 系列，§46）
+Artifact Distribution  ← 已立项（2026-10 拍板，A 系列，§47）
 ```
 
 ---
@@ -2301,4 +2301,129 @@ DB：E1905（spec / 白名单 / 表名）+ E1904（dsn_env）+ E1901（DSN
 （credential_env）+ E1902 + E1903（形状门）+ E9902 + E1906——每条
 路径既存测试逐码断言（crate 级 assert contains + CLI 进程级 stderr
 断言），诊断渲染经 `load_project` Err → `error: {e}` 全覆盖。S6
-未开工。
+已交付——文档收口（source.md 后续扩展清单转正、cli.md 新增 Remote
+Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构树
+对账），S 系列 S1–S6 全数交付。
+
+---
+
+# 46. Migration（M 系列，2026-10 立项拍板）
+
+**决策记录（2026-10 拍板，依「待拍板项按建议方案自行定 + 记录，用户
+后续审核再调」授权）**
+
+- **定了什么**：Migration = Schema 演进下对存量 Source 数据的**声明式
+  迁移**——迁移规则（`migrations/` 目录，文件名序即版本步进链：`0001-…`、
+  `0002-…`）显式声明每段变换（字段改名 / 补默认值 / 删字段 / 安全类型
+  加宽 / 枚举值映射 / 表改名），`cage migrate` 对 Canonical Model 执行
+  变换、逐表逐行出报告、迁移后在新 schema 下回验（check 全绿才算完成）；
+  默认只读报告，`--write` 才落盘。
+- **为什么**：schema 变更后存量数据怎么办是编译器的演进刚需——手工改不可
+  审计、自动推断不可靠；显式规则 + 回验 = 可审计（规则进版本库）、确定性
+  （同规则 + 同数据 = 同产物，与全仓确定性契约同构）、失败即失败（不静默
+  丢数据）。
+- **备选**：① 从 schema diff 自动推断迁移步骤（弃——歧义处静默走错方向：
+  字段改名 vs 删旧增新无法机械区分）；② 只出报告不改数据（弱——没闭环，
+  用户仍手改）；③ 运行时兼容层（弃——越界，红线「不做游戏运行时数据库 /
+  游戏逻辑框架」）。
+- **实现顺序**：A 系列（§47）先行——复用 R 系列在册设施、零新概念；M 系列
+  随后（新模块爬坡）。
+
+**能力边界**：
+
+- 做的：Canonical Model 层的声明式变换；可文本改写的源（JSON / YAML /
+  CSV）支持 `--write` 落盘；Excel 源只出报告不落盘（红线「不做 Excel
+  编辑器」——按报告手工改，改完重跑 migrate 校验收敛）；迁移后的注册表
+  条目 = 重跑 build + `cage registry publish`（复用 R 系列，不新造通道）。
+- 不做的：自动推断（规则必须显式）；schema 自身的演进（schema 编辑走
+  Schema Editor / 手编，迁移只管数据）；跨多段自动跳迁（首期显式逐段执行，
+  `--to` 链式留待实现期）。
+
+**接口**：
+
+```text
+cage-core::migrate
+├── MigrationSpec      # 一段迁移：from / to / steps[]
+├── Step               # rename_field / set_default / remove_field /
+│                      # widen_type / remap_values / rename_table
+├── parse_spec(...)    # 迁移文件 → MigrationSpec（E2001 解析失败、
+│                      # E2002 规则引用不合法——新旧 schema 均无此表/字段）
+└── apply(spec, doc)   # Canonical Model 变换 + 逐变更报告
+                       # （E2003 变换不满足：加宽不安全、required 缺默认值）
+
+cage migrate [--all | --to <ver>] [--write]   # 默认 dry-run 只报告
+└── 载入工程 → 按文件名序逐段应用 → 新 schema 回验（E2004 迁移后
+    校验失败，定位到段）→ 报告（每表变更行数 / 跳过原因）；
+    --write 对可写源落盘，Excel 源恒报告
+```
+
+**错误码（E20xx 族）**：E2001 迁移规则文件解析失败 / E2002 规则引用
+不合法 / E2003 变换不满足 / E2004 迁移后回验失败。全族随 M1 进
+`codes.rs` 的 `error::codes::migration` 模块 + validation.md，每码一
+doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
+
+**留待实现期**：链式自动跳迁（`--to latest` 沿版本链逐段）、schema diff
+辅助生成规则草稿、Excel 报告的单元格级定位、迁移规则与 `[dependencies]`
+版本 pin 的联动校验。
+
+---
+
+# 47. Artifact Distribution（A 系列，2026-10 拍板）
+
+**决策记录（2026-10 拍板，同 §46 授权口径）**
+
+- **定了什么**：注册表条目的两条分发路——① **离线 bundle**：
+  `cage registry export <包>[@<版本>] -o <file>` 产出确定性 tar（条目全部
+  文件 + 账本 + 包 index 摘录；mtime/uid/gid 归零、成员按名序——同条目 =
+  同字节），`cage registry import <file>` 先过同一账本信任门
+  （`verify_snapshot`，未经校验不入册）再入册（同字节幂等 / 异字节
+  E1801 冲突，坏账本 E2103）；② **直推**：`cage registry push <包>
+  [@<版本>]` 对 http(s) 注册表根逐文件 PUT（条目文件全部成功后最后写
+  包 `index.json`——条目字节不可变纪律不变），`Authorization: Bearer
+  $TOKEN`，token 经 `[registry].auth_env` 环境变量名解析（E1904 同口径：
+  凭据永不进 cage.toml、永不落日志、网络触达前先验缺失）。
+- **为什么**：R3 已闭环「消费方怎么取」（匿名 GET 三资源只读解析），缺的
+  是「怎么到远端、怎么走非网络渠道」——bundle 覆盖离线 / 审计 / 对象存储
+  渠道（产物本就是自校验快照，拷贝即分发），push 覆盖自动化发布（CI 出包
+  直进远端注册表）；两条路复用同一账本信任门，不引入第二套信任模型。
+- **备选**：① 自建 registry 服务端进程（弃——红线不造服务端产品；协议只定
+  客户端写形态，服务端任何能收 PUT 的静态网关 / nginx WebDAV / CI job
+  皆可）；② git 作分发后端（弃——隐式改写历史与注册表「绝不隐式改写
+  历史」纪律冲突）；③ gzip/zstd 压缩容器（弃——压缩帧时间戳 / 字典态破坏
+  确定性契约，首期无压缩 tar；压缩留待实现期）。
+- **服务端约定（文档化，不实现）**：PUT `<root>/<包>/<版本>/<文件>` 逐
+  文件上传，条目全部成功后 PUT `<root>/<包>/index.json`；405/501 =
+  服务端未实现写通道（E2104，提示回退「本地 publish + 静态托管」）；
+  无鉴权部署照旧可用（R3 读路径不变，push 可选 auth_env 缺省不带头）。
+
+**能力边界**：export / import / push 只动「已入册条目」——不重新构建
+（发布仍是 `cage registry publish`，本地根专属）；读路径保持 R3 匿名
+只读；不做服务端实现、不做增量 delta、不做签名（blake3 账本已是完整性
+锚，抗抵赖签名留待实现期）。
+
+**接口**：
+
+```text
+cage-core::registry 增
+├── export_bundle(root, package, version, out)  # E2101 条目读取失败
+│    # 条目全文件 + HASHES.json + 包 index 摘录 → 确定性 tar
+├── import_bundle(root, file, dry_run)          # verify_snapshot 信任门
+│    # → 入册（坏账本 E2103；同字节幂等、异字节 E1801）
+└── push_entry(root_spec, package, version, auth_env)
+     # 逐文件 PUT（remote::http_put，RetryPolicy 与 http_get 同口径）
+     # E2101 传输失败 / E2102 鉴权被拒（401/403）/ E2104 服务端拒写
+     # （4xx 明确拒绝）/ E2105 凭据缺失（auth_env 未设，网络触达前失败）
+
+cage registry export <pkg>[@<ver>] -o <file>
+cage registry import <file> [--registry <root>] [--dry-run]
+cage registry push  <pkg>[@<ver>] [--registry <root>] [--dry-run]
+```
+
+**错误码（E21xx 族）**：E2101 分发传输 / 条目读取失败 / E2102 鉴权被拒
+（HTTP 401/403）/ E2103 bundle 账本校验失败 / E2104 服务端拒写（405 /
+409 / 明确 4xx）/ E2105 push 凭据缺失（auth_env 未设）。全族随 A1 起
+逐签进 `codes.rs` 的 `error::codes::distribution` 模块 + validation.md，
+每码一 doc。
+
+**留待实现期**：压缩容器（zstd 确定性字典）、签名账本（ed25519，抗
+抵赖）、增量 delta 分发、S3 presigned 直推、pull-through 缓存代理。

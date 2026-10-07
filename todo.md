@@ -70,7 +70,9 @@
       收官（2026-10，见下方「S 系列：Remote Source」：S1 HTTP API 源 /
       S2 MySQL / PostgreSQL 源 / S3 Google Sheets 源 / S4 确定性与
       离线语义收口 / S5 错误码接线收口 / S6 文档收口）
-- [ ] Artifact 分发与迁移
+- [ ] Artifact 分发与迁移——已立项开工（2026-10 拍板：A 系列注册表分发 +
+      M 系列声明式数据迁移，见下方两节；设计定稿 design §46/§47，决策
+      记录随稿——定了什么 / 为什么 / 备选）
 
 ### R 系列：Configuration Registry（2026-10 开工，design §29）
 
@@ -258,6 +260,75 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       ——零代码行为变化，纯措辞与文档签。design §45 实装状态补 S5
       对账详述、todo 勾选、需求整理.md 行同步
 - [x] S6 文档收口：source.md 后续扩展清单转正（注明首期四大远程源已交付）、cli.md 新增 Remote Source 章节（四源语法/特性/错误码对照表 + 离线回退引用）、需求整理.md Remote Source 行同步 S6 已交付、architecture.md 工程结构树三 crate（cage-source-http/db/sheets）早已在列
+
+### A 系列：Artifact Distribution（2026-10 立项，design §47）
+
+形态定稿：注册表条目的分发走两条路，复用同一账本信任门（未经校验不分发、
+不入册）——① **离线 bundle**：`cage registry export` 产出确定性 tar
+（条目全文件 + HASHES.json + 包 index 摘录，mtime/uid/gid 归零、成员名序，
+同条目 = 同字节），`cage registry import` 先 `verify_snapshot` 再入册
+（坏账本 E2103，同字节幂等 / 异字节 E1801）；② **直推**：
+`cage registry push` 对 http(s) 根逐文件 PUT、条目全成后最后写包 index
+（字节不可变纪律不变），`Authorization: Bearer $TOKEN` 经
+`[registry].auth_env` 环境变量名解析（E1904 同口径：凭据不进 cage.toml、
+不落日志、网络触达前先验缺失）。服务端只文档化约定（任何能收 PUT 的静态
+网关 / nginx WebDAV / CI job 皆可），cage 不实现服务端。决策记录（定了
+什么 / 为什么 / 备选）见 design §47。实现顺序：A 先 M 后（A 复用 R 系列
+在册设施零新概念，M 新模块爬坡）。
+
+- [x] A0 设计定稿（design.md §47）：两条分发路（bundle / 直推）与接口
+      草案（export_bundle / import_bundle / push_entry + 三子命令）、
+      E21xx 五码规划（E2101 传输 / E2102 鉴权 / E2103 账本 / E2104
+      拒写 / E2105 凭据缺失）、能力边界（只动已入册条目、不做服务端 /
+      delta / 签名）、留待实现期清单——本轮交付，勾选
+- [ ] A1 bundle 导出（`cage registry export`）：`export_bundle` 确定性
+      tar 打包（成员名序 + 元数据归零，同条目同字节 golden 锁定）+
+      E2101 + codes.rs `distribution` 模块与 validation.md 预留标注；
+      验收：单测（确定性两跑一致 / 条目缺失 E2101）+ CLI 集成测试
+      （publish → export → `tar -tf` 可检 → 同条目两包逐字节一致）+
+      cli.md 小节 + 本勾选
+- [ ] A2 bundle 导入（`cage registry import`）：解包 → verify_snapshot
+      信任门 → publish 入册（--dry-run 报告不落笔；坏账本 E2103、
+      异字节冲突 E1801 复用）；验收：单测 + 集成测试（干净导入 →
+      resolve 可解析、篡改字节 E2103、同字节重导幂等、异字节 E1801）
+      + cli.md 小节 + 本勾选
+- [ ] A3 直推（`cage registry push` + auth_env）：`remote::http_put`
+      （RetryPolicy 与 http_get 同口径）+ 逐文件 PUT、index 收尾 +
+      `RegistryConfig.auth_env`（serde default 可选）+ E2102/E2104/
+      E2105 接线；验收：本地静态 HTTP 服务器集成测试（push → 远端根
+      resolve 复现、401 E2102、405 E2104、auth_env 未设 E2105 网络前
+      失败、--dry-run 零请求）+ cli.md push 章节 + 本勾选
+- [ ] A4 文档收口：design §47 实装状态、validation.md E21xx 全族转
+      已接线、architecture.md 对账、需求整理.md Artifact 分发行同步
+
+### M 系列：Migration（2026-10 立项，design §46）
+
+形态定稿：Schema 演进下的声明式数据迁移——`migrations/` 目录文件名序即
+版本步进链，每段显式声明变换（rename_field / set_default / remove_field /
+widen_type / remap_values / rename_table），`cage migrate` 对 Canonical
+Model 执行、逐表逐行报告、新 schema 回验（check 全绿才算完成）；默认
+dry-run 只报告，`--write` 才对可文本源（JSON/YAML/CSV）落盘，Excel 源
+恒报告不落盘（红线「不做 Excel 编辑器」）；迁移后的注册表条目 = 重跑
+build + publish，不新造通道。决策记录（定了什么 / 为什么 / 备选：diff
+自动推断弃、只报告弃、运行时兼容层弃）见 design §46。
+
+- [x] M0 设计定稿（design.md §46）：能力边界（Canonical Model 层显式
+      变换 / Excel 只报告 / 条目迁移复用 publish）/ 接口草案
+      （MigrationSpec / Step / parse_spec / apply + cage migrate）/
+      E20xx 四码规划（E2001 解析 / E2002 引用 / E2003 变换 / E2004
+      回验）/ 留待实现期清单——本轮交付，勾选
+- [ ] M1 规则模型与解析：`cage-core::migrate`（MigrationSpec / Step /
+      parse_spec，版本步进链文件名序）+ E2001/E2002 注册与 validation.md
+      预留标注；验收：单测（六类 Step 解析、链序、引用不合法 E2002、
+      坏文件 E2001）+ 本勾选
+- [ ] M2 执行器与报告：`apply` 对 Canonical Model 变换 + 逐变更报告 +
+      E2003/E2004；验收：单测（六类 Step 变换语义、加宽不安全 E2003、
+      回验失败 E2004、确定性两跑一致）+ 本勾选
+- [ ] M3 CLI 与文档收口：`cage migrate`（--all/--to/--write，默认
+      dry-run）+ 可写源落盘 / Excel 只报告 + CLI 集成测试（json 工程
+      dry-run → write → check 全绿 → 再跑无变更；excel 工程 E2004
+      路径与报告形态）+ design §46 实装状态 + cli.md migrate 章节 +
+      validation.md E20xx 转已接线 + 需求整理.md 迁移行同步 + 本勾选
 
 ### G 系列：Template Target（2026-10 立项，design §22；G1 随立项交付）
 
