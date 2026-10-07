@@ -1077,9 +1077,11 @@ Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义�
 - **模板文件名即输出文件名模板**：`{table}.py.tera` 按表名序每表一
   文件，不含 `{table}` 的模板全局渲染一次（输出名 = 文件名去 `.tera`）
   ——沿用 `file_template` 的 `{table}` 占位符口径
-- **模板内不写逻辑**：命名约定（snake_case / camelCase / PascalCase）
-  与各语言类型映射 / 默认值字面量做成 Tera filter，决策留在 Rust（原
-  plan 层的活换了个挂点，不搬进模板）
+- **模板内不写逻辑**：命名约定（snake_case / camelCase / PascalCase /
+  kebab_case / SCREAMING_CASE）+ `field_order` 字段名序与各语言类型映射
+  / 默认值字面量做成 Tera filter（约定层恒注册，语言层经
+  `options.lang_filters` 挂载），决策留在 Rust（原 plan 层的活换了个
+  挂点，不搬进模板）
 - **确定性**：产物顺序 = 模板注册序（文件系统模式按路径名序、官方内存
   模板按传入序）× 表名序，Tera workspace 锁版，模板随源码——同 schema
   + 同模板逐字节一致；官方模板改写后现有测试逐字节不变为验收锚
@@ -1137,8 +1139,13 @@ Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义�
   type/default smoke + 约定过滤器与 field_order + setup 钩子 +
   CLI 挂载与未知键两形态），workspace 545 全绿；过滤器表进
   target.md Template 小节
-- G5 文档收口：未开工——§22/§23 与实装对账复查、target.md 模板小节
-  （模板变量表 / 过滤器表 / 自定义指南）、需求整理.md 状态
+- G5 文档收口：已交付——target.md Template 小节（配置样例 /
+  输出名与渲染序约定 / IR 变量表 / 约定+语言过滤器两表 / 错误口径，
+  G3/G4 随签落地本签复查）；需求整理.md 状态行 + 生成器清单 +
+  crate 落地口径补 cage-target-template；architecture.md 结构树补
+  cage-target-template；README Target 插件行补 Template Target；
+  §22/§23 与实装对账复查（本面板 G1–G4 全数已交付，命名约定/过滤器
+  清单同步 G4 实况）
 
 ---
 

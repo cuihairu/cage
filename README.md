@@ -41,7 +41,7 @@ Authoring Sources → Source Adapters → Canonical Model
 - Profile 机制：client / server 不同 targets 与字段可见性，一份配置两端复用
 - Configuration Snapshot：`cage snapshot` 打包自校验配置快照（manifest + schema + 产物 + 逐文件哈希账本），服务器启动载入前验证，篡改/增删文件即暴露
 - Configuration Registry：`cage registry` 多版本配置仓库（发布/列表/审计/GC/移除），消费方 `registry:包@版本` 引用 + `[dependencies]` 版本 pin，远程 http(s) 根只读解析（缓存离线可用）
-- Target 插件：JSON / CSV 数据产物起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定，后续 Protobuf 等（数据序列化与代码生成分离）
+- Target 插件：JSON / CSV 数据产物起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（用户自定义 Tera 模板 + 语言过滤器库），后续 Protobuf 等（数据序列化与代码生成分离）
 
 ## 快速开始
 

@@ -332,6 +332,8 @@ cage/
 │   ├── cage-target-cpp/     # C++ 代码绑定
 │   ├── cage-target-go/      # Go 代码绑定
 │   ├── cage-target-java/    # Java 代码绑定
+│   ├── cage-target-template/  # Tera 模板引擎：官方随包模板 + 用户自定义模板
+│                            #   （format = "template"，G 系列，design §22）
 │   └── cage-cli/            # cage 命令行（check / build / gen / inspect / diff /
 │                            #   snapshot / web / registry，含远程注册表解析）
 ├── docs/                    # 本文档站（VitePress）

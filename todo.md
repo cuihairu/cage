@@ -369,10 +369,12 @@ render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点�
       枚举引用带官方分配标识符），CLI options.lang_filters 挂载
       （未知键渲染前报错），go/cpp allocate_names 零行为提取同源
       复用；测试 11 新增，workspace 545 全绿，过滤器表进 target.md
-- [ ] G5 文档收口：§22/§23 与实装对账复查、target.md 新增模板小节
-      （模板变量表 / 过滤器表 / 自定义模板指南）、需求整理.md 状态行、
-      architecture.md 结构树补 cage-target-template、README Target
-      插件行更新
+- [x] G5 文档收口（已交付）：target.md Template 小节随 G3/G4 落地
+      （配置样例 / 渲染序约定 / IR 变量表 / 约定+语言过滤器两表 /
+      错误口径）本签复查；需求整理.md 状态行 + 生成器清单 + crate
+      口径补 template；architecture.md 结构树补 cage-target-template；
+      README Target 插件行更新；design §22/§23 对账复查（G1–G4 全数
+      已交付，命名约定与过滤器清单同步 G4 实况），G 系列收口
 
 ## 第四阶段（核心模型边界定稿，2026-10 评审驱动）
 
