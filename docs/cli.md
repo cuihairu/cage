@@ -164,6 +164,7 @@ cage registry list    --registry <dir>
 cage registry verify  --registry <dir>
 cage registry gc      --registry <dir> [--keep 3] [--dry-run]
 cage registry remove  <package> <version> --registry <dir> [--dry-run]
+cage registry export  <package>[@<version>] -o <file> --registry <dir>
 ```
 
 本地 Configuration Registry（第三阶段 R 系列，[design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)）。
@@ -253,6 +254,25 @@ index 保留（即便变空）；显式移除后的版本槽位可用同字节�
 publish 干净入册，重发不是冲突；除此之外的同版本重发仍按版本冲突拒绝。
 verify / gc / remove 同 publish / list 一样只对本地注册表生效，远程根
 报 read-only 错误退出。
+
+### bundle 导出（A 系列，[design §47](https://github.com/cuihairu/cage/blob/main/docs/design.md#47-artifact-distributiona-系列2026-10-拍板)）
+
+```bash
+cage registry export common@0.1.0 -o common-0.1.0.tar --registry ../registry
+cage registry export common       -o common-latest.tar --registry ../registry   # 省略 @版本 = 最高点分序版本
+```
+
+把已入册条目打成**确定性 tar bundle**：条目全部文件（`data/`、
+`generated/`、`manifest.json`、`schema.json`、`HASHES.json` 账本）加上
+包 index 摘录（`index.json`，只含导出的那个条目），成员路径为
+`<包>/<版本>/<文件>`。同条目必得同字节——成员按名序写入、mtime/uid/gid
+归零、固定 0o644 权限位，不随导出机器与时间变化，可直接进对象存储或
+差分/审计流程。bundle 自带账本：接收侧（未来的 `cage registry import`）
+入册前先过 `verify_snapshot` 信任门，未经校验的字节不入册。
+
+导出只读注册表，不重新构建（发布仍是 `cage registry publish`）；包或
+版本不存在、条目缺账本、bundle 写不出 → `E2101`。远程根不支持导出
+（只读协议无文件枚举），远端消费走 `registry:` 源解析。
 
 ## 快速开始
 

@@ -42,3 +42,5 @@ toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# §47 A1 integration tests inspect the exported bundle archive
+tar = { workspace = true }

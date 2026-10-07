@@ -592,6 +592,16 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 
 HTTP 源（`cage-source-http`，design §45 S1）的坏 JSON 不走 E1903——它走与本地文件同一条 Parse 诊断（`E0001` 带行列定位）。DB 源（`cage-source-db`，§45 S2）的行集由适配器自产 canonical JSON，形状不可能非法，同样不经 E1903。DB 源装载顺序：解析 spec → 具名查询 / 表名解析（E1905）→ SELECT 白名单（E1905）→ DSN env 解析（E1904）→ 连接（E1901）——白名单与凭据校验都在任何网络触达之前。Sheets 源（`cage-source-sheets`，§45 S3）装载顺序：解析 spec 与 spreadsheet id（E1901）→ credential env 解析（E1904）→ 取数（401/403 → E1902，其余 → E1901）→ 形状门（E1903）——spec 与凭据校验同样都在网络触达之前，错误诊断只引 `gsheet:<id>/<tab>` spec，API key 不落日志。三源的传输类取数失败（连接 / DNS / 超时）在缓存副本存在时回退并发 `E1906` WARNING（`--no-cache` 关闭回退），404 与 401/403 永不回退——旧字节不得掩盖远端已删除或访问被吊销。
 
+### Artifact Distribution（分发，A 系列）
+
+| 代码 | 含义 |
+| --- | --- |
+| `E2101` | 分发传输失败：bundle 导出读不到条目（包 / 版本不存在、条目目录或账本缺失、非法包名 / 版本名）或写不出 bundle 文件（已接线） |
+| `E2102` | 分发目标拒绝凭据：push 收到 HTTP 401 / 403（预留，A3 接线） |
+| `E2103` | bundle 账本校验失败：导入侧在 `verify_snapshot` 信任门拒收未过验字节（预留，A2 接线） |
+| `E2104` | 分发目标拒绝写入：push 收到 405 / 409 或其他明确 4xx——服务端无写通道，回退「本地 publish + 静态托管」（预留，A3 接线） |
+| `E2105` | 分发凭据缺失：`[registry].auth_env` 未声明或声明的 env 未设置——任何网络触达之前失败（预留，A3 接线） |
+
 ### Internal（系统级）
 
 | 代码 | 含义 |

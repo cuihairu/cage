@@ -24,6 +24,7 @@
 //! verifies the entry's ledger, then yields its `data/` directory as the
 //! source root.
 
+use crate::error::codes::distribution::E2101;
 use crate::error::codes::registry::{E1801, E1802, E1803};
 use crate::snapshot;
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,18 @@ pub struct PublishReport {
     /// `true` when a byte-identical version already existed and nothing
     /// was rewritten (idempotent re-publish), `false` when newly written
     pub already_identical: bool,
+}
+
+/// Result of `export_bundle`: what was packed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportReport {
+    /// Package the bundle was exported from
+    pub package: String,
+    /// Entry version packed (explicitly requested, or dotted-numeric latest
+    /// when the version was omitted)
+    pub version: String,
+    /// Entry files packed (the bundle also carries the package index excerpt)
+    pub files: usize,
 }
 
 /// One comparator of a version requirement (R2 dependency pin): `op` plus a
@@ -574,6 +587,139 @@ pub fn packages(root: &Path) -> Result<Vec<RegistryIndex>, String> {
     names.iter().map(|n| read_index(root, n)).collect()
 }
 
+/// Export a published entry as a deterministic tar bundle (A1, design §47):
+/// every entry file — artifacts, `manifest.json`, `schema.json`, the
+/// `HASHES.json` ledger — plus the package index excerpt, at member paths
+/// `<package>/<version>/<file>` with the excerpt as `index.json`. Same
+/// entry, same bytes: members are written in name order with zeroed
+/// mtime/uid/gid and a fixed 0o644 mode, so the bundle is byte-reproducible
+/// from the registry alone and travels over offline / audit / object-storage
+/// channels; `import_bundle` (A2) re-verifies the riding ledger before
+/// anything enters a registry. A missing entry (package, version, directory
+/// or ledger) and any bundle write failure are E2101. `version = None`
+/// exports the latest entry in dotted-numeric order.
+pub fn export_bundle(
+    root: &Path,
+    package: &str,
+    version: Option<&str>,
+    out: &Path,
+) -> Result<ExportReport, String> {
+    if !valid_component(package) {
+        return Err(format!(
+            "{E2101} invalid registry package name '{package}' (allowed: letters, digits, '.', '-', '_')"
+        ));
+    }
+    if let Some(v) = version {
+        if !valid_component(v) {
+            return Err(format!(
+                "{E2101} invalid registry version '{v}' (allowed: letters, digits, '.', '-', '_')"
+            ));
+        }
+    }
+    // A package dir without an index reads as empty → both branches below
+    // report E2101 through the not-found paths.
+    let index = read_index(root, package)?;
+    let version = match version {
+        Some(v) => {
+            if !index.entries.iter().any(|e| e.version == v) {
+                return Err(format!(
+                    "{E2101} registry entry not found: {package}/{v} (registry {})",
+                    root.display()
+                ));
+            }
+            v.to_string()
+        }
+        None => latest_version(
+            &index
+                .entries
+                .iter()
+                .map(|e| e.version.clone())
+                .collect::<Vec<_>>(),
+        )
+        .ok_or_else(|| {
+            format!(
+                "{E2101} registry package not found: {package} (registry {})",
+                root.display()
+            )
+        })?
+        .to_string(),
+    };
+
+    let entry_dir = root.join(package).join(&version);
+    if !entry_dir.is_dir() {
+        return Err(format!(
+            "{E2101} registry entry directory missing: {} (registry {})",
+            entry_dir.display(),
+            root.display()
+        ));
+    }
+    let rels = files_under(&entry_dir)?;
+    if !rels
+        .iter()
+        .any(|rel| rel == std::path::Path::new(LEDGER_FILE))
+    {
+        return Err(format!(
+            "{E2101} registry entry has no {LEDGER_FILE} ledger: {}",
+            entry_dir.display()
+        ));
+    }
+
+    // The excerpt carries just the exported entry — the receiving side
+    // re-derives everything else from the ledger (A2).
+    let excerpt = RegistryIndex {
+        package: package.to_string(),
+        entries: index
+            .entries
+            .iter()
+            .filter(|e| e.version == version)
+            .cloned()
+            .collect(),
+    };
+    let mut excerpt_bytes = serde_json::to_vec_pretty(&excerpt)
+        .map_err(|e| format!("{E2101} cannot serialize index excerpt: {e}"))?;
+    excerpt_bytes.push(b'\n');
+
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(rels.len() + 1);
+    members.push(("index.json".to_string(), excerpt_bytes));
+    for rel in &rels {
+        let source = entry_dir.join(rel);
+        let bytes = fs::read(&source)
+            .map_err(|e| format!("{E2101} cannot read entry file {}: {e}", source.display()))?;
+        members.push((
+            format!("{package}/{version}/{}", rel.to_string_lossy()),
+            bytes,
+        ));
+    }
+    members.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let file = fs::File::create(out)
+        .map_err(|e| format!("{E2101} cannot create bundle {}: {e}", out.display()))?;
+    let mut builder = tar::Builder::new(file);
+    for (name, bytes) in &members {
+        // Determinism contract: header fields we set ourselves — the tar
+        // layer never sees a filesystem stat, so nothing environment-sourced
+        // (mtime, uid/gid, mode) can leak into the bytes.
+        let mut header = tar::Header::new_ustar();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_uid(0);
+        header.set_gid(0);
+        builder
+            .append_data(&mut header, name, bytes.as_slice())
+            .map_err(|e| format!("{E2101} cannot pack bundle member '{name}': {e}"))?;
+    }
+    builder
+        .into_inner()
+        .map_err(|e| format!("{E2101} cannot finalize bundle {}: {e}", out.display()))?;
+
+    Ok(ExportReport {
+        package: package.to_string(),
+        version,
+        files: rels.len(),
+    })
+}
+
 /// Render a requirement back to a compact comparator list (diagnostics).
 fn render_req(req: &VersionReq) -> String {
     req.comparators
@@ -926,6 +1072,7 @@ pub fn remove_entry(
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Read;
 
     /// Build a tiny self-verifying snapshot directory on the fly. The
     /// ledger's `content_hash` derives from `content`, so different contents
@@ -1037,6 +1184,96 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["1.0.0", "1.9.0", "1.10.0"]
         );
+    }
+
+    #[test]
+    fn export_bundle_is_deterministic_tar_with_entry_files_and_excerpt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("reg");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&root, "common", "1.0.0", &snap).unwrap();
+        let snap2 = tmp.path().join("snap2");
+        make_snapshot(&snap2, "two");
+        publish(&root, "common", "1.9.0", &snap2).unwrap();
+
+        // Two exports of the same entry are byte-identical.
+        let out1 = tmp.path().join("b1.tar");
+        let report = export_bundle(&root, "common", Some("1.0.0"), &out1).unwrap();
+        assert_eq!(report.package, "common");
+        assert_eq!(report.version, "1.0.0");
+        let out2 = tmp.path().join("b2.tar");
+        export_bundle(&root, "common", Some("1.0.0"), &out2).unwrap();
+        assert_eq!(fs::read(&out1).unwrap(), fs::read(&out2).unwrap());
+
+        // A missing version picks the dotted-numeric latest (1.9.0).
+        let out3 = tmp.path().join("b3.tar");
+        let latest = export_bundle(&root, "common", None, &out3).unwrap();
+        assert_eq!(latest.version, "1.9.0");
+
+        // The bundle parses as a tar carrying entry files + index excerpt,
+        // with the determinism contract visible in the headers.
+        let mut archive = tar::Archive::new(fs::File::open(&out1).unwrap());
+        let mut names = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            names.push(entry.path().unwrap().to_string_lossy().into_owned());
+            assert_eq!(entry.header().mtime().unwrap(), 0, "mtime must be zero");
+            assert_eq!(entry.header().uid().unwrap(), 0);
+            assert_eq!(entry.header().gid().unwrap(), 0);
+            assert_eq!(entry.header().mode().unwrap(), 0o644);
+        }
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "common/1.0.0/HASHES.json".to_string(),
+                "common/1.0.0/data/client/json/Item.json".to_string(),
+                "common/1.0.0/manifest.json".to_string(),
+                "common/1.0.0/schema.json".to_string(),
+                "index.json".to_string(),
+            ]
+        );
+        // The excerpt records exactly the exported entry.
+        let mut ar2 = tar::Archive::new(fs::File::open(&out1).unwrap());
+        for entry in ar2.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if entry.path().unwrap() == std::path::Path::new("index.json") {
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                let excerpt: RegistryIndex = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(excerpt.package, "common");
+                assert_eq!(excerpt.entries.len(), 1);
+                assert_eq!(excerpt.entries[0].version, "1.0.0");
+            }
+        }
+    }
+
+    #[test]
+    fn export_bundle_missing_entry_or_bad_name_is_e2101() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("reg");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&root, "common", "1.0.0", &snap).unwrap();
+        let out = tmp.path().join("x.tar");
+        let e2101 = crate::error::codes::distribution::E2101;
+
+        // Unknown package / unknown version / path-escape version.
+        let err = export_bundle(&root, "ghost", None, &out).unwrap_err();
+        assert!(err.starts_with(e2101), "{err}");
+        let err = export_bundle(&root, "common", Some("9.9.9"), &out).unwrap_err();
+        assert!(err.starts_with(e2101), "{err}");
+        let err = export_bundle(&root, "common", Some("../evil"), &out).unwrap_err();
+        assert!(err.starts_with(e2101), "{err}");
+        let err = export_bundle(&root, "../evil", None, &out).unwrap_err();
+        assert!(err.starts_with(e2101), "{err}");
+
+        // An entry stripped of its ledger is not exportable.
+        let version_dir = root.join("common/1.0.0");
+        fs::remove_file(version_dir.join(LEDGER_FILE)).unwrap();
+        let err = export_bundle(&root, "common", Some("1.0.0"), &out).unwrap_err();
+        assert!(err.starts_with(e2101), "{err}");
     }
 
     #[test]

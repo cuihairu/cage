@@ -281,12 +281,15 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       E21xx 五码规划（E2101 传输 / E2102 鉴权 / E2103 账本 / E2104
       拒写 / E2105 凭据缺失）、能力边界（只动已入册条目、不做服务端 /
       delta / 签名）、留待实现期清单——本轮交付，勾选
-- [ ] A1 bundle 导出（`cage registry export`）：`export_bundle` 确定性
-      tar 打包（成员名序 + 元数据归零，同条目同字节 golden 锁定）+
-      E2101 + codes.rs `distribution` 模块与 validation.md 预留标注；
-      验收：单测（确定性两跑一致 / 条目缺失 E2101）+ CLI 集成测试
-      （publish → export → `tar -tf` 可检 → 同条目两包逐字节一致）+
-      cli.md 小节 + 本勾选
+- [x] A1 bundle 导出（`cage registry export`）：`export_bundle` 确定性
+      tar 打包（成员名序 + mtime/uid/gid 归零 + 0o644，同条目两跑逐字节
+      断言锁定）+ E2101 接线 + codes.rs `distribution` 五码模块（E2102–
+      E2105 预留标注至 A2/A3 接线清零）+ validation.md E21xx 新表节；
+      验收已过：单测（确定性两跑一致 + tar 头归零 + index.json 摘录
+      单条目 / 包·版本·路径逃逸·缺账本四路 E2101）+ CLI 集成测试
+      （publish → export 两包逐字节一致 → `tar::Archive` 成员清单可检 →
+      缺包缺版本 E2101 退出码 1）+ cli.md「bundle 导出」小节——本轮交付，
+      勾选
 - [ ] A2 bundle 导入（`cage registry import`）：解包 → verify_snapshot
       信任门 → publish 入册（--dry-run 报告不落笔；坏账本 E2103、
       异字节冲突 E1801 复用）；验收：单测 + 集成测试（干净导入 →

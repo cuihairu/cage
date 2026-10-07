@@ -226,6 +226,21 @@ enum RegistryCmd {
         #[arg(long)]
         registry: Option<PathBuf>,
     },
+    /// Export a published entry as a deterministic tar bundle — every entry
+    /// file plus its ledger and the package index excerpt, packed in member
+    /// name order with zeroed mtime/uid/gid (same entry, same bytes) — for
+    /// offline distribution or manual upload to a static registry host
+    Export {
+        /// Package name, optionally suffixed `@<version>` (latest when the
+        /// version is omitted)
+        package: String,
+        /// Bundle output file
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Registry root directory (overrides cage.toml `[registry].path`)
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
 }
 
 /// A loaded Cage project: config + merged schema + merged document.
@@ -307,6 +322,11 @@ fn main() {
                 dry_run,
                 registry,
             } => run_registry_remove(&package, &version, dry_run, registry.as_deref()),
+            RegistryCmd::Export {
+                package,
+                output,
+                registry,
+            } => run_registry_export(&package, &output, registry.as_deref()),
         },
     };
     std::process::exit(code);
@@ -1346,6 +1366,49 @@ fn run_registry_list(registry_flag: Option<&Path>) -> i32 {
     }
 }
 
+/// `cage registry export` — pack a published entry into a deterministic tar
+/// bundle (A1). The bundle is byte-reproducible from the registry alone
+/// (member-name order, zeroed mtime/uid/gid) and self-verifying — the entry
+/// ledger rides along, and A2's import re-checks it before anything enters
+/// a registry. Local registry roots only: the remote read protocol has no
+/// file enumeration, so remote consumers resolve `registry:` sources
+/// instead.
+fn run_registry_export(package_spec: &str, output: &Path, registry_flag: Option<&Path>) -> i32 {
+    let Some(reg_root) = registry_flag else {
+        eprintln!("error: no registry root (pass --registry)");
+        return 2;
+    };
+    if let Some(spec) = reg_root.to_str() {
+        if remote::is_remote_root(spec) {
+            eprintln!(
+                "error: registry root '{spec}' is remote — export packs a local entry; \
+                 fetch remote packages via registry: source roots instead"
+            );
+            return 2;
+        }
+    }
+    let (package, version) = match package_spec.split_once('@') {
+        Some((p, v)) => (p, Some(v)),
+        None => (package_spec, None),
+    };
+    match cage_core::registry::export_bundle(reg_root, package, version, output) {
+        Ok(report) => {
+            println!(
+                "cage registry: exported {}/{} → {} ({} entry files + index excerpt)",
+                report.package,
+                report.version,
+                output.display(),
+                report.files
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 /// `cage registry verify` — the full-registry audit (R4): every recorded
 /// entry exists and self-verifies (its bytes re-hashed against its ledger,
 /// the index record matching the ledger's `build_id`/`content_hash`), and no
@@ -1978,6 +2041,17 @@ mod tests {
                     registry,
                 } => format!(
                     "registry remove {package} {version} {dry_run} {}",
+                    registry
+                        .as_deref()
+                        .map_or_else(|| Path::new("<flag required>").display(), Path::display)
+                ),
+                RegistryCmd::Export {
+                    package,
+                    output,
+                    registry,
+                } => format!(
+                    "registry export {package} {} {}",
+                    output.display(),
                     registry
                         .as_deref()
                         .map_or_else(|| Path::new("<flag required>").display(), Path::display)

@@ -772,3 +772,93 @@ fn registry_gc_keeps_window_and_remove_republish() {
     let out = run_cage(&["build", &newpin, "--profile", "client"]);
     assert_code(&out, 0, "republished version builds");
 }
+
+#[test]
+fn registry_export_is_byte_deterministic_tar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_publisher(root);
+    let reg = root.join("reg").to_str().unwrap().to_string();
+    let pub_root = root.join("pub").to_str().unwrap().to_string();
+
+    let out = run_cage(&["registry", "publish", &pub_root, "--registry", &reg]);
+    assert_code(&out, 0, "publish for export");
+
+    // Two exports of the same entry land byte-identical (A1 determinism
+    // contract: member-name order, zeroed mtime/uid/gid).
+    let b1 = root.join("b1.tar").to_str().unwrap().to_string();
+    let b2 = root.join("b2.tar").to_str().unwrap().to_string();
+    let out = run_cage(&[
+        "registry",
+        "export",
+        "common@0.1.0",
+        "-o",
+        &b1,
+        "--registry",
+        &reg,
+    ]);
+    assert_code(&out, 0, "export pinned");
+    assert!(stdout(&out).contains("common/0.1.0"), "{}", stdout(&out));
+    let out = run_cage(&[
+        "registry",
+        "export",
+        "common",
+        "-o",
+        &b2,
+        "--registry",
+        &reg,
+    ]);
+    assert_code(&out, 0, "export latest");
+    assert_eq!(
+        fs::read(&b1).unwrap(),
+        fs::read(&b2).unwrap(),
+        "same entry must export to identical bytes"
+    );
+
+    // The bundle reads back as a plain tar with the entry files + ledger +
+    // index excerpt, headers carrying the zeroed metadata.
+    let mut archive = tar::Archive::new(fs::File::open(&b1).unwrap());
+    let mut names = Vec::new();
+    for entry in archive.entries().unwrap() {
+        let entry = entry.unwrap();
+        names.push(entry.path().unwrap().to_string_lossy().into_owned());
+        assert_eq!(entry.header().mtime().unwrap(), 0, "mtime zeroed");
+        assert_eq!(entry.header().uid().unwrap(), 0, "uid zeroed");
+        assert_eq!(entry.header().gid().unwrap(), 0, "gid zeroed");
+    }
+    names.sort();
+    assert!(names.contains(&"index.json".to_string()), "{names:?}");
+    assert!(
+        names.contains(&"common/0.1.0/HASHES.json".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&"common/0.1.0/data/client/json/Item.json".to_string()),
+        "{names:?}"
+    );
+
+    // Missing package and missing version are E2101 failures.
+    let bx = root.join("bx.tar").to_str().unwrap().to_string();
+    let out = run_cage(&[
+        "registry",
+        "export",
+        "ghost@0.1.0",
+        "-o",
+        &bx,
+        "--registry",
+        &reg,
+    ]);
+    assert_code(&out, 1, "export missing package");
+    assert!(stderr(&out).contains("E2101"), "{}", stderr(&out));
+    let out = run_cage(&[
+        "registry",
+        "export",
+        "common@9.9.9",
+        "-o",
+        &bx,
+        "--registry",
+        &reg,
+    ]);
+    assert_code(&out, 1, "export missing version");
+    assert!(stderr(&out).contains("E2101"), "{}", stderr(&out));
+}

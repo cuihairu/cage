@@ -132,6 +132,31 @@ pub mod registry {
     pub const E1803: &str = "E1803";
 }
 
+/// Artifact distribution errors (A series, design §47): moving published
+/// entries to remote or air-gapped consumers. Wired per sign — E2101 in
+/// bundle export (A1), E2103 at the import trust gate (A2), E2102/E2104/
+/// E2105 in `registry push` (A3); each doc note marks where it lands.
+pub mod distribution {
+    /// E2101 - Distribution transfer failed: bundle export could not read
+    /// the entry (missing package/version, entry directory or ledger) or
+    /// write the bundle file (A1, `cage registry export`)
+    pub const E2101: &str = "E2101";
+    /// E2102 - Distribution target rejected the credentials (HTTP 401 / 403
+    /// on push; reserved until A3 wiring)
+    pub const E2102: &str = "E2102";
+    /// E2103 - Distribution bundle failed its ledger verification — import
+    /// refuses unverifiable bytes (reserved until A2 wiring)
+    pub const E2103: &str = "E2103";
+    /// E2104 - Distribution target refused the write (405 / 409 or another
+    /// explicit 4xx on push — the server has no write channel; reserved
+    /// until A3 wiring)
+    pub const E2104: &str = "E2104";
+    /// E2105 - Distribution credential missing: `[registry].auth_env` not
+    /// declared or the named env var unset — fails before any network
+    /// contact (reserved until A3 wiring)
+    pub const E2105: &str = "E2105";
+}
+
 /// Remote Source errors (S series, design §45): read-only fetch of
 /// Google Sheets / MySQL / PostgreSQL / HTTP API sources. All six are
 /// wired: E1901/E1902 at the fetch stage of every adapter, E1903 in the
@@ -240,6 +265,12 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         registry::E1801 => Some("Registry Publish Conflict"),
         registry::E1802 => Some("Registry Reference Unresolved"),
         registry::E1803 => Some("Registry Entry Verification Failed"),
+        // Distribution
+        distribution::E2101 => Some("Distribution Transfer Failed"),
+        distribution::E2102 => Some("Distribution Auth Rejected"),
+        distribution::E2103 => Some("Bundle Verification Failed"),
+        distribution::E2104 => Some("Distribution Write Refused"),
+        distribution::E2105 => Some("Distribution Credential Missing"),
         // Remote Source
         remote::E1901 => Some("Remote Source Fetch Failed"),
         remote::E1902 => Some("Remote Source Auth Rejected"),

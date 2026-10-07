@@ -18,6 +18,8 @@ indexmap = { workspace = true }
 regex = { workspace = true }
 blake3 = { workspace = true }
 console = { workspace = true }
+# §47 A series: deterministic bundle export/import
+tar = { workspace = true }
 # Remote Source (§45): the shared HTTP GET lives here so every remote
 # consumer (registry + source adapters) runs one retry policy.
 ureq = { workspace = true }
