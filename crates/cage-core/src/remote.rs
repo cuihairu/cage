@@ -99,19 +99,41 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Which failures of a network call are transport-class (retryable under
+/// [`RetryPolicy`]) versus definitive server answers. `FetchFailure` (GET)
+/// and `PutFailure` (PUT) both classify their `Transport` variant.
+pub trait RetryClassify {
+    /// `true` for connection / DNS / timeout-class failures
+    fn is_transport(&self) -> bool;
+}
+
+impl RetryClassify for FetchFailure {
+    fn is_transport(&self) -> bool {
+        matches!(self, FetchFailure::Transport(_))
+    }
+}
+
+impl RetryClassify for PutFailure {
+    fn is_transport(&self) -> bool {
+        matches!(self, PutFailure::Transport(_))
+    }
+}
+
 /// Run `fetch` under `policy`: transport failures are retried with the
 /// backoff, success and every other failure return immediately. When the
-/// budget runs out the last transport error wins.
-pub fn with_retries<T>(
+/// budget runs out the last transport error wins. Generic over the failure
+/// type — GET and PUT share the one policy while keeping their own
+/// failure kinds.
+pub fn with_retries<T, E: RetryClassify>(
     policy: &RetryPolicy,
-    mut fetch: impl FnMut() -> Result<T, FetchFailure>,
-) -> Result<T, FetchFailure> {
-    let mut last: Option<FetchFailure> = None;
+    mut fetch: impl FnMut() -> Result<T, E>,
+) -> Result<T, E> {
+    let mut last: Option<E> = None;
     for attempt in 0..policy.attempts {
         match fetch() {
             Ok(value) => return Ok(value),
-            Err(FetchFailure::Transport(e)) => {
-                last = Some(FetchFailure::Transport(e));
+            Err(e) if e.is_transport() => {
+                last = Some(e);
                 if attempt + 1 < policy.attempts {
                     std::thread::sleep(policy.backoff);
                 }
@@ -121,7 +143,7 @@ pub fn with_retries<T>(
     }
     // `attempts` is at least 1 in practice; a zero budget never calls
     // `fetch`, and there is no meaningful failure to report then.
-    Err(last.unwrap_or_else(|| FetchFailure::Transport("no attempt configured".to_string())))
+    Err(last.expect("retry policy with zero attempts"))
 }
 
 /// GET one URL, returning the response body bytes. Bounded retries on
@@ -148,6 +170,65 @@ fn http_get_once(url: &str) -> Result<Vec<u8>, FetchFailure> {
         .read_to_end(&mut bytes)
         .map_err(|e| FetchFailure::Transport(format!("reading {url}: {e}")))?;
     Ok(bytes)
+}
+
+/// One failed HTTP PUT, kind-tagged for the distribution write path (§47
+/// A3): transport failures are retried like `FetchFailure::Transport`,
+/// 401/403 are credential rejections (E2102), and any other server answer
+/// is a definitive write refusal (E2104 — 405/501 mean the server has no
+/// write channel at all).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PutFailure {
+    /// Connection / DNS / timeout — retryable
+    Transport(String),
+    /// HTTP 401 / 403 — the credentials were rejected
+    AuthRejected(u16),
+    /// Any other HTTP status — the server refuses (or cannot) store
+    WriteRefused(u16),
+}
+
+impl std::fmt::Display for PutFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PutFailure::Transport(e) => write!(f, "transport failure: {e}"),
+            PutFailure::AuthRejected(code) => write!(f, "auth rejected: http status {code}"),
+            PutFailure::WriteRefused(code) => write!(f, "write refused: http status {code}"),
+        }
+    }
+}
+
+/// PUT `body` to one URL, optionally with an `Authorization: Bearer` header.
+/// Same one-policy discipline as `http_get`: bounded retries on
+/// transport-level flake only; a server answer is definitive and maps to
+/// the caller's error code via `PutFailure`'s kind. The token travels only
+/// in the request header — never logged, never persisted.
+pub fn http_put(url: &str, token: Option<&str>, body: &[u8]) -> Result<(), PutFailure> {
+    with_retries(&RetryPolicy::default(), || http_put_once(url, token, body))
+}
+
+fn http_put_once(url: &str, token: Option<&str>, body: &[u8]) -> Result<(), PutFailure> {
+    let mut request = ureq::put(url).timeout(Duration::from_secs(30));
+    if let Some(token) = token {
+        request = request.set("Authorization", &format!("Bearer {token}"));
+    }
+    let response = request
+        // `send_bytes`, not `send`: the Read-based sender streams chunked
+        // (no Content-Length), which static registry hosts are not obliged
+        // to decode — a fixed-length body is the interoperable form.
+        .send_bytes(body)
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) if code == 401 || code == 403 => {
+                PutFailure::AuthRejected(code)
+            }
+            ureq::Error::Status(code, _) => PutFailure::WriteRefused(code),
+            ureq::Error::Transport(t) => PutFailure::Transport(t.to_string()),
+        })?;
+    let mut sink = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut sink)
+        .map_err(|e| PutFailure::Transport(format!("reading {url}: {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]

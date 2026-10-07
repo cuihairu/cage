@@ -24,7 +24,7 @@
 //! verifies the entry's ledger, then yields its `data/` directory as the
 //! source root.
 
-use crate::error::codes::distribution::{E2101, E2103};
+use crate::error::codes::distribution::{E2101, E2102, E2103, E2104, E2105};
 use crate::error::codes::registry::{E1801, E1802, E1803};
 use crate::snapshot;
 use serde::{Deserialize, Serialize};
@@ -615,12 +615,18 @@ pub fn packages(root: &Path) -> Result<Vec<RegistryIndex>, String> {
 /// anything enters a registry. A missing entry (package, version, directory
 /// or ledger) and any bundle write failure are E2101. `version = None`
 /// exports the latest entry in dotted-numeric order.
-pub fn export_bundle(
+/// Locate a published entry in a local registry for the distribution path
+/// (A1/A3): names validated against the registry character set, the package
+/// index read, the version resolved (explicit must exist, `None` = latest
+/// in dotted-numeric order) and the entry directory plus its ledger
+/// confirmed on disk. Every failure is E2101 — the entry cannot be read
+/// for distribution. A package dir without an index reads as empty and
+/// lands in the not-found paths.
+fn resolve_entry(
     root: &Path,
     package: &str,
     version: Option<&str>,
-    out: &Path,
-) -> Result<ExportReport, String> {
+) -> Result<(String, PathBuf, Vec<PathBuf>), String> {
     if !valid_component(package) {
         return Err(format!(
             "{E2101} invalid registry package name '{package}' (allowed: letters, digits, '.', '-', '_')"
@@ -633,8 +639,6 @@ pub fn export_bundle(
             ));
         }
     }
-    // A package dir without an index reads as empty → both branches below
-    // report E2101 through the not-found paths.
     let index = read_index(root, package)?;
     let version = match version {
         Some(v) => {
@@ -661,7 +665,6 @@ pub fn export_bundle(
         })?
         .to_string(),
     };
-
     let entry_dir = root.join(package).join(&version);
     if !entry_dir.is_dir() {
         return Err(format!(
@@ -680,17 +683,60 @@ pub fn export_bundle(
             entry_dir.display()
         ));
     }
+    Ok((version, entry_dir, rels))
+}
+
+/// Rebuild the entry's index record from its riding ledger (the same
+/// fields publish writes): the distribution path needs `build_id` /
+/// `content_hash` to merge indexes and detect conflicts without trusting
+/// any second copy of the record.
+fn entry_record(entry_dir: &Path, version: &str, files: usize) -> Result<IndexEntry, String> {
+    let ledger: serde_json::Value = serde_json::from_slice(
+        &fs::read(entry_dir.join(LEDGER_FILE))
+            .map_err(|e| format!("{E2101} cannot read ledger: {e}"))?,
+    )
+    .map_err(|e| format!("{E2101} ledger parse: {e}"))?;
+    let build_id = ledger
+        .get("build_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{E2101} ledger has no build_id"))?
+        .to_string();
+    let content_hash = ledger
+        .get("content_hash")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "{E2101} ledger has no content_hash".to_string())?;
+    Ok(IndexEntry {
+        version: version.to_string(),
+        build_id,
+        content_hash: content_hash.to_string(),
+        files,
+    })
+}
+
+/// Export a registry entry as a deterministic, self-verifying bundle (A1).
+///
+/// The bundle is a tar archive containing:
+/// - `index.json` — an excerpt of the registry index covering only the exported entry.
+/// - All artifact files under `package/version/...` as recorded in the entry's `files` manifest.
+///
+/// The tar is deterministic: all header fields (mtime, uid, gid, mode) are zeroed or fixed,
+/// and members are sorted lexicographically by name. The resulting bytes are byte-for-byte
+/// identical for the same source entry regardless of build environment.
+///
+/// Returns an `ExportReport` with the bundle path, size, and content hash.
+pub fn export_bundle(
+    root: &Path,
+    package: &str,
+    version: Option<&str>,
+    out: &Path,
+) -> Result<ExportReport, String> {
+    let (version, entry_dir, rels) = resolve_entry(root, package, version)?;
 
     // The excerpt carries just the exported entry — the receiving side
     // re-derives everything else from the ledger (A2).
     let excerpt = RegistryIndex {
         package: package.to_string(),
-        entries: index
-            .entries
-            .iter()
-            .filter(|e| e.version == version)
-            .cloned()
-            .collect(),
+        entries: vec![entry_record(&entry_dir, &version, rels.len())?],
     };
     let mut excerpt_bytes = serde_json::to_vec_pretty(&excerpt)
         .map_err(|e| format!("{E2101} cannot serialize index excerpt: {e}"))?;
@@ -900,6 +946,183 @@ pub fn import_bundle(root: &Path, file: &Path, dry_run: bool) -> Result<ImportRe
         version,
         files: staged_files.len(),
         already_identical: report.already_identical,
+        dry_run: false,
+    })
+}
+
+/// Result of `push_entry`: what was (or would be) uploaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushReport {
+    /// Package pushed
+    pub package: String,
+    /// Entry version pushed (explicitly requested, or dotted-numeric latest
+    /// when the version was omitted)
+    pub version: String,
+    /// Entry files uploaded (the package index PUT is counted separately —
+    /// it always lands last)
+    pub files: usize,
+    /// `true` when the remote already held the exact bytes (idempotent
+    /// no-op — zero PUTs), `false` when files were uploaded
+    pub already_identical: bool,
+    /// `true` when the push ran as a report-only dry run (zero PUTs)
+    pub dry_run: bool,
+}
+
+/// Push a published entry from a local registry to a remote http(s)
+/// registry root (A3, design §47): one PUT per entry file
+/// (`<root>/<package>/<version>/<file>`), the package `index.json` written
+/// last — merged over the remote's existing entries, so a push never
+/// rewrites remote history. Credentials: `auth_env` names the environment
+/// variable carrying the bearer token; it must resolve before any network
+/// contact (E2105) and the value travels only in the `Authorization`
+/// header — never logged, never persisted. `auth_env = None` pushes
+/// anonymously (unauthenticated deployments). Failure mapping: the local
+/// entry unreadable → E2101; the remote index unreadable or a PUT failing
+/// transport after retries → E2101; HTTP 401/403 → E2102; any other
+/// refusing status (405/501/…) → E2104 — the server has no write channel.
+/// The remote already holding the same version with different bytes is an
+/// E1801 conflict (remote history is never rewritten); identical bytes are
+/// an idempotent no-op with zero PUTs. With `dry_run` the local read,
+/// credential resolution and remote-state check all run, but nothing is
+/// uploaded.
+pub fn push_entry(
+    source_root: &Path,
+    remote_root: &str,
+    package: &str,
+    version: Option<&str>,
+    auth_env: Option<&str>,
+    dry_run: bool,
+) -> Result<PushReport, String> {
+    let base = remote_root.trim_end_matches('/');
+    if !base.starts_with("http://") && !base.starts_with("https://") {
+        return Err(format!(
+            "{E2101} push targets a remote http(s) registry root, got '{remote_root}'"
+        ));
+    }
+
+    // Local side first: the entry must read cleanly before anything remote
+    // is contacted.
+    let (version, entry_dir, rels) = resolve_entry(source_root, package, version)?;
+    let record = entry_record(&entry_dir, &version, rels.len())?;
+
+    // Credential resolution precedes any network contact (E2105); only the
+    // env var NAME may appear in errors — never the token itself.
+    let token = match auth_env {
+        Some(name) => {
+            let value = std::env::var(name).map_err(|_| {
+                format!(
+                    "{E2105} push credential missing: env '{name}' is not set (declared via \
+                     --auth-env or [registry].auth_env)"
+                )
+            })?;
+            if value.is_empty() {
+                return Err(format!(
+                    "{E2105} push credential missing: env '{name}' is empty"
+                ));
+            }
+            Some(value)
+        }
+        None => None,
+    };
+
+    // Remote state: the package index decides merge vs no-op vs conflict.
+    let index_url = format!("{base}/{package}/index.json");
+    let remote_entries: Vec<IndexEntry> = match crate::remote::http_get(&index_url) {
+        Ok(bytes) => {
+            let remote: RegistryIndex = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("{E2101} cannot parse remote index {index_url}: {e}"))?;
+            if let Some(existing) = remote.entries.iter().find(|e| e.version == version) {
+                if existing.content_hash == record.content_hash {
+                    return Ok(PushReport {
+                        package: package.to_string(),
+                        version,
+                        files: rels.len(),
+                        already_identical: true,
+                        dry_run,
+                    });
+                }
+                return Err(format!(
+                    "{E1801} registry version conflict: {package}/{version} already on the remote \
+                     with content_hash {} — push refused (remote history is never rewritten)",
+                    existing.content_hash
+                ));
+            }
+            remote.entries
+        }
+        Err(crate::remote::FetchFailure::NotFound(_)) => Vec::new(),
+        // An auth rejection on the state probe is an auth rejection, full
+        // stop — mapped before the generic unreachable-index case.
+        Err(crate::remote::FetchFailure::Status(code)) if code == 401 || code == 403 => {
+            return Err(format!(
+                "{E2102} push rejected at {index_url}: http status {code}"
+            ));
+        }
+        Err(e) => return Err(format!("{E2101} cannot read remote index {index_url}: {e}")),
+    };
+
+    if dry_run {
+        return Ok(PushReport {
+            package: package.to_string(),
+            version,
+            files: rels.len(),
+            already_identical: false,
+            dry_run: true,
+        });
+    }
+
+    let put = |rel_path: &str, body: &[u8]| -> Result<(), String> {
+        crate::remote::http_put(&format!("{base}{rel_path}"), token.as_deref(), body).map_err(|e| {
+            match e {
+                crate::remote::PutFailure::Transport(detail) => {
+                    format!("{E2101} push transport failed for {rel_path}: {detail}")
+                }
+                crate::remote::PutFailure::AuthRejected(code) => {
+                    format!("{E2102} push rejected for {rel_path}: http status {code}")
+                }
+                crate::remote::PutFailure::WriteRefused(code) => {
+                    format!(
+                        "{E2104} push refused for {rel_path}: http status {code} (the server has \
+                         no write channel — publish locally and host statically)"
+                    )
+                }
+            }
+        })
+    };
+
+    for rel in &rels {
+        let source = entry_dir.join(rel);
+        let body = fs::read(&source)
+            .map_err(|e| format!("{E2101} cannot read entry file {}: {e}", source.display()))?;
+        put(
+            &format!("/{package}/{version}/{}", rel.to_string_lossy()),
+            &body,
+        )?;
+    }
+
+    // The package index lands last (design §47): only after every entry
+    // file is in place, merged over the remote's existing entries.
+    let mut merged = remote_entries;
+    merged.retain(|e| e.version != version);
+    merged.push(record);
+    merged.sort_by(|a, b| {
+        version_key(&a.version)
+            .cmp(&version_key(&b.version))
+            .then_with(|| a.version.cmp(&b.version))
+    });
+    let merged_index = RegistryIndex {
+        package: package.to_string(),
+        entries: merged,
+    };
+    let mut index_bytes = serde_json::to_vec_pretty(&merged_index)
+        .map_err(|e| format!("{E2101} cannot serialize merged index: {e}"))?;
+    index_bytes.push(b'\n');
+    put(&format!("/{package}/index.json"), &index_bytes)?;
+
+    Ok(PushReport {
+        package: package.to_string(),
+        version,
+        files: rels.len(),
+        already_identical: false,
         dry_run: false,
     })
 }
@@ -1255,8 +1478,10 @@ pub fn remove_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::io::Read;
+    use std::sync::{Arc, Mutex};
 
     /// Build a tiny self-verifying snapshot directory on the fly. The
     /// ledger's `content_hash` derives from `content`, so different contents
@@ -1580,6 +1805,374 @@ mod tests {
         assert!(report.dry_run);
         assert!(!report.already_identical);
         assert!(!dry_target.join("common").exists());
+    }
+
+    /// A stand-in remote registry for `push_entry`: stores PUT bodies,
+    /// serves GETs from the store, records (method, path, auth header) per
+    /// request, and can be forced to answer a fixed status for everything
+    /// (401 = auth rejection, 405 = no write channel). `std::net` only.
+    struct PushServer {
+        port: u16,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl PushServer {
+        fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+
+        fn shutdown(self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.handle.map(std::thread::JoinHandle::join);
+        }
+    }
+
+    type PushServerState = (
+        PushServer,
+        Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+        Arc<Mutex<Vec<String>>>,
+    );
+
+    fn start_push_server(force_status: Option<u16>) -> PushServerState {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let store: Arc<Mutex<BTreeMap<String, Vec<u8>>>> = Arc::new(Mutex::new(BTreeMap::new()));
+        let requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let store2 = store.clone();
+        let requests2 = requests.clone();
+        let handle = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while !stop2.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                // Read the head, then exactly Content-Length body bytes.
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let head_end = loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break buf.len(),
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break pos + 4;
+                            }
+                            if buf.len() > 1024 * 1024 {
+                                break buf.len();
+                            }
+                        }
+                    }
+                };
+                let head = String::from_utf8_lossy(&buf[..head_end.min(buf.len())]).into_owned();
+                let mut lines = head.split("\r\n");
+                let request_line = lines.next().unwrap_or("");
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("/").to_string();
+                let mut content_length = 0usize;
+                let mut auth = String::new();
+                for line in lines {
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("authorization:") {
+                        auth = line["authorization:".len()..].trim().to_string();
+                    }
+                }
+                let mut body = buf[head_end.min(buf.len())..].to_vec();
+                while body.len() < content_length {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => body.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                requests2
+                    .lock()
+                    .unwrap()
+                    .push(format!("{method} {path} {auth}"));
+                let (status, reason, payload): (u16, &str, Vec<u8>) =
+                    match (force_status, method.as_str()) {
+                        // GETs serve from the store regardless — a static
+                        // host reads fine even when it refuses writes.
+                        (_, "GET") => match store2.lock().unwrap().get(&path) {
+                            Some(bytes) => (200, "OK", bytes.clone()),
+                            None => (404, "Not Found", b"not found".to_vec()),
+                        },
+                        (Some(code), "PUT") => (code, "Refused", b"refused".to_vec()),
+                        (None, "PUT") => {
+                            store2.lock().unwrap().insert(path.clone(), body);
+                            (200, "OK", Vec::new())
+                        }
+                        _ => (405, "Method Not Allowed", b"method".to_vec()),
+                    };
+                let head = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&payload);
+                let _ = stream.flush();
+            }
+        });
+        (
+            PushServer {
+                port,
+                stop,
+                handle: Some(handle),
+            },
+            store,
+            requests,
+        )
+    }
+
+    fn put_count(requests: &[String]) -> usize {
+        requests.iter().filter(|r| r.starts_with("PUT ")).count()
+    }
+
+    #[test]
+    fn push_entry_uploads_files_then_merged_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+        let snap2 = tmp.path().join("snap2");
+        make_snapshot(&snap2, "two");
+        publish(&source, "common", "0.2.0", &snap2).unwrap();
+
+        let (server, store, requests) = start_push_server(None);
+        std::env::set_var("CAGE_TOK_B", "tok-b");
+        let report = push_entry(
+            &source,
+            &server.url(),
+            "common",
+            Some("0.2.0"),
+            Some("CAGE_TOK_B"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(report.package, "common");
+        assert_eq!(report.version, "0.2.0");
+        assert!(!report.already_identical);
+        assert!(!report.dry_run);
+        assert_eq!(report.files, 4);
+
+        // Order: index GET first (anonymous — the read protocol is), entry
+        // files next, the package index PUT dead last; the token rides only
+        // the PUTs.
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(log[0], "GET /common/index.json ");
+        assert_eq!(log.last().unwrap(), "PUT /common/index.json Bearer tok-b");
+        assert_eq!(put_count(&log), 5, "4 entry files + merged index");
+        assert!(log
+            .iter()
+            .filter(|r| r.starts_with("PUT "))
+            .all(|r| r.ends_with("Bearer tok-b")));
+
+        // The merged index holds exactly the pushed entry (remote was
+        // empty), and a second push of another version merges over it.
+        let stored = store
+            .lock()
+            .unwrap()
+            .get("/common/index.json")
+            .cloned()
+            .unwrap();
+        let index: RegistryIndex = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(
+            index
+                .entries
+                .iter()
+                .map(|e| e.version.clone())
+                .collect::<Vec<_>>(),
+            ["0.2.0"]
+        );
+        push_entry(
+            &source,
+            &server.url(),
+            "common",
+            Some("1.0.0"),
+            Some("CAGE_TOK_B"),
+            false,
+        )
+        .unwrap();
+        let stored = store
+            .lock()
+            .unwrap()
+            .get("/common/index.json")
+            .cloned()
+            .unwrap();
+        let index: RegistryIndex = serde_json::from_slice(&stored).unwrap();
+        // dotted-numeric order: 0.2.0 sorts before 1.0.0
+        assert_eq!(
+            index
+                .entries
+                .iter()
+                .map(|e| e.version.clone())
+                .collect::<Vec<_>>(),
+            ["0.2.0", "1.0.0"]
+        );
+
+        // Re-pushing identical bytes is a zero-PUT no-op (one GET for the
+        // remote state, nothing else).
+        let before = requests.lock().unwrap().len();
+        let again = push_entry(
+            &source,
+            &server.url(),
+            "common",
+            Some("0.2.0"),
+            Some("CAGE_TOK_B"),
+            false,
+        )
+        .unwrap();
+        assert!(again.already_identical);
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(log.len(), before + 1);
+        assert_eq!(put_count(&log[before..]), 0);
+        server.shutdown();
+        std::env::remove_var("CAGE_TOK_B");
+    }
+
+    #[test]
+    fn push_entry_maps_auth_refusals_and_missing_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+
+        // 401 from the remote → E2102, credentials riding every request.
+        let (server, _store, requests) = start_push_server(Some(401));
+        std::env::set_var("CAGE_TOK_A", "sekrit-token");
+        let err = push_entry(
+            &source,
+            &server.url(),
+            "common",
+            Some("1.0.0"),
+            Some("CAGE_TOK_A"),
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(crate::error::codes::distribution::E2102),
+            "{err}"
+        );
+        assert!(
+            !err.contains("sekrit-token"),
+            "the token value never leaks into errors: {err}"
+        );
+        // Anonymous state probe first, then the token rides the refused PUT;
+        // the push fails fast — exactly one PUT attempted.
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(log[0], "GET /common/index.json ");
+        assert_eq!(put_count(&log), 1);
+        assert!(log[1..]
+            .iter()
+            .all(|r| r.starts_with("PUT ") && r.ends_with("Bearer sekrit-token")));
+        server.shutdown();
+        std::env::remove_var("CAGE_TOK_A");
+
+        // 405 → E2104: the server has no write channel.
+        let (server, _store, _requests) = start_push_server(Some(405));
+        let err =
+            push_entry(&source, &server.url(), "common", Some("1.0.0"), None, false).unwrap_err();
+        assert!(
+            err.starts_with(crate::error::codes::distribution::E2104),
+            "{err}"
+        );
+        server.shutdown();
+
+        // auth_env unset → E2105 before any network contact: the target is
+        // a closed port, so any connection attempt would surface as E2101.
+        let err = push_entry(
+            &source,
+            "http://127.0.0.1:1",
+            "common",
+            Some("1.0.0"),
+            Some("CAGE_TOK_MISSING"),
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(crate::error::codes::distribution::E2105),
+            "{err}"
+        );
+        // An empty token is as good as absent.
+        std::env::set_var("CAGE_TOK_EMPTY", "");
+        let err = push_entry(
+            &source,
+            "http://127.0.0.1:1",
+            "common",
+            Some("1.0.0"),
+            Some("CAGE_TOK_EMPTY"),
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(crate::error::codes::distribution::E2105),
+            "{err}"
+        );
+        std::env::remove_var("CAGE_TOK_EMPTY");
+    }
+
+    #[test]
+    fn push_entry_conflict_refuses_and_dry_run_uploads_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+
+        // Dry run: the remote state check happens, nothing is stored.
+        let (server, store, requests) = start_push_server(None);
+        let report =
+            push_entry(&source, &server.url(), "common", Some("1.0.0"), None, true).unwrap();
+        assert!(report.dry_run);
+        assert!(!report.already_identical);
+        assert!(store.lock().unwrap().is_empty(), "dry run stores nothing");
+        assert_eq!(put_count(&requests.lock().unwrap()), 0);
+        server.shutdown();
+
+        // Same version, different bytes already on the remote → E1801.
+        let (server, store, _requests) = start_push_server(None);
+        push_entry(&source, &server.url(), "common", Some("1.0.0"), None, false).unwrap();
+        let other = tmp.path().join("snap2");
+        make_snapshot(&other, "hacked");
+        let conflicting = tmp.path().join("regB");
+        publish(&conflicting, "common", "1.0.0", &other).unwrap();
+        let err = push_entry(
+            &conflicting,
+            &server.url(),
+            "common",
+            Some("1.0.0"),
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(crate::error::codes::registry::E1801),
+            "{err}"
+        );
+        // The remote index was not rewritten by the refused push.
+        let index: RegistryIndex =
+            serde_json::from_slice(store.lock().unwrap().get("/common/index.json").unwrap())
+                .unwrap();
+        assert_eq!(index.entries.len(), 1);
+        assert_ne!(index.entries[0].content_hash, "");
+        server.shutdown();
     }
 
     #[test]

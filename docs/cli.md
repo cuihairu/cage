@@ -16,7 +16,8 @@ cage registry
 MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`gen` / `snapshot`
 为第二阶段（均已实装），`web` 为第三阶段（Schema 编辑器本地服务），
 `registry` 为第三阶段 R 系列（本地 Configuration Registry 发布/列表，
-R1–R4 均已实装）。`cage verify runtime/`（验证已生成产物）与
+R1–R4 均已实装），A 系列分发（bundle 导出/导入、直推远端，design §47）
+已随 A1–A3 实装。`cage verify runtime/`（验证已生成产物）与
 `cage graph`（读依赖图）在 [design §30](https://github.com/cuihairu/cage/blob/main/docs/design.md#30-cli) 是规划命令，
 尚未实装：配置依赖图经 `cage build --incremental` 实时参与构建决策。
 
@@ -166,6 +167,7 @@ cage registry gc      --registry <dir> [--keep 3] [--dry-run]
 cage registry remove  <package> <version> --registry <dir> [--dry-run]
 cage registry export  <package>[@<version>] -o <file> --registry <dir>
 cage registry import  <file> [--dry-run] --registry <dir>
+cage registry push    <project> [package[@version]] --registry <remote-url> [--auth-env VAR] [--dry-run]
 ```
 
 本地 Configuration Registry（第三阶段 R 系列，[design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)）。
@@ -213,8 +215,8 @@ path = "https://registry.example.com/config"   # http(s):// 前缀 = 远程根
 本地副本兜底）；不可达且无缓存 → `E1802`。
 
 远程根只读：`cage registry publish` 与 `cage registry list` 对远程根报错
-退出（协议无包枚举资源，发布方在本地注册表发布后用任意静态服务器托管，
-或留待未来的上传/同步协议）。鉴权方案留待后续立项。
+退出（协议无包枚举资源）；发布方在本地注册表发布后用任意静态服务器
+托管，或用 `cage registry push` 直推远端（见下文 bundle 分发与直推）。
 
 ### 依赖声明与版本区间（R2）
 
@@ -268,8 +270,8 @@ cage registry export common       -o common-latest.tar --registry ../registry   
 包 index 摘录（`index.json`，只含导出的那个条目），成员路径为
 `<包>/<版本>/<文件>`。同条目必得同字节——成员按名序写入、mtime/uid/gid
 归零、固定 0o644 权限位，不随导出机器与时间变化，可直接进对象存储或
-差分/审计流程。bundle 自带账本：接收侧（未来的 `cage registry import`）
-入册前先过 `verify_snapshot` 信任门，未经校验的字节不入册。
+差分/审计流程。bundle 自带账本：接收侧（`cage registry import`）入册前
+先过 `verify_snapshot` 信任门，未经校验的字节不入册。
 
 导出只读注册表，不重新构建（发布仍是 `cage registry publish`）；包或
 版本不存在、条目缺账本、bundle 写不出 → `E2101`。远程根不支持导出
@@ -293,6 +295,37 @@ content_hash / 文件数一致）→ 通过后走与 publish 相同的入册路�
 
 导入目标是本地根（导入即写入，远程根不收写）；`--dry-run` 跑完整
 信任门并报告将入册的条目与文件数，不写任何字节。
+
+### 直推远端（A 系列）
+
+```bash
+# 从项目 [registry].path 声明的本地注册表推送（镜像 publish 的项目路径加载）
+cage registry push ./game                  --registry https://registry.example.com/config --auth-env CAGE_TOKEN
+cage registry push ./game common@0.1.0     --registry https://registry.example.com/config --auth-env CAGE_TOKEN
+cage registry push ./game common           --registry https://registry.example.com/config --dry-run
+```
+
+把本地已入册条目直推到 http(s) 注册表根（design §47 A3）：源是项目
+cage.toml 里 `[registry].path` 声明的**本地**注册表（未声明 → 报错提示
+先配 `[registry]` 并 `publish`）；`--registry` 是**远端**目标，只收
+http(s) 根（本地目标是 `cage registry publish` 的领地，混用直接拒绝）。
+包名缺省 `project.name`，版本缺省点分序最新。
+
+推送流程：匿名 GET 远端包 index 作状态探针（R3 读协议不变）→ 逐文件
+PUT（`Authorization: Bearer $TOKEN` 只随 PUT，探针不带）→ index 与远端
+现有条目**合并**后最后整体 PUT（远端历史条目永不改写或删除；条目文件
+全部成功才写 index，中断不产生半成品条目引用）。探针结果决定动作：
+远端无此包（404）→ 全量上传；同版本同 content_hash → 幂等零 PUT；
+同版本异 content_hash → `E1801` 拒推（字节不可变纪律跨分发通道一致）。
+
+鉴权：token 经 `--auth-env` 指定的环境变量名解析，缺省回落项目
+`[registry].auth_env` 声明——cage.toml 里**只存变量名**，token 永不进
+配置文件、错误文本与日志（E1904 同口径）。env 未设置或为空 → `E2105`
+在任何网络触达之前失败。错误映射：传输失败（重试用尽）/ 远端 index
+不可读 → `E2101`；探针或 PUT 收到 401/403 → `E2102`（token 不入错误
+文本）；405/409 等明确 4xx → `E2104`（服务端无写通道，回退「本地
+publish + 静态托管」的部署形态）。`--dry-run` 跑完整本地读取与状态
+探针，零 PUT。
 
 ## 快速开始
 

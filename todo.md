@@ -302,12 +302,24 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       schema 构建通过 → 重导 no-op → 篡改 E2103 → 异字节 E1801）+
       codes.rs E2103 doc 转接线 + validation.md 转已接线 + cli.md
       「bundle 导入」小节——本轮交付，勾选
-- [ ] A3 直推（`cage registry push` + auth_env）：`remote::http_put`
-      （RetryPolicy 与 http_get 同口径）+ 逐文件 PUT、index 收尾 +
-      `RegistryConfig.auth_env`（serde default 可选）+ E2102/E2104/
-      E2105 接线；验收：本地静态 HTTP 服务器集成测试（push → 远端根
-      resolve 复现、401 E2102、405 E2104、auth_env 未设 E2105 网络前
-      失败、--dry-run 零请求）+ cli.md push 章节 + 本勾选
+- [x] A3 直推（`cage registry push` + auth_env）：`remote::http_put`
+      （RetryPolicy 与 http_get 同口径，`send_bytes` 定长发送——`send`
+      走 chunked 静态主机不收；RetryClassify trait 泛化 with_retries，
+      GET/PUT 共用一政策各留失败种类）+ 逐文件 PUT、index 合并远端
+      条目收尾（远端历史永不改写）+ `RegistryConfig.auth_env`（serde
+      default 可选，只存变量名）+ E2102/E2104/E2105 接线；推送语义：
+      `push <project> [pkg[@ver]] --registry <远端根> [--auth-env]`，
+      源 = `[registry].path`（包名缺省 project.name、版本缺省最新），
+      匿名探针 GET（404=全量上传/同 hash 幂等零 PUT/异 hash E1801），
+      Bearer 只随 PUT；验收已过：core 单测×3（顺序断言 GET 匿名+PUT
+      骑 Bearer+index 最后、合并序点分、重推幂等零 PUT；401 E2102
+      fail-fast 且 token 不入错误文本、405 E2104、未设/空 env E2105
+      闭合端口零网络；dry-run 零存零 PUT、异字节 E1801 远端 index
+      未被改写）+ CLI 集成×2（push → 远端根 resolve 复现消费方构建
+      通过 → 重推 no-op → dry-run 零 PUT → E2105 网络前失败；401
+      E2102 / 405 E2104 / 本地路径拒 exit 2）+ design §47 接口块按
+      实装细化 + cli.md「直推远端」小节 + validation.md/codes.rs
+      三码转已接线——本轮交付，勾选
 - [ ] A4 文档收口：design §47 实装状态、validation.md E21xx 全族转
       已接线、architecture.md 对账、需求整理.md Artifact 分发行同步
 

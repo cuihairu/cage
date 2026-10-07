@@ -257,6 +257,29 @@ enum RegistryCmd {
         #[arg(long)]
         registry: Option<PathBuf>,
     },
+    /// Push a published entry from the project's local registry
+    /// (`[registry].path`) to a remote http(s) registry root — one PUT per
+    /// entry file, the package index written last, merged over the remote's
+    /// existing entries (remote history is never rewritten). The bearer
+    /// token resolves from the env var named by `--auth-env` or
+    /// `[registry].auth_env`; anonymous when neither is set.
+    Push {
+        /// Configuration project root directory
+        path: PathBuf,
+        /// Package name, optionally suffixed `@<version>` (defaults to
+        /// project.name at the source registry's latest)
+        package: Option<String>,
+        /// Remote http(s) registry root to push to
+        #[arg(long)]
+        registry: String,
+        /// Environment variable carrying the bearer token (overrides
+        /// `[registry].auth_env`)
+        #[arg(long)]
+        auth_env: Option<String>,
+        /// Read the local entry and check the remote state, upload nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// A loaded Cage project: config + merged schema + merged document.
@@ -348,6 +371,19 @@ fn main() {
                 dry_run,
                 registry,
             } => run_registry_import(&file, dry_run, registry.as_deref()),
+            RegistryCmd::Push {
+                path,
+                package,
+                registry,
+                auth_env,
+                dry_run,
+            } => run_registry_push(
+                &path,
+                package.as_deref(),
+                &registry,
+                auth_env.as_deref(),
+                dry_run,
+            ),
         },
     };
     std::process::exit(code);
@@ -1475,6 +1511,88 @@ fn run_registry_import(file: &Path, dry_run: bool, registry_flag: Option<&Path>)
     }
 }
 
+/// `cage registry push` — upload a published entry from the project's local
+/// registry (`[registry].path`) to a remote http(s) registry root (A3): one
+/// PUT per entry file, the package index written last and merged over the
+/// remote's existing entries. The bearer token resolves from the
+/// environment via `--auth-env` or `[registry].auth_env` (anonymous when
+/// neither is set); the value never enters logs or the config.
+fn run_registry_push(
+    path: &Path,
+    package_spec: Option<&str>,
+    remote_flag: &str,
+    auth_env_flag: Option<&str>,
+    dry_run: bool,
+) -> i32 {
+    let config = match load_project_config(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let Some(registry_cfg) = &config.registry else {
+        eprintln!(
+            "error: {E1802} no local registry to push from (set '[registry] path' in cage.toml — \
+             the local registry is the push source)"
+        );
+        return 2;
+    };
+    let source_root = path.join(&registry_cfg.path);
+    // Flag overrides the config declaration; neither set pushes anonymously.
+    let auth_env = auth_env_flag.or(registry_cfg.auth_env.as_deref());
+    if !remote::is_remote_root(remote_flag) {
+        eprintln!(
+            "error: push targets a remote http(s) registry root, got '{remote_flag}' — local \
+             destinations belong to 'cage registry publish'"
+        );
+        return 2;
+    }
+    // Package/version defaults mirror publish: the project's own name, at
+    // the source registry's latest when no @version is given.
+    let (package, version) = match package_spec {
+        Some(spec) => match spec.split_once('@') {
+            Some((p, v)) => (p.to_string(), Some(v.to_string())),
+            None => (spec.to_string(), None),
+        },
+        None => (config.project.name.clone(), None),
+    };
+    match cage_core::registry::push_entry(
+        &source_root,
+        remote_flag,
+        &package,
+        version.as_deref(),
+        auth_env,
+        dry_run,
+    ) {
+        Ok(report) => {
+            println!(
+                "cage registry: {}{}/{} → {} ({} file(s){}){}",
+                if report.dry_run {
+                    "would push "
+                } else {
+                    "pushed "
+                },
+                report.package,
+                report.version,
+                remote_flag,
+                report.files,
+                if report.dry_run { ", zero PUT" } else { "" },
+                if report.already_identical {
+                    " — identical, no-op"
+                } else {
+                    ""
+                }
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 /// `cage registry verify` — the full-registry audit (R4): every recorded
 /// entry exists and self-verifies (its bytes re-hashed against its ledger,
 /// the index record matching the ledger's `build_id`/`content_hash`), and no
@@ -2132,6 +2250,18 @@ mod tests {
                     registry
                         .as_deref()
                         .map_or_else(|| Path::new("<flag required>").display(), Path::display)
+                ),
+                RegistryCmd::Push {
+                    path,
+                    package,
+                    registry,
+                    auth_env,
+                    dry_run,
+                } => format!(
+                    "registry push {} {} {registry} {dry_run} {}",
+                    path.display(),
+                    package.as_deref().unwrap_or("<project.name>"),
+                    auth_env.as_deref().unwrap_or("<no auth_env>")
                 ),
             },
         }

@@ -142,8 +142,9 @@ pub mod distribution {
     /// the entry (missing package/version, entry directory or ledger) or
     /// write the bundle file (A1, `cage registry export`)
     pub const E2101: &str = "E2101";
-    /// E2102 - Distribution target rejected the credentials (HTTP 401 / 403
-    /// on push; reserved until A3 wiring)
+    /// E2102 - Distribution target rejected the credentials: the state
+    /// probe or a file/index PUT answered HTTP 401 / 403 (A3,
+    /// `cage registry push`)
     pub const E2102: &str = "E2102";
     /// E2103 - Distribution bundle failed its ledger verification —
     /// structural problems (unsafe member paths, malformed index, missing
@@ -151,13 +152,14 @@ pub mod distribution {
     /// before anything is staged into the target registry (A2,
     /// `cage registry import`)
     pub const E2103: &str = "E2103";
-    /// E2104 - Distribution target refused the write (405 / 409 or another
-    /// explicit 4xx on push — the server has no write channel; reserved
-    /// until A3 wiring)
+    /// E2104 - Distribution target refused the write: a file/index PUT
+    /// answered 405 / 409 or another explicit 4xx — the server has no
+    /// write channel, fall back to local publish + static hosting (A3,
+    /// `cage registry push`)
     pub const E2104: &str = "E2104";
-    /// E2105 - Distribution credential missing: `[registry].auth_env` not
-    /// declared or the named env var unset — fails before any network
-    /// contact (reserved until A3 wiring)
+    /// E2105 - Distribution credential missing: `[registry].auth_env` (or
+    /// `--auth-env`) not declared or the named env var unset — fails
+    /// before any network contact (A3, `cage registry push`)
     pub const E2105: &str = "E2105";
 }
 

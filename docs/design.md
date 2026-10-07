@@ -2377,11 +2377,19 @@ doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
   文件 + 账本 + 包 index 摘录；mtime/uid/gid 归零、成员按名序——同条目 =
   同字节），`cage registry import <file>` 先过同一账本信任门
   （`verify_snapshot`，未经校验不入册）再入册（同字节幂等 / 异字节
-  E1801 冲突，坏账本 E2103）；② **直推**：`cage registry push <包>
-  [@<版本>]` 对 http(s) 注册表根逐文件 PUT（条目文件全部成功后最后写
-  包 `index.json`——条目字节不可变纪律不变），`Authorization: Bearer
-  $TOKEN`，token 经 `[registry].auth_env` 环境变量名解析（E1904 同口径：
-  凭据永不进 cage.toml、永不落日志、网络触达前先验缺失）。
+  E1801 冲突，坏账本 E2103）；② **直推**：`cage registry push <project>
+  [包[@版本]] --registry <远端根>` 从项目 `[registry].path` 声明的本地
+  注册表读条目（镜像 publish 的项目路径加载；包名缺省 `project.name`、
+  版本缺省点分序最新），对 http(s) 远端根逐文件 PUT，条目文件全部成功
+  后最后写包 `index.json`（条目字节不可变纪律不变）；`--registry` 只收
+  http(s) 根（本地目标是 publish 的领地）；鉴权 `Authorization: Bearer
+  $TOKEN`，token 经 `--auth-env`（覆盖）或 `[registry].auth_env` 的环境
+  变量名解析（E1904 同口径：凭据永不进 cage.toml、永不落日志与错误
+  文本、网络触达前先验缺失——E2105）；推送前匿名 GET 远端包 index 作
+  状态探针（R3 读协议不变，404 = 远端尚无此包 → 全量上传；同 content_hash
+  → 幂等零 PUT；异 content_hash → E1801 拒推——远端已有同版本不同字节的
+  条目），index PUT 与远端现有条目合并后整体重写（远端历史条目永不
+  改写或删除）。
 - **为什么**：R3 已闭环「消费方怎么取」（匿名 GET 三资源只读解析），缺的
   是「怎么到远端、怎么走非网络渠道」——bundle 覆盖离线 / 审计 / 对象存储
   渠道（产物本就是自校验快照，拷贝即分发），push 覆盖自动化发布（CI 出包
@@ -2391,10 +2399,13 @@ doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
   皆可）；② git 作分发后端（弃——隐式改写历史与注册表「绝不隐式改写
   历史」纪律冲突）；③ gzip/zstd 压缩容器（弃——压缩帧时间戳 / 字典态破坏
   确定性契约，首期无压缩 tar；压缩留待实现期）。
-- **服务端约定（文档化，不实现）**：PUT `<root>/<包>/<版本>/<文件>` 逐
-  文件上传，条目全部成功后 PUT `<root>/<包>/index.json`；405/501 =
-  服务端未实现写通道（E2104，提示回退「本地 publish + 静态托管」）；
-  无鉴权部署照旧可用（R3 读路径不变，push 可选 auth_env 缺省不带头）。
+- **服务端约定（文档化，不实现）**：GET `<root>/<包>/index.json` 匿名
+  作状态探针（404 = 包不存在）；PUT `<root>/<包>/<版本>/<文件>` 逐文件
+  上传，条目全部成功后 PUT `<root>/<包>/index.json`（服务端应整体替换
+  该文件——客户端已合并远端现有条目）；405/501 = 服务端未实现写通道
+  （E2104，提示回退「本地 publish + 静态托管」）；401/403 = 凭据被拒
+  （E2102，探针与 PUT 同映射）；无鉴权部署照旧可用（R3 读路径不变，
+  push 可选 auth_env 缺省不带头）。
 
 **能力边界**：export / import / push 只动「已入册条目」——不重新构建
 （发布仍是 `cage registry publish`，本地根专属）；读路径保持 R3 匿名
@@ -2409,21 +2420,29 @@ cage-core::registry 增
 │    # 条目全文件 + HASHES.json + 包 index 摘录 → 确定性 tar
 ├── import_bundle(root, file, dry_run)          # verify_snapshot 信任门
 │    # → 入册（坏账本 E2103；同字节幂等、异字节 E1801）
-└── push_entry(root_spec, package, version, auth_env)
-     # 逐文件 PUT（remote::http_put，RetryPolicy 与 http_get 同口径）
-     # E2101 传输失败 / E2102 鉴权被拒（401/403）/ E2104 服务端拒写
-     # （4xx 明确拒绝）/ E2105 凭据缺失（auth_env 未设，网络触达前失败）
+└── push_entry(source_root, remote_root, package, version, auth_env,
+               dry_run)
+     # resolve_entry + 账本重建 index 记录 → 匿名探针 GET 远端包 index
+     #   （同 hash 幂等早退 / 异 hash E1801 / 404 空远端 / 401·403 E2102）
+     # → 逐文件 PUT（remote::http_put，RetryPolicy 与 http_get 同口径，
+     #   Bearer 仅随 PUT）→ index 合并远端条目最后 PUT
+     # E2101 传输 / 远端 index 不可读 / 非 http(s) 根
+     # E2102 鉴权被拒（401/403，探针与 PUT 同映射）
+     # E2104 服务端拒写（405/501 等明确 4xx）
+     # E2105 凭据缺失（env 未设或空，网络触达前失败）
+     # dry_run 走完整本地读 + 状态探针，零 PUT
 
-cage registry export <pkg>[@<ver>] -o <file>
-cage registry import <file> [--registry <root>] [--dry-run]
-cage registry push  <pkg>[@<ver>] [--registry <root>] [--dry-run]
+cage registry export <pkg>[@<ver>] -o <file> [--registry <local-root>]
+cage registry import <file> [--registry <local-root>] [--dry-run]
+cage registry push <project> [pkg[@ver]] --registry <remote-root>
+    [--auth-env <VAR>] [--dry-run]
 ```
 
 **错误码（E21xx 族）**：E2101 分发传输 / 条目读取失败 / E2102 鉴权被拒
 （HTTP 401/403）/ E2103 bundle 账本校验失败 / E2104 服务端拒写（405 /
 409 / 明确 4xx）/ E2105 push 凭据缺失（auth_env 未设）。全族随 A1 起
 逐签进 `codes.rs` 的 `error::codes::distribution` 模块 + validation.md，
-每码一 doc。
+每码一 doc；A3 收口时五码全部转已接线。
 
 **留待实现期**：压缩容器（zstd 确定性字典）、签名账本（ed25519，抗
 抵赖）、增量 delta 分发、S3 presigned 直推、pull-through 缓存代理。

@@ -438,6 +438,12 @@ pub struct RegistryConfig {
     /// Registry root directory. A relative path is resolved against the
     /// project root — the consumer project pins which registry it reads.
     pub path: String,
+    /// Name of the environment variable carrying the bearer token that
+    /// `cage registry push` sends to the remote root (§47 A3). The config
+    /// carries only the *name* — the token resolves from the environment at
+    /// push time (missing → E2105), never logged, never stored anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_env: Option<String>,
 }
 
 /// Remote source connection settings (`[remote.<scheme>]`, design §45).
