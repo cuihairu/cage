@@ -16,9 +16,9 @@
 //! Execution ([`apply`]-style transforms, E2003) and post-migration
 //! reverification (E2004) land with M2.
 
-use crate::error::codes::migration::{E2001, E2002};
+use crate::error::codes::migration::{E2001, E2002, E2003, E2004};
 use crate::schema::{FieldType, Schema};
-use crate::value::Value;
+use crate::value::{Document, Row, Table, TypedValue, Value};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use std::path::Path;
@@ -439,6 +439,333 @@ pub fn parse_migration_dir(dir: &Path) -> Result<Vec<(String, MigrationSpec)>, S
     Ok(chain)
 }
 
+/// Per-step outcome of an [`apply`] run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepReport {
+    /// The step, in [`Step::describe`] form
+    pub step: String,
+    /// Rows touched by this step (table-level steps report the table's
+    /// row count)
+    pub rows_changed: usize,
+}
+
+/// What one migration segment did to a document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MigrateReport {
+    /// Schema version the document started at
+    pub from: String,
+    /// Schema version the document now represents
+    pub to: String,
+    /// One entry per applied step, in order
+    pub steps: Vec<StepReport>,
+}
+
+impl MigrateReport {
+    /// Total rows touched across all steps (a row may be counted by
+    /// several steps — this is an activity measure, not a distinct-row
+    /// count).
+    pub fn total_rows_changed(&self) -> usize {
+        self.steps.iter().map(|s| s.rows_changed).sum()
+    }
+}
+
+/// Apply one migration segment to a document in place, reporting per-step
+/// activity. Steps run in declaration order, each seeing the previous
+/// step's output. A step that the data cannot satisfy — a `widen_type`
+/// whose direction is not a safe widening, or a value that would not fit
+/// the widened type — fails the whole segment (E2003): migration never
+/// silently drops or mangles rows.
+///
+/// `from_schema` supplies the pre-migration field types for `widen_type`'s
+/// direction check; reference validity against it is [`validate_spec`]'s
+/// job (run before apply).
+pub fn apply(
+    spec: &MigrationSpec,
+    doc: &mut Document,
+    from_schema: &Schema,
+) -> Result<MigrateReport, String> {
+    let mut report = MigrateReport {
+        from: spec.from.clone(),
+        to: spec.to.clone(),
+        steps: Vec::with_capacity(spec.steps.len()),
+    };
+    for step in &spec.steps {
+        let rows_changed = apply_step(step, doc, from_schema)?;
+        report.steps.push(StepReport {
+            step: step.describe(),
+            rows_changed,
+        });
+    }
+    Ok(report)
+}
+
+fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<usize, String> {
+    match step {
+        Step::RenameField { table, from, to } => {
+            let rows = need_table_rows(doc, table, step)?;
+            let mut changed = 0;
+            for row in rows {
+                rename_row_field(&mut row.fields, from, to);
+                changed += 1;
+            }
+            Ok(changed)
+        }
+        Step::SetDefault {
+            table,
+            field,
+            value,
+        } => {
+            let rows = need_table_rows(doc, table, step)?;
+            let mut changed = 0;
+            for row in rows {
+                match row.fields.get_mut(field) {
+                    Some(existing) if existing.value != Value::Null => {} // keep
+                    slot => {
+                        let location = match slot {
+                            Some(existing) => existing.location.clone(),
+                            None => row.location.clone(),
+                        };
+                        let _ = slot; // borrow settled; re-borrow through map
+                        row.fields.insert(
+                            field.clone(),
+                            TypedValue {
+                                value: value.clone(),
+                                location,
+                                schema_type: None,
+                            },
+                        );
+                        changed += 1;
+                    }
+                }
+            }
+            Ok(changed)
+        }
+        Step::RemoveField { table, field } => {
+            let rows = need_table_rows(doc, table, step)?;
+            let mut changed = 0;
+            for row in rows {
+                if row.fields.shift_remove(field).is_some() {
+                    changed += 1;
+                }
+            }
+            Ok(changed)
+        }
+        Step::WidenType { table, field, to } => {
+            let current = from_schema
+                .tables
+                .get(table)
+                .and_then(|t| t.fields.get(field))
+                .map(|f| &f.field_type)
+                .ok_or_else(|| {
+                    format!(
+                        "{E2003}: {} — from-schema has no type for `{table}.{field}`",
+                        step.describe()
+                    )
+                })?;
+            if !is_widening(current, to) {
+                return Err(format!(
+                    "{E2003}: {} — {current:?} → {to:?} is not a safe widening",
+                    step.describe()
+                ));
+            }
+            let rows = need_table_rows(doc, table, step)?;
+            let mut changed = 0;
+            for row in rows {
+                let slot = row.fields.get_mut(field).ok_or_else(|| {
+                    format!(
+                        "{E2003}: {} — row {} has no `{field}`",
+                        step.describe(),
+                        row.index
+                    )
+                })?;
+                slot.value = widen_value(&slot.value, to).ok_or_else(|| {
+                    format!(
+                        "{E2003}: {} — row {} value {} does not fit {to:?}",
+                        step.describe(),
+                        row.index,
+                        slot.value.type_name()
+                    )
+                })?;
+                changed += 1;
+            }
+            Ok(changed)
+        }
+        Step::RemapValues { table, field, map } => {
+            let rows = need_table_rows(doc, table, step)?;
+            let mut changed = 0;
+            for row in rows {
+                if let Some(existing) = row.fields.get_mut(field) {
+                    if let Value::String(s) = &existing.value {
+                        if let Some(new) = map.get(s.as_str()) {
+                            existing.value = Value::String(new.clone());
+                            changed += 1;
+                        }
+                    }
+                }
+            }
+            Ok(changed)
+        }
+        Step::RenameTable { from, to } => {
+            if !doc.tables.contains_key(from) {
+                return Err(format!(
+                    "{E2003}: {} — document has no table `{from}`",
+                    step.describe()
+                ));
+            }
+            // Position-preserving rename: rebuild the table map with the
+            // same order, only the one key changed.
+            let rebuilt: IndexMap<String, Table> = doc
+                .tables
+                .iter()
+                .map(|(name, table)| {
+                    if name == from {
+                        let mut renamed = table.clone();
+                        renamed.name.clone_from(to);
+                        (to.clone(), renamed)
+                    } else {
+                        (name.clone(), table.clone())
+                    }
+                })
+                .collect();
+            doc.tables = rebuilt;
+            Ok(doc.tables.get(to).map_or(0, |t| t.rows.len()))
+        }
+    }
+}
+
+/// Borrow every row of a table for mutation, E2003 if the document has no
+/// such table.
+fn need_table_rows<'a>(
+    doc: &'a mut Document,
+    table: &str,
+    step: &Step,
+) -> Result<impl Iterator<Item = &'a mut Row> + 'a, String> {
+    doc.tables
+        .get_mut(table)
+        .map(|t| t.rows.iter_mut())
+        .ok_or_else(|| {
+            format!(
+                "{E2003}: {} — document has no table `{table}`",
+                step.describe()
+            )
+        })
+}
+
+/// Rename one row field in place, preserving field order.
+fn rename_row_field(fields: &mut IndexMap<String, TypedValue>, from: &str, to: &str) {
+    let rebuilt: IndexMap<String, TypedValue> = fields
+        .iter()
+        .map(|(name, value)| {
+            if name == from {
+                (to.to_string(), value.clone())
+            } else {
+                (name.clone(), value.clone())
+            }
+        })
+        .collect();
+    *fields = rebuilt;
+}
+
+/// Safe widening directions: integer ranks only grow, unsigned → signed
+/// only when every value of the source type fits the target, and the
+/// float step is Float32 → Float64 only (Int64/UInt64 → Float64 loses
+/// precision above 2^53 and is refused). Everything else — narrowing,
+/// cross-family moves, string/bool/bytes — is not a widening.
+fn is_widening(from: &FieldType, to: &FieldType) -> bool {
+    use FieldType as F;
+    let int_rank = |t: &FieldType| match t {
+        F::Int8 => Some(1u8),
+        F::Int16 => Some(2),
+        F::Int32 => Some(3),
+        F::Int64 => Some(4),
+        _ => None,
+    };
+    let uint_rank = |t: &FieldType| match t {
+        F::UInt8 => Some(1u8),
+        F::UInt16 => Some(2),
+        F::UInt32 => Some(3),
+        F::UInt64 => Some(4),
+        _ => None,
+    };
+    match (from, to) {
+        (f, t) if int_rank(f).is_some() && int_rank(t).is_some() => int_rank(t) > int_rank(f),
+        (f, t) if uint_rank(f).is_some() && uint_rank(t).is_some() => uint_rank(t) > uint_rank(f),
+        // unsigned → signed: 8→16, 16→32, 32→64 (one signed step per
+        // unsigned rank keeps every value representable); every ≤32-bit
+        // integer and Float32 fit Float64 exactly (2^53).
+        (F::UInt8, F::Int16 | F::Int32 | F::Int64)
+        | (F::UInt16, F::Int32 | F::Int64)
+        | (F::UInt32, F::Int64)
+        | (
+            F::Int8 | F::Int16 | F::Int32 | F::UInt8 | F::UInt16 | F::UInt32 | F::Float32,
+            F::Float64,
+        ) => true,
+        _ => false,
+    }
+}
+
+/// Move one row value into the widened type's canonical representation.
+/// Values keep their payload where the representation already matches
+/// (Int stays Int); unsigned values moving into a signed type become
+/// Int. Returns `None` when the value would not fit.
+fn widen_value(value: &Value, to: &FieldType) -> Option<Value> {
+    use FieldType as F;
+    let fits_int = |i: i64, to: &F| match to {
+        F::Int8 => i8::try_from(i).is_ok(),
+        F::Int16 => i16::try_from(i).is_ok(),
+        F::Int32 => i32::try_from(i).is_ok(),
+        F::Int64 => true,
+        _ => false,
+    };
+    let fits_uint = |u: u64, to: &F| match to {
+        F::UInt8 => u8::try_from(u).is_ok(),
+        F::UInt16 => u16::try_from(u).is_ok(),
+        F::UInt32 => u32::try_from(u).is_ok(),
+        F::UInt64 => true,
+        _ => false,
+    };
+    match (value, to) {
+        (Value::Null, _) => Some(Value::Null),
+        (Value::Int(i), t) if fits_int(*i, t) => Some(Value::Int(*i)),
+        (Value::UInt(u), F::Int8 | F::Int16 | F::Int32 | F::Int64) => {
+            i64::try_from(*u).ok().map(Value::Int)
+        }
+        (Value::UInt(u), t) if fits_uint(*u, t) => Some(Value::UInt(*u)),
+        (Value::Float(f), F::Float64) => Some(Value::Float(*f)),
+        (Value::Int(_) | Value::UInt(_), F::Float64) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// Re-check a migrated document under the new schema (E2004): the full
+/// validation stack through L6 semantic must come back clean — a
+/// migration that leaves the document failing validation is not done.
+/// `GameRule` (L7) is out of scope here: it needs the plugin registry and
+/// is run by the CLI check path after `--write`.
+pub fn reverify(doc: &Document, schema: &Schema) -> Result<(), String> {
+    let validated = crate::schema::ValidatedSchema {
+        schema: schema.clone(),
+        dependency_graph: crate::reference::DependencyGraph::from_schema(schema),
+    };
+    let diagnostics = crate::validation::validate(
+        &validated,
+        doc,
+        crate::validation::ValidationLevel::Semantic,
+        false,
+    );
+    if diagnostics.has_errors() {
+        return Err(format!(
+            "{E2004}: migrated document fails validation under schema `{}`\n{}",
+            schema
+                .metadata
+                .as_ref()
+                .map_or("(unversioned)", |m| m.version.as_str()),
+            diagnostics.render(false)
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,5 +1058,453 @@ steps:
             ],
         };
         assert!(validate_spec(&spec, &schema).is_ok());
+    }
+
+    use crate::value::{Document, Row, SourceLocation, Table, TypedValue, Value as V};
+
+    fn tv(value: V) -> TypedValue {
+        TypedValue {
+            value,
+            location: SourceLocation::new("config/item.json"),
+            schema_type: None,
+        }
+    }
+
+    fn make_row(index: usize, fields: Vec<(&str, V)>) -> Row {
+        Row {
+            primary_key: vec![],
+            fields: fields
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), tv(value)))
+                .collect(),
+            location: SourceLocation::new("config/item.json").with_row(index + 1),
+            index,
+        }
+    }
+
+    fn make_document() -> Document {
+        let items = Table {
+            name: "Item".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![
+                make_row(
+                    0,
+                    vec![
+                        ("id", V::Int(1)),
+                        ("name", V::String("Sword".to_string())),
+                        ("legacy_id", V::String("SW-1".to_string())),
+                        ("level", V::Int(10)),
+                        ("grade", V::String("S".to_string())),
+                    ],
+                ),
+                make_row(
+                    1,
+                    vec![
+                        ("id", V::Int(2)),
+                        ("name", V::String("Shield".to_string())),
+                        ("legacy_id", V::String("SH-1".to_string())),
+                        ("level", V::Int(20)),
+                        ("grade", V::String("A".to_string())),
+                        ("rarity", V::String("rare".to_string())),
+                    ],
+                ),
+            ],
+            source_file: "config/item.json".to_string(),
+            sheet: None,
+        };
+        let mobs = Table {
+            name: "Mob".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![make_row(
+                0,
+                vec![("id", V::Int(1)), ("name", V::String("Slime".to_string()))],
+            )],
+            source_file: "config/mob.json".to_string(),
+            sheet: None,
+        };
+        let mut tables = IndexMap::new();
+        tables.insert("Item".to_string(), items);
+        tables.insert("Mob".to_string(), mobs);
+        Document {
+            tables,
+            source_files: vec!["config/item.json".to_string()],
+            metadata: crate::value::DocumentMetadata::default(),
+        }
+    }
+
+    fn full_spec() -> MigrationSpec {
+        MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![
+                Step::RenameField {
+                    table: "Item".into(),
+                    from: "name".into(),
+                    to: "title".into(),
+                },
+                Step::SetDefault {
+                    table: "Item".into(),
+                    field: "rarity".into(),
+                    value: V::String("common".into()),
+                },
+                Step::RemoveField {
+                    table: "Item".into(),
+                    field: "legacy_id".into(),
+                },
+                Step::WidenType {
+                    table: "Item".into(),
+                    field: "level".into(),
+                    to: FieldType::Int64,
+                },
+                Step::RemapValues {
+                    table: "Item".into(),
+                    field: "grade".into(),
+                    map: IndexMap::from([("S".to_string(), "legendary".to_string())]),
+                },
+                Step::RenameTable {
+                    from: "Mob".into(),
+                    to: "Monster".into(),
+                },
+            ],
+        }
+    }
+
+    fn schema_for_document(version: &str) -> Schema {
+        let mut schema = schema_with_table("Item", &[]);
+        // Rebuild Item with the full from-schema field set.
+        let fields: Vec<(&str, FieldType)> = vec![
+            ("id", FieldType::Int32),
+            ("name", FieldType::String),
+            ("legacy_id", FieldType::String),
+            ("level", FieldType::Int32),
+            ("grade", FieldType::String),
+        ];
+        let mut field_map = IndexMap::new();
+        for (name, field_type) in fields {
+            field_map.insert(
+                name.to_string(),
+                crate::schema::FieldSchema {
+                    name: name.to_string(),
+                    field_type,
+                    description: None,
+                    required: false,
+                    default: None,
+                    min: None,
+                    max: None,
+                    min_length: None,
+                    max_length: None,
+                    pattern: None,
+                    enum_values: None,
+                    min_items: None,
+                    max_items: None,
+                    items: None,
+                    properties: None,
+                    additional_properties: None,
+                    reference: None,
+                    targets: Vec::new(),
+                    rules: Vec::new(),
+                    metadata: IndexMap::new(),
+                },
+            );
+        }
+        schema.tables.get_mut("Item").unwrap().fields = field_map;
+        schema.tables.insert(
+            "Mob".to_string(),
+            crate::schema::TableSchema {
+                name: "Mob".to_string(),
+                description: None,
+                primary_key: vec!["id".to_string()],
+                fields: {
+                    let mut m = IndexMap::new();
+                    for name in ["id", "name"] {
+                        m.insert(
+                            name.to_string(),
+                            crate::schema::FieldSchema {
+                                name: name.to_string(),
+                                field_type: if name == "id" {
+                                    FieldType::Int32
+                                } else {
+                                    FieldType::String
+                                },
+                                description: None,
+                                required: false,
+                                default: None,
+                                min: None,
+                                max: None,
+                                min_length: None,
+                                max_length: None,
+                                pattern: None,
+                                enum_values: None,
+                                min_items: None,
+                                max_items: None,
+                                items: None,
+                                properties: None,
+                                additional_properties: None,
+                                reference: None,
+                                targets: Vec::new(),
+                                rules: Vec::new(),
+                                metadata: IndexMap::new(),
+                            },
+                        );
+                    }
+                    m
+                },
+                unique_constraints: Vec::new(),
+                order_by: None,
+                targets: Vec::new(),
+            },
+        );
+        schema.metadata = Some(crate::schema::SchemaMetadata {
+            version: version.to_string(),
+            description: None,
+            author: None,
+        });
+        schema
+    }
+
+    #[test]
+    fn apply_runs_all_six_step_semantics() {
+        let mut doc = make_document();
+        let from_schema = schema_for_document("1.0.0");
+        let report = apply(&full_spec(), &mut doc, &from_schema).unwrap();
+
+        // rename_field: every row renamed, order preserved (title stays
+        // where name was).
+        let items = &doc.tables["Item"];
+        for row in &items.rows {
+            let keys: Vec<&String> = row.fields.keys().collect();
+            assert!(!keys.iter().any(|k| k.as_str() == "name"), "{keys:?}");
+        }
+        assert_eq!(
+            items.rows[0].fields.keys().nth(1).unwrap(),
+            "title",
+            "renamed field keeps its position"
+        );
+        assert_eq!(
+            items.rows[0].fields["title"].value,
+            V::String("Sword".to_string())
+        );
+
+        // set_default: fills only rows where the field is absent; an
+        // existing non-null value survives.
+        assert_eq!(
+            items.rows[0].fields["rarity"].value,
+            V::String("common".to_string())
+        );
+        assert_eq!(
+            items.rows[1].fields["rarity"].value,
+            V::String("rare".to_string()),
+            "existing value is kept"
+        );
+
+        // remove_field: gone from every row.
+        assert!(items
+            .rows
+            .iter()
+            .all(|r| !r.fields.contains_key("legacy_id")));
+
+        // widen_type: values still present, representation unchanged.
+        assert_eq!(items.rows[0].fields["level"].value, V::Int(10));
+
+        // remap_values: mapped values rewritten, unmapped untouched.
+        assert_eq!(
+            items.rows[0].fields["grade"].value,
+            V::String("legendary".to_string())
+        );
+        assert_eq!(
+            items.rows[1].fields["grade"].value,
+            V::String("A".to_string()),
+            "unmapped value passes through"
+        );
+
+        // rename_table: new name carries the same rows, old name gone.
+        assert!(!doc.tables.contains_key("Mob"));
+        assert_eq!(doc.tables["Monster"].rows.len(), 1);
+        assert_eq!(
+            doc.tables.keys().take(2).cloned().collect::<Vec<_>>(),
+            vec!["Item", "Monster"],
+            "renamed table keeps its position"
+        );
+
+        // Report: one entry per step in order.
+        assert_eq!(report.from, "1.0.0");
+        assert_eq!(report.to, "1.1.0");
+        assert_eq!(report.steps.len(), 6);
+        assert_eq!(report.steps[0].rows_changed, 2, "both items renamed");
+        assert_eq!(
+            report.steps[1].rows_changed, 1,
+            "only the row missing rarity"
+        );
+        assert_eq!(report.steps[2].rows_changed, 2);
+        assert_eq!(report.steps[4].rows_changed, 1, "only S is mapped");
+        assert_eq!(report.steps[5].rows_changed, 1, "the single mob row");
+    }
+
+    #[test]
+    fn widen_type_rejects_unsafe_directions_and_unfit_values_as_e2003() {
+        let mut doc = make_document();
+        let from_schema = schema_for_document("1.0.0");
+
+        // Int64 → Float32 is not a widening.
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::WidenType {
+                table: "Item".into(),
+                field: "level".into(),
+                to: FieldType::Float32,
+            }],
+        };
+        let out = apply(&spec, &mut doc, &from_schema).unwrap_err();
+        assert!(out.starts_with("E2003"), "{out}");
+        assert!(out.contains("not a safe widening"), "{out}");
+
+        // UInt8 → Int8 loses half the range — refused.
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::WidenType {
+                table: "Item".into(),
+                field: "id".into(),
+                to: FieldType::Int8,
+            }],
+        };
+        let out = apply(&spec, &mut doc, &from_schema).unwrap_err();
+        assert!(out.starts_with("E2003"), "{out}");
+
+        // A value outside the widened domain fails the segment without
+        // touching the document: a rogue Int16 column carrying a value
+        // beyond Int32's range (the schema type has been narrowed here to
+        // make the row value provably out-of-domain for the target).
+        let mut bad = make_document();
+        bad.tables["Item"].rows[0].fields["level"].value = V::Int(5_000_000_000);
+        let mut int16_schema = from_schema.clone();
+        int16_schema.tables["Item"].fields["level"].field_type = FieldType::Int16;
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::WidenType {
+                table: "Item".into(),
+                field: "level".into(),
+                to: FieldType::Int32,
+            }],
+        };
+        let out = apply(&spec, &mut bad, &int16_schema).unwrap_err();
+        assert!(out.starts_with("E2003"), "{out}");
+        assert!(out.contains("does not fit"), "{out}");
+
+        // Missing field on a row.
+        let mut short = make_document();
+        short.tables["Item"].rows[1].fields.shift_remove("level");
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::WidenType {
+                table: "Item".into(),
+                field: "level".into(),
+                to: FieldType::Int64,
+            }],
+        };
+        let out = apply(&spec, &mut short, &from_schema).unwrap_err();
+        assert!(out.starts_with("E2003"), "{out}");
+        assert!(out.contains("has no `level`"), "{out}");
+
+        // The safe direction on clean data succeeds: legal widenings run.
+        let mut doc2 = make_document();
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::WidenType {
+                table: "Item".into(),
+                field: "id".into(),
+                to: FieldType::Int64,
+            }],
+        };
+        let report = apply(&spec, &mut doc2, &from_schema).unwrap();
+        assert_eq!(report.steps[0].rows_changed, 2);
+        assert_eq!(doc2.tables["Item"].rows[0].fields["id"].value, V::Int(1));
+
+        // A document without the table fails as E2003 too.
+        let mut empty = Document::new();
+        let out = apply(&full_spec(), &mut empty, &from_schema).unwrap_err();
+        assert!(out.starts_with("E2003"), "{out}");
+    }
+
+    #[test]
+    fn reverify_passes_clean_and_fails_as_e2004() {
+        let from_schema = schema_for_document("1.0.0");
+
+        // Migrate a document, then build the to-schema (the migrated
+        // shape: title / rarity / no legacy_id / level Int64) and check
+        // it comes back clean.
+        let mut doc = make_document();
+        apply(&full_spec(), &mut doc, &from_schema).unwrap();
+        let mut to_schema = schema_for_document("1.1.0");
+        {
+            let item = to_schema.tables.get_mut("Item").unwrap();
+            // Rebuild fields to the migrated shape; `rarity` is required —
+            // set_default in the spec is what makes the migrated rows
+            // satisfy it, so the migrated document passes while the
+            // pre-migration one (row 0 lacks rarity) must fail.
+            let mut fields = IndexMap::new();
+            for (name, field_type, required) in [
+                ("id", FieldType::Int32, false),
+                ("title", FieldType::String, false),
+                ("level", FieldType::Int64, false),
+                ("grade", FieldType::String, false),
+                ("rarity", FieldType::String, true),
+            ] {
+                fields.insert(
+                    name.to_string(),
+                    crate::schema::FieldSchema {
+                        name: name.to_string(),
+                        field_type,
+                        description: None,
+                        required,
+                        default: None,
+                        min: None,
+                        max: None,
+                        min_length: None,
+                        max_length: None,
+                        pattern: None,
+                        enum_values: None,
+                        min_items: None,
+                        max_items: None,
+                        items: None,
+                        properties: None,
+                        additional_properties: None,
+                        reference: None,
+                        targets: Vec::new(),
+                        rules: Vec::new(),
+                        metadata: IndexMap::new(),
+                    },
+                );
+            }
+            item.fields = fields;
+        }
+        to_schema
+            .tables
+            .insert("Monster".to_string(), to_schema.tables["Mob"].clone());
+        to_schema.tables.shift_remove("Mob");
+        assert!(reverify(&doc, &to_schema).is_ok());
+
+        // Re-verifying the ORIGINAL document under the NEW schema fails
+        // as E2004 — rows still carry `name`, which the new schema does
+        // not know, and the old Mob table still exists.
+        let original = make_document();
+        let out = reverify(&original, &to_schema).unwrap_err();
+        assert!(out.starts_with("E2004"), "{out}");
+    }
+
+    #[test]
+    fn apply_is_deterministic_two_runs_identical() {
+        let from_schema = schema_for_document("1.0.0");
+        let mut first = make_document();
+        let mut second = make_document();
+        apply(&full_spec(), &mut first, &from_schema).unwrap();
+        apply(&full_spec(), &mut second, &from_schema).unwrap();
+        let a = serde_json::to_string(&first).unwrap();
+        let b = serde_json::to_string(&second).unwrap();
+        assert_eq!(a, b, "same rules over same data = same document");
     }
 }

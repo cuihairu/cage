@@ -164,10 +164,9 @@ pub mod distribution {
 }
 
 /// Migration errors (M series, design §46): declarative data migration
-/// under schema evolution. Wired per sign — E2001/E2002 at rule parse /
-/// reference validation (`cage-core::migrate` M1), E2003/E2004 in the
-/// apply executor (M2, reserved until wiring); each doc note marks where
-/// it lands.
+/// under schema evolution. All four are wired — E2001/E2002 at rule
+/// parse / reference validation (`cage-core::migrate` M1), E2003 in the
+/// apply executor and E2004 at post-migration reverification (M2).
 pub mod migration {
     /// E2001 - Migration rule file invalid: unreadable, not valid YAML,
     /// missing `from`/`to`/`steps`, or an unknown step kind (M1,
@@ -178,12 +177,13 @@ pub mod migration {
     /// exists, or a rule names a table neither side knows (M1,
     /// `validate_spec`)
     pub const E2002: &str = "E2002";
-    /// E2003 - Migration step not satisfiable by the data: an unsafe type
-    /// narrowing passed to `widen_type`, or `required` without a default
-    /// where the source rows have no value (reserved until M2 wiring)
+    /// E2003 - Migration step not satisfiable by the data: a `widen_type`
+    /// whose direction is not a safe widening, a value outside the
+    /// widened domain, or a step naming a table/row field the document
+    /// does not carry (M2, `apply`)
     pub const E2003: &str = "E2003";
     /// E2004 - Post-migration verification failed: the migrated document
-    /// does not validate under the new schema (reserved until M2 wiring)
+    /// does not validate under the new schema (M2, `reverify`)
     pub const E2004: &str = "E2004";
 }
 

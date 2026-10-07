@@ -358,9 +358,21 @@ build + publish，不新造通道。决策记录（定了什么 / 为什么 / �
       from==to、引用校验——表不存在/字段不存在/rename 撞字段/
       rename_table 撞表与合法改名）+ validation.md E20xx 新表节
       （E2001/E2002 已接线、E2003/E2004 预留 M2）——本轮交付，勾选
-- [ ] M2 执行器与报告：`apply` 对 Canonical Model 变换 + 逐变更报告 +
-      E2003/E2004；验收：单测（六类 Step 变换语义、加宽不安全 E2003、
-      回验失败 E2004、确定性两跑一致）+ 本勾选
+- [x] M2 执行器与报告：`apply` 对 Canonical Model 变换 + 逐变更报告 +
+      E2003/E2004；实装细化：apply(spec, &mut Document, from_schema)
+      逐步骤原位变换（MigrateReport/StepReport 逐步骤行数），六类语义
+      ——rename_field 保序改名、set_default 只补缺失或 Null 行、
+      remove_field 计实删行、widen_type 方向表（整数/无符号族升序、
+      无符号→有符号跨一步 8→16/16→32/32→64、Int32→Float64 允而
+      Int64→Float64 拒——2^53 精度线）+ 逐行值域校验、remap_values
+      未映射值原样通过、rename_table 表序保持（文档无此表 E2003）；
+      失败即失败整段中止；reverify(doc, to_schema) 借 validation 全栈
+      L0–L6 回验（GameRule 留 CLI check 通道），E2004 附诊断渲染；
+      验收已过：单测×4（六类 Step 变换语义 + 报告计数逐项断言、加宽
+      不安全方向两路/值超域/行缺字段/文档缺表 E2003 + 合法加宽通过、
+      迁移产物回验全绿而未迁移产物 required 缺失 E2004、serde_json
+      序列化两跑逐字节一致）+ validation.md E2003/E2004 转已接线 +
+      codes.rs 两码 doc 转接线——本轮交付，勾选
 - [ ] M3 CLI 与文档收口：`cage migrate`（--all/--to/--write，默认
       dry-run）+ 可写源落盘 / Excel 只报告 + CLI 集成测试（json 工程
       dry-run → write → check 全绿 → 再跑无变更；excel 工程 E2004
