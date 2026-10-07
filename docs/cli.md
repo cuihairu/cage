@@ -165,6 +165,7 @@ cage registry verify  --registry <dir>
 cage registry gc      --registry <dir> [--keep 3] [--dry-run]
 cage registry remove  <package> <version> --registry <dir> [--dry-run]
 cage registry export  <package>[@<version>] -o <file> --registry <dir>
+cage registry import  <file> [--dry-run] --registry <dir>
 ```
 
 本地 Configuration Registry（第三阶段 R 系列，[design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)）。
@@ -273,6 +274,25 @@ cage registry export common       -o common-latest.tar --registry ../registry   
 导出只读注册表，不重新构建（发布仍是 `cage registry publish`）；包或
 版本不存在、条目缺账本、bundle 写不出 → `E2101`。远程根不支持导出
 （只读协议无文件枚举），远端消费走 `registry:` 源解析。
+
+### bundle 导入（A 系列）
+
+```bash
+cage registry import common-0.1.0.tar --registry ../registry          # 入册
+cage registry import common-0.1.0.tar --registry ../registry --dry-run # 只报告不落笔
+```
+
+把 bundle 入册到本地注册表：解包进临时暂存区 → 骑乘账本过
+`verify_snapshot` 信任门 → index 摘录与账本交叉核对（build_id /
+content_hash / 文件数一致）→ 通过后走与 publish 相同的入册路径。
+**未经校验的字节永不接触目标注册表**——任何拒绝路径（篡改、缺账本、
+成员路径逃逸、摘录与账本漂移）都只碰暂存区，`E2103` 报告问题清单。
+同字节重导是幂等 no-op；同版本异字节报 `E1801` 冲突（注册表不改写
+历史，分发通道也不例外）。导入后的条目与本地 publish 的条目完全
+同质：`registry:` 源解析、`schema_path`、`registry verify` 全部照常。
+
+导入目标是本地根（导入即写入，远程根不收写）；`--dry-run` 跑完整
+信任门并报告将入册的条目与文件数，不写任何字节。
 
 ## 快速开始
 

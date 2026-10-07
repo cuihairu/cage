@@ -24,11 +24,12 @@
 //! verifies the entry's ledger, then yields its `data/` directory as the
 //! source root.
 
-use crate::error::codes::distribution::E2101;
+use crate::error::codes::distribution::{E2101, E2103};
 use crate::error::codes::registry::{E1801, E1802, E1803};
 use crate::snapshot;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Ledger file name inside a published entry (the snapshot trust root).
@@ -89,6 +90,22 @@ pub struct ExportReport {
     pub version: String,
     /// Entry files packed (the bundle also carries the package index excerpt)
     pub files: usize,
+}
+
+/// Result of `import_bundle`: what entered (or would enter) the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportReport {
+    /// Package imported from the bundle's index excerpt
+    pub package: String,
+    /// Entry version imported
+    pub version: String,
+    /// Entry files staged and ledger-verified
+    pub files: usize,
+    /// `true` when the exact bytes were already in the registry (idempotent
+    /// re-import, nothing rewritten), `false` when newly written
+    pub already_identical: bool,
+    /// `true` when the import ran as a report-only dry run (nothing written)
+    pub dry_run: bool,
 }
 
 /// One comparator of a version requirement (R2 dependency pin): `op` plus a
@@ -720,6 +737,173 @@ pub fn export_bundle(
     })
 }
 
+/// Import a bundle produced by `export_bundle` (A2, design §47): the riding
+/// ledger must pass `verify_snapshot` and match the bundle's index excerpt
+/// before anything enters the registry — unverifiable bytes never touch the
+/// target (staging is a temp dir, discarded on every refusal path). A
+/// byte-identical re-import is an idempotent no-op; the same version with
+/// different bytes is the usual E1801 conflict (the registry never rewrites
+/// history, not even through distribution). Structural problems — unsafe
+/// member paths, malformed index, members outside the entry, missing
+/// ledger — and any trust-gate refusal are E2103. With `dry_run` the full
+/// gate runs and the report comes back without writing anything.
+pub fn import_bundle(root: &Path, file: &Path, dry_run: bool) -> Result<ImportReport, String> {
+    let bytes = fs::read(file)
+        .map_err(|e| format!("{E2101} cannot read bundle {}: {e}", file.display()))?;
+    let mut archive = tar::Archive::new(&bytes[..]);
+
+    // Members are untrusted input: only plain relative paths survive the
+    // component check (no absolute, no `..`, no prefix segments).
+    let mut excerpt: Option<RegistryIndex> = None;
+    let mut members: Vec<(String, Vec<u8>)> = Vec::new();
+    for entry in archive
+        .entries()
+        .map_err(|e| format!("{E2103} malformed bundle {}: {e}", file.display()))?
+    {
+        let mut entry = entry.map_err(|e| format!("{E2103} malformed bundle entry: {e}"))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("{E2103} malformed bundle entry path: {e}"))?
+            .into_owned();
+        if path.is_absolute()
+            || !path
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(format!(
+                "{E2103} unsafe bundle member path '{}'",
+                path.display()
+            ));
+        }
+        let name = path.to_string_lossy().into_owned();
+        let mut content = Vec::new();
+        entry
+            .read_to_end(&mut content)
+            .map_err(|e| format!("{E2103} cannot read bundle member '{name}': {e}"))?;
+        if name == INDEX_FILE {
+            if excerpt.is_some() {
+                return Err(format!("{E2103} duplicate {INDEX_FILE} in bundle"));
+            }
+            let parsed: RegistryIndex = serde_json::from_slice(&content)
+                .map_err(|e| format!("{E2103} malformed {INDEX_FILE} in bundle: {e}"))?;
+            excerpt = Some(parsed);
+        } else {
+            members.push((name, content));
+        }
+    }
+
+    // A1 bundles carry exactly one entry: the excerpt names it, the members
+    // realize it.
+    let index = excerpt.ok_or_else(|| format!("{E2103} bundle has no {INDEX_FILE}"))?;
+    if index.entries.len() != 1 {
+        return Err(format!(
+            "{E2103} bundle {INDEX_FILE} must carry exactly one entry, got {}",
+            index.entries.len()
+        ));
+    }
+    let excerpt_entry = &index.entries[0];
+    let package = index.package;
+    let version = excerpt_entry.version.clone();
+    let prefix = format!("{package}/{version}/");
+    let mut has_ledger = false;
+    for (name, _) in &members {
+        if !name.starts_with(&prefix) {
+            return Err(format!(
+                "{E2103} bundle member '{name}' is outside {prefix}"
+            ));
+        }
+        if *name == format!("{prefix}{LEDGER_FILE}") {
+            has_ledger = true;
+        }
+    }
+    if !has_ledger {
+        return Err(format!("{E2103} bundle has no {LEDGER_FILE} ledger"));
+    }
+
+    // Stage into a temp dir — the registry target stays untouched until the
+    // trust gate has passed.
+    let staging =
+        tempfile::tempdir().map_err(|e| format!("{E2103} cannot create staging directory: {e}"))?;
+    for (name, content) in &members {
+        let abs = staging.path().join(&name[prefix.len()..]);
+        fs::create_dir_all(abs.parent().expect("entry parent"))
+            .map_err(|e| format!("{E2103} cannot stage {}: {e}", abs.display()))?;
+        fs::write(&abs, content)
+            .map_err(|e| format!("{E2103} cannot stage {}: {e}", abs.display()))?;
+    }
+
+    // The trust gate: same gate as publish, refused as a bundle problem.
+    let report = snapshot::verify_snapshot(staging.path())
+        .map_err(|e| format!("{E2103} bundle failed its trust gate: {e}"))?;
+    if !report.ok {
+        return Err(format!(
+            "{E2103} refusing to import unverifiable bundle {} ({} problem(s)): {}",
+            file.display(),
+            report.mismatches.len(),
+            report.mismatches.join("; ")
+        ));
+    }
+    let ledger: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.path().join(LEDGER_FILE))
+            .map_err(|e| format!("{E2103} bundle ledger read: {e}"))?,
+    )
+    .map_err(|e| format!("{E2103} bundle ledger parse: {e}"))?;
+    let build_id = ledger
+        .get("build_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let content_hash = ledger
+        .get("content_hash")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if build_id != excerpt_entry.build_id || content_hash != excerpt_entry.content_hash {
+        return Err(format!(
+            "{E2103} bundle {INDEX_FILE} record does not match its ledger (build_id {build_id}, content_hash {content_hash})"
+        ));
+    }
+    let staged_files = files_under(staging.path())?;
+    if staged_files.len() != excerpt_entry.files {
+        return Err(format!(
+            "{E2103} bundle {INDEX_FILE} record claims {} files, ledger covers {}",
+            excerpt_entry.files,
+            staged_files.len()
+        ));
+    }
+
+    // Conflict pre-check shares publish's rule so dry runs report the exact
+    // outcome a real import would produce.
+    let existing_index = read_index(root, &package)?;
+    let mut already_identical = false;
+    if let Some(existing) = existing_index.entries.iter().find(|e| e.version == version) {
+        if existing.content_hash != content_hash {
+            return Err(format!(
+                "{E1801} registry version conflict: {package}/{version} already published with \
+                 content_hash {} — import refused",
+                existing.content_hash
+            ));
+        }
+        already_identical = true;
+    }
+    if dry_run {
+        return Ok(ImportReport {
+            package,
+            version,
+            files: staged_files.len(),
+            already_identical,
+            dry_run: true,
+        });
+    }
+
+    let report = publish(root, &package, &version, staging.path())?;
+    Ok(ImportReport {
+        package,
+        version,
+        files: staged_files.len(),
+        already_identical: report.already_identical,
+        dry_run: false,
+    })
+}
+
 /// Render a requirement back to a compact comparator list (diagnostics).
 fn render_req(req: &VersionReq) -> String {
     req.comparators
@@ -1274,6 +1458,128 @@ mod tests {
         fs::remove_file(version_dir.join(LEDGER_FILE)).unwrap();
         let err = export_bundle(&root, "common", Some("1.0.0"), &out).unwrap_err();
         assert!(err.starts_with(e2101), "{err}");
+    }
+
+    /// Rebuild a bundle with one member's bytes replaced (test tampering:
+    /// the content file or the index excerpt) — same deterministic headers.
+    fn repack_with_member(src: &Path, dst: &Path, member_suffix: &str, new_bytes: &[u8]) {
+        use std::io::Read;
+        let data = fs::read(src).unwrap();
+        let mut ar = tar::Archive::new(&data[..]);
+        let out = fs::File::create(dst).unwrap();
+        let mut builder = tar::Builder::new(out);
+        for e in ar.entries().unwrap() {
+            let mut e = e.unwrap();
+            let name = e.path().unwrap().to_string_lossy().into_owned();
+            let mut content = Vec::new();
+            e.read_to_end(&mut content).unwrap();
+            let bytes = if name.ends_with(member_suffix) {
+                new_bytes.to_vec()
+            } else {
+                content
+            };
+            let mut h = tar::Header::new_ustar();
+            h.set_size(bytes.len() as u64);
+            h.set_mode(0o644);
+            h.set_mtime(0);
+            h.set_uid(0);
+            h.set_gid(0);
+            builder.append_data(&mut h, &name, &bytes[..]).unwrap();
+        }
+        builder.into_inner().unwrap();
+    }
+
+    #[test]
+    fn import_bundle_enters_verified_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+        let bundle = tmp.path().join("b.tar");
+        export_bundle(&source, "common", Some("1.0.0"), &bundle).unwrap();
+
+        let target = tmp.path().join("regB");
+        let report = import_bundle(&target, &bundle, false).unwrap();
+        assert_eq!(report.package, "common");
+        assert_eq!(report.version, "1.0.0");
+        assert!(!report.already_identical);
+        assert!(!report.dry_run);
+
+        // The imported entry is a first-class citizen: full-registry audit
+        // clean, resolve works, bytes match the source entry.
+        let audit = verify_registry(&target).unwrap();
+        assert!(audit.problems.is_empty(), "{:?}", audit.problems);
+        let dir = resolve(&target, "common", Some("1.0.0")).unwrap();
+        assert!(dir.ends_with("common/1.0.0"));
+        let artifact = fs::read(dir.join("data/client/json/Item.json")).unwrap();
+        assert_eq!(artifact, b"one".to_vec());
+
+        // Re-importing the same bundle is an idempotent no-op.
+        let again = import_bundle(&target, &bundle, false).unwrap();
+        assert!(again.already_identical);
+    }
+
+    #[test]
+    fn import_bundle_refuses_tamper_conflict_and_respects_dry_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+        let bundle = tmp.path().join("b.tar");
+        export_bundle(&source, "common", Some("1.0.0"), &bundle).unwrap();
+        let e2103 = crate::error::codes::distribution::E2103;
+
+        // Tampered entry bytes fail the riding ledger at the trust gate.
+        let tampered = tmp.path().join("tampered.tar");
+        repack_with_member(&bundle, &tampered, "Item.json", b"hacked");
+        let target = tmp.path().join("regB");
+        let err = import_bundle(&target, &tampered, false).unwrap_err();
+        assert!(err.starts_with(e2103), "{err}");
+        assert!(
+            !target.join("common").exists(),
+            "refused bytes must not touch the registry"
+        );
+
+        // An index excerpt doctored to claim another content_hash also
+        // fails (excerpt ⇔ ledger cross-check) — the JSON itself is valid,
+        // so only the cross-check can catch this one.
+        let doctored = tmp.path().join("doctored.tar");
+        let data = fs::read(&bundle).unwrap();
+        let mut ar = tar::Archive::new(&data[..]);
+        let mut fake_excerpt_bytes = Vec::new();
+        for e in ar.entries().unwrap() {
+            let mut e = e.unwrap();
+            if e.path().unwrap() == std::path::Path::new(INDEX_FILE) {
+                std::io::Read::read_to_end(&mut e, &mut fake_excerpt_bytes).unwrap();
+            }
+        }
+        let mut fake: RegistryIndex = serde_json::from_slice(&fake_excerpt_bytes).unwrap();
+        fake.entries[0].content_hash = "0".repeat(24);
+        let mut fake_bytes = serde_json::to_vec_pretty(&fake).unwrap();
+        fake_bytes.push(b'\n');
+        repack_with_member(&bundle, &doctored, INDEX_FILE, &fake_bytes);
+        let err = import_bundle(&target, &doctored, false).unwrap_err();
+        assert!(err.starts_with(e2103), "{err}");
+
+        // Same version, different bytes already in the target → E1801.
+        let other = tmp.path().join("snap2");
+        make_snapshot(&other, "two");
+        publish(&target, "common", "1.0.0", &other).unwrap();
+        let err = import_bundle(&target, &bundle, false).unwrap_err();
+        assert!(
+            err.starts_with(crate::error::codes::registry::E1801),
+            "{err}"
+        );
+
+        // Dry run reports without writing: a fresh target stays empty even
+        // though the real import would succeed.
+        let dry_target = tmp.path().join("regC");
+        let report = import_bundle(&dry_target, &bundle, true).unwrap();
+        assert!(report.dry_run);
+        assert!(!report.already_identical);
+        assert!(!dry_target.join("common").exists());
     }
 
     #[test]

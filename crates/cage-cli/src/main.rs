@@ -241,6 +241,22 @@ enum RegistryCmd {
         #[arg(long)]
         registry: Option<PathBuf>,
     },
+    /// Import a bundle exported by `cage registry export`: the riding ledger
+    /// must verify and match the bundle's index excerpt before anything
+    /// enters the registry (E2103 otherwise); byte-identical re-imports are
+    /// idempotent no-ops, different bytes for an existing version are an
+    /// E1801 conflict
+    Import {
+        /// Bundle file produced by `cage registry export`
+        file: PathBuf,
+        /// Run the full trust gate and report what would enter, without
+        /// writing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Registry root directory (overrides cage.toml `[registry].path`)
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
 }
 
 /// A loaded Cage project: config + merged schema + merged document.
@@ -327,6 +343,11 @@ fn main() {
                 output,
                 registry,
             } => run_registry_export(&package, &output, registry.as_deref()),
+            RegistryCmd::Import {
+                file,
+                dry_run,
+                registry,
+            } => run_registry_import(&file, dry_run, registry.as_deref()),
         },
     };
     std::process::exit(code);
@@ -1409,6 +1430,51 @@ fn run_registry_export(package_spec: &str, output: &Path, registry_flag: Option<
     }
 }
 
+/// `cage registry import` — enter a bundle into the local registry (A2).
+/// The bundle's riding ledger gates the entry exactly like publish does;
+/// refused bytes never touch the target. Local registry roots only —
+/// import writes, and writes over the network stay out of scope.
+fn run_registry_import(file: &Path, dry_run: bool, registry_flag: Option<&Path>) -> i32 {
+    let Some(reg_root) = registry_flag else {
+        eprintln!("error: no registry root (pass --registry)");
+        return 2;
+    };
+    if let Some(spec) = reg_root.to_str() {
+        if remote::is_remote_root(spec) {
+            eprintln!(
+                "error: registry root '{spec}' is remote — import writes a local registry; \
+                 publish to a local root and host it statically instead"
+            );
+            return 2;
+        }
+    }
+    match cage_core::registry::import_bundle(reg_root, file, dry_run) {
+        Ok(report) => {
+            println!(
+                "cage registry: {}{}/{} ({} files){}",
+                if report.dry_run {
+                    "would import "
+                } else {
+                    "imported "
+                },
+                report.package,
+                report.version,
+                report.files,
+                if report.already_identical {
+                    " — identical, no-op"
+                } else {
+                    ""
+                }
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 /// `cage registry verify` — the full-registry audit (R4): every recorded
 /// entry exists and self-verifies (its bytes re-hashed against its ledger,
 /// the index record matching the ledger's `build_id`/`content_hash`), and no
@@ -2052,6 +2118,17 @@ mod tests {
                 } => format!(
                     "registry export {package} {} {}",
                     output.display(),
+                    registry
+                        .as_deref()
+                        .map_or_else(|| Path::new("<flag required>").display(), Path::display)
+                ),
+                RegistryCmd::Import {
+                    file,
+                    dry_run,
+                    registry,
+                } => format!(
+                    "registry import {} {dry_run} {}",
+                    file.display(),
                     registry
                         .as_deref()
                         .map_or_else(|| Path::new("<flag required>").display(), Path::display)

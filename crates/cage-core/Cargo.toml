@@ -20,9 +20,10 @@ blake3 = { workspace = true }
 console = { workspace = true }
 # §47 A series: deterministic bundle export/import
 tar = { workspace = true }
+# §47 A2: staging directory for untrusted bundle bytes on their way
+# through the verify_snapshot trust gate (RAII cleanup)
+tempfile = { workspace = true }
 # Remote Source (§45): the shared HTTP GET lives here so every remote
 # consumer (registry + source adapters) runs one retry policy.
 ureq = { workspace = true }
 
-[dev-dependencies]
-tempfile = "3"

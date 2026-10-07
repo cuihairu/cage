@@ -290,11 +290,18 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       （publish → export 两包逐字节一致 → `tar::Archive` 成员清单可检 →
       缺包缺版本 E2101 退出码 1）+ cli.md「bundle 导出」小节——本轮交付，
       勾选
-- [ ] A2 bundle 导入（`cage registry import`）：解包 → verify_snapshot
-      信任门 → publish 入册（--dry-run 报告不落笔；坏账本 E2103、
-      异字节冲突 E1801 复用）；验收：单测 + 集成测试（干净导入 →
-      resolve 可解析、篡改字节 E2103、同字节重导幂等、异字节 E1801）
-      + cli.md 小节 + 本勾选
+- [x] A2 bundle 导入（`cage registry import`）：import_bundle 解包进
+      临时暂存区 → verify_snapshot 信任门 → index 摘录与账本交叉核对
+      （build_id/content_hash/文件数）→ publish 路径入册；--dry-run
+      跑完整门只报告；结构问题/信任门拒绝/摘录漂移一律 E2103（拒绝
+      字节永不接触目标根）、异字节 E1801 复用；tempfile 提升为 core
+      正式依赖（暂存区 RAII 清理）；验收已过：单测×2（干净导入 →
+      verify_registry 全绿 + resolve 可解析 + 字节一致、重导幂等；
+      篡改 E2103 且目标根零字节、假摘要 E2103、异字节 E1801、dry-run
+      不落笔）+ CLI 集成（dry-run 报告不写 → 导入 → 消费方含条目
+      schema 构建通过 → 重导 no-op → 篡改 E2103 → 异字节 E1801）+
+      codes.rs E2103 doc 转接线 + validation.md 转已接线 + cli.md
+      「bundle 导入」小节——本轮交付，勾选
 - [ ] A3 直推（`cage registry push` + auth_env）：`remote::http_put`
       （RetryPolicy 与 http_get 同口径）+ 逐文件 PUT、index 收尾 +
       `RegistryConfig.auth_env`（serde default 可选）+ E2102/E2104/

@@ -134,8 +134,9 @@ pub mod registry {
 
 /// Artifact distribution errors (A series, design §47): moving published
 /// entries to remote or air-gapped consumers. Wired per sign — E2101 in
-/// bundle export (A1), E2103 at the import trust gate (A2), E2102/E2104/
-/// E2105 in `registry push` (A3); each doc note marks where it lands.
+/// bundle export (A1), E2103 at the import trust gate (A2, wired),
+/// E2102/E2104/E2105 in `registry push` (A3); each doc note marks where it
+/// lands.
 pub mod distribution {
     /// E2101 - Distribution transfer failed: bundle export could not read
     /// the entry (missing package/version, entry directory or ledger) or
@@ -144,8 +145,11 @@ pub mod distribution {
     /// E2102 - Distribution target rejected the credentials (HTTP 401 / 403
     /// on push; reserved until A3 wiring)
     pub const E2102: &str = "E2102";
-    /// E2103 - Distribution bundle failed its ledger verification — import
-    /// refuses unverifiable bytes (reserved until A2 wiring)
+    /// E2103 - Distribution bundle failed its ledger verification —
+    /// structural problems (unsafe member paths, malformed index, missing
+    /// ledger), trust-gate refusals, and excerpt⇔ledger drift all refuse
+    /// before anything is staged into the target registry (A2,
+    /// `cage registry import`)
     pub const E2103: &str = "E2103";
     /// E2104 - Distribution target refused the write (405 / 409 or another
     /// explicit 4xx on push — the server has no write channel; reserved
