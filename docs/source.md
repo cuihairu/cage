@@ -138,7 +138,7 @@ the previous cached copy: <spec> (cache: <路径>)`）。两类失败**永不
 回退：远端取不到即失败，即使有缓存副本。适合「必须以远端最新字节
 构建」的发布前核对。
 
-## 后续扩展
+## 后续扩展（非首期）
 
 ```text
 XML
@@ -146,6 +146,8 @@ TOML
 SQLite
 Custom Binary
 ```
+
+以上格式不在首期交付范围内；首期四大远程源（HTTP / MySQL / PostgreSQL / Google Sheets）已随 S1–S5 全量交付，详见上文各节。
 
 ## Rust 落地
 

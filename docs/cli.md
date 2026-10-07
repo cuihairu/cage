@@ -121,6 +121,23 @@ cage graph
 （环检测 / 拓扑序）由 `cage build --incremental` 消费，见
 [增量构建](/build#增量构建)。
 
+## Remote Source（远程源）
+
+Cage 支持四种远程输入源，全部在 `cage.toml` 的 `[source_roots]` 以统一语法声明，凭据只存环境变量名（永不进 `cage.toml`、不落日志）：
+
+| 语法 | crate | 关键特性 |
+| --- | --- | --- |
+| `https://...` / `http://...` | `cage-source-http` | GET 响应字节缓存后走标准 JSON 解析；`E1901` 取数失败、`E1902` 401/403、`E0001` 坏 JSON |
+| `mysql:<表|具名查询>` | `cage-source-db` | SELECT 白名单（单条、SELECT 开头，拒分号/注释/行锁/CTE/`INTO`）→ `dsn_env` 解析 → 会话钉只读（`SESSION TRANSACTION READ ONLY`）；DECIMAL 文本保真、`E1905` 白名单、`E1904` 凭据、`E1901` 连接/语句 |
+| `pg:<表|具名查询>` | `cage-source-db` | 同上；PG 侧只读用 `default_transaction_read_only` |
+| `gsheet:<spreadsheet_id>/<tab>` | `cage-source-sheets` | Sheets API v4 `values` + `UNFORMATTED_VALUE`；首行表头、空行跳过、短行补 null；形状门 `E1903`（非行集/空表头/majorDimension 非 ROWS） |
+
+三源共享缓存布局 `.cage-cache/source/<指纹>/`：远端字节先落盘，再走标准 JSON 解析与 L0-L7 全量校验，**无旁路**。详见 [Source](/source)。
+
+### 离线回退与 `--no-cache`
+
+见上文 [`--no-cache` 小节](#no-cache远程源离线回退开关)。
+
 ## web
 
 ```bash

@@ -146,7 +146,7 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1–S5 已交付，S6 未开工）
+### S 系列：Remote Source（2026-10 立项，design §45；S1–S6 全数交付）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
 纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
@@ -255,8 +255,7 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       诊断渲染经 load_project Err → `error: {e}` 全覆盖，无吞码路径
       ——零代码行为变化，纯措辞与文档签。design §45 实装状态补 S5
       对账详述、todo 勾选、需求整理.md 行同步
-- [ ] S6 文档收口：source.md 后续扩展清单转正、cli.md 远程源章节、
-      需求整理.md Remote Source 勾选、architecture.md 工程结构树补三 crate
+- [x] S6 文档收口：source.md 后续扩展清单转正（注明首期四大远程源已交付）、cli.md 新增 Remote Source 章节（四源语法/特性/错误码对照表 + 离线回退引用）、需求整理.md Remote Source 行同步 S6 已交付、architecture.md 工程结构树三 crate（cage-source-http/db/sheets）早已在列
 
 ### G 系列：Template Target（2026-10 立项，design §22；G1 随立项交付）
 
