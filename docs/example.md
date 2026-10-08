@@ -1,6 +1,6 @@
 # 完整示例
 
-仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 关卡」三张表、三种源格式（CSV / YAML / JSON）、一份覆盖全部字段类型用法的 schema、一个 profile 构建全部 10 个 target（json/csv 数据 + 8 种语言代码绑定），外加一套触发 L7 Game Rule 的坏数据。
+仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 关卡」三张表、三种源格式（CSV / YAML / JSON）、一份覆盖常用字段类型与约束用法的 schema、一个 profile 构建全部 10 个 target（json/csv 数据 + 8 种语言代码绑定），外加一套触发 L7 Game Rule 的坏数据。
 
 本页所有命令与输出都是**真实执行结果**（在仓库根目录运行），不是伪代码。
 
@@ -10,7 +10,7 @@
 bash examples/run.sh
 ```
 
-脚本从 `cage build` 到 `cage gen` 到 `cage check`（含坏数据 E1601 断言）一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
+脚本从 `cage check` 到 `cage build` 到 `cage gen`（含坏数据 E1601 断言与 `cage inspect`）一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
 
 <details>
 <summary>examples/run.sh 完整输出（点击展开）</summary>
@@ -102,7 +102,7 @@ $ cage build examples/game-config --profile client
 cage build: OK (profile 'client', 42 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
-42 个产物 = 每表 3 份数据（json/csv）+ 8 种语言代码绑定（各 3 表 + 1 枚举单元，JS 形态额外配对 `.d.ts`）+ manifest：
+42 个产物 = 数据 6 份（3 表 × json/csv）+ 代码 36 份（8 种语言 × 各 3 表 + 1 枚举单元，JS 形态额外配对 `.d.ts`）；manifest 在 `build/manifest.json`，不在 `client/` 计数内：
 
 ```text
 build/client/
@@ -181,7 +181,7 @@ fields:
 | 可选对象组（部分行缺省） | `Stage.boss` |
 | 数组字段 min_items/max_items | `Stage.tags` |
 | Map<K,V>（含嵌套，空 map 合法） | `Stage.drop_table: map<string, Array<Int32>>` |
-| 保留字字段自动转义（`class`） | `Character.class` → cs `@class`、py/java/lua `class_`、go `Class` |
+| 保留字字段自动转义（`class`） | `Character.class` → cs `@class`、py/java `class_`、go `Class`；lua/ts/js 不转义（消费端按键名取值） |
 
 Map 字段的 schema 写法（`schemas/stage.yaml`）：
 

@@ -37,6 +37,11 @@ cage check --level reference    # 只做到引用层
 cage check --profile client     # 按 Profile 验证
 ```
 
+`--level` 取值：parse / schema / type / value / table / reference /
+semantic / gamerule（默认 `semantic`，即默认执行到 L6，含 L7 业务规则
+需显式 `--level gamerule`）。`--profile` 默认 `client`（check / build /
+gen 同）。
+
 ## build
 
 ```bash
@@ -44,6 +49,8 @@ cage build config/ --profile client
 cage build config/ --profile server
 cage build config/ --incremental     # 哈希与上次 manifest 一致时跳过重新生成
 ```
+
+与 check 同口径的 `--level`（默认 semantic）可上调/下调验证层级。
 
 验证并生成目标产物，同时输出 [Build Manifest](/build#build-manifest)。
 `--incremental` 依据 manifest 里的 schema/source 哈希跳过未变化的重建
@@ -56,16 +63,18 @@ cage build config/ --incremental     # 哈希与上次 manifest 一致时跳过�
 cage gen config/ --profile server
 ```
 
-只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java](/target#code-targets-与-data-targets-分离)），
+只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java](/target#code-targets-与-data-targets-分离)，
+另支持 `template` 用户自定义 Tera 模板 target），
 不跑数据校验：代码生成是 Schema 驱动的，类型与元数据全部来自 Schema，
-不依赖配置行数据。Profile 里的数据类 Target（json/csv）会被跳过，需要
+不消费配置行数据（源文件仍需可正常加载解析）。Profile 里的数据类
+Target（json/csv）会被跳过，需要
 数据产物时用 `cage build`。产物同样写入 Build Manifest（与 build 同一口
 径），后写者胜。
 
 ## inspect
 
 ```bash
-cage inspect Item
+cage inspect config/ Item     # 项目路径必填；表名可选，省略时列出全部表
 ```
 
 查看 Schema 和配置结构。
@@ -89,7 +98,8 @@ cage build config/ --no-cache    # check / build / gen / inspect 通用
 cage diff build/a build/b
 ```
 
-比较两个配置版本。
+比较两个配置版本；两个位置参数也接受 manifest.json 文件路径（不限于
+构建目录）。
 
 ## snapshot
 
@@ -162,7 +172,8 @@ Ctrl+C 停止服务。`--port` 默认 8765。
 ## registry
 
 ```bash
-cage registry publish <project> --registry <dir> [--package name] [--version 1.0.0] [--profile client]
+cage registry publish <project> [--registry <dir>] [--package name] [--version 1.0.0] [--profile client]
+#                                     └ 可省：缺省回落 cage.toml [registry].path
 cage registry list    --registry <dir>
 cage registry verify  --registry <dir>
 cage registry gc      --registry <dir> [--keep 3] [--dry-run]

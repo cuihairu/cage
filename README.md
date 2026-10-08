@@ -32,15 +32,16 @@ Authoring Sources → Source Adapters → Canonical Model
 
 ## 核心能力
 
-- Source Adapter 插件：Excel / CSV / JSON / YAML（后续 XML、SQLite、数据库、Google Sheets…），只读取解析，不做业务校验
+- Source Adapter 插件：Excel / CSV / JSON / YAML，以及 HTTP API / MySQL / PostgreSQL / Google Sheets 远程源（后续 XML、SQLite…），只读取解析，不做业务校验
 - Schema 与 Source 解耦：同一 Schema 可用于多个配置源（类型/必填/默认值/范围/枚举/唯一/引用）
 - 八级验证流水线：Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule，可分级执行（`cage check --level`）
-- 跨配置引用校验：存在性之外还支持谓词与兼容性检查（引用对象存在但类型不合法同样报错）
+- 跨配置引用校验：存在性 + 兼容性检查（引用对象存在但类型不合法同样报错；语义谓词校验预留）
 - Diagnostics 一等公民：错误码 + 精确定位（文件/Sheet/单元格/字段/值）+ 修复提示
 - 确定性构建：相同输入 → 相同产物、哈希与 Manifest（可追踪、可回滚、可增量）
 - Profile 机制：client / server 不同 targets 与字段可见性，一份配置两端复用
 - Configuration Snapshot：`cage snapshot` 打包自校验配置快照（manifest + schema + 产物 + 逐文件哈希账本），服务器启动载入前验证，篡改/增删文件即暴露
-- Configuration Registry：`cage registry` 多版本配置仓库（发布/列表/审计/GC/移除），消费方 `registry:包@版本` 引用 + `[dependencies]` 版本 pin，远程 http(s) 根只读解析（缓存离线可用）
+- Configuration Registry：`cage registry` 多版本配置仓库（发布/列表/审计/GC/移除 + bundle 导出/导入/直推远端），消费方 `registry:包@版本` 引用 + `[dependencies]` 版本 pin，远程 http(s) 根解析（消费侧缓存离线可用，`registry push` 直推远端）
+- 声明式数据迁移：`cage migrate` 按版本步进链对已验证配置做规则变换（改名/补默认/删字段/类型加宽/值重映射），默认 dry-run 报告，`--write` 原路写回并全栈回验
 - Target 插件：JSON / CSV 数据产物起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（用户自定义 Tera 模板 + 语言过滤器库），后续 Protobuf 等（数据序列化与代码生成分离）
 
 ## 快速开始
@@ -57,7 +58,8 @@ cage build config/ --profile client  # 验证并生成目标产物
 cage snapshot config/ --profile client  # 构建 + 打包自校验快照；快照目录 --verify 载入前校验
 cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
 cage diff build/a build/b          # 比较两个配置版本
-cage inspect Item                  # 查看 Schema 与配置结构
+cage inspect config/ Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
+cage migrate config/               # 迁移计划预览（--write 落盘，--all 全链）
 cage web ./                        # 启动 Schema 编辑器本地服务（只绑 127.0.0.1）
 ```
 

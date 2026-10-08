@@ -43,8 +43,9 @@ Authoring Sources
              ...
 ```
 
-图中 Protobuf 为规划项；当前已实装 JSON / CSV 数据产物与 C# / Python /
-Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定。
+图中 Protobuf 为规划项；当前已实装 JSON / CSV 数据产物、C# / Python /
+Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template
+Target（Tera 用户自定义模板）。
 
 ## 为什么需要 Cage
 
@@ -121,7 +122,7 @@ Artifact
 
 ### Source
 
-配置的输入来源，例如 Excel、CSV、JSON、YAML，后续扩展 XML、TOML、SQLite、数据库、Remote API、Google Sheets 等。
+配置的输入来源，例如 Excel、CSV、JSON、YAML，已扩展 MySQL / PostgreSQL、HTTP API、Google Sheets 远程源与 `registry:` 源根，后续扩展 XML、TOML、SQLite 等。
 
 Source 只负责：
 
@@ -134,32 +135,26 @@ Source 只负责：
 定义配置的结构和约束，例如：
 
 ```yaml
-table: Item
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: UInt32 }, required: true }
+      title: { name: title, type: { kind: String }, required: true }
+      price: { name: price, type: { kind: UInt32 }, min: 0 }
+      type: { name: type, type: { kind: Enum, value: ItemType } }
 
-primary_key: id
-
-fields:
-  id:
-    type: uint32
-    required: true
-
-  name:
-    type: string
-    required: true
-
-  price:
-    type: uint32
-    min: 0
-
-  type:
-    type: enum
+enums:
+  ItemType:
+    name: ItemType
     values:
-      - Weapon
-      - Armor
-      - Consumable
+      - { name: Weapon, value: 1 }
+      - { name: Armor, value: 2 }
+      - { name: Consumable, value: 3 }
 ```
 
-Schema 定义：字段、类型、必填、默认值、范围、枚举、数组、对象、唯一性、引用、输出信息。详见 [Schema 栏目](/schema)。
+Schema 定义：字段、类型、必填、默认值、范围、枚举、数组、对象、唯一性、引用、输出信息（此为实际 wire 格式；完整 DSL 见 [Schema 栏目](/schema)）。
 
 ### Canonical Model
 
@@ -226,7 +221,7 @@ C#/Lua/C++/Python/Protobuf 都只是插件。本章把每个概念的归属与�
 | Canonical Model | 数据在 Cage 世界的语义模型 | `Value` / `TypedValue` / `Document`（cage-core::value，含 SourceLocation） | Source 生产 → Validation / Normalize / Target 消费 | 不直接等同任何文件格式；Source 只把它读懂，Target 只读它 |
 | IR | 归一化后的 Canonical。v0.3 定界：与 Canonical 同构，不设独立类型 | 即 Canonical（归一化 `Document` + `Schema`） | Normalize 生产 → Target 消费 | Target 不得回读 Source 文件；IR 阶段不重新验证 |
 | Validation Context | 验证执行期的游标与现场 | `ValidationContext`（current_table / current_row / current_field / schema…） | Validation 生产 → Diagnostics 消费 | 验证不产出产物、不修改数据；Target 不重复验证 |
-| Dependency Graph | 表间引用的拓扑与增量规划 | `DependencyGraph` / `IncrementalPlanner`（cage-core::reference） | Reference（L5）生产 → 增量构建消费 | 图是编译结果不是运行时数据；未接线前不参与构建决策 |
+| Dependency Graph | 表间引用的拓扑与增量规划 | `DependencyGraph` / `IncrementalPlanner`（cage-core::reference） | schema 引用声明建图（`from_schema`）→ L5 校验与增量构建共同消费 | 图是编译结果不是运行时数据 |
 | Profile | 面向消费端的裁剪视图 | `BuildProfile`（cage-core::manifest）+ profile 过滤 | 用户配置 → 裁剪 Schema + Document → Validation / Target | 过滤是起点不是终点：语义落地面见差距表 |
 | Manifest | 构建产物的账本与输入指纹 | `BuildManifest` / `ArtifactInfo`（cage-core::manifest） | ManifestGenerator 生产 → verify / 增量 / 部署 / 回滚消费 | 只记账不生成；与产物一同落盘、随产物验证 |
 | Snapshot | 可独立加载的配置快照（D5 已实装） | `snapshot_files` / `verify_snapshot` / `load`（cage-core::snapshot） | 构建生产 → 服务器 / 客户端启动加载校验 | 快照自带校验信息，不依赖构建机现场 |
@@ -252,10 +247,10 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 
 | 概念 | 现状 | 差距 / 下一步 |
 | --- | --- | --- |
-| Schema | 已实装：19 种字段类型（含 Map）、引用、唯一约束、字段级 `targets` 可见性、19 错误码族 | — |
+| Schema | 已实装：19 种字段类型（含 Map）、引用、唯一约束、字段级 `targets` 可见性 | — |
 | Canonical Model | 已实装：value.rs 全类型 + SourceLocation | — |
 | IR | 定界完成（见上） | 派生形状需求出现时拆 Compiled IR |
-| Validation Context | 已实装：validation/mod.rs（schema / document / diagnostics / max_level / profile / reference_cache） | — |
+| Validation Context | 已实装：validation/mod.rs（schema / document / diagnostics / max_level / profile / reference_cache / warnings_as_errors） | — |
 | Dependency Graph | 已实装并接线：reference/mod.rs `DependencyGraph`（环检测 / 拓扑）+ `IncrementalPlanner`；cli 构建真实接线，增量第二层按表哈希 + 依赖传播只重建受影响表，manifest 落 `dependencies`/`table_hashes` 账（D2） | 增量删除表回退全量（不沿边传播删除语义）；target 配置变更仍不参与哈希 |
 | Profile | 已实装（D3 语义化）：表 + 字段双层面板过滤裁剪 Schema 与 Document 产物视图；校验在**完整** schema/document 上执行（profile 只裁剪产物视图、不豁免数据校验）；ValidationContext 携带 profile，结构不可缺字段（required 无默认 / 主键 / 唯一约束 / 引用目标）被 profile 隐藏报 E9006 冲突而非静默过滤 | 可选字段裁剪保持合法视图语义；整表剔除是表级可见性语义 |
 | Manifest | 已实装（D4）：11 顶层字段（project / profile / cage_version / generator_version / build_id / schema_hash / source_hash / content_hash / dependencies / table_hashes / artifacts） | — |
@@ -315,6 +310,7 @@ cage/
 │   │       ├── snapshot/        # Configuration Snapshot（打包 / 校验 / 加载）
 │   │       ├── edit/            # Schema ↔ 编辑器交换模型（W1）
 │   │       ├── registry.rs      # Configuration Registry（发布 / 解析 / 审计，R1-R4；bundle 导出导入 + http(s) 直推，§47 A 系列）
+│   │       ├── migrate/         # 声明式数据迁移（规则模型 + 执行器 + 回验，M 系列，design §46）
 │   │       └── remote.rs        # Remote Source 共享取数 / 重试 / 缓存键（§45；http_put 直推写通道，§47 A3）
 │   ├── cage-source-excel/   # Excel 输入源（calamine）
 │   ├── cage-source-csv/     # CSV 输入源
@@ -335,7 +331,7 @@ cage/
 │   ├── cage-target-template/  # Tera 模板引擎：官方随包模板 + 用户自定义模板
 │                            #   （format = "template"，G 系列，design §22）
 │   └── cage-cli/            # cage 命令行（check / build / gen / inspect / diff /
-│                            #   snapshot / web / registry，含远程注册表解析）
+│                            #   snapshot / web / registry / migrate，含远程注册表解析）
 ├── docs/                    # 本文档站（VitePress）
 └── .github/workflows/       # CI / 每日构建 / 文档部署
 ```

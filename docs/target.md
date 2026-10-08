@@ -4,38 +4,26 @@
 
 ## Normalize（归一化）
 
-数值统一：
+流水线里的 Normalize 做的是**表示层**归一，不是跨型转换：
 
-```text
-"100"
-100
-100.0
-```
+- 字符串 trim、去除行尾 `\r`；
+- 浮点 `-0.0` → `0.0`；
+- 对象键按 `BTreeMap` 排序输出。
 
-统一为：
+类型归属在源头确定、在 L2 严格把关：文本源解析期做类型推断（CSV 的
+`true`/`false`/`yes`/`no` → Bool、整数/浮点文本 → Int/Float、空 →
+Null），L2 按**类型族**校验（Int 只配 Int8–Int64、UInt 只配 UInt8–
+UInt64、跨族即 `E1101`，不做字符串↔数字重校准——数值文本写进 String
+列、`100` 写进 uint32 字段都会报类型错误）。
 
-```text
-UInt(100)
-```
-
-布尔值统一：
-
-```text
-yes
-YES
-true
-1
-```
-
-统一为：
-
-```text
-Bool(true)
-```
+跨型强制转换（`"100"` → Int32、`1` → Bool(true) 等）是 cage-core 的
+库 API（`normalize::coerce_to_type`），**当前未接入构建流水线**——
+嵌入方可自行调用；流水线接入属规划项。
 
 Normalize 的目标：
 
-> **相同语义的数据应该产生相同的 Canonical Representation。**
+> **相同语义的数据应该产生相同的 Canonical Representation**（同表示层
+> 内成立：trim 后相同的字符串、排序后相同的对象键，规范形式一致）。
 
 归一化使用确定性规则（`BTreeMap`、稳定排序），相同输入必然得到相同输出，为[确定性构建](/build)打底。
 
@@ -125,6 +113,15 @@ Template        ← 已实装（用户自定义模板）
 
 （「规划」项不在 `format =` 支持范围内，构建报
 `unsupported target format '<fmt>'` 并以退出码 2 失败。）
+
+两个数据 target 各有自己的 options：
+
+- `json`：`pretty`（默认 `true`，缩进美化输出）、`sort_keys`（默认
+  `true`，对象键名序；`false` 时保留源字段序）。库 API 另有
+  `generate_combined` 产出 `all.json`（表名 → 行数组），CLI 暂未暴露。
+- `csv`：`delimiter`（单字符，默认 `,`）、`write_header`（默认
+  `true`）、`quote_style`（`always` / `never` / `non_numeric`，非法值
+  静默回退默认的「按需加引号」）。
 
 Code Target 的现役生成方式（plan → render → verify 直渲染，不依赖 AST
 库）及其选型理由见仓库设计稿 `docs/design.md` 的 Code Targets 章节；
@@ -350,6 +347,7 @@ output_dir = "build/go"
 [profiles.server.targets.options]
 package = "config"             # 默认 config
 enums_file = "cage_enums.go"   # 默认 cage_enums.go
+file_template = "{table}.go"   # 默认 {table}.go
 ```
 
 生成规则要点：
@@ -384,6 +382,7 @@ output_dir = "build/java"
 [profiles.server.targets.options]
 package = "cage.generated"     # 默认 cage.generated
 enums_file = "CageEnums.java"  # 默认 CageEnums.java
+file_template = "{table}.java" # 默认 {table}.java
 ```
 
 生成规则要点：
@@ -394,8 +393,9 @@ enums_file = "CageEnums.java"  # 默认 CageEnums.java
   （`Integer` / `Double` / …），引用类型天然可空；数组默认值
   `new ArrayList<>(List.of(…))` 每实例新建
 - 无符号宽度提升一档：`UInt8 → short`、`UInt16 → int`、`UInt32 /
-  UInt64 → long`（Java 全有符号；超出 `Long.MAX_VALUE` 的 u64 值在
-  字段文档标注）
+  UInt64 → long`（Java 全有符号；超出 `Long.MAX_VALUE` 的 u64 **枚举
+  值**以二补数 long 字面量落盘并在行尾注释 `wrapped from unsigned …`；
+  字段默认值超界则整个跳过默认值）
 - 整数枚举按值域选 `int` / `long` 载荷（`public final value` + 构造
   器）；字符串/无值枚举 `String` 载荷（成员名兜底）；非有限浮点用
   `Double.NaN` / `…POSITIVE_INFINITY`
@@ -443,8 +443,11 @@ lang_filters = "py,go"          # 挂载语言过滤器库（见下），缺省�
 | `metadata` | Schema 级元数据 | 可空 |
 | `schema_hash` | 内容哈希（确定性构建口径） | 恒有（缺省 `(unavailable)` 场合为 null，配 `default` 过滤器兜底） |
 
-`fields` 是字段名 → 字段的映射（`name` / `type` / `description` /
-`required` / `default` / `min` / `max` / `min_length` / `max_length`）。
+`fields` 是字段名 → 字段的映射，至少含 `name` / `type`，其余键按
+Schema 实情出现（`description` / `required` / `default` / `min` / `max` /
+`min_length` / `max_length` / `pattern` / `enum_values` / `min_items` /
+`max_items` / `reference` / `targets` / `rules` 等；`required` 为
+`false` 时该键省略）。
 
 ### 过滤器
 
@@ -528,6 +531,9 @@ fields:
     targets:
       - server
 ```
+
+`targets` 省略 = 对所有 profile 可见；`"*"` 通配等价全部。表级也有
+`targets`：列表不含当前 profile 时整表从该 profile 视图剔除。
 
 客户端产出：
 

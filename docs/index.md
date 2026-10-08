@@ -18,13 +18,13 @@ hero:
 
 features:
   - title: Source Adapter 插件
-    details: Excel / CSV / JSON / YAML 起步，只负责读取解析，不做业务校验；后续扩展 XML、SQLite、数据库、Google Sheets。
+    details: Excel / CSV / JSON / YAML 与 HTTP API / MySQL / PostgreSQL / Google Sheets 远程源，只负责读取解析，不做业务校验；后续扩展 XML、SQLite。
   - title: Schema 与 Source 解耦
     details: 同一份 Schema 可用于多个配置源：类型、必填、默认值、范围、枚举、唯一、引用独立定义。
   - title: 八级验证流水线
     details: Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule 逐级执行，cage check --level 可分级验证。
   - title: 跨配置引用校验
-    details: 存在性之外还支持谓词与兼容性检查，引用对象存在但类型不合法同样报错。
+    details: 存在性 + 兼容性检查，引用对象存在但类型不合法同样报错；语义谓词校验预留。
   - title: Diagnostics 一等公民
     details: 错误码 + 精确定位（文件 / Sheet / 单元格 / 字段 / 值）+ 修复提示，CLI 与 Web UI 直接消费，IDE 留待后续。
   - title: 确定性构建
@@ -32,7 +32,9 @@ features:
   - title: Profile 机制
     details: client / server 配置不同 targets 与字段可见性，一份配置两端复用，不维护两套表。
   - title: Target 插件
-    details: JSON / CSV 起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定（Protobuf 等留待后续）；数据序列化与代码生成分离。
+    details: JSON / CSV 起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（Tera 自定义模板）（Protobuf 等留待后续）；数据序列化与代码生成分离。
+  - title: 声明式数据迁移
+    details: cage migrate 按版本步进链对已验证配置做规则变换（改名 / 补默认 / 删字段 / 类型加宽 / 值重映射），默认 dry-run 报告，--write 原路写回并全栈回验。
 ---
 
 ## 核心链路
@@ -52,7 +54,7 @@ cage check config/                   # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
 cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
 cage diff build/a build/b            # 比较两个配置版本
-cage inspect Item                    # 查看 Schema 与配置结构
+cage inspect config/ Item            # 查看 Schema 与配置结构（项目路径必填，表名可选）
 ```
 
 ## 文档栏目
@@ -60,5 +62,5 @@ cage inspect Item                    # 查看 Schema 与配置结构
 - [架构](/architecture)：定位、核心概念、插件模型与工程结构
 - [Source](/source) / [Schema](/schema) / [Validation](/validation) / [Target](/target)：数据管线四阶段
 - [CLI](/cli) / [Build](/build)：命令行与确定性构建
-- [Web UI](/web)：第三阶段 Schema 编辑器（交换模型 W1、本地服务 W2、编辑器界面 W3 已实装）
-- [Registry](/cli#registry)：第三阶段 R 系列配置仓库（本地发布/列表 + `registry:` 源与 Schema 解析 + `[dependencies]` 版本 pin + 远程只读解析 + verify 全册审计 / gc 滚动窗口 / remove 显式移除，R1–R4 已实装）
+- [Web UI](/web)：第三阶段 Schema 编辑器（交换模型 W1、本地服务 W2、编辑器界面 W3、示例与冒烟 W4 已实装）
+- [Registry](/cli#registry)：第三阶段 R 系列配置仓库（本地发布/列表 + `registry:` 源与 Schema 解析 + `[dependencies]` 版本 pin + 远程解析 + verify 全册审计 / gc 滚动窗口 / remove 显式移除，R1–R4 已实装；A 系列 bundle 导出/导入 + `registry push` 直推远端已实装）

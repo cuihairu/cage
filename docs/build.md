@@ -34,7 +34,7 @@ Build(A) == Build(A)
 - 随机 ID
 - 非稳定排序
 
-落地口径：内部一律 `BTreeMap` / 稳定排序，产物字节级可复现（golden 测试：同输入两次构建字节级一致），禁止时间戳与随机 ID 进入产物。
+落地口径：`IndexMap` 保序 + 显式稳定排序（对象键经 `BTreeMap` 规范化），产物字节级可复现（golden 测试：同输入两次构建字节级一致），禁止时间戳与随机 ID 进入产物。
 
 ## Build Manifest
 
@@ -113,7 +113,7 @@ Monster
 
 这个依赖图可以用于：
 
-- 引用检查（L5 校验产出引用拓扑）
+- 引用检查（L5 校验消费引用拓扑）
 - 构建顺序
 - 增量构建（第二层：变更影响传播）
 - 变更影响分析
@@ -122,9 +122,10 @@ Monster
 - 调试
 
 现状：核心类型与算法已实装并有测试（reference/mod.rs：`DependencyGraph` /
-`IncrementalPlanner`、环检测、拓扑、增量规划），构建路径已接线——L5
-校验产出真实引用图（`DependencyGraph::from_schema`），cli 构建用它做增量
-第二层决策，manifest 落 `dependencies` 引用账。核心与 cli 的接线覆盖在
+`IncrementalPlanner`、环检测、拓扑、增量规划），构建路径已接线——引用图由
+schema 引用声明经 `DependencyGraph::from_schema` 构建（先于且独立于 L5
+校验运行），L5 校验与 cli 增量第二层共同消费它，manifest 落
+`dependencies` 引用账。核心与 cli 的接线覆盖在
 tests/incremental.rs（含第二层端到端：变更传播 + 携带 + manifest 收敛）。
 
 ## 增量构建
@@ -138,7 +139,8 @@ tests/incremental.rs（含第二层端到端：变更传播 + 携带 + manifest 
 一次全量构建。
 
 **第二层：依赖图传播（v0.3 实装）。** 当 schema 哈希未变（schema 驱动
-code-target 形态，schema 变则整体回退全量）、`table_hashes` 非空且没有
+code-target 形态，schema 变则整体回退全量）、prev 与当前 profile 相同、
+`table_hashes` 非空且没有
 删除表时，按表哈希找出变更表，经依赖图
 （`IncrementalPlanner::compute_affected`）传播出受影响表集合，只重建这
 些表：
@@ -150,8 +152,9 @@ code-target 形态，schema 变则整体回退全量）、`table_hashes` 非空�
   与全量构建逐字节一致（确定性契约）。
 
 回退全量的条件：prev 无 `table_hashes`（旧版 manifest）、删除过表（prev
-表集合 ⊄ 当前 —— 避免把过期产物错误携带）、携带产物缺文件或读失败
-（warn 后回退）。
+表集合 ⊄ 当前 —— 避免把过期产物错误携带）、携带产物读失败（warn 后
+回退全量）。携带产物缺文件不算回退：缺文件的表在计算受影响集合前已
+视为变更，随受影响表定向重生成。
 
 例如 `Item.xlsx` 修改，影响：
 
@@ -216,7 +219,7 @@ server
    ↓
 verify HASHES.json（逐文件重哈希比对，缺/错/多文件均报）
    ↓
-load（manifest + schema + data/generated 产物的惰性映射）
+load（manifest + schema + data/generated 产物全量读入映射）
    ↓
 load configuration
 ```

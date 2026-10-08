@@ -1,6 +1,9 @@
 # Schema：结构定义
 
-Schema 定义配置的结构和约束：字段、类型、必填、默认值、范围、枚举、数组、对象、唯一性、引用、输出信息。它是独立于输入源的 DSL 文件（YAML），不依附于任何一种 Source。
+Schema 定义配置的结构和约束：字段、类型、必填、默认值、范围、枚举、数组、对象、唯一性、引用、输出信息。它是独立于输入源的 DSL 文件（YAML 或 JSON，`schema_path` 可为单文件或目录——目录下按文件名序合并加载全部 `yaml`/`yml`/`json`），不依附于任何一种 Source。
+
+> 本文示例均为实际 wire 格式，可直接装载。可运行的完整工程见
+> [`examples/game-config/schemas/`](https://github.com/cuihairu/cage/blob/main/examples/game-config/schemas)。
 
 ## Schema 与 Source 解耦
 
@@ -31,56 +34,99 @@ CSV + Schema
 
 ## DSL 示例
 
+Schema 文件的根键是 `tables` / `enums` / `metadata`。每张表必须带
+`name` 与 `primary_key`，每个字段必须带 `name`：
+
 ```yaml
-table: Item
+tables:
+  Item:
+    name: Item
+    description: 道具表
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: UInt32 }, required: true, min: 1 }
+      title: { name: title, type: { kind: String }, required: true, max_length: 64 }
+      price: { name: price, type: { kind: UInt32 }, min: 0 }
+      type:
+        name: type
+        type: { kind: Enum, value: ItemType }
+        required: true
 
-primary_key: id
-
-fields:
-  id:
-    type: uint32
-    required: true
-
-  name:
-    type: string
-    required: true
-
-  price:
-    type: uint32
-    min: 0
-
-  type:
-    type: enum
+enums:
+  ItemType:
+    name: ItemType
     values:
-      - Weapon
-      - Armor
-      - Consumable
+      - { name: Weapon, value: 1 }
+      - { name: Armor, value: 2 }
+      - { name: Consumable, value: 3 }
 ```
 
 字段间可以声明引用关系：
 
 ```yaml
-DropItemID:
-  type: uint32
-
-  reference:
-    table: Item
-    field: ID
+      drop_item_id:
+        name: drop_item_id
+        type: { kind: UInt32 }
+        reference:
+          table: Item
+          field: id
 ```
 
-## 字段约束清单（MVP）
+`reference` 还有三个可选子键：`predicate`（引用对象须满足的语义谓词，
+求值器当前为占位、恒通过）、`cardinality`（`one`/`many`/`optional`，
+默认 `one`，基数校验预留未接线）、`compatible_with`（引用对象类型
+兼容性检查，产出 `E1411`）。
+
+## 字段类型（19 种）
+
+类型一律写成 adjacent-tag 形态 `type: { kind: X }`（带参数的类型在
+`value` 里传参）；小写标量形态（`type: uint32`）**无法解析**：
+
+| kind | 说明 |
+| --- | --- |
+| `Null` / `Bool` | 空值 / 布尔 |
+| `Int8` `Int16` `Int32` `Int64` | 有符号整数 |
+| `UInt8` `UInt16` `UInt32` `UInt64` | 无符号整数 |
+| `Float32` `Float64` | 浮点数 |
+| `String` / `Bytes` | UTF-8 字符串 / 原始字节 |
+| `Array` | 数组，`value` 为元素类型：`{ kind: Array, value: { kind: Int32 } }` |
+| `Object` | 对象，`value` 为属性表：`{ kind: Object, value: { x: { kind: Int32 } } }` |
+| `Map` | 映射 `map<K,V>`，`value: { key_type: string\|int, value_type: { kind: … } }`，可嵌套 |
+| `Enum` | 命名枚举引用，`value` 为枚举名（须在顶层 `enums:` 注册） |
+| `Any` | 任意值 |
+
+## 字段约束清单
 
 | 约束 | 说明 |
 | --- | --- |
-| `type` | 字段类型：`uint32` / `int64` / `float` / `string` / `bool` / `enum` / `array` / `object` / `map` 等 |
+| `type` | 字段类型（见上表，`{ kind: X }` 形态） |
 | `required` | 必填（缺失报 `E1001`） |
-| `default` | 默认值（缺省时填充） |
-| `enum` / `values` | 枚举取值域 |
-| `min` / `max` | 数值范围 |
-| `min_length` / `max_length` | 字符串长度范围 |
-| `regex` | 正则匹配 |
-| `unique` | 唯一性 |
-| `primary_key` | 主键（表级） |
-| `reference` | 跨表引用（`table` + `field`） |
+| `default` | 声明缺省值；当前用于 `E9006` 可见性豁免与生成代码的成员初始值，**数据行缺失该字段仍按 `E1001` 报错**（不做数据回填） |
+| `min` / `max` | 数值范围（`E1201`） |
+| `min_length` / `max_length` | 字符串长度范围（`E1201`） |
+| `pattern` | 字符串须匹配的正则（`E1203`）。注意：写 `regex:` 会被当作自定义元数据**静默忽略** |
+| `enum_values` | 内联枚举取值域（`E1204`）。注意：写 `values:` 会被静默忽略；命名枚举走顶层 `enums:` + `{ kind: Enum, value: 名 }` |
+| `min_items` / `max_items` | 数组元素个数范围（`E1205`） |
+| `items` | 数组元素的字段 schema（递归） |
+| `properties` / `additional_properties` | 对象属性 schema 与未知键开关 |
+| `reference` | 跨表引用（`table` + `field`，`E1401`；见上文子键说明） |
+| `targets` | 字段对哪些 profile 可见（空 = 全部；`"*"` 等价空；被隐藏的结构必需字段报 `E9006`） |
+| `rules` | 字段级语义规则（`name`/`assert`/`message`/`warning_only`；表达式求值器当前为占位、恒通过） |
 
-Schema 校验由 [Validation 流水线](/validation) 的 L1-L3 层执行。
+## 表级约束
+
+| 约束 | 说明 |
+| --- | --- |
+| `name` / `description` | 表名（必填）与描述 |
+| `primary_key` | 主键字段列表（必填；重复报 `E1301`） |
+| `unique_constraints` | 组合唯一约束列表：`- { name: name_unique, fields: [name] }`（`E1302`）。注意：字段上没有 `unique:` 键，写了会被静默忽略 |
+| `order_by` | 行排序要求：字段名列表（`E1304`） |
+| `targets` | 表对哪些 profile 可见（空 = 全部；整表剔除或隐藏必需表报 `E9006`） |
+
+未知键不会报错——经 `#[serde(flatten)]` 落入自定义元数据。写错约束键
+名（如 `regex`、`values`、字段级 `unique`）因此**静默无效**，校验时
+该约束形同不存在。
+
+Schema 校验由 [Validation 流水线](/validation) 分级执行：required 在
+L1、类型在 L2、值域（min/max/length/pattern/enum/items）在 L3、唯一性
+与主键在 L4、跨表引用在 L5。

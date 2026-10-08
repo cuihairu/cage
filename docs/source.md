@@ -18,7 +18,7 @@ Source Adapter 是 Cage 的输入插件。每种输入格式一个 Adapter，统
 
 > **Source Adapter 只负责读取和解析，不负责游戏业务逻辑。**
 
-类型猜测（例如 CSV 里 `100` 是数字还是字符串）交给 Schema 校准；Source 不做业务校验、不做转换决策。
+文本类源在解析期做基础类型推断（如 CSV 里 `100` 推断为整数、`true` 推断为布尔），Schema 随后在 L2 按目标类型**严格**校验（族不匹配即 `E1101`，不做字符串↔数字重校准——数值文本写进 String 列会报类型错误）；Source 不做业务校验、不做转换决策。
 
 ## 第一阶段支持
 
@@ -42,7 +42,7 @@ Skill.xlsx
 Quest.xlsx
 ```
 
-Excel Adapter（基于 [calamine](https://crates.io/crates/calamine) 读取）可以处理：
+Excel Adapter（基于 [calamine](https://crates.io/crates/calamine) 读取 `.xlsx`/`.xlsm`/`.ods`）可以处理：
 
 - Workbook
 - Worksheet
@@ -50,13 +50,14 @@ Excel Adapter（基于 [calamine](https://crates.io/crates/calamine) 读取）�
 - Cell
 - Row
 - Column
-- Merged Cells（合并单元格）
+- Merged Cells（合并单元格回填；仅 `.xlsx`，`.ods` 不做）
 - Formula（公式缓存值，不重算）
-- Comment
 - Cell Type
-- Sheet Metadata
 
-错误定位精确到单元格（如 `monster.xlsx Sheet Monster Cell G27`）。
+单元格注释（Comment）与表级元数据（Sheet Metadata）未实装。
+
+错误定位精确到单元格（诊断 `Source` 字段渲染形如
+`monster.xlsx | Sheet: Monster | Row: 27 | Col: G`）。
 
 最终转换成：
 
@@ -72,12 +73,26 @@ Document
 
 - 以表头行定义列名，行为数据行
 - 定位到表头名 + 行号
-- 所有单元格初始按字符串读取，类型由 Schema 校准
+- 解析期做类型推断：`true`/`false`/`yes`/`no` → Bool，整数与浮点文本 →
+  Int/UInt/Float，空单元格 → Null，其余 → String；Schema 在 L2 按目标
+  类型严格校验（数值文本进 String 列会报 `E1101`，引号是 CSV 语法、
+  不改变内容类型）
 
 ### JSON / YAML
 
 - 天然树形结构，直接映射到 Canonical Model
+- YAML 根形态：顶层 Sequence（元素为 Mapping）按多表读，顶层 Mapping
+  按单行表读，null 跳过；支持 `<<: *anchor` 合并键展开
 - 保留路径定位：文本格式错误（YAML 语法错误等）精确到行号（错误码 `E0001` 族）
+
+### 源目录装载范围
+
+`[source_roots]` 目录发现收集 `json` / `yaml` / `yml` / `csv` /
+`xlsx` / `xls` 扩展名；其中 `.xls` 旧格式被收集后按 `E0001` 拒绝，
+`.xlsm`/`.ods` 不在目录收集清单内（目录模式下被静默忽略——单文件
+`schema_path`/`source` 显式指定时适配器本身支持 `.xlsx`/`.xlsm`/`.ods`）。
+远程源根（`registry:`，见 [CLI · registry](/cli#registry)）同样可作
+`[source_roots]` 取值。
 
 ### HTTP API（远程源，S1）
 

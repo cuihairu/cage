@@ -83,10 +83,10 @@ Missing required field:
     price
 ```
 
-未知字段：
+未知字段（默认告警，`warnings_as_errors = true` 时升级为错误）：
 
 ```text
-ERROR E1002
+WARNING E1002
 
 Item[10001]
 
@@ -96,7 +96,7 @@ Unknown field:
 
 ### E9006 字段可见性冲突（Profile 语义化）
 
-`targets` 决定字段/表在哪些 profile 的视图里可见（空 = 全 profile）。
+`targets` 决定字段/表在哪些 profile 的视图里可见（空 = 全 profile；`"*"` 通配等价空）。
 裁剪对视图是常规操作，但**结构上不可缺的字段被 profile 隐藏就是冲突**，
 报 `E9006` 而不是静默过滤：
 
@@ -129,7 +129,9 @@ Level = "abc"
 Schema：
 
 ```yaml
-type: uint32
+      level:
+        name: level
+        type: { kind: UInt32 }
 ```
 
 错误：
@@ -140,7 +142,7 @@ ERROR E1101
 Item[10001].Level
 
 Expected:
-    uint32
+    UInt32
 
 Actual:
     string
@@ -159,10 +161,11 @@ Map 字段的键值逐项校验：键按 `key_type` 门控（string 键恒合法
 类型正确也不代表值合理。Schema：
 
 ```yaml
-level:
-  type: uint32
-  min: 1
-  max: 100
+      level:
+        name: level
+        type: { kind: UInt32 }
+        min: 1
+        max: 100
 ```
 
 数据：
@@ -185,15 +188,14 @@ Allowed range:
 支持的值约束：
 
 ```text
-min
-max
-min_length
-max_length
-regex
-enum
-unique
-required
+min / max               数值范围（E1201）
+min_length / max_length 字符串长度（E1202）
+pattern                 正则匹配（E1203）
+enum_values             枚举取值域（E1204；命名枚举的成员资格同走此层）
+min_items / max_items   数组元素个数（E1205）
 ```
+
+`unique` 属 L4（E1301/E1302）、`required` 属 L1（E1001），不在本层。
 
 ## L4 Table（表级）
 
@@ -222,10 +224,8 @@ Rows:
 还可以检查：
 
 ```text
-组合唯一
-字段组合约束
-排序要求
-空值规则
+组合唯一（unique_constraints，E1302）
+排序要求（order_by，E1304）
 ```
 
 ## L5 Reference（引用）
@@ -253,12 +253,12 @@ ID       DropItemID
 Schema：
 
 ```yaml
-DropItemID:
-  type: uint32
-
-  reference:
-    table: Item
-    field: ID
+      drop_item_id:
+        name: drop_item_id
+        type: { kind: UInt32 }
+        reference:
+          table: Item
+          field: id
 ```
 
 Cage：
@@ -286,10 +286,10 @@ Monster.DropItemID
 Item.ID
 ```
 
-Item 存在（`Item[10001]`），但 `Item[10001].Type = QuestItem`，而 Monster 掉落只允许 `Weapon / Armor / Consumable`。这时候应该继续报告：
+Item 存在（`Item[10001]`），但 `Item[10001].Type = QuestItem`，而 Monster 掉落只允许 `Weapon / Armor / Consumable`。用 `compatible_with` 声明目标字段须兼容的取值，违反报 `E1411`：
 
 ```text
-ERROR E1410
+ERROR E1411
 
 Monster[20001].DropItemID = 10001
 
@@ -309,8 +309,8 @@ Reference 的检查面分五类，实装状态：
 
 ```text
 Existence        存在性          已实装（E1401）
-Type             引用对象类型     已实装（E1410）
-Predicate        谓词约束         已实装（E1410/E1411）
+Type             引用对象类型     已实装（E1411，compatible_with）
+Predicate        谓词约束         预留（求值器占位恒通过，E1410 现不可触发）
 Cardinality      基数            预留（E1404，未接线）
 Compatibility    兼容性          已实装（E1411，字段级约束）
 ```
@@ -331,15 +331,18 @@ Monster.DropTableID 必须存在
 可以定义表达式规则：
 
 ```yaml
-rules:
-  - name: level_range
-    assert: min_level <= max_level
-
-  - name: price_range
-    assert: sell_price <= buy_price
+      level:
+        name: level
+        type: { kind: Int32 }
+        rules:
+          - name: level_range
+            assert: min_level <= max_level
 ```
 
-违反断言报 `E1501`，定位到行级。
+规则声明会随 Schema 解析（`name`/`assert`/`message`/`warning_only`
+齐全）；表达式求值器当前为**占位实现（恒通过）**，断言为假的行暂不
+报 `E1501`——求值器接线前该码不可触发。需要真正的跨字段语义校验
+时，用 L7 业务规则插件。
 
 ## L7 Game Rule（业务插件，已实装）
 
@@ -387,9 +390,10 @@ trait → 动态库 → 沙箱）与信任边界见
 这些层级不是必须全部执行：
 
 ```bash
-cage check                      # 执行完整验证
+cage check                      # 执行 L0–L6（默认 --level semantic）
 cage check --level schema       # 只做 Schema 层
 cage check --level reference    # 只做到引用层
+cage check --level gamerule     # 加上 L7 业务规则插件
 ```
 
 详见 [CLI](/cli)。
@@ -412,37 +416,17 @@ Message
 Hint
 ```
 
-完整示例：
+完整示例（实际渲染形态）：
 
 ```text
-ERROR E1401
-
-File:
-    monster.xlsx
-
-Sheet:
-    Monster
-
-Cell:
-    G27
-
-Row:
-    Monster[20003]
-
-Field:
-    DropItemID
-
-Value:
-    99999
-
-Reference:
-    Item.ID
-
-Message:
-    Target does not exist.
-
-Hint:
-    Add Item[99999] or change DropItemID.
+ERROR E1401 — Reference Target Missing
+  Source: config/Monster.json | Sheet: Monster | Col: G27
+  Table: Monster
+  Row: 20003
+  Field: DropItemID
+  Value: 99999
+  Message: reference target not found: Item.id = 99999
+  Hint: Add Item[99999] or change DropItemID.
 ```
 
 严重级别支持：
@@ -483,7 +467,7 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 
 | 代码 | 含义 |
 | --- | --- |
-| `E0001` | 语法错误 |
+| `E0001` | 语法错误（另：L1 对「schema 有 required 字段但文档缺整表」复用本码发 Warning） |
 | `E0002` | 输入意外结束（预留） |
 | `E0003` | 字符编码非法（预留） |
 | `E0004` | 结构畸形（如 YAML 映射错误） |
@@ -495,7 +479,7 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 | `E1001` | 缺少必填字段 |
 | `E1002` | Schema 未定义的未知字段 |
 | `E1003` | Schema 字段重复定义（预留） |
-| `E1004` | Schema 定义非法（如循环引用） |
+| `E1004` | Schema 自身引用悬空（pk/unique/枚举/引用指向不存在的字段、枚举或表；仅 Web API 装载路径执行，表间循环依赖在构建排序期以无码错误报告） |
 | `E1005` | Schema 文件缺失或不可读（预留） |
 
 ### L2 Type
@@ -535,14 +519,14 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 | `E1402` | 引用已删除实体（预留） |
 | `E1403` | 循环引用（预留） |
 | `E1404` | 基数违规（预留） |
-| `E1410` | 引用对象存在但语义谓词不满足 |
+| `E1410` | 引用对象存在但语义谓词不满足（预留：谓词求值器占位恒通过，现不可触发） |
 | `E1411` | 引用对象字段约束违规 |
 
 ### L6 Semantic
 
 | 代码 | 含义 |
 | --- | --- |
-| `E1501` | 断言表达式为假 |
+| `E1501` | 断言表达式为假（预留：表达式求值器占位恒通过，现不可触发） |
 | `E1502` | 跨字段约束违规（预留） |
 | `E1503` | 表达式求值错误（如除零）（预留） |
 

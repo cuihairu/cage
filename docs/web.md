@@ -45,7 +45,8 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 ### 无 node 前端工具链
 
 前端是 `docs/public` 下静态单页（vanilla ES 模块），`cage web` 直接
-伺服。仓库不引入 Node/npm 构建链，cargo 一键即得编辑器。
+伺服。编辑器链路不引入 Node/npm 构建链，cargo 一键即得（文档站自身
+用 VitePress 构建，与编辑器无关）。
 
 ## 现状
 
@@ -72,7 +73,9 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       （`Diagnostics` serde 的 `{"items": [...]}` 壳在 API 层摊平）
 - [x] `POST /api/schema`：canonical YAML 写回。单文件 `schema_path`
       直接覆盖；目录（多文件 schema）→ 409 拒写（编辑器不重写
-      作者侧拆分）；未配置 → 写 `schema.yaml` + note 提醒接线
+      作者侧拆分）；`registry:` 开头的 `schema_path` 同样 409（已发布
+      entry 的 schema 不在编辑器改，须回发布方工程重发布）；未配置 →
+      写 `schema.yaml` + note 提醒接线
       cage.toml（服务器绝不改配置文件）
 - [x] 集成测试（crates/cage-cli/tests/web.rs）：真实子进程 + 原始
       TCP 请求，覆盖文档伺服 / E1701+E1004 校验 / 保存后重载与
@@ -98,11 +101,11 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       严重级配色计数；点诊断 → 定位字段（`data-path` 精确锚点 +
       滚动高亮）；保存被拒（E1701）诊断同样入面板
 - [x] 保存：Ctrl/Cmd+S 或保存按钮 → `POST /api/schema`；未保存标记 +
-      beforeunload 拦截；409（目录 schema_path）/ 未接线 note /
-      500 均以错误 toast 呈现
-- [x] 外科手术式文档编辑：未知/遗留键（如 fuzzyField 的 items/properties
-      旧字段）原样保留，只改可控键，与「编辑器 JSON ≡ canonical 形状」的
-      交换契约一致；保存全程不经前端渲染 YAML
+      beforeunload 拦截；409（目录或 `registry:` schema_path）/ 未接线
+      note / 500 均以错误 toast 呈现
+- [x] 外科手术式文档编辑：未知/遗留键原样保留，只改可控键，与
+      「编辑器 JSON ≡ canonical 形状」的交换契约一致；保存全程不经
+      前端渲染 YAML
 - [x] 集成测试：GET / 返回嵌入编辑器页（含模块/样式引用）、/app.js、
       /app.css 伺服与 404；测试原始客户端补 chunked 解码
       （tiny_http 大响应走 chunked，分块边界可切开 UTF-8 序列）

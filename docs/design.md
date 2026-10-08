@@ -1126,9 +1126,10 @@ Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义�
   官方各语言统一的发射序）；`generate_with_setup` 开出 setup 钩子
   （`generate` = 无钩子特例）。语言层（各 `cage-target-*` crate 暴露
   `pub fn register_filters(tera, schema[, holder])`）：七语言
-  `{lang}_type`（字段对象 → 官方同款类型文本，枚举引用带分配后标识符）
-  + 六语言 `{lang}_default`（字段对象 → 官方同款字面量，无默认 / 不可
-  渲染 → null；lua 的类型面是标签）；CLI `options.lang_filters`
+  `{lang}_type`（字段对象 → 官方同款类型文本，枚举引用带分配后标识符；
+  lua 的类型面是标签）+ 七语言 `{lang}_default`（字段对象 → 官方同款
+  字面量，无默认 / 不可
+  渲染 → null）；CLI `options.lang_filters`
   （逗号分隔，未知键渲染前报错退码 2）挂载，java 的 holder 从
   `options.enums_file` stem 推导（与 from_config 同源）。枚举分配
   重构为零行为变化提取：go `allocate_names` / cpp `allocate_names`
@@ -2224,7 +2225,8 @@ fetch
 ```
 
 source_hash 覆盖的是解析后的 Canonical Model 内容（表名 / 行序 /
-主键 / 字段，`manifest::hash_source` 同一把尺子）。远端数据变了，
+主键 / 字段，`ManifestGenerator::input_hashes` → 私有
+`hash_source` 同一把尺子）。远端数据变了，
 解析出的内容就变，source_hash 跟着变，build_id 旋转——变化在
 manifest 里看得见，不存在「悄悄换了数据」；同字节重复构建仍逐字节
 一致，golden 契约不破。源指纹复用 R3 的 `cache_key` 口径（URL 的
