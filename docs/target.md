@@ -163,7 +163,7 @@ output_dir = "build/cs"
 file_template = "{table}.cs"
 
 [profiles.client.targets.options]
-namespace = "Game.Config"    # 默认 Cage.Generated
+namespace = "Cage.Generated"  # 默认即此值
 enums_file = "CageEnums.cs"  # 默认 CageEnums.cs
 ```
 
