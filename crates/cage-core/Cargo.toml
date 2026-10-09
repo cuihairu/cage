@@ -29,4 +29,9 @@ tempfile = { workspace = true }
 # Remote Source (§45): the shared HTTP GET lives here so every remote
 # consumer (registry + source adapters) runs one retry policy.
 ureq = { workspace = true }
+# §47 A6: ed25519 detached bundle signatures (export --sign / import
+# --verify-sig) + keygen; keys travel as env-var bytes only
+ed25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+base64 = { workspace = true }
 

@@ -2464,8 +2464,11 @@ registry push`，探针 + 逐文件 PUT + index 远端合并）均已交付，E2
 `export_bundle` 增 `compression` 参数（CLI `--compress zstd`，固定级别 19
 单 zstd 帧，同 tar + 同级别 + 同 zstd 库版本 → 同容器字节），`import_bundle`
 按帧魔数嗅探容器（不看扩展名，账本哈希解压后内容，两种形态信任门同判）；
-push 不变（推单文件不推 bundle）；下方接口块与签名以实装
-为准。
+push 不变（推单文件不推 bundle）；A6 签名账本已补齐——`cage registry
+keygen`（种子只落用户指定文件、公钥上 stdout）、`export --sign
+--key-env`（`<bundle>.sig` 分离式 ed25519 签名）、`import --verify-sig
+--key-env`（账本信任门前的签名门），E2106/E2107 接线，共七码（下方
+接口块与签名以实装为准）。
 
 **决策记录（2026-10 拍板，同 §46 授权口径）**
 
@@ -2498,7 +2501,26 @@ push 不变（推单文件不推 bundle）；下方接口块与签名以实装
   顾虑后被证实不适用于 bulk 单帧编码：帧头无时间戳、无字典态；已实装——
   `--compress zstd` 固定级别 19 单帧包裹确定性 tar，容器字节同库版本内
   逐字节可复现，导入按帧魔数嗅探，见实装状态）。
-- **服务端约定（文档化，不实现）**：GET `<root>/<包>/index.json` 匿名
+- **实装决策记录（签名账本 A6，随码补充）**：
+
+- **签名挂在 bundle 字节层，不在账本文件层**：HASHES.json 账本依然是
+  完整性锚（导入信任门不变），ed25519 分离式签名覆盖 bundle **落盘
+  精确字节**（纯 tar / zstd 容器同判）——签名对象包含账本，账本本身
+  被篡改也会连带验签失败，不引入第二份可信清单。
+- **sidecar 的 public_key 不是信任锚**：`<bundle>.sig` 里的公钥只为
+  人类核对与传输便利；验证永远钉死在消费方 `--key-env` 带来的钥匙上
+  ——「谁可信」由消费方决定，签名只回答「谁签的」。没有可信钥就不
+  跑（`--verify-sig` 强制 `--key-env`，clap `requires`），不做「信
+  sidecar 自身公钥」的静默降级——那等于只验完整性，把抗抵赖卖掉。
+- **密钥纪律**：密钥只从环境变量读（base64 32 字节种子/公钥），不进
+  cage.toml、不进日志；`keygen` 的种子只写 `-o` 指定文件（unix 0600，
+  尽力而为不阻断），stdout 永不出种子。E2106（密钥材料不可用）与
+  E2107（验签不过 / sidecar 缺失畸形 / 算法不认）分码——拿不到钥匙与
+  钥匙对不上是两类失败。
+- **签名门在账本门之前**：不可归因的 bundle 先拒绝，再谈完整性——
+  顺序决定失败信息：E2107 先于 E2103/E1801 出现。
+
+**服务端约定（文档化，不实现）**：GET `<root>/<包>/index.json` 匿名
   作状态探针（404 = 包不存在）；PUT `<root>/<包>/<版本>/<文件>` 逐文件
   上传，条目全部成功后 PUT `<root>/<包>/index.json`（服务端应整体替换
   该文件——客户端已合并远端现有条目）；405/501 = 服务端未实现写通道
@@ -2508,8 +2530,8 @@ push 不变（推单文件不推 bundle）；下方接口块与签名以实装
 
 **能力边界**：export / import / push 只动「已入册条目」——不重新构建
 （发布仍是 `cage registry publish`，本地根专属）；读路径保持 R3 匿名
-只读；不做服务端实现、不做增量 delta、不做签名（blake3 账本已是完整性
-锚，抗抵赖签名留待实现期）。
+只读；不做服务端实现、不做增量 delta。签名已实装（A6 ed25519 分离式
+签名，见实装状态）——blake3 账本仍是完整性锚，签名在其上加抗抵赖。
 
 **接口**：
 
@@ -2520,10 +2542,14 @@ cage-core::registry 增
 │    # compression = Plain | Zstd（固定级别 19 单帧）
 ├── import_bundle(root, file, dry_run)          # verify_snapshot 信任门
 │    # → 入册（坏账本 E2103；同字节幂等、异字节 E1801）
-└── push_entry(source_root, remote_root, package, version, auth_env,
-               dry_run)
-     # resolve_entry + 账本重建 index 记录 → 匿名探针 GET 远端包 index
-     #   （同 hash 幂等早退 / 异 hash E1801 / 404 空远端 / 401·403 E2102）
+├── push_entry(source_root, remote_root, package, version, auth_env,
+│              dry_run)
+│    # resolve_entry + 账本重建 index 记录 → 匿名探针 GET 远端包 index
+│    #   （同 hash 幂等早退 / 异 hash E1801 / 404 空远端 / 401·403 E2102）
+└── 签名账本（A6）：generate_signing_key + key_material（keygen，种子只落
+     用户指定文件）、signing_key_from_env / verifying_key_from_env（E2106
+     密钥材料不可用）、sign_bundle_bytes / verify_bundle_bytes（E2107
+     验签不过）、read/write_bundle_signature（`<bundle>.sig` sidecar）
      # → 逐文件 PUT（remote::http_put，RetryPolicy 与 http_get 同口径，
      #   Bearer 仅随 PUT）→ index 合并远端条目最后 PUT
      # E2101 传输 / 远端 index 不可读 / 非 http(s) 根
@@ -2532,19 +2558,22 @@ cage-core::registry 增
      # E2105 凭据缺失（env 未设或空，网络触达前失败）
      # dry_run 走完整本地读 + 状态探针，零 PUT
 
-cage registry export <pkg>[@<ver>] -o <file> [--compress zstd] [--registry <local-root>]
-cage registry import <file> [--registry <local-root>] [--dry-run]
+cage registry export <pkg>[@<ver>] -o <file> [--compress zstd]
+    [--sign --key-env <VAR>] [--registry <local-root>]
+cage registry import <file> [--verify-sig --key-env <VAR>] [--registry <local-root>] [--dry-run]
+cage registry keygen -o <file>
 cage registry push <project> [pkg[@ver]] --registry <remote-root>
     [--auth-env <VAR>] [--dry-run]
 ```
 
 **错误码（E21xx 族）**：E2101 分发传输 / 条目读取失败 / E2102 鉴权被拒
 （HTTP 401/403）/ E2103 bundle 账本校验失败 / E2104 服务端拒写（405 /
-409 / 明确 4xx）/ E2105 push 凭据缺失（auth_env 未设）。全族随 A1 起
-逐签进 `codes.rs` 的 `error::codes::distribution` 模块 + validation.md，
-每码一 doc；A3 收口时五码全部转已接线。
+409 / 明确 4xx）/ E2105 push 凭据缺失（auth_env 未设）/ E2106 签名密钥
+不可用（A6）/ E2107 bundle 签名校验失败（A6）。全族随 A1 起逐签进
+`codes.rs` 的 `error::codes::distribution` 模块 + validation.md，每码
+一 doc；A6 收口时七码全部转已接线。
 
-**留待实现期**：签名账本（ed25519，抗
-抵赖）、增量 delta 分发、S3 presigned 直推、pull-through 缓存代理。
-（压缩容器已实装——固定级别 19 的 bulk 编码本就不依赖字典态，「zstd
-确定性字典」变体随之失效。）
+**留待实现期**：增量 delta 分发、S3 presigned 直推、pull-through 缓存
+代理。（压缩容器已实装——固定级别 19 的 bulk 编码本就不依赖字典态，
+「zstd 确定性字典」变体随之失效；签名账本已随 A6 实装——见实装状态与
+A6 决策记录。）

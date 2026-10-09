@@ -178,8 +178,9 @@ cage registry list    --registry <dir>
 cage registry verify  --registry <dir>
 cage registry gc      --registry <dir> [--keep 3] [--dry-run]
 cage registry remove  <package> <version> --registry <dir> [--dry-run]
-cage registry export  <package>[@<version>] -o <file> --registry <dir>
-cage registry import  <file> [--dry-run] --registry <dir>
+cage registry export  <package>[@<version>] -o <file> --registry <dir> [--compress zstd] [--sign --key-env VAR]
+cage registry import  <file> [--verify-sig --key-env VAR] [--dry-run] --registry <dir>
+cage registry keygen  -o <file>
 cage registry push    <project> [package[@version]] --registry <remote-url> [--auth-env VAR] [--dry-run]
 ```
 
@@ -293,6 +294,17 @@ cage registry export common -o common.tar.zst --compress zstd --registry ../regi
 只收字面量 `zstd`，其他值按参数错误退出 2；不带该参数仍是纯 tar，行为
 不变。
 
+`--sign` 在导出落盘后对 bundle **文件字节**做一次 ed25519 签名，把
+分离式签名写到 `<bundle>.sig`（JSON：`algorithm`/`public_key`/
+`signature`，base64）。签名覆盖精确字节——纯 tar 与 zstd 容器都按落盘
+字节签，文件任何一处被改动都无法通过验证。签名密钥只从 `--key-env`
+命名的环境变量解析（32 字节 Ed25519 种子的 base64；密钥不进
+cage.toml、不进日志）——`--sign` 缺 `--key-env` 是用法错误退出 2，
+密钥未设 / 空 / 非 base64 / 长度不对 → `E2106`。配套
+`cage registry keygen -o <file>` 生成新密钥对：种子（私密）只写入
+`-o` 指定的文件（unix 下 0600 权限）、永不打印，stdout 只出公钥与
+export/import 的环境变量用法两行。
+
 导出只读注册表，不重新构建（发布仍是 `cage registry publish`）；包或
 版本不存在、条目缺账本、bundle 写不出 → `E2101`。远程根不支持导出
 （只读协议无文件枚举），远端消费走 `registry:` 源解析。
@@ -315,6 +327,15 @@ content_hash / 文件数一致）→ 通过后走与 publish 相同的入册路�
 
 导入目标是本地根（导入即写入，远程根不收写）；`--dry-run` 跑完整
 信任门并报告将入册的条目与文件数，不写任何字节。
+
+`--verify-sig --key-env <VAR>` 在账本信任门**之前**先过签名门：读
+`<bundle>.sig` 分离式签名，用消费方自己带来的可信公钥（32 字节
+Ed25519 公钥的 base64，从环境变量解析）验证 bundle 文件字节。
+**sidecar 里随行的 public_key 不是信任锚**——验证只认 `--key-env`
+给的钥匙；签名验不过、sidecar 缺失或畸形、算法名不认 → `E2107`，
+bundle 不触碰注册表。blake3 账本保证完整性（字节没被改过），ed25519
+签名在其上加**抗抵赖**（能证明哪个密钥产出了这份 bundle）——两层各
+管一事，都过才算过。
 
 导入按**文件头**嗅探容器形态，不看扩展名：头四字节是 zstd 帧魔数
 （`28 B5 2F FD`）就先解压再解 tar，否则按纯 tar 解析，两种容器在任何

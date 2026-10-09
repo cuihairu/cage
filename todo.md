@@ -349,6 +349,24 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       + 头四字节魔数 + 重导 no-op；--compress gzip exit 2 零落笔）
       ——本轮交付，勾选
 
+- [x] A6 签名账本（§47 留待实现期：ed25519 抗抵赖签名）：
+      `cage registry keygen -o <file>`（种子只落 `-o` 文件 unix 0600、
+      永不上 stdout；公钥 + 环境变量用法上 stdout）+ `cage registry
+      export --sign --key-env <VAR>`（bundle 落盘字节整体 ed25519 签名 →
+      `<bundle>.sig` 分离式 sidecar，JSON algorithm/public_key/signature）
+      + `cage registry import --verify-sig --key-env <VAR>`（账本信任门
+      之前的签名门——sidecar 随行公钥非信任锚，验证只钉消费方 env 钥匙，
+      缺钥匙不跑、无静默降级）；密钥只走环境变量（base64 32 字节），不进
+      cage.toml、不进日志；E2106（密钥材料不可用）/ E2107（sidecar 缺失
+      畸形、算法不认、验签不过）接线进 codes.rs + validation.md；
+      ed25519-dalek =2.2.0（rand_core feature，离线缓存全链可解）+
+      rand_core 0.6.4（getrandom）+ base64 0.22；验收已过：core 单测×3
+      （签验往返/篡改与他钥拒绝/坏密钥材料 E2106/sidecar 往返与 0600）
+      + CLI 集成×1（keygen→export --sign→import --verify-sig 全流程 +
+      篡改字节/缺 sidecar/他钥 bundle/坏 env 四类拒绝）+ parse 单测
+      （--sign/--verify-sig 与 --key-env clap requires 方向）——本轮
+      交付，勾选
+
 ### M 系列：Migration（2026-10 立项，design §46）
 
 形态定稿：Schema 演进下的声明式数据迁移——`migrations/` 目录文件名序即

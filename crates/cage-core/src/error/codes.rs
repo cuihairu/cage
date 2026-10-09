@@ -161,6 +161,18 @@ pub mod distribution {
     /// `--auth-env`) not declared or the named env var unset — fails
     /// before any network contact (A3, `cage registry push`)
     pub const E2105: &str = "E2105";
+    /// E2106 - Signing key unavailable: the env var named by `--key-env`
+    /// is unset, empty, or not base64 of a 32-byte Ed25519 key; also
+    /// covers key material the library rejects and key/file failures in
+    /// keygen and sidecar writes (A6, `cage registry export --sign` /
+    /// `import --verify-sig` / `keygen`)
+    pub const E2106: &str = "E2106";
+    /// E2107 - Bundle signature verification failed: the `.sig` sidecar is
+    /// missing or malformed, names an unknown algorithm, or the detached
+    /// ed25519 signature does not verify under the trusted key — the
+    /// bundle was signed by a different key or its bytes were altered
+    /// (A6, `cage registry import --verify-sig`)
+    pub const E2107: &str = "E2107";
 }
 
 /// Migration errors (M series, design §46): declarative data migration
@@ -301,6 +313,8 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         distribution::E2103 => Some("Bundle Verification Failed"),
         distribution::E2104 => Some("Distribution Write Refused"),
         distribution::E2105 => Some("Distribution Credential Missing"),
+        distribution::E2106 => Some("Signing Key Unavailable"),
+        distribution::E2107 => Some("Bundle Signature Verification Failed"),
         // Migration
         migration::E2001 => Some("Migration Rule Invalid"),
         migration::E2002 => Some("Migration Rule Reference Invalid"),

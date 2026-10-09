@@ -56,6 +56,10 @@ toml = "0.8"
 # Hashing & deterministic
 blake3 = "1.5"
 base64 = "0.22"
+# §47 A6 signed bundles: ed25519 over bundle file bytes; rand_core+getrandom
+# feeds SigningKey::generate for `cage registry keygen`
+ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 # Deterministic tar bundles (§47 A series): zero-dep pure-Rust archive
 # read/write; determinism comes from headers we set ourselves
 tar = "0.4"

@@ -281,6 +281,15 @@ enum RegistryCmd {
         /// magic, so both container forms load identically.
         #[arg(long, value_parser = ["zstd"], value_name = "FORMAT")]
         compress: Option<String>,
+        /// Also produce a detached ed25519 signature at `<output>.sig` —
+        /// the signature covers the exact bundle file bytes, so a consumer
+        /// can prove which key produced it (A6)
+        #[arg(long, requires = "key_env")]
+        sign: bool,
+        /// Environment variable carrying the base64 32-byte Ed25519 seed
+        /// (required by --sign; the key never enters cage.toml or logs)
+        #[arg(long)]
+        key_env: Option<String>,
         /// Registry root directory (overrides cage.toml `[registry].path`)
         #[arg(long)]
         registry: Option<PathBuf>,
@@ -295,6 +304,15 @@ enum RegistryCmd {
     Import {
         /// Bundle file produced by `cage registry export`
         file: PathBuf,
+        /// Verify the detached ed25519 signature at `<file>.sig` before
+        /// the trust gate — the trusted key comes from --key-env (the
+        /// riding public key is not a trust anchor) (A6)
+        #[arg(long, requires = "key_env")]
+        verify_sig: bool,
+        /// Environment variable carrying the base64 32-byte Ed25519
+        /// public key (required by --verify-sig)
+        #[arg(long)]
+        key_env: Option<String>,
         /// Run the full trust gate and report what would enter, without
         /// writing anything
         #[arg(long)]
@@ -325,6 +343,16 @@ enum RegistryCmd {
         /// Read the local entry and check the remote state, upload nothing
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Generate a fresh ed25519 signing keypair: the seed (secret) is
+    /// written to the output file with owner-only permissions and is
+    /// never printed; only the public key goes to stdout. Feed the seed
+    /// to `cage registry export --sign` through an env variable
+    /// (`export CAGE_SIGNING_KEY=$(cat <file>)`) (A6)
+    Keygen {
+        /// File to receive the base64 32-byte seed (the secret; chmod 600)
+        #[arg(short, long)]
+        output: PathBuf,
     },
 }
 
@@ -411,13 +439,31 @@ fn main() {
                 package,
                 output,
                 compress,
+                sign,
+                key_env,
                 registry,
-            } => run_registry_export(&package, &output, compress.as_deref(), registry.as_deref()),
+            } => run_registry_export(
+                &package,
+                &output,
+                compress.as_deref(),
+                sign,
+                key_env.as_deref(),
+                registry.as_deref(),
+            ),
             RegistryCmd::Import {
                 file,
+                verify_sig,
+                key_env,
                 dry_run,
                 registry,
-            } => run_registry_import(&file, dry_run, registry.as_deref()),
+            } => run_registry_import(
+                &file,
+                verify_sig,
+                key_env.as_deref(),
+                dry_run,
+                registry.as_deref(),
+            ),
+            RegistryCmd::Keygen { output } => run_registry_keygen(&output),
             RegistryCmd::Push {
                 path,
                 package,
@@ -2024,6 +2070,8 @@ fn run_registry_export(
     package_spec: &str,
     output: &Path,
     compress: Option<&str>,
+    sign: bool,
+    key_env: Option<&str>,
     registry_flag: Option<&Path>,
 ) -> i32 {
     let Some(reg_root) = registry_flag else {
@@ -2067,6 +2115,36 @@ fn run_registry_export(
                     ""
                 }
             );
+            // A6: detached ed25519 signature over the exact bundle bytes,
+            // riding beside it as `<output>.sig`. The signing key resolves
+            // from the env var named by --key-env only — never from
+            // config, never echoed.
+            if sign {
+                let key_env = key_env.unwrap_or_else(|| {
+                    eprintln!("error: --sign requires --key-env");
+                    std::process::exit(2);
+                });
+                let signed = || -> Result<(), String> {
+                    let key = cage_core::registry::signing_key_from_env(key_env)?;
+                    let bytes = std::fs::read(output)
+                        .map_err(|e| format!("cannot read back {}: {e}", output.display()))?;
+                    let sig = cage_core::registry::sign_bundle_bytes(&bytes, &key);
+                    cage_core::registry::write_bundle_signature(output, &sig)?;
+                    Ok(())
+                };
+                match signed() {
+                    Ok(()) => {
+                        println!(
+                            "cage registry: signed bundle → {}",
+                            cage_core::registry::sidecar_path(output).display()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return 1;
+                    }
+                }
+            }
             0
         }
         Err(e) => {
@@ -2083,7 +2161,13 @@ fn run_registry_export(
 /// `--compress zstd` frame decompresses first, so both import identically
 /// under any extension. Local registry roots only — import writes, and
 /// writes over the network stay out of scope.
-fn run_registry_import(file: &Path, dry_run: bool, registry_flag: Option<&Path>) -> i32 {
+fn run_registry_import(
+    file: &Path,
+    verify_sig: bool,
+    key_env: Option<&str>,
+    dry_run: bool,
+    registry_flag: Option<&Path>,
+) -> i32 {
     let Some(reg_root) = registry_flag else {
         eprintln!("error: no registry root (pass --registry)");
         return 2;
@@ -2096,6 +2180,29 @@ fn run_registry_import(file: &Path, dry_run: bool, registry_flag: Option<&Path>)
             );
             return 2;
         }
+    }
+    // A6: the signature gate runs before the ledger trust gate — a
+    // bundle that cannot be attributed to the trusted key is refused
+    // before anything is staged, even though the ledger would also
+    // catch byte-level tampering. The trusted key comes from --key-env;
+    // the riding public key is never the anchor.
+    if verify_sig {
+        let key_env = key_env.unwrap_or_else(|| {
+            eprintln!("error: --verify-sig requires --key-env");
+            std::process::exit(2);
+        });
+        let gate = || -> Result<(), String> {
+            let trusted = cage_core::registry::verifying_key_from_env(key_env)?;
+            let bytes =
+                std::fs::read(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+            let sidecar = cage_core::registry::read_bundle_signature(file)?;
+            cage_core::registry::verify_bundle_bytes(&bytes, &sidecar, &trusted)
+        };
+        if let Err(e) = gate() {
+            eprintln!("error: {e}");
+            return 1;
+        }
+        println!("cage registry: signature verified");
     }
     match cage_core::registry::import_bundle(reg_root, file, dry_run) {
         Ok(report) => {
@@ -2114,6 +2221,43 @@ fn run_registry_import(file: &Path, dry_run: bool, registry_flag: Option<&Path>)
                 } else {
                     ""
                 }
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// `cage registry keygen` (A6): generate an ed25519 signing keypair. The
+/// seed goes only to the user-named file (owner-only permissions); stdout
+/// carries the public key and the usage lines — the secret never appears
+/// in any output.
+fn run_registry_keygen(output: &Path) -> i32 {
+    match cage_core::registry::generate_signing_key() {
+        Ok(key) => {
+            let (seed, public) = cage_core::registry::key_material(&key);
+            if let Err(e) = std::fs::write(output, format!("{seed}\n")) {
+                eprintln!("error: cannot write {}: {e}", output.display());
+                return 1;
+            }
+            // Best-effort owner-only permissions (unix); failure is not
+            // fatal — the file sits in the user's own workspace either way.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o600));
+            }
+            println!("cage registry keygen: seed (secret) → {}", output.display());
+            println!("cage registry keygen: public key: {public}");
+            println!(
+                "export CAGE_SIGNING_KEY=$(cat {}) # then: cage registry export --sign --key-env CAGE_SIGNING_KEY",
+                output.display()
+            );
+            println!(
+                "export CAGE_VERIFYING_KEY={public} # consumers: cage registry import --verify-sig --key-env CAGE_VERIFYING_KEY"
             );
             0
         }
@@ -2846,26 +2990,35 @@ mod tests {
                     package,
                     output,
                     compress,
+                    sign,
+                    key_env,
                     registry,
                 } => format!(
-                    "registry export {package} {} {} {}",
+                    "registry export {package} {} {} {sign} {} {}",
                     output.display(),
                     compress.as_deref().unwrap_or("-"),
+                    key_env.as_deref().unwrap_or("<no key-env>"),
                     registry
                         .as_deref()
                         .map_or_else(|| Path::new("<flag required>").display(), Path::display)
                 ),
                 RegistryCmd::Import {
                     file,
+                    verify_sig,
+                    key_env,
                     dry_run,
                     registry,
                 } => format!(
-                    "registry import {} {dry_run} {}",
+                    "registry import {} {verify_sig} {} {dry_run} {}",
                     file.display(),
+                    key_env.as_deref().unwrap_or("<no key-env>"),
                     registry
                         .as_deref()
                         .map_or_else(|| Path::new("<flag required>").display(), Path::display)
                 ),
+                RegistryCmd::Keygen { output } => {
+                    format!("registry keygen {}", output.display())
+                }
                 RegistryCmd::Push {
                     path,
                     package,
@@ -3003,6 +3156,58 @@ mod tests {
         assert_eq!(
             describe(&cli.command),
             "migrate-draft old.yaml new.yaml 1.0.0 2.0.0 migrations/0001-draft.yaml"
+        );
+    }
+
+    #[test]
+    fn parse_registry_signing_flags() {
+        // export --sign requires --key-env (clap `requires`), and the
+        // flag pair round-trips through describe.
+        let cli = Cli::try_parse_from([
+            "cage",
+            "registry",
+            "export",
+            "game",
+            "-o",
+            "b.tar",
+            "--sign",
+            "--key-env",
+            "K",
+            "--registry",
+            "reg",
+        ])
+        .expect("parse export sign");
+        assert_eq!(
+            describe(&cli.command),
+            "registry export game b.tar - true K reg"
+        );
+        let cli = Cli::try_parse_from([
+            "cage",
+            "registry",
+            "import",
+            "b.tar",
+            "--verify-sig",
+            "--key-env",
+            "K",
+            "--registry",
+            "reg",
+        ])
+        .expect("parse import verify");
+        assert_eq!(
+            describe(&cli.command),
+            "registry import b.tar true K false reg"
+        );
+        let cli = Cli::try_parse_from(["cage", "registry", "keygen", "-o", "key.txt"])
+            .expect("parse keygen");
+        assert_eq!(describe(&cli.command), "registry keygen key.txt");
+        assert!(
+            Cli::try_parse_from(["cage", "registry", "export", "game", "-o", "b.tar", "--sign"])
+                .is_err(),
+            "--sign without --key-env must be a usage error"
+        );
+        assert!(
+            Cli::try_parse_from(["cage", "registry", "import", "b.tar", "--verify-sig"]).is_err(),
+            "--verify-sig without --key-env must be a usage error"
         );
     }
 
