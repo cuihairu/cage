@@ -242,6 +242,7 @@ dependencies = [
  "cage-target-java",
  "cage-target-json",
  "cage-target-lua",
+ "cage-target-msgpack",
  "cage-target-py",
  "cage-target-template",
  "cage-target-ts",
@@ -430,6 +431,17 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tera",
+]
+
+[[package]]
+name = "cage-target-msgpack"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "indexmap",
+ "rmp",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2034,6 +2046,15 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

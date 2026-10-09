@@ -42,7 +42,7 @@ Authoring Sources → Source Adapters → Canonical Model
 - Configuration Snapshot: `cage snapshot` packs a self-verifying configuration snapshot (manifest + schema + artifacts + a per-file hash ledger); a server verifies it before loading, and tampering or added/removed files are exposed
 - Configuration Registry: `cage registry` is a multi-version configuration repository (publish / list / audit / GC / remove + bundle export / import / direct push to a remote); consumers reference `registry:package@version` and pin versions via `[dependencies]`, with remote http(s) root resolution (the consumer-side cache works offline, and `registry push` pushes directly to a remote)
 - Declarative data migration: `cage migrate` applies rule transforms to validated configuration along a version-stepped chain (rename / fill defaults / drop fields / widen types / remap values); it reports a dry-run plan by default, and `--write` writes the sources back in place and re-verifies the full stack
-- Target plugins: JSON / CSV data artifacts to start, extended with C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java code bindings and a Template Target (user-defined Tera templates + a language filter library); Protobuf and others later (data serialization and code generation are separate)
+- Target plugins: JSON / CSV data artifacts to start, extended with C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java code bindings and a Template Target (user-defined Tera templates + a language filter library), plus MessagePack data artifacts; Protobuf and others later (data serialization and code generation are separate)
 
 ## Quick Start
 

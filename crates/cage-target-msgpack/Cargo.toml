@@ -1,0 +1,19 @@
+[package]
+name = "cage-target-msgpack"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "MessagePack target generator for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+rmp = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

@@ -10,6 +10,7 @@ members = [
     "crates/cage-source-sheets",
     "crates/cage-source-yaml",
     "crates/cage-target-json",
+    "crates/cage-target-msgpack",
     "crates/cage-target-csv",
     "crates/cage-target-cs",
     "crates/cage-target-py",
@@ -66,6 +67,8 @@ tar = "0.4"
 # Bundles are small config artifacts — level 19 (max) trades compression
 # time for ratio; determinism is per pinned zstd-sys/build
 zstd = "0.13"
+
+rmp = "0.8"
 
 # Template Target engine (§22 Template Target, G series)
 tera = "1"

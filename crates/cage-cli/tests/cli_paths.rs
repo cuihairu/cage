@@ -506,6 +506,46 @@ fn build_csv_target_writes_artifacts() {
 }
 
 #[test]
+fn build_msgpack_target_writes_deterministic_artifacts() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let toml = format!(
+        "{CAGE_TOML}\n[[profiles.client.targets]]\nformat = \"msgpack\"\noutput_dir = \"build/msgpack\"\n"
+    );
+    fs::write(tmp.path().join("cage.toml"), toml).unwrap();
+    let out = run_cage(&["build", tmp.path().to_str().unwrap()]);
+    assert_code(&out, 0, "build with msgpack target");
+
+    let artifact_path = tmp.path().join("build/msgpack/Item.msgpack");
+    let bytes1 = fs::read(&artifact_path).unwrap();
+    // Golden bytes: fixarray(1) of fixmap(2) with sorted row fields
+    // (id, name) — same shape the msgpack crate's unit golden locks.
+    let expected: Vec<u8> = [
+        0x91, 0x82, 0xa2, b'i', b'd', 0x01, 0xa4, b'n', b'a', b'm', b'e', 0xa5, b'S', b'w', b'o',
+        b'r', b'd',
+    ]
+    .to_vec();
+    assert_eq!(
+        bytes1, expected,
+        "msgpack bytes not deterministic-canonical"
+    );
+
+    // A fresh full build over the same inputs reproduces the same bytes.
+    let out = run_cage(&["build", tmp.path().to_str().unwrap()]);
+    assert!(
+        stdout(&out).contains("cage build: OK"),
+        "stdout:\n{}",
+        stdout(&out)
+    );
+    let bytes2 = fs::read(&artifact_path).unwrap();
+    assert_eq!(bytes1, bytes2);
+
+    // The manifest records the artifact under the msgpack format.
+    let manifest = fs::read_to_string(tmp.path().join("build/manifest.json")).unwrap();
+    assert!(manifest.contains("msgpack"), "manifest:\n{manifest}");
+}
+
+#[test]
 fn build_unsupported_format_exits_2() {
     let tmp = tempfile::tempdir().unwrap();
     write_empty_project(

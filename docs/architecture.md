@@ -321,6 +321,7 @@ cage/
 │   ├── cage-source-yaml/    # YAML 输入源
 │   ├── cage-target-json/    # JSON 产出
 │   ├── cage-target-csv/     # CSV 产出
+│   ├── cage-target-msgpack/ # MessagePack 产出（rmp 最小形，确定性二进制）
 │   ├── cage-target-cs/      # C# 代码绑定
 │   ├── cage-target-py/      # Python 代码绑定
 │   ├── cage-target-lua/     # Lua 代码绑定

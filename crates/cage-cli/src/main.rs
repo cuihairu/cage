@@ -1678,6 +1678,11 @@ fn build_project(
                 "csv" => cage_target_csv::CsvTargetGenerator::from_config(target)
                     .generate(&gen_doc, &[])
                     .map_err(BuildFailure::Validation),
+                "msgpack" | "messagepack" => {
+                    cage_target_msgpack::MsgPackTargetGenerator::from_config(target)
+                        .generate(&gen_doc, &[])
+                        .map_err(BuildFailure::Validation)
+                }
                 other => {
                     return Err(BuildFailure::Io(format!(
                         "unsupported target format '{other}'"

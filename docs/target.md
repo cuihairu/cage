@@ -75,7 +75,6 @@ Java
 
 ```text
 Protobuf
-MessagePack
 FlatBuffers
 Binary
 SQLite
@@ -90,8 +89,8 @@ Data Targets（数据序列化）：
 ```text
 JSON            ← 已实装
 CSV             ← 已实装
+MessagePack     ← 已实装
 YAML            ← 规划
-MessagePack     ← 规划
 Protobuf        ← 规划
 FlatBuffers     ← 规划
 Binary          ← 规划
@@ -114,7 +113,7 @@ Template        ← 已实装（用户自定义模板）
 （「规划」项不在 `format =` 支持范围内，构建报
 `unsupported target format '<fmt>'` 并以退出码 2 失败。）
 
-两个数据 target 各有自己的 options：
+三个数据 target 各有自己的 options：
 
 - `json`：`pretty`（默认 `true`，缩进美化输出）、`sort_keys`（默认
   `true`，对象键名序；`false` 时保留源字段序）。库 API 另有
@@ -122,6 +121,35 @@ Template        ← 已实装（用户自定义模板）
 - `csv`：`delimiter`（单字符，默认 `,`）、`write_header`（默认
   `true`）、`quote_style`（`always` / `never` / `non_numeric`，非法值
   静默回退默认的「按需加引号」）。
+- `msgpack`：`sort_keys`（默认 `true`，行字段按名序进 map；`false`
+  时保留源字段序——嵌套对象键仍经 normalize 排序，与 `json` 同口径）。
+
+### MessagePack Target（已实装）
+
+数据类 target：Canonical Model → MessagePack 二进制，每表一个
+`{table}.msgpack`（表 = 行数组，行 = 字段 map）。
+
+```toml
+[[profiles.client.targets]]
+format = "msgpack"              # 别名 messagepack
+output_dir = "build/msgpack"
+file_template = "{table}.msgpack"
+
+[profiles.client.targets.options]
+sort_keys = true                # 默认 true：行字段按名序
+```
+
+编码与确定性要点：
+
+- 编码走 `rmp` 最小形（smallest-form）：定值定字节，同输入文档恒产出
+  逐字节一致的产物（golden 测试锁定）
+- 类型映射：Null → nil、Bool → bool、Int/UInt → 整数族最小表示、
+  Float → f64、String → str、Bytes → 原生 bin（不做 base64 绕道）、
+  Array → array、Object → map
+- 非有限浮点（NaN / ±Inf）编码为 nil——NaN 位型不跨平台稳定，二进制
+  直编会破坏确定性契约（JSON target 同规则：非有限 → null）
+- `sort_keys = false` 时行字段保留源字段序；嵌套对象键仍由 normalize
+  的 `BTreeMap` 排序（`json` 同口径）
 
 Code Target 的现役生成方式（plan → render → verify 直渲染，不依赖 AST
 库）及其选型理由见仓库设计稿 `docs/design.md` 的 Code Targets 章节；

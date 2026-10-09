@@ -43,6 +43,24 @@
 
 ## 第二阶段（预排）
 - [x] 代码生成器：C#/Python/Lua/TypeScript/JavaScript/C++/Go/Java
+- [x] MsgPack 生成器（2026-10，第二阶段唯一遗留收尾之一，design §23
+      Data Targets）：新 crate `cage-target-msgpack`——Canonical Model →
+      MessagePack 二进制，`format = msgpack`/`messagepack` 进 `cage
+      build` 数据面（json/csv 同面板，`unsupported target format` 对其
+      收口）；编码走 `rmp` 最小形（定值定字节），确定性契约 = 行字段
+      `sort_keys` 名序（默认 true，false 保留源序）+ 嵌套对象键
+      normalize BTreeMap 序 + 非有限浮点编码 nil（NaN 位型跨平台不稳，
+      对齐 JSON target 非有限 → null 规则）+ Bytes 原生 bin 不做
+      base64；options 仅 `sort_keys`；验收：8 单测（手算 golden 字节、
+      两跑逐字节一致、全 Value 族逐字段字节断言、sort_keys 双向、
+      profile 过滤、from_config 三态、trait 面）+ 1 CLI 集成测试
+      （构建产物 golden 字节 + 全量重建同字节 + manifest 记录），
+      workspace 615 全绿
+- [ ] Protobuf 生成器（第二阶段唯一遗留收尾之二，design §23）：设计稿
+      无 wire 编码明文口径，拍板方向 = 输出 .proto3 定义文件（schema
+      驱动、与 C#/Go 代码绑定同族；类型映射表自定并入 target.md，
+      shared enums 单文件 + import，字段号按名序分配）；新 crate
+      `cage-target-proto` 进 `cage build`/`cage gen` 代码面
 - [x] Plugin SDK + Game Rule Validator 实装（沙箱方案定稿于 design §17.1：进程内 trait 现已实装、动态库 C ABI shim 为第三方分发路线、不可信代码不执行；GameRuleValidator trait + GameRuleRegistry + 内建 power_curve 样例端到端，`cage check --level gamerule` 输出 E1601 行级诊断；动态库装载与插件市场不在本期）
 - [x] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
 - [x] 增量构建（--incremental 按 manifest 的 schema/source 哈希跳过未变更的整轮重建；按 target 的变更影响传播未做，target 配置变更不参与哈希、需全量）
