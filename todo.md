@@ -22,6 +22,13 @@
 - [x] T3.4 L5 Reference（E1401 存在性；E1410 谓词：引用对象字段约束）
 - [x] T3.5 L6 Semantic 表达式规则（assert: min_level <= max_level，行级定位）
 - [x] T3.6 `--level` 分级执行
+- [x] T3.7 命名枚举成员资格校验（审计遗留闭环，审计-文档一致性.md 留档第 1 项）：
+      L3 `validate_field_constraints` 对 `type: {kind: Enum, value: 名}` 字段检查
+      顶层 `enums:` 声明的成员资格（同走 E1204，提示 Allowed values）；只查字符串值
+      ——非字符串类型失配归 L2（E1101），悬空枚举名归 L1（E1004），不双重诊断；
+      顺手顺修审计留档第 2 项（schema/mod.rs compatible_with 注释 E1410→E1411）；
+      验收已过：l3_enforces_named_enum_membership 单测（越界成员 E1204 +
+      合法成员通过 + 非字符串仅 E1101）——本轮交付，勾选
 
 ### T4 Normalize 与 Target
 - [x] T4.1 Normalize（数值/布尔归一，确定性 Canonical Representation）

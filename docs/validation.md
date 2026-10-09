@@ -191,7 +191,10 @@ Allowed range:
 min / max               数值范围（E1201）
 min_length / max_length 字符串长度（E1202）
 pattern                 正则匹配（E1203）
-enum_values             枚举取值域（E1204；命名枚举的成员资格同走此层）
+enum_values             枚举取值域（E1204）。命名枚举（type: {kind: Enum, value: 名}）
+                        的成员资格同在本层、同走 E1204——对顶层 enums: 声明的成员做
+                        检查；只查字符串值，非字符串类型失配归 L2（E1101），
+                        悬空枚举名归 L1（E1004）
 min_items / max_items   数组元素个数（E1205）
 ```
 

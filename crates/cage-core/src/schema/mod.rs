@@ -288,7 +288,7 @@ pub struct ReferenceSchema {
     /// Cardinality: "one" | "many" | "optional"
     #[serde(default = "default_cardinality", skip_serializing_if = "is_one")]
     pub cardinality: String,
-    /// Compatibility check (for E1410)
+    /// Compatibility check (for E1411)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compatible_with: Option<Vec<String>>,
 }

@@ -679,6 +679,34 @@ fn validate_field_constraints(
         }
     }
 
+    // Named enum membership (`type: {kind: Enum, value: X}`): the value
+    // must be one of the declared members of the schema-level enum. This
+    // is a disjoint surface from inline `enum_values` (above) and
+    // previously had no check at all — L2 passes any String for Enum
+    // (see `value_matches_type`). Only well-typed strings are checked:
+    // a non-string value is an L2 type mismatch (E1101), already
+    // reported there — no double diagnosis. A dangling enum name is an
+    // L1 schema check (E1004), so an unknown name falls through here.
+    if let FieldType::Enum(enum_name) = &field_schema.field_type {
+        if let (Some(enum_schema), Value::String(val_str)) =
+            (ctx.schema.schema.enums.get(enum_name), value)
+        {
+            let members: Vec<&str> = enum_schema.values.iter().map(|v| v.name.as_str()).collect();
+            if !members.contains(&val_str.as_str()) {
+                ctx.diagnostics.add(
+                    DiagnosticBuilder::error(value::E1204, "Value not in allowed enum")
+                        .location(loc.clone())
+                        .table(table_name)
+                        .row(format!("{}", row.index))
+                        .field(field_name)
+                        .value(serde_json::to_value(value).unwrap_or_default())
+                        .hint(format!("Allowed values: {}", members.join(", ")))
+                        .build(),
+                );
+            }
+        }
+    }
+
     // Array length
     if let Value::Array(arr) = value {
         if let Some(min_items) = field_schema.min_items {
@@ -1998,6 +2026,61 @@ mod tests {
                     .as_deref()
                     .is_some_and(|h| h.contains("Allowed values: common, rare"))
         }));
+    }
+
+    #[test]
+    fn l3_enforces_named_enum_membership() {
+        use crate::schema::{EnumSchema, EnumValue};
+
+        let named = |name: &str| EnumValue {
+            name: name.to_string(),
+            value: None,
+            description: None,
+        };
+        let mut schema = Schema::new();
+        schema.enums.insert(
+            "Rarity".to_string(),
+            EnumSchema {
+                name: "Rarity".to_string(),
+                values: vec![named("common"), named("rare")],
+                description: None,
+            },
+        );
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("rarity", FieldType::Enum("Rarity".to_string())),
+            ],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Drop",
+            vec![
+                row(0, &[("id", Value::UInt(1)), ("rarity", str_val("epic"))]),
+                row(1, &[("id", Value::UInt(2)), ("rarity", str_val("rare"))]),
+                // A non-string value is an L2 type mismatch (E1101), not a
+                // membership failure — no double diagnosis.
+                row(
+                    2,
+                    &[("id", Value::UInt(3)), ("rarity", Value::Array(vec![]))],
+                ),
+            ],
+        );
+
+        let diags = validate(&vs, &doc, ValidationLevel::Value, false);
+        let errors = diags.errors();
+        // L2 (type) runs before L3 (constraints), so the E1101 lands first.
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].code, type_val::E1101);
+        assert_eq!(errors[1].code, value::E1204);
+        assert_eq!(errors[1].row.as_deref(), Some("0"));
+        assert!(errors[1]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("Allowed values: common, rare")));
+        assert_eq!(errors[0].row.as_deref(), Some("2"));
     }
 
     #[test]
