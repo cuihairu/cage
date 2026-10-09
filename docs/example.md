@@ -1,6 +1,6 @@
 # 完整示例
 
-仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 关卡」三张表、三种源格式（CSV / YAML / JSON）、一份覆盖常用字段类型与约束用法的 schema、一个 profile 构建全部 10 个 target（json/csv 数据 + 8 种语言代码绑定），外加一套触发 L7 Game Rule 的坏数据。
+仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 关卡」三张表、三种源格式（CSV / YAML / JSON）、一份覆盖常用字段类型与约束用法的 schema、一个 profile 构建全部 12 个 target（json/csv/msgpack 数据 + 9 种语言代码绑定），外加一套触发 L7 Game Rule 的坏数据。
 
 本页所有命令与输出都是**真实执行结果**（在仓库根目录运行），不是伪代码。
 
@@ -24,13 +24,13 @@ cage check: OK (3 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --level gamerule
 cage check: OK (3 tables, 0 warnings, level <= gamerule)
 
-==> [3/5] cage build --profile client   —— 验证 + 生成全部 10 个 target
+==> [3/5] cage build --profile client   —— 验证 + 生成全部 12 个 target
 $ cage build examples/game-config --profile client
-cage build: OK (profile 'client', 42 artifacts, manifest examples/game-config/build/manifest.json)
+cage build: OK (profile 'client', 49 artifacts, manifest examples/game-config/build/manifest.json)
 
-==> [4/5] cage gen --profile client   —— 只生成 8 种代码绑定（跳过数据 target）
+==> [4/5] cage gen --profile client   —— 只生成 9 种代码绑定（跳过数据 target，含 proto 定义）
 $ cage gen examples/game-config --profile client
-cage gen: OK (profile 'client', 36 artifacts, manifest examples/game-config/build/manifest.json)
+cage gen: OK (profile 'client', 40 artifacts, manifest examples/game-config/build/manifest.json)
 
 ==> [5/5] 坏数据：attack=500 越过 power curve（level=1 上限 150）→ 期望 E1601 + 退出码 1
 $ cage check examples/game-config/bad --level gamerule   # 期望退出码 1
@@ -57,6 +57,7 @@ schemas:
   Stage (9 fields, primary key: id)
 
 全部通过。
+产物目录：examples/game-config/build/client/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java}
 ```
 
 </details>
@@ -65,7 +66,7 @@ schemas:
 
 ```text
 examples/game-config/
-├── cage.toml          # 工程配置：一个 profile 构建全部 10 个 target
+├── cage.toml          # 工程配置：一个 profile 构建全部 12 个 target
 ├── schemas/           # 三个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
 │   ├── character.yaml # 角色成长：枚举/唯一约束/正则/范围/默认值/保留字字段 class
 │   ├── item.yaml      # 道具：整型枚举 + 字符串枚举 + 可选字段
@@ -99,15 +100,17 @@ cage check: OK (3 tables, 0 warnings, level <= gamerule)
 
 ```console
 $ cage build examples/game-config --profile client
-cage build: OK (profile 'client', 42 artifacts, manifest examples/game-config/build/manifest.json)
+cage build: OK (profile 'client', 49 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
-42 个产物 = 数据 6 份（3 表 × json/csv）+ 代码 36 份（8 种语言 × 各 3 表 + 1 枚举单元，JS 形态额外配对 `.d.ts`）；manifest 在 `build/manifest.json`，不在 `client/` 计数内：
+49 个产物 = 数据 9 份（3 表 × json/csv/msgpack）+ proto 4 份（3 表 + 共享 `cage_enums.proto`）+ 代码 36 份（8 种语言 × 各 3 表 + 1 枚举单元，JS 形态额外配对 `.d.ts`）；manifest 在 `build/manifest.json`，不在 `client/` 计数内：
 
 ```text
 build/client/
 ├── json/    Character.json  Item.json  Stage.json
 ├── csv/     Character.csv   Item.csv   Stage.csv
+├── msgpack/ Character.msgpack  Item.msgpack  Stage.msgpack
+├── proto/   Character.proto Item.proto Stage.proto cage_enums.proto
 ├── cs/      Character.cs    Item.cs    Stage.cs    CageEnums.cs
 ├── py/      Character.py    Item.py    Stage.py    cage_enums.py
 ├── lua/     Character.lua   Item.lua   Stage.lua   cage_enums.lua
@@ -123,10 +126,10 @@ build/client/
 
 ```console
 $ cage gen examples/game-config --profile client
-cage gen: OK (profile 'client', 36 artifacts, manifest examples/game-config/build/manifest.json)
+cage gen: OK (profile 'client', 40 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
-跳过 json/csv 数据 target，代码类产物与 build 完全一致。
+跳过 json/csv/msgpack 数据 target，代码类产物（含 proto 定义）与 build 完全一致。
 
 ### cage check（坏数据）—— E1601 行级诊断
 

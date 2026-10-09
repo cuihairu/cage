@@ -25,11 +25,28 @@ step "[2/5] cage check --level gamerule examples/game-config   —— L7 业务�
 echo "\$ cage check examples/game-config --level gamerule"
 "$CAGE_BIN" check "$EX" --level gamerule
 
-step "[3/5] cage build --profile client   —— 验证 + 生成全部 10 个 target"
+step "[3/5] cage build --profile client   —— 验证 + 生成全部 12 个 target"
 echo "\$ cage build examples/game-config --profile client"
 "$CAGE_BIN" build "$EX" --profile client
 
-step "[4/5] cage gen --profile client   —— 只生成 8 种代码绑定（跳过数据 target）"
+# 新 target 产物抽查：msgpack 三表字节产物 + proto 三表定义与共享枚举文件
+for f in msgpack/Character.msgpack msgpack/Item.msgpack msgpack/Stage.msgpack \
+         proto/Character.proto proto/Item.proto proto/Stage.proto proto/cage_enums.proto; do
+  test -s "$EX/build/client/$f" || { echo "FAIL: 缺产物 $f" >&2; exit 1; }
+done
+
+# 确定性抽查：全量重建后两格式逐字节一致
+B1="$(sha256sum "$EX/build/client/msgpack/Item.msgpack" | cut -d' ' -f1)"
+B2="$(sha256sum "$EX/build/client/proto/Item.proto" | cut -d' ' -f1)"
+"$CAGE_BIN" build "$EX" --profile client > /dev/null
+A1="$(sha256sum "$EX/build/client/msgpack/Item.msgpack" | cut -d' ' -f1)"
+A2="$(sha256sum "$EX/build/client/proto/Item.proto" | cut -d' ' -f1)"
+if [ "$B1" != "$A1" ] || [ "$B2" != "$A2" ]; then
+  echo "FAIL: 重建后产物字节变化（期望确定性）" >&2
+  exit 1
+fi
+
+step "[4/5] cage gen --profile client   —— 只生成 9 种代码绑定（跳过数据 target，含 proto 定义）"
 echo "\$ cage gen examples/game-config --profile client"
 "$CAGE_BIN" gen "$EX" --profile client
 
@@ -53,4 +70,4 @@ step "附：cage inspect examples/game-config   —— 查看表结构"
 echo "\$ cage inspect examples/game-config"
 "$CAGE_BIN" inspect "$EX"
 
-printf '\n全部通过。\n产物目录：examples/game-config/build/client/{json,csv,cs,py,lua,ts,js,cpp,go,java}\n'
+printf '\n全部通过。\n产物目录：examples/game-config/build/client/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java}\n'

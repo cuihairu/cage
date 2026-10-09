@@ -234,7 +234,7 @@ references, normalized_types, visibility, dependencies }`。对照现状：
 - normalize（cage-core/src/normalize/mod.rs：`normalize_document` /
   `normalize_typed_value` / `normalize_value`）是 Canonical → Canonical 的纯
   变换，产出仍是 Document / TypedValue / Value 类型；
-- 全部 10 个 target 的入口要么是 `(Schema, Document)`（数据 target），要么是
+- 全部 12 个 target 的入口要么是 `(Schema, Document)`（数据 target），要么是
   `(Schema, schema_hash)`（代码 target——类型与元数据全来自 Schema，数据不参与
   代码生成）。target 面已经按 IR 视角消费，且结构性满足「不得读 Source」。
 

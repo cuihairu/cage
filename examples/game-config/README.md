@@ -11,7 +11,7 @@ bash examples/run.sh
 
 ```
 game-config/
-├── cage.toml          # 工程配置：一个 profile 构建全部 10 个 target
+├── cage.toml          # 工程配置：一个 profile 构建全部 12 个 target
 ├── schemas/           # 三个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
 │   ├── character.yaml # 角色成长：枚举/唯一约束/正则/范围/默认值/保留字字段 class
 │   ├── item.yaml      # 道具：整型枚举 + 字符串枚举 + 可选字段
@@ -36,6 +36,8 @@ game-config/
 | 跨表引用（L5 校验） | `Stage.boss_item_id → Item.id` |
 | 保留字字段自动转义（`class`） | `Character.class` |
 | Map<K,V> 字段（含嵌套，空 map 合法） | `Stage.drop_table: map<string, Array<Int32>>` |
+| MessagePack 二进制（rmp 最小形，确定性字节） | `build/client/msgpack/` |
+| Protobuf .proto3 定义（protoc 可编译） | `build/client/proto/` |
 | L7 Game Rule：好数据通过 / 坏数据 E1601 | `run.sh` 第 2、5 步 |
 | Web 编辑器拒写目录 schema（409） | `examples/web-smoke.sh` 第 6 步
 
@@ -44,10 +46,10 @@ game-config/
 ```bash
 cage check examples/game-config                    # L0-L6 校验
 cage check examples/game-config --level gamerule   # 加上 L7 业务规则
-cage build examples/game-config --profile client   # 10 个 target 全量构建
-cage gen   examples/game-config --profile client   # 只生成 8 种代码绑定
+cage build examples/game-config --profile client   # 12 个 target 全量构建
+cage gen   examples/game-config --profile client   # 只生成 9 种代码绑定（含 proto 定义）
 cage check examples/game-config/bad --level gamerule  # E1601，退出码 1
 cage inspect examples/game-config                   # 表结构清单
 ```
 
-产物在 `build/client/{json,csv,cs,py,lua,ts,js,cpp,go,java}/`（已 gitignore，按需重新生成）。
+产物在 `build/client/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java}/`（已 gitignore，按需重新生成）。

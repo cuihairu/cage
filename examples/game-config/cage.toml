@@ -1,6 +1,6 @@
 # Cage 完整示例工程 —— 一键跑通见 examples/run.sh
 # 三张表、三种源格式（CSV / YAML / JSON）、三个 schema 文件（合并加载），
-# 一个 profile 构建全部 10 个 target（json/csv 数据 + 8 种代码绑定）。
+# 一个 profile 构建全部 12 个 target（json/csv/msgpack 数据 + 9 种代码绑定）。
 output_dir = "build"
 schema_path = "schemas"
 
@@ -14,11 +14,13 @@ main = "config"
 
 [profiles.client]
 name = "client"
-description = "全量构建：2 个数据 target + 8 种语言代码绑定"
+description = "全量构建：3 个数据 target + 9 种语言代码绑定"
 # options 为可选内联表：namespace / package / enums_file 演示各 target 常用项
 targets = [
   { format = "json",         output_dir = "build/client/json" },
   { format = "csv",          output_dir = "build/client/csv" },
+  { format = "msgpack",      output_dir = "build/client/msgpack" },
+  { format = "proto",        output_dir = "build/client/proto", options = { package = "game.config" } },
   { format = "csharp",       output_dir = "build/client/cs",  options = { namespace = "Game.Config" } },
   { format = "python",       output_dir = "build/client/py" },
   { format = "lua",          output_dir = "build/client/lua" },
