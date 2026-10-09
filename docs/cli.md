@@ -67,7 +67,7 @@ cage gen config/ --profile server
 另支持 `template` 用户自定义 Tera 模板 target），
 不跑数据校验：代码生成是 Schema 驱动的，类型与元数据全部来自 Schema，
 不消费配置行数据（源文件仍需可正常加载解析）。Profile 里的数据类
-Target（json/csv）会被跳过，需要
+Target（json/csv/msgpack）会被跳过，需要
 数据产物时用 `cage build`。产物同样写入 Build Manifest（与 build 同一口
 径），后写者胜。
 
