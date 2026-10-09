@@ -895,8 +895,7 @@ fn report_reference_cycles(ctx: &mut ValidationContext, schema: &Schema) {
             .iter()
             .enumerate()
             .min_by(|a, b| a.1.cmp(b.1))
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
+            .map_or(0, |(idx, _)| idx);
         let rotated: Vec<String> = cycle[lead..]
             .iter()
             .chain(cycle[..lead].iter())
@@ -2582,7 +2581,7 @@ mod tests {
         assert!(errors.iter().any(|e| e.code == table::E1301));
     }
 
-    /// UInt32 field with a cross-table reference (`table.field`).
+    /// `UInt32` field with a cross-table reference (`table.field`).
     fn ref_field(name: &str, table: &str, field: &str) -> FieldSchema {
         let mut f = plain_field(name, FieldType::UInt32);
         f.reference = Some(ReferenceSchema {
