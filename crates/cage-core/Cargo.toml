@@ -20,6 +20,9 @@ blake3 = { workspace = true }
 console = { workspace = true }
 # §47 A series: deterministic bundle export/import
 tar = { workspace = true }
+# §47 A1: fixed-level zstd frame wrapping the deterministic tar bundle
+# (`--compress zstd`); the vendored C library is pure-bundled, no system dep
+zstd = { workspace = true }
 # §47 A2: staging directory for untrusted bundle bytes on their way
 # through the verify_snapshot trust gate (RAII cleanup)
 tempfile = { workspace = true }

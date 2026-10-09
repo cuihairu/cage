@@ -276,6 +276,7 @@ verify / gc / remove 同 publish / list 一样只对本地注册表生效，远�
 ```bash
 cage registry export common@0.1.0 -o common-0.1.0.tar --registry ../registry
 cage registry export common       -o common-latest.tar --registry ../registry   # 省略 @版本 = 最高点分序版本
+cage registry export common -o common.tar.zst --compress zstd --registry ../registry   # zstd 压缩容器（固定压缩级别）
 ```
 
 把已入册条目打成**确定性 tar bundle**：条目全部文件（`data/`、
@@ -285,6 +286,12 @@ cage registry export common       -o common-latest.tar --registry ../registry   
 归零、固定 0o644 权限位，不随导出机器与时间变化，可直接进对象存储或
 差分/审计流程。bundle 自带账本：接收侧（`cage registry import`）入册前
 先过 `verify_snapshot` 信任门，未经校验的字节不入册。
+
+`--compress zstd` 把同一份确定性 tar 原样包进单个 zstd 帧
+（`zstd::stream::encode_all`，压缩级别钉死为 19、不对用户开放）：同 tar +
+同级别 + 同 zstd 库版本 → 同容器字节，两次导出逐字节一致。`--compress`
+只收字面量 `zstd`，其他值按参数错误退出 2；不带该参数仍是纯 tar，行为
+不变。
 
 导出只读注册表，不重新构建（发布仍是 `cage registry publish`）；包或
 版本不存在、条目缺账本、bundle 写不出 → `E2101`。远程根不支持导出
@@ -308,6 +315,12 @@ content_hash / 文件数一致）→ 通过后走与 publish 相同的入册路�
 
 导入目标是本地根（导入即写入，远程根不收写）；`--dry-run` 跑完整
 信任门并报告将入册的条目与文件数，不写任何字节。
+
+导入按**文件头**嗅探容器形态，不看扩展名：头四字节是 zstd 帧魔数
+（`28 B5 2F FD`）就先解压再解 tar，否则按纯 tar 解析，两种容器在任何
+扩展名下导入结果一致。压缩只在容器层，`HASHES.json` 账本哈希的是解压后
+的内容，zstd 包裹的 bundle 与纯 tar 形态过同一信任门。声明了 zstd 帧却
+解不开的损坏容器按 `E2103` 拒绝，不会当纯 tar 静默解析。
 
 ### 直推远端（A 系列）
 
@@ -348,6 +361,7 @@ cage migrate .                    # 单段 dry-run 预演（默认：只报告�
 cage migrate . --write            # 单段执行：数据变换 + 落盘本地文本源
 cage migrate . --all --write      # 整条链一次跑完
 cage migrate . --to 1.2.0 --write # 链前缀：跑到指定目标版本（含）为止
+cage migrate . --to latest --write # 整链（latest 解析为链终点，与 --all 同选段）
 ```
 
 对存量源数据执行声明式迁移（design §46）：`migrations/` 目录按文件名
@@ -358,13 +372,18 @@ cage migrate . --to 1.2.0 --write # 链前缀：跑到指定目标版本（含�
 `rename_table`（表序保持）。执行完对**当前 schema**（L0–L6 全栈）回验。
 
 - **流程**：载入工程 → 逐段 apply（每步报行数，失败即失败整段中止，
-  `E2003`）→ 回验（`E2004` 附完整诊断，失败**不落盘**）→ 报告每个
+  `E2003`；Excel 表的步骤行下附受影响行的单元格级定位——
+  `file.xlsx | Sheet: 名 | Row: 行号`，按源序，超 8 行折叠为
+  `… +K more row(s)` 一行；JSON/YAML/CSV 源保持文件级报告不加行级
+  噪声）→ 回验（`E2004` 附完整诊断，失败**不落盘**）→ 报告每个
   源文件的处置。`migrations/` 目录缺失或空链 → 提示 nothing to migrate
   并以 0 退出；坏规则文件 → `E2001`；规则引用不合法 → `E2002`（库侧
   `validate_spec`，CLI 路径由 apply 的 `E2003` 防线接力——rename 目标
   已被占用、引用的表文档里没有，都在变换时拒绝）。
 - **段选择**：默认跑文件名序**首段**（显式逐段推进）；`--all` 整链；
-  `--to <ver>` 取链前缀（到目标版本含）。`--all` 与 `--to` 互斥；
+  `--to <ver>` 取链前缀（到目标版本含）；`--to latest` 解析为整链（与
+  `--all` 同选段）——链上真有版本名叫 `latest` 的段时按字面版本优先
+  （只跑到该段含）。`--all` 与 `--to` 互斥；
   `--to` 给了链上不存在的版本 → 用法错误退出 2。链上每个中间态都要
   自洽满足当前 schema——回验永远对磁盘上那一份 schema 跑。
 - **默认 dry-run**：完整跑 apply + 回验并报告「将写哪些文件」，

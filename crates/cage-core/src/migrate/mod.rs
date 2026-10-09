@@ -18,7 +18,7 @@
 
 use crate::error::codes::migration::{E2001, E2002, E2003, E2004};
 use crate::schema::{FieldType, Schema};
-use crate::value::{Document, Row, Table, TypedValue, Value};
+use crate::value::{Document, Row, SourceLocation, Table, TypedValue, Value};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use std::path::Path;
@@ -447,6 +447,14 @@ pub struct StepReport {
     /// Rows touched by this step (table-level steps report the table's
     /// row count)
     pub rows_changed: usize,
+    /// Source locations of the changed rows, in table then row (source)
+    /// order — the data for cell-level localization, chiefly Excel
+    /// sources whose rendered report carries `Sheet`/`Row` addressing.
+    /// `rename_table` (a table-level step) reports the whole table's rows,
+    /// matching its `rows_changed`. Rows whose bytes did not change are
+    /// absent, so a re-run over an already-migrated document reports none
+    /// — the same no-op semantics `rows_changed` follows.
+    pub affected_locations: Vec<SourceLocation>,
 }
 
 /// What one migration segment did to a document.
@@ -498,18 +506,26 @@ pub fn apply(
         steps: Vec::with_capacity(spec.steps.len()),
     };
     for step in &spec.steps {
-        let rows_changed = apply_step(step, doc, from_schema)?;
+        let mut affected_locations = Vec::new();
+        let rows_changed = apply_step(step, doc, from_schema, &mut affected_locations)?;
         report.steps.push(StepReport {
             step: step.describe(),
             rows_changed,
+            affected_locations,
         });
     }
     Ok(report)
 }
 
-fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<usize, String> {
+fn apply_step(
+    step: &Step,
+    doc: &mut Document,
+    from_schema: &Schema,
+    affected: &mut Vec<SourceLocation>,
+) -> Result<usize, String> {
     match step {
         Step::RenameField { table, from, to } => {
+            let excel = excel_sourced(doc, table);
             let rows = need_table_rows(doc, table, step)?;
             let mut changed = 0;
             for row in rows {
@@ -529,6 +545,9 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                     }
                     rename_row_field(&mut row.fields, from, to);
                     changed += 1;
+                    if excel {
+                        affected.push(row.location.clone());
+                    }
                 }
             }
             Ok(changed)
@@ -538,6 +557,7 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
             field,
             value,
         } => {
+            let excel = excel_sourced(doc, table);
             let rows = need_table_rows(doc, table, step)?;
             let mut changed = 0;
             for row in rows {
@@ -558,17 +578,24 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                             },
                         );
                         changed += 1;
+                        if excel {
+                            affected.push(row.location.clone());
+                        }
                     }
                 }
             }
             Ok(changed)
         }
         Step::RemoveField { table, field } => {
+            let excel = excel_sourced(doc, table);
             let rows = need_table_rows(doc, table, step)?;
             let mut changed = 0;
             for row in rows {
                 if row.fields.shift_remove(field).is_some() {
                     changed += 1;
+                    if excel {
+                        affected.push(row.location.clone());
+                    }
                 }
             }
             Ok(changed)
@@ -598,6 +625,7 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                     step.describe()
                 ));
             }
+            let excel = excel_sourced(doc, table);
             let rows = need_table_rows(doc, table, step)?;
             let mut changed = 0;
             for row in rows {
@@ -619,11 +647,15 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                 if widened != slot.value {
                     slot.value = widened;
                     changed += 1;
+                    if excel {
+                        affected.push(row.location.clone());
+                    }
                 }
             }
             Ok(changed)
         }
         Step::RemapValues { table, field, map } => {
+            let excel = excel_sourced(doc, table);
             let rows = need_table_rows(doc, table, step)?;
             let mut changed = 0;
             for row in rows {
@@ -632,6 +664,9 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                         if let Some(new) = map.get(s.as_str()) {
                             existing.value = Value::String(new.clone());
                             changed += 1;
+                            if excel {
+                                affected.push(row.location.clone());
+                            }
                         }
                     }
                 }
@@ -675,9 +710,30 @@ fn apply_step(step: &Step, doc: &mut Document, from_schema: &Schema) -> Result<u
                 })
                 .collect();
             doc.tables = rebuilt;
-            Ok(doc.tables.get(to).map_or(0, |t| t.rows.len()))
+            let renamed = doc.tables.get(to).expect("just inserted");
+            if excel_sourced(doc, to) {
+                affected.extend(renamed.rows.iter().map(|row| row.location.clone()));
+            }
+            Ok(renamed.rows.len())
         }
     }
+}
+
+/// Whether the named table is Excel-served (its source file carries an
+/// `.xlsx` / `.xls` extension) — the only sources `cage migrate` never
+/// rewrites, so per-row locations are the only record of which cells a
+/// step moved. Read before the table's rows are borrowed for mutation.
+fn excel_sourced(doc: &Document, table: &str) -> bool {
+    doc.tables
+        .get(table)
+        .is_some_and(|t| is_excel_source(&t.source_file))
+}
+
+/// Excel-served source file: `.xlsx` or `.xls`, case-insensitive.
+fn is_excel_source(source_file: &str) -> bool {
+    Path::new(source_file)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx") || ext.eq_ignore_ascii_case("xls"))
 }
 
 /// Borrow every row of a table for mutation, E2003 if the document has no
@@ -1385,6 +1441,178 @@ steps:
         assert_eq!(report.steps[2].rows_changed, 2);
         assert_eq!(report.steps[4].rows_changed, 1, "only S is mapped");
         assert_eq!(report.steps[5].rows_changed, 1, "the single mob row");
+
+        // The document's tables are text-sourced: no per-row locations are
+        // recorded for them (their rewritten file is the change record).
+        assert!(report.steps.iter().all(|s| s.affected_locations.is_empty()));
+    }
+
+    /// An Item table served from an Excel workbook — sheet set, row
+    /// locations carrying sheet-grid row numbers (header on row 1).
+    fn excel_document() -> Document {
+        let mut items = Table {
+            name: "Item".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: Vec::new(),
+            source_file: "config/items.xlsx".to_string(),
+            sheet: Some("Items".to_string()),
+        };
+        for (index, (id, grade)) in [(1, "S"), (2, "A"), (3, "B")].iter().enumerate() {
+            items.rows.push(Row {
+                primary_key: vec![V::Int(*id)],
+                fields: [
+                    ("id", V::Int(*id)),
+                    ("grade", V::String((*grade).to_string())),
+                ]
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), tv(value)))
+                .collect(),
+                location: SourceLocation::new("config/items.xlsx")
+                    .with_sheet("Items")
+                    .with_row(index + 2),
+                index,
+            });
+        }
+        let mut tables = IndexMap::new();
+        tables.insert("Item".to_string(), items);
+        Document {
+            tables,
+            source_files: vec!["config/items.xlsx".to_string()],
+            metadata: crate::value::DocumentMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn excel_sourced_steps_record_affected_row_locations() {
+        let mut doc = excel_document();
+        let from_schema = schema_for_document("1.0.0");
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![
+                Step::RemapValues {
+                    table: "Item".into(),
+                    field: "grade".into(),
+                    map: IndexMap::from([
+                        ("S".to_string(), "legendary".to_string()),
+                        ("A".to_string(), "epic".to_string()),
+                    ]),
+                },
+                Step::SetDefault {
+                    table: "Item".into(),
+                    field: "rarity".into(),
+                    value: V::String("common".into()),
+                },
+            ],
+        };
+        let report = apply(&spec, &mut doc, &from_schema).unwrap();
+
+        // Remap touched rows 1 and 2 (sheet rows 2 and 3) — in source
+        // order, sheet-grid addressed, the step's field carried by the
+        // step name.
+        assert_eq!(report.steps[0].rows_changed, 2);
+        assert_eq!(
+            report.steps[0]
+                .affected_locations
+                .iter()
+                .map(SourceLocation::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "config/items.xlsx | Sheet: Items | Row: 2",
+                "config/items.xlsx | Sheet: Items | Row: 3",
+            ]
+        );
+        // set_default filled all three rows.
+        assert_eq!(report.steps[1].rows_changed, 3);
+        assert_eq!(
+            report.steps[1]
+                .affected_locations
+                .iter()
+                .map(SourceLocation::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "config/items.xlsx | Sheet: Items | Row: 2",
+                "config/items.xlsx | Sheet: Items | Row: 3",
+                "config/items.xlsx | Sheet: Items | Row: 4",
+            ]
+        );
+    }
+
+    #[test]
+    fn excel_remap_run_twice_records_no_locations_and_no_rows() {
+        let mut doc = excel_document();
+        let from_schema = schema_for_document("1.0.0");
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::RemapValues {
+                table: "Item".into(),
+                field: "grade".into(),
+                map: IndexMap::from([("S".to_string(), "legendary".to_string())]),
+            }],
+        };
+        let first = apply(&spec, &mut doc, &from_schema).unwrap();
+        assert_eq!(first.steps[0].rows_changed, 1);
+        assert_eq!(first.steps[0].affected_locations.len(), 1);
+
+        // Second run: nothing changed, so no rows and no locations — the
+        // no-op semantics cover the location record too.
+        let again = apply(&spec, &mut doc, &from_schema).unwrap();
+        assert_eq!(again.steps[0].rows_changed, 0);
+        assert_eq!(again.steps[0].affected_locations, [] as [SourceLocation; 0]);
+    }
+
+    #[test]
+    fn rename_table_reports_whole_excel_table_and_text_tables_stay_location_free() {
+        let mut doc = excel_document();
+        // A second, text-sourced table sharing the workbook migration.
+        let mut logs = Table {
+            name: "Log".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![make_row(0, vec![("id", V::Int(1))])],
+            source_file: "config/logs.json".to_string(),
+            sheet: None,
+        };
+        logs.rows[0].location = SourceLocation::new("config/logs.json").with_row(1);
+        doc.tables.insert("Log".to_string(), logs);
+
+        let from_schema = schema_for_document("1.0.0");
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![
+                Step::RenameTable {
+                    from: "Item".into(),
+                    to: "Goods".into(),
+                },
+                Step::RenameTable {
+                    from: "Log".into(),
+                    to: "Event".into(),
+                },
+            ],
+        };
+        let report = apply(&spec, &mut doc, &from_schema).unwrap();
+
+        // Table-level steps count every row and locate every row — for
+        // the Excel table only; the text-sourced table stays file-level.
+        assert_eq!(report.steps[0].rows_changed, 3);
+        assert_eq!(
+            report.steps[0]
+                .affected_locations
+                .iter()
+                .map(SourceLocation::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "config/items.xlsx | Sheet: Items | Row: 2",
+                "config/items.xlsx | Sheet: Items | Row: 3",
+                "config/items.xlsx | Sheet: Items | Row: 4",
+            ]
+        );
+        assert_eq!(report.steps[1].rows_changed, 1);
+        assert_eq!(
+            report.steps[1].affected_locations,
+            [] as [SourceLocation; 0]
+        );
     }
 
     #[test]

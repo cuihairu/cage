@@ -2315,7 +2315,10 @@ Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构
 `parse_migration_dir`，E2001/E2002）、M2 迁移执行器与回验（`apply` 六类
 变换语义 + `reverify` L0–L6 回验，E2003/E2004）、M3 CLI 与落盘
 （`cage migrate` dry-run/`--write`/`--all`/`--to`，本地文本源原路写回）
-均已交付，E20xx 四码全数接线（validation.md E20xx 表为准）；下方接口块
+均已交付，E20xx 四码全数接线（validation.md E20xx 表为准）；追加交付：
+`--to latest`（解析为整链、同 `--all`；链上字面版本 `latest` 优先）与
+Excel 报告的单元格级定位（`StepReport.affected_locations`——Excel 表
+受影响行的 `Sheet`/`Row` 定位随报告输出，文本源不采集）；下方接口块
 与签名以实装为准——`apply` 实带 `from_schema` 参数（`widen_type` 方向
 检查用），`reverify(doc, schema)` 为独立入口。
 
@@ -2344,6 +2347,14 @@ Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构
 - **多段链回验**：回验永远对磁盘上那一份（最终版）schema 跑——链上
   每个中间态必须自洽满足当前 schema；跨到中间态停住的链（中间态不满足
   最终 schema）应 `--all` 一次到位。
+- **latest 符号与字面版本**：`--to latest` 默认解析为整链（与 `--all`
+  同选段）；链上若真有段 `to: "latest"`，按字面版本优先、只取到该段为
+  止——具体目标赢过符号，避免链自带 latest 版本时无法只迁到它。
+- **Excel 单元格级定位**：Excel 源永不写回，报告是其唯一变更可见面——
+  `apply` 对 Excel 表（.xlsx/.xls 后缀判定）采集受影响行的
+  `Row.location`（`file | Sheet | Row` 渲染），文本源不采集（落盘 diff
+  即变更记录）；CLI 每步骤行下按源序渲染、超 8 行折叠
+  `… +K more row(s)`（确定性封顶，无时间戳无随机序）。
 
 **决策记录（2026-10 拍板，依「待拍板项按建议方案自行定 + 记录，用户
 后续审核再调」授权）**
@@ -2372,8 +2383,8 @@ Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构
   编辑器」——按报告手工改，改完重跑 migrate 校验收敛）；迁移后的注册表
   条目 = 重跑 build + `cage registry publish`（复用 R 系列，不新造通道）。
 - 不做的：自动推断（规则必须显式）；schema 自身的演进（schema 编辑走
-  Schema Editor / 手编，迁移只管数据）；`--to latest` 自动沿链跳迁
-  （首期显式：默认单段逐次推进，`--all` 全链、`--to <ver>` 前缀）。
+  Schema Editor / 手编，迁移只管数据）；段选择按需取（`--all` 全链、
+  `--to <ver>` 前缀、`--to latest` 整链）。
 
 **接口**：
 
@@ -2392,7 +2403,7 @@ cage-core::migrate
 │                      # 重跑已迁移文档 0 行变更）
 └── reverify(doc, schema)  # 迁移产物对新 schema L0–L6 回验（E2004 附诊断）
 
-cage migrate [--all | --to <ver>] [--write]   # 默认 dry-run 只报告
+cage migrate [--all | --to <ver|latest>] [--write]   # 默认 dry-run 只报告
 └── 载入工程 → 按文件名序逐段应用 → 当前 schema 回验（E2004 迁移后
     校验失败不落盘）→ 报告（每步骤行数 / 每源文件处置）；
     --write 对本地 JSON/YAML/CSV 源按 source_file 原路写回（schema
@@ -2404,9 +2415,9 @@ cage migrate [--all | --to <ver>] [--write]   # 默认 dry-run 只报告
 `codes.rs` 的 `error::codes::migration` 模块 + validation.md，每码一
 doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
 
-**留待实现期**：`--to latest` 自动沿版本链跳迁、schema diff
-辅助生成规则草稿、Excel 报告的单元格级定位、迁移规则与 `[dependencies]`
-版本 pin 的联动校验。
+**留待实现期**：schema diff 辅助生成规则草稿、迁移规则与
+`[dependencies]` 版本 pin 的联动校验。（`--to latest` 与 Excel 报告的
+单元格级定位已随 M3.1 补齐，见实装状态。）
 
 ---
 
@@ -2415,7 +2426,11 @@ doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
 **实装状态**：A1 bundle 导出（`cage registry export`，确定性 tar）、A2
 bundle 导入（`cage registry import`，信任门入册）、A3 直推（`cage
 registry push`，探针 + 逐文件 PUT + index 远端合并）均已交付，E21xx
-五码全数接线（validation.md E21xx 表为准）；下方接口块与签名以实装
+五码全数接线（validation.md E21xx 表为准）；A1 的延迟项压缩容器已补齐——
+`export_bundle` 增 `compression` 参数（CLI `--compress zstd`，固定级别 19
+单 zstd 帧，同 tar + 同级别 + 同 zstd 库版本 → 同容器字节），`import_bundle`
+按帧魔数嗅探容器（不看扩展名，账本哈希解压后内容，两种形态信任门同判）；
+push 不变（推单文件不推 bundle）；下方接口块与签名以实装
 为准。
 
 **决策记录（2026-10 拍板，同 §46 授权口径）**
@@ -2445,8 +2460,10 @@ registry push`，探针 + 逐文件 PUT + index 远端合并）均已交付，E2
 - **备选**：① 自建 registry 服务端进程（弃——红线不造服务端产品；协议只定
   客户端写形态，服务端任何能收 PUT 的静态网关 / nginx WebDAV / CI job
   皆可）；② git 作分发后端（弃——隐式改写历史与注册表「绝不隐式改写
-  历史」纪律冲突）；③ gzip/zstd 压缩容器（弃——压缩帧时间戳 / 字典态破坏
-  确定性契约，首期无压缩 tar；压缩留待实现期）。
+  历史」纪律冲突）；③ gzip/zstd 压缩容器（初版弃——压缩帧时间戳 / 字典态
+  顾虑后被证实不适用于 bulk 单帧编码：帧头无时间戳、无字典态；已实装——
+  `--compress zstd` 固定级别 19 单帧包裹确定性 tar，容器字节同库版本内
+  逐字节可复现，导入按帧魔数嗅探，见实装状态）。
 - **服务端约定（文档化，不实现）**：GET `<root>/<包>/index.json` 匿名
   作状态探针（404 = 包不存在）；PUT `<root>/<包>/<版本>/<文件>` 逐文件
   上传，条目全部成功后 PUT `<root>/<包>/index.json`（服务端应整体替换
@@ -2464,8 +2481,9 @@ registry push`，探针 + 逐文件 PUT + index 远端合并）均已交付，E2
 
 ```text
 cage-core::registry 增
-├── export_bundle(root, package, version, out)  # E2101 条目读取失败
+├── export_bundle(root, package, version, compression, out)  # E2101 条目读取失败
 │    # 条目全文件 + HASHES.json + 包 index 摘录 → 确定性 tar
+│    # compression = Plain | Zstd（固定级别 19 单帧）
 ├── import_bundle(root, file, dry_run)          # verify_snapshot 信任门
 │    # → 入册（坏账本 E2103；同字节幂等、异字节 E1801）
 └── push_entry(source_root, remote_root, package, version, auth_env,
@@ -2480,7 +2498,7 @@ cage-core::registry 增
      # E2105 凭据缺失（env 未设或空，网络触达前失败）
      # dry_run 走完整本地读 + 状态探针，零 PUT
 
-cage registry export <pkg>[@<ver>] -o <file> [--registry <local-root>]
+cage registry export <pkg>[@<ver>] -o <file> [--compress zstd] [--registry <local-root>]
 cage registry import <file> [--registry <local-root>] [--dry-run]
 cage registry push <project> [pkg[@ver]] --registry <remote-root>
     [--auth-env <VAR>] [--dry-run]
@@ -2492,5 +2510,7 @@ cage registry push <project> [pkg[@ver]] --registry <remote-root>
 逐签进 `codes.rs` 的 `error::codes::distribution` 模块 + validation.md，
 每码一 doc；A3 收口时五码全部转已接线。
 
-**留待实现期**：压缩容器（zstd 确定性字典）、签名账本（ed25519，抗
+**留待实现期**：签名账本（ed25519，抗
 抵赖）、增量 delta 分发、S3 presigned 直推、pull-through 缓存代理。
+（压缩容器已实装——固定级别 19 的 bulk 编码本就不依赖字典态，「zstd
+确定性字典」变体随之失效。）

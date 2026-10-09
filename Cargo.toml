@@ -59,6 +59,9 @@ base64 = "0.22"
 # Deterministic tar bundles (§47 A series): zero-dep pure-Rust archive
 # read/write; determinism comes from headers we set ourselves
 tar = "0.4"
+# Bundles are small config artifacts — level 19 (max) trades compression
+# time for ratio; determinism is per pinned zstd-sys/build
+zstd = "0.13"
 
 # Template Target engine (§22 Template Target, G series)
 tera = "1"

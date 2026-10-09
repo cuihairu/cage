@@ -294,6 +294,17 @@ fn segment_selection_all_to_and_offchain() {
         out_str.contains("remap_values(Item.grade, 1 entry): 1 row(s)"),
         "{out_str}"
     );
+
+    // --to latest resolves to the whole chain — byte-identical output to
+    // --all (the symbol carries no other effect on the run).
+    let all_out = run_cage(&["migrate", proj.to_str().unwrap(), "--all"]);
+    let latest = run_cage(&["migrate", proj.to_str().unwrap(), "--to", "latest"]);
+    assert_code(&latest, 0, "--to latest");
+    assert_eq!(
+        stdout(&latest),
+        stdout(&all_out),
+        "--to latest must select exactly what --all selects"
+    );
 }
 
 // ---------------------------------------------------------------- Excel ---
@@ -437,4 +448,101 @@ fn excel_success_reports_skip_and_never_writes() {
         before,
         "Excel sources are never rewritten"
     );
+}
+
+/// Excel-served tables are never written back, so the report carries the
+/// affected rows' cell-level addresses — `file | Sheet: <name> | Row: <n>`
+/// — under each step's row count, capped deterministically when there are
+/// many. Rows are 1-indexed on the sheet grid (the fixture's data starts
+/// at sheet row 3, header on row 2).
+#[test]
+fn excel_report_carries_cell_level_locations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = write_excel_project(
+        tmp.path(),
+        "from: \"1.0.0\"\nto: \"1.1.0\"\nsteps:\n  - set_default:\n      table: Items\n      field: rarity\n      value: \"common\"\n  - set_default:\n      table: Items\n      field: note\n      value: \"\"\n",
+    );
+    let xlsx = proj.join("config/Items.xlsx").display().to_string();
+
+    let out = run_cage(&["migrate", proj.to_str().unwrap()]);
+    assert_code(&out, 0, "excel location report");
+    let out_str = stdout(&out);
+
+    assert!(
+        out_str.contains("  set_default(Items.rarity): 3 row(s)"),
+        "{out_str}"
+    );
+    // The three fixture data rows, sheet-grid addressed (header on row 2,
+    // data on rows 3-5); merged-cell rows still carry their own location.
+    for row in [3, 4, 5] {
+        let loc = format!("{xlsx} | Sheet: Items | Row: {row}");
+        assert!(
+            out_str.lines().any(|l| l.trim() == loc),
+            "missing '{loc}' in:\n{out_str}"
+        );
+    }
+    // The note fill touches only the two merged-null rows (row 5 carries
+    // a note already) — only those two addresses render under its line.
+    let note_block = out_str
+        .lines()
+        .skip_while(|l| !l.contains("set_default(Items.note): 2 row(s)"))
+        .skip(1)
+        .take_while(|l| l.trim_start().starts_with(&xlsx))
+        .collect::<Vec<_>>();
+    assert_eq!(note_block.len(), 2, "{out_str}");
+    for row in [3, 4] {
+        let loc = format!("{xlsx} | Sheet: Items | Row: {row}");
+        assert!(
+            note_block.iter().any(|l| l.trim() == loc),
+            "missing '{loc}' under the note step:\n{out_str}"
+        );
+    }
+    assert!(
+        note_block.iter().all(|l| !l.contains("Row: 5")),
+        "row 5 has a note, it must not render:\n{out_str}"
+    );
+    // Plain-text tables never gain per-row lines — only Excel rows are
+    // addressed here (the fixture is Excel-only, so nothing else renders).
+    assert!(
+        !out_str.contains("… +"),
+        "three rows must fit under the cap:\n{out_str}"
+    );
+}
+
+/// A chain that literally contains a segment ending at a version named
+/// `latest` resolves `--to latest` as that version first — the concrete
+/// target wins over the symbol, selecting the prefix that ends there, not
+/// the whole chain.
+#[test]
+fn to_latest_resolves_the_literal_chain_version_before_the_symbol() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("proj");
+    write(&proj.join("cage.toml"), JSON_TOML);
+    write(&proj.join("schema.yaml"), MIGRATED_SCHEMA);
+    write(&proj.join("config/item.json"), OLD_ITEM_DATA);
+    // First segment ends at a version literally named `latest`.
+    write(
+        &proj.join("migrations/0001-a.yaml"),
+        "from: \"1.0.0\"\nto: \"latest\"\nsteps:\n  - rename_field:\n      table: Item\n      from: name\n      to: title\n  - set_default:\n      table: Item\n      field: rarity\n      value: \"common\"\n",
+    );
+    // Second segment continues past it.
+    write(
+        &proj.join("migrations/0002-b.yaml"),
+        "from: \"latest\"\nto: \"1.2.0\"\nsteps:\n  - remap_values:\n      table: Item\n      field: grade\n      map:\n        \"S\": \"legendary\"\n",
+    );
+
+    let out = run_cage(&["migrate", proj.to_str().unwrap(), "--to", "latest"]);
+    assert_code(&out, 0, "--to literal latest");
+    let out_str = stdout(&out);
+    assert!(out_str.contains("0001-a.yaml"), "{out_str}");
+    assert!(
+        !out_str.contains("0002-b.yaml"),
+        "the literal version must win over the chain symbol:\n{out_str}"
+    );
+    assert!(out_str.contains("1 segment(s)"), "{out_str}");
+
+    // Only the explicit whole-chain selectors reach the second segment.
+    let out = run_cage(&["migrate", proj.to_str().unwrap(), "--all"]);
+    assert_code(&out, 0, "--all over literal latest chain");
+    assert!(stdout(&out).contains("2 segment(s)"), "{}", stdout(&out));
 }

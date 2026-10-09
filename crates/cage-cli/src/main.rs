@@ -169,7 +169,7 @@ enum Commands {
         #[arg(long, conflicts_with = "to")]
         all: bool,
         /// Apply the chain prefix up to and including the segment whose
-        /// target version matches
+        /// target version matches — `latest` means the whole chain
         #[arg(long, value_name = "VERSION")]
         to: Option<String>,
         /// Rewrite the migrated data back into the local text sources
@@ -256,6 +256,12 @@ enum RegistryCmd {
         /// Bundle output file
         #[arg(short, long)]
         output: PathBuf,
+        /// Wrap the deterministic tar in a compression container; the only
+        /// accepted value is `zstd` (a single frame at a fixed level, so
+        /// the wrapped bytes stay reproducible). Import sniffs the frame
+        /// magic, so both container forms load identically.
+        #[arg(long, value_parser = ["zstd"], value_name = "FORMAT")]
+        compress: Option<String>,
         /// Registry root directory (overrides cage.toml `[registry].path`)
         #[arg(long)]
         registry: Option<PathBuf>,
@@ -264,7 +270,9 @@ enum RegistryCmd {
     /// must verify and match the bundle's index excerpt before anything
     /// enters the registry (E2103 otherwise); byte-identical re-imports are
     /// idempotent no-ops, different bytes for an existing version are an
-    /// E1801 conflict
+    /// E1801 conflict. The container is sniffed from the file head, not the
+    /// name — plain tars and `--compress zstd` frames load identically
+    /// under any extension
     Import {
         /// Bundle file produced by `cage registry export`
         file: PathBuf,
@@ -383,8 +391,9 @@ fn main() {
             RegistryCmd::Export {
                 package,
                 output,
+                compress,
                 registry,
-            } => run_registry_export(&package, &output, registry.as_deref()),
+            } => run_registry_export(&package, &output, compress.as_deref(), registry.as_deref()),
             RegistryCmd::Import {
                 file,
                 dry_run,
@@ -862,9 +871,40 @@ fn run_check(path: &Path, level: &str, profile: &str, no_cache: bool) -> i32 {
     }
 }
 
-/// `cage migrate [--all | --to <ver>] [--write]` — apply the migration
-/// chain in `<root>/migrations/` (file-name order = version step chain)
-/// to the loaded document, then reverify it under the current schema.
+/// How many affected-row location lines one step may render before the
+/// rest collapse into a single deterministic summary line (always the
+/// first N in source order — rows already are in source order).
+const EXCEL_LOCATION_CAP: usize = 8;
+
+/// Render one step's affected-row locations for the migrate report, in
+/// source order under the step's row-count line (4-space indent), tail
+/// summarized once past [`EXCEL_LOCATION_CAP`]. Core records locations
+/// only for Excel-served tables, so an empty list renders nothing.
+fn affected_location_lines(step: &cage_core::migrate::StepReport) -> Vec<String> {
+    let locations = &step.affected_locations;
+    if locations.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = locations
+        .iter()
+        .take(EXCEL_LOCATION_CAP)
+        .map(|loc| format!("    {}", loc.display()))
+        .collect();
+    if locations.len() > EXCEL_LOCATION_CAP {
+        lines.push(format!(
+            "    … +{} more row(s)",
+            locations.len() - EXCEL_LOCATION_CAP
+        ));
+    }
+    lines
+}
+
+/// `cage migrate [--all | --to <ver|latest>] [--write]` — apply the
+/// migration chain in `<root>/migrations/` (file-name order = version
+/// step chain) to the loaded document, then reverify it under the
+/// current schema. `--to latest` resolves to the whole chain, same
+/// selection as `--all`.
+///
 /// The CLI always holds the post-migration schema (rules migrate data;
 /// the schema was already edited), so no historical from-schema exists on
 /// disk: `validate_spec`'s from-schema reference check stays a library
@@ -902,7 +942,12 @@ fn run_migrate(path: &Path, all: bool, to: Option<&str>, write: bool) -> i32 {
         );
         return 0;
     }
-    let selected: Vec<(String, cage_core::migrate::MigrationSpec)> = if all {
+    // `latest` is the symbolic end of the chain — it resolves to the whole
+    // chain, exactly like `--all`. A chain that literally contains a
+    // segment ending at the version named "latest" resolves as that
+    // version first (the concrete target wins over the symbol).
+    let latest_symbol = to == Some("latest") && !chain.iter().any(|(_, s)| s.to == "latest");
+    let selected: Vec<(String, cage_core::migrate::MigrationSpec)> = if all || latest_symbol {
         chain
     } else if let Some(target) = to {
         let mut picked = Vec::new();
@@ -939,6 +984,14 @@ fn run_migrate(path: &Path, all: bool, to: Option<&str>, write: bool) -> i32 {
         for step in &report.steps {
             println!("  {}: {} row(s)", step.step, step.rows_changed);
             migrated_rows += step.rows_changed;
+            // Excel sources are report-only (never written back), so the
+            // affected rows' addresses are the one concrete record of what
+            // the step moved. Plain-text sources stay file-level — their
+            // rewritten file is the record, and per-row lines there would
+            // be noise.
+            for line in affected_location_lines(step) {
+                println!("{line}");
+            }
         }
     }
 
@@ -1862,10 +1915,17 @@ fn run_registry_list(registry_flag: Option<&Path>) -> i32 {
 /// bundle (A1). The bundle is byte-reproducible from the registry alone
 /// (member-name order, zeroed mtime/uid/gid) and self-verifying — the entry
 /// ledger rides along, and A2's import re-checks it before anything enters
-/// a registry. Local registry roots only: the remote read protocol has no
-/// file enumeration, so remote consumers resolve `registry:` sources
-/// instead.
-fn run_registry_export(package_spec: &str, output: &Path, registry_flag: Option<&Path>) -> i32 {
+/// a registry. `--compress zstd` wraps that same tar in a single zstd frame
+/// at a fixed level, so the wrapped bytes stay reproducible; import sniffs
+/// the frame magic, so both container forms load identically. Local
+/// registry roots only: the remote read protocol has no file enumeration,
+/// so remote consumers resolve `registry:` sources instead.
+fn run_registry_export(
+    package_spec: &str,
+    output: &Path,
+    compress: Option<&str>,
+    registry_flag: Option<&Path>,
+) -> i32 {
     let Some(reg_root) = registry_flag else {
         eprintln!("error: no registry root (pass --registry)");
         return 2;
@@ -1879,18 +1939,33 @@ fn run_registry_export(package_spec: &str, output: &Path, registry_flag: Option<
             return 2;
         }
     }
+    // clap's value_parser already restricts --compress to the literal
+    // "zstd"; the guard keeps a non-CLI caller honest anyway.
+    let compression = match compress {
+        None => cage_core::registry::BundleCompression::Plain,
+        Some("zstd") => cage_core::registry::BundleCompression::Zstd,
+        Some(other) => {
+            eprintln!("error: --compress only accepts 'zstd', got '{other}'");
+            return 2;
+        }
+    };
     let (package, version) = match package_spec.split_once('@') {
         Some((p, v)) => (p, Some(v)),
         None => (package_spec, None),
     };
-    match cage_core::registry::export_bundle(reg_root, package, version, output) {
+    match cage_core::registry::export_bundle(reg_root, package, version, compression, output) {
         Ok(report) => {
             println!(
-                "cage registry: exported {}/{} → {} ({} entry files + index excerpt)",
+                "cage registry: exported {}/{} → {} ({} entry files + index excerpt{})",
                 report.package,
                 report.version,
                 output.display(),
-                report.files
+                report.files,
+                if matches!(compression, cage_core::registry::BundleCompression::Zstd) {
+                    ", zstd container"
+                } else {
+                    ""
+                }
             );
             0
         }
@@ -1903,8 +1978,11 @@ fn run_registry_export(package_spec: &str, output: &Path, registry_flag: Option<
 
 /// `cage registry import` — enter a bundle into the local registry (A2).
 /// The bundle's riding ledger gates the entry exactly like publish does;
-/// refused bytes never touch the target. Local registry roots only —
-/// import writes, and writes over the network stay out of scope.
+/// refused bytes never touch the target. The container form is sniffed from
+/// the file head, not the name: plain tars load unchanged and a
+/// `--compress zstd` frame decompresses first, so both import identically
+/// under any extension. Local registry roots only — import writes, and
+/// writes over the network stay out of scope.
 fn run_registry_import(file: &Path, dry_run: bool, registry_flag: Option<&Path>) -> i32 {
     let Some(reg_root) = registry_flag else {
         eprintln!("error: no registry root (pass --registry)");
@@ -2667,10 +2745,12 @@ mod tests {
                 RegistryCmd::Export {
                     package,
                     output,
+                    compress,
                     registry,
                 } => format!(
-                    "registry export {package} {} {}",
+                    "registry export {package} {} {} {}",
                     output.display(),
+                    compress.as_deref().unwrap_or("-"),
                     registry
                         .as_deref()
                         .map_or_else(|| Path::new("<flag required>").display(), Path::display)
@@ -2767,9 +2847,66 @@ mod tests {
         let cli = Cli::try_parse_from(["cage", "migrate", "proj", "--to", "1.2.0"])
             .expect("parse migrate to");
         assert_eq!(describe(&cli.command), "migrate proj false 1.2.0 false");
+        // `latest` is accepted as a literal target value (resolution to
+        // the whole chain happens at run time, chain-dependent).
+        let cli = Cli::try_parse_from(["cage", "migrate", "proj", "--to", "latest"])
+            .expect("parse migrate to latest");
+        assert_eq!(describe(&cli.command), "migrate proj false latest false");
         // --all and --to are mutually exclusive segment selectors.
         let cli = Cli::try_parse_from(["cage", "migrate", "proj", "--all", "--to", "1.2.0"]);
         assert!(cli.is_err(), "--all and --to must conflict");
+    }
+
+    #[test]
+    fn affected_location_lines_cap_deterministically() {
+        // No locations (text-sourced table): no lines at all.
+        let step = cage_core::migrate::StepReport {
+            step: "set_default(Item.rarity)".into(),
+            rows_changed: 0,
+            affected_locations: Vec::new(),
+        };
+        assert_eq!(affected_location_lines(&step), [] as [&str; 0]);
+
+        // Within the cap: one line per row, source order.
+        let step = cage_core::migrate::StepReport {
+            step: "set_default(Items.rarity)".into(),
+            rows_changed: 2,
+            affected_locations: vec![
+                cage_core::value::SourceLocation::new("config/Items.xlsx")
+                    .with_sheet("Items")
+                    .with_row(3),
+                cage_core::value::SourceLocation::new("config/Items.xlsx")
+                    .with_sheet("Items")
+                    .with_row(4),
+            ],
+        };
+        assert_eq!(
+            affected_location_lines(&step),
+            vec![
+                "    config/Items.xlsx | Sheet: Items | Row: 3".to_string(),
+                "    config/Items.xlsx | Sheet: Items | Row: 4".to_string(),
+            ]
+        );
+
+        // Past the cap: the first EXCEL_LOCATION_CAP rows, then exactly
+        // one summary line for the rest.
+        let step = cage_core::migrate::StepReport {
+            step: "widen_type(Items.level → Int64)".into(),
+            rows_changed: EXCEL_LOCATION_CAP + 3,
+            affected_locations: (1..=EXCEL_LOCATION_CAP + 3)
+                .map(|row| {
+                    cage_core::value::SourceLocation::new("config/Items.xlsx")
+                        .with_sheet("Items")
+                        .with_row(row)
+                })
+                .collect(),
+        };
+        let lines = affected_location_lines(&step);
+        assert_eq!(lines.len(), EXCEL_LOCATION_CAP + 1);
+        assert!(lines[0].contains("Row: 1"), "{lines:?}");
+        let cap = EXCEL_LOCATION_CAP;
+        assert!(lines[cap - 1].contains(&format!("Row: {cap}")), "{lines:?}");
+        assert_eq!(lines[cap], "    … +3 more row(s)", "{lines:?}");
     }
 
     #[test]

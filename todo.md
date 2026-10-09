@@ -326,6 +326,21 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       architecture.md 工程树 registry.rs/remote.rs 注释与 Snapshot 行
       补 A 系列分发、需求整理.md 状态行与 Artifact 分发行转已交付
       ——本轮交付，A 系列收官，勾选
+- [x] A5 压缩容器（§47 延迟项补齐）：`export_bundle` 增 compression 参数
+      （`BundleCompression::Plain | Zstd`），CLI `--compress zstd`（clap
+      value_parser 只收字面量 zstd，异值参数错误 exit 2）把确定性 tar 原样
+      包进单个 zstd 帧（`zstd::stream::encode_all`，`BUNDLE_ZSTD_LEVEL`
+      钉死级别 19——bundle 是小配置产物比率优先于速度；同 tar+同级别+
+      同库版本 → 同容器字节，两跑逐字节断言锁定）；`import_bundle` 按文件
+      头帧魔数（28 B5 2F FD）嗅探容器、不看扩展名（改名 .tar/.zst 均导入），
+      压缩只在容器层——HASHES.json 账本哈希解压后内容，两种形态过同一
+      信任门；push 不变（推单文件不推 bundle）；依赖 zstd = "0.13" 进
+      workspace.dependencies（cage-core 引用，离线缓存即解）；验收：core
+      单测×2（zstd 导出两跑逐字节一致且解包载荷 == 纯 tar 导出；zstd
+      bundle 导入 verify_registry 全绿、条目字节同源、dry-run 不落笔、
+      改名双向嗅探、截断帧 E2103）+ CLI 集成×2（--compress zstd 两跑一致
+      + 头四字节魔数 + 重导 no-op；--compress gzip exit 2 零落笔）
+      ——本轮交付，勾选
 
 ### M 系列：Migration（2026-10 立项，design §46）
 
@@ -401,6 +416,16 @@ build + publish，不新造通道。决策记录（定了什么 / 为什么 / �
       实装决策记录（widen 双路径/validate_spec 取舍/幂等/渲染序/多段
       链回验）+ cli.md migrate 章节与顶部标注 + 需求整理.md 迁移行
       勾选——本轮交付，勾选；M 系列全数收官
+- [x] M3.1 增量交付（§46 留待实现期两项）：`cage migrate --to latest`
+      （解析为整链、同 `--all`；链上字面 `latest` 版本优先，具体目标赢过
+      符号）+ Excel 报告单元格级定位（`StepReport.affected_locations`——
+      `apply` 对 Excel 表（.xlsx/.xls 后缀判定）采集受影响行 `Row.location`、
+      文本源不采集；CLI 源序渲染 `file | Sheet | Row`，超 8 行折叠
+      `… +K more row(s)`，确定性封顶）；验收已过：core 单测×3 新增
+      （Excel 定位采集源序、幂等重跑零定位、rename_table 全表定位与文本表
+      空）+ CLI 集成×2（Excel 定位行渲染；`--to latest` 与 `--all` 输出
+      逐字节一致 + 字面 latest 链优先）+ parse/封顶单测扩展——本轮交付，
+      勾选
 
 ### G 系列：Template Target（2026-10 立项，design §22；G1 随立项交付）
 

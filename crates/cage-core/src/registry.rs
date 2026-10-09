@@ -29,13 +29,31 @@ use crate::error::codes::registry::{E1801, E1802, E1803};
 use crate::snapshot;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 /// Ledger file name inside a published entry (the snapshot trust root).
 const LEDGER_FILE: &str = "HASHES.json";
 /// Registry index file name inside a package directory.
 const INDEX_FILE: &str = "index.json";
+
+/// Fixed zstd compression level for `--compress zstd` bundles (A1).
+///
+/// Level 19 — the top of zstd's standard (documented 1–19) range. The
+/// compression-time cost is paid once per export, while bundles are small
+/// configuration artifacts where the ratio wins on every wire/store hop —
+/// the same trade as the release profile's `opt-level = "z"`. The ultra
+/// levels above 19 cost extreme time and window memory for marginal gain,
+/// so they stay out of the contract. The level is pinned in code (not
+/// user-selectable) so a given input always compresses to identical bytes
+/// within a pinned zstd library version, matching the bundle's determinism
+/// contract.
+pub const BUNDLE_ZSTD_LEVEL: i32 = 19;
+
+/// The 4-byte zstd frame magic `0x28 0xB5 0x2F 0xFD` (little-endian
+/// `0xFD2FB528`), sniffed at the head of an import file to tell a
+/// zstd-wrapped bundle from a plain tar.
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
 /// Valid package/version character set: alphanumerics, dot, dash, underscore.
 /// `..` / `/` / `\` are rejected so names can never escape the registry root.
@@ -78,6 +96,19 @@ pub struct PublishReport {
     /// `true` when a byte-identical version already existed and nothing
     /// was rewritten (idempotent re-publish), `false` when newly written
     pub already_identical: bool,
+}
+
+/// Container format of an exported bundle (A1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleCompression {
+    /// The deterministic tar bytes, unwrapped — the default and the only
+    /// format `export_bundle` wrote before compression landed.
+    Plain,
+    /// The deterministic tar wrapped in a single zstd frame at the fixed
+    /// level [`BUNDLE_ZSTD_LEVEL`]. `import_bundle` sniffs the frame magic,
+    /// so both forms load identically; the trust ledger hashes uncompressed
+    /// content, so a wrapped bundle verifies exactly like its plain form.
+    Zstd,
 }
 
 /// Result of `export_bundle`: what was packed.
@@ -723,11 +754,20 @@ fn entry_record(entry_dir: &Path, version: &str, files: usize) -> Result<IndexEn
 /// and members are sorted lexicographically by name. The resulting bytes are byte-for-byte
 /// identical for the same source entry regardless of build environment.
 ///
+/// With [`BundleCompression::Zstd`] the finished tar is wrapped in a single
+/// zstd frame at the fixed level [`BUNDLE_ZSTD_LEVEL`]: same tar, same
+/// level, same zstd library version → the same container bytes. The
+/// container is transparent to [`import_bundle`], which sniffs the frame
+/// magic instead of trusting extensions — and irrelevant to the trust gate,
+/// because the `HASHES.json` ledger hashes uncompressed content, so a
+/// zstd-wrapped bundle verifies identically to its plain form.
+///
 /// Returns an `ExportReport` with the bundle path, size, and content hash.
 pub fn export_bundle(
     root: &Path,
     package: &str,
     version: Option<&str>,
+    compression: BundleCompression,
     out: &Path,
 ) -> Result<ExportReport, String> {
     let (version, entry_dir, rels) = resolve_entry(root, package, version)?;
@@ -755,9 +795,9 @@ pub fn export_bundle(
     }
     members.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let file = fs::File::create(out)
-        .map_err(|e| format!("{E2101} cannot create bundle {}: {e}", out.display()))?;
-    let mut builder = tar::Builder::new(file);
+    // The deterministic tar is built in memory first, so whichever container
+    // follows wraps exactly the bytes a plain export would carry.
+    let mut builder = tar::Builder::new(Vec::new());
     for (name, bytes) in &members {
         // Determinism contract: header fields we set ourselves — the tar
         // layer never sees a filesystem stat, so nothing environment-sourced
@@ -772,15 +812,48 @@ pub fn export_bundle(
             .append_data(&mut header, name, bytes.as_slice())
             .map_err(|e| format!("{E2101} cannot pack bundle member '{name}': {e}"))?;
     }
-    builder
+    let tar_bytes = builder
         .into_inner()
         .map_err(|e| format!("{E2101} cannot finalize bundle {}: {e}", out.display()))?;
+
+    match compression {
+        BundleCompression::Plain => {
+            fs::write(out, &tar_bytes)
+                .map_err(|e| format!("{E2101} cannot write bundle {}: {e}", out.display()))?;
+        }
+        BundleCompression::Zstd => {
+            // Bulk single-threaded encode at the pinned [`BUNDLE_ZSTD_LEVEL`]:
+            // deterministic for a given zstd library version, keeping the
+            // bundle byte-reproducible like its plain-tar form.
+            let wrapped = zstd::stream::encode_all(&tar_bytes[..], BUNDLE_ZSTD_LEVEL)
+                .map_err(|e| format!("{E2101} cannot compress bundle {}: {e}", out.display()))?;
+            fs::write(out, &wrapped)
+                .map_err(|e| format!("{E2101} cannot write bundle {}: {e}", out.display()))?;
+        }
+    }
 
     Ok(ExportReport {
         package: package.to_string(),
         version,
         files: rels.len(),
     })
+}
+
+/// Strip a bundle's compression container, if it carries one: a zstd frame
+/// magic at the head selects the zstd form, anything else passes through as
+/// the plain tar. The sniff is content-based, never extension-based —
+/// bundles travel renamed across offline and object-storage channels, so a
+/// `.tar`/`.tar.zst` suffix carries no format truth. A head that claims the
+/// frame but fails to decode is a corrupt container; the caller reports it
+/// against the bundle file. Compression is container-level only: the
+/// `HASHES.json` ledger hashes uncompressed content, so the trust gate runs
+/// on the decompressed entries exactly as it does for a plain bundle.
+fn decompress_bundle(raw: Vec<u8>) -> Result<Vec<u8>, String> {
+    if !raw.starts_with(&ZSTD_MAGIC) {
+        return Ok(raw);
+    }
+    zstd::stream::decode_all(Cursor::new(&raw[..]))
+        .map_err(|e| format!("zstd container decode failed: {e}"))
 }
 
 /// Import a bundle produced by `export_bundle` (A2, design §47): the riding
@@ -791,11 +864,16 @@ pub fn export_bundle(
 /// different bytes is the usual E1801 conflict (the registry never rewrites
 /// history, not even through distribution). Structural problems — unsafe
 /// member paths, malformed index, members outside the entry, missing
-/// ledger — and any trust-gate refusal are E2103. With `dry_run` the full
-/// gate runs and the report comes back without writing anything.
+/// ledger — and any trust-gate refusal are E2103. The container form is
+/// sniffed from the file head, not the name: plain tars load unchanged and
+/// a `--compress zstd` frame decompresses first, so both forms import
+/// identically under any extension. With `dry_run` the full gate runs and
+/// the report comes back without writing anything.
 pub fn import_bundle(root: &Path, file: &Path, dry_run: bool) -> Result<ImportReport, String> {
-    let bytes = fs::read(file)
+    let raw = fs::read(file)
         .map_err(|e| format!("{E2101} cannot read bundle {}: {e}", file.display()))?;
+    let bytes = decompress_bundle(raw)
+        .map_err(|e| format!("{E2103} malformed bundle {}: {e}", file.display()))?;
     let mut archive = tar::Archive::new(&bytes[..]);
 
     // Members are untrusted input: only plain relative paths survive the
@@ -1608,16 +1686,30 @@ mod tests {
 
         // Two exports of the same entry are byte-identical.
         let out1 = tmp.path().join("b1.tar");
-        let report = export_bundle(&root, "common", Some("1.0.0"), &out1).unwrap();
+        let report = export_bundle(
+            &root,
+            "common",
+            Some("1.0.0"),
+            BundleCompression::Plain,
+            &out1,
+        )
+        .unwrap();
         assert_eq!(report.package, "common");
         assert_eq!(report.version, "1.0.0");
         let out2 = tmp.path().join("b2.tar");
-        export_bundle(&root, "common", Some("1.0.0"), &out2).unwrap();
+        export_bundle(
+            &root,
+            "common",
+            Some("1.0.0"),
+            BundleCompression::Plain,
+            &out2,
+        )
+        .unwrap();
         assert_eq!(fs::read(&out1).unwrap(), fs::read(&out2).unwrap());
 
         // A missing version picks the dotted-numeric latest (1.9.0).
         let out3 = tmp.path().join("b3.tar");
-        let latest = export_bundle(&root, "common", None, &out3).unwrap();
+        let latest = export_bundle(&root, "common", None, BundleCompression::Plain, &out3).unwrap();
         assert_eq!(latest.version, "1.9.0");
 
         // The bundle parses as a tar carrying entry files + index excerpt,
@@ -1659,6 +1751,123 @@ mod tests {
     }
 
     #[test]
+    fn export_bundle_zstd_is_byte_deterministic_and_wraps_the_plain_tar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("reg");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&root, "common", "1.0.0", &snap).unwrap();
+
+        let plain = tmp.path().join("plain.tar");
+        export_bundle(
+            &root,
+            "common",
+            Some("1.0.0"),
+            BundleCompression::Plain,
+            &plain,
+        )
+        .unwrap();
+        let z1 = tmp.path().join("z1.tar.zst");
+        let z2 = tmp.path().join("z2.tar.zst");
+        export_bundle(&root, "common", Some("1.0.0"), BundleCompression::Zstd, &z1).unwrap();
+        export_bundle(&root, "common", Some("1.0.0"), BundleCompression::Zstd, &z2).unwrap();
+
+        // Fixed-level determinism: two exports of the same entry land
+        // byte-identical container bytes (within the pinned zstd library —
+        // the same scope as the plain-tar golden contract).
+        assert_eq!(
+            fs::read(&z1).unwrap(),
+            fs::read(&z2).unwrap(),
+            "fixed level must compress identically every run"
+        );
+
+        // The container wraps exactly the plain tar: frame magic at the
+        // head, and the decoded payload is byte-identical to the plain
+        // export of the same entry.
+        let wrapped = fs::read(&z1).unwrap();
+        assert!(wrapped.starts_with(&ZSTD_MAGIC), "zstd frame magic");
+        assert_ne!(wrapped, fs::read(&plain).unwrap(), "wrapped, not plain");
+        let payload = zstd::stream::decode_all(Cursor::new(&wrapped[..])).unwrap();
+        assert_eq!(payload, fs::read(&plain).unwrap());
+    }
+
+    #[test]
+    fn import_bundle_sniffs_zstd_container_and_gates_on_decompressed_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+        let plain = tmp.path().join("plain.tar");
+        export_bundle(
+            &source,
+            "common",
+            Some("1.0.0"),
+            BundleCompression::Plain,
+            &plain,
+        )
+        .unwrap();
+        let wrapped = tmp.path().join("wrapped.tar.zst");
+        export_bundle(
+            &source,
+            "common",
+            Some("1.0.0"),
+            BundleCompression::Zstd,
+            &wrapped,
+        )
+        .unwrap();
+
+        // The compressed bundle imports through the same trust gate: verify
+        // clean, resolve, and entry bytes matching the plain form — the
+        // ledger hashes uncompressed content, so the container never shows.
+        let target = tmp.path().join("regB");
+        let report = import_bundle(&target, &wrapped, false).unwrap();
+        assert_eq!(report.package, "common");
+        assert_eq!(report.version, "1.0.0");
+        assert!(!report.already_identical);
+        let audit = verify_registry(&target).unwrap();
+        assert!(audit.ok(), "{:?}", audit.problems);
+        let dir = resolve(&target, "common", Some("1.0.0")).unwrap();
+        let source_artifact = source.join("common/1.0.0/data/client/json/Item.json");
+        assert_eq!(
+            fs::read(dir.join("data/client/json/Item.json")).unwrap(),
+            fs::read(source_artifact).unwrap()
+        );
+
+        // Dry run of a compressed bundle: full gate, nothing written.
+        let dry_target = tmp.path().join("regC");
+        let report = import_bundle(&dry_target, &wrapped, true).unwrap();
+        assert!(report.dry_run);
+        assert!(!dry_target.join("common").exists());
+
+        // Content-based sniff, extension-blind: the compressed form under a
+        // plain `.tar` name and the plain form under a `.zst` name both
+        // import — the file head, not the suffix, decides.
+        let lying_tar = tmp.path().join("actually-zstd.tar");
+        fs::copy(&wrapped, &lying_tar).unwrap();
+        let lying_zst = tmp.path().join("actually-plain.tar.zst");
+        fs::copy(&plain, &lying_zst).unwrap();
+        let target_tar = tmp.path().join("regD");
+        let report = import_bundle(&target_tar, &lying_tar, false).unwrap();
+        assert_eq!(report.version, "1.0.0");
+        let target_zst = tmp.path().join("regE");
+        let report = import_bundle(&target_zst, &lying_zst, false).unwrap();
+        assert_eq!(report.version, "1.0.0");
+
+        // A head claiming the zstd frame but not decoding is a refused
+        // bundle (E2103), not a panic and not a silent plain-tar parse.
+        let mut corrupt = fs::read(&wrapped).unwrap();
+        corrupt.truncate(8);
+        let corrupt_path = tmp.path().join("corrupt.tar.zst");
+        fs::write(&corrupt_path, &corrupt).unwrap();
+        let err = import_bundle(&tmp.path().join("regF"), &corrupt_path, false).unwrap_err();
+        assert!(
+            err.starts_with(crate::error::codes::distribution::E2103),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn export_bundle_missing_entry_or_bad_name_is_e2101() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("reg");
@@ -1669,19 +1878,41 @@ mod tests {
         let e2101 = crate::error::codes::distribution::E2101;
 
         // Unknown package / unknown version / path-escape version.
-        let err = export_bundle(&root, "ghost", None, &out).unwrap_err();
+        let err = export_bundle(&root, "ghost", None, BundleCompression::Plain, &out).unwrap_err();
         assert!(err.starts_with(e2101), "{err}");
-        let err = export_bundle(&root, "common", Some("9.9.9"), &out).unwrap_err();
+        let err = export_bundle(
+            &root,
+            "common",
+            Some("9.9.9"),
+            BundleCompression::Plain,
+            &out,
+        )
+        .unwrap_err();
         assert!(err.starts_with(e2101), "{err}");
-        let err = export_bundle(&root, "common", Some("../evil"), &out).unwrap_err();
+        let err = export_bundle(
+            &root,
+            "common",
+            Some("../evil"),
+            BundleCompression::Plain,
+            &out,
+        )
+        .unwrap_err();
         assert!(err.starts_with(e2101), "{err}");
-        let err = export_bundle(&root, "../evil", None, &out).unwrap_err();
+        let err =
+            export_bundle(&root, "../evil", None, BundleCompression::Plain, &out).unwrap_err();
         assert!(err.starts_with(e2101), "{err}");
 
         // An entry stripped of its ledger is not exportable.
         let version_dir = root.join("common/1.0.0");
         fs::remove_file(version_dir.join(LEDGER_FILE)).unwrap();
-        let err = export_bundle(&root, "common", Some("1.0.0"), &out).unwrap_err();
+        let err = export_bundle(
+            &root,
+            "common",
+            Some("1.0.0"),
+            BundleCompression::Plain,
+            &out,
+        )
+        .unwrap_err();
         assert!(err.starts_with(e2101), "{err}");
     }
 
@@ -1722,7 +1953,14 @@ mod tests {
         make_snapshot(&snap, "one");
         publish(&source, "common", "1.0.0", &snap).unwrap();
         let bundle = tmp.path().join("b.tar");
-        export_bundle(&source, "common", Some("1.0.0"), &bundle).unwrap();
+        export_bundle(
+            &source,
+            "common",
+            Some("1.0.0"),
+            BundleCompression::Plain,
+            &bundle,
+        )
+        .unwrap();
 
         let target = tmp.path().join("regB");
         let report = import_bundle(&target, &bundle, false).unwrap();
@@ -1753,7 +1991,14 @@ mod tests {
         make_snapshot(&snap, "one");
         publish(&source, "common", "1.0.0", &snap).unwrap();
         let bundle = tmp.path().join("b.tar");
-        export_bundle(&source, "common", Some("1.0.0"), &bundle).unwrap();
+        export_bundle(
+            &source,
+            "common",
+            Some("1.0.0"),
+            BundleCompression::Plain,
+            &bundle,
+        )
+        .unwrap();
         let e2103 = crate::error::codes::distribution::E2103;
 
         // Tampered entry bytes fail the riding ledger at the trust gate.
