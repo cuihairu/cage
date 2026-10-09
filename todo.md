@@ -427,6 +427,21 @@ build + publish，不新造通道。决策记录（定了什么 / 为什么 / �
       逐字节一致 + 字面 latest 链优先）+ parse/封顶单测扩展——本轮交付，
       勾选
 
+- [x] M3.2 增量交付（§46 留待实现期：schema diff 规则草稿）：
+      `cage migrate-draft <from-schema> <to-schema> --from <ver> --to <ver> [-o file]`
+      —— `migrate::diff` 模块（`diff_schemas` 表/字段名对齐结构 diff +
+      `draft_migration` 机械安全变换成步、歧义项 `# TODO` +
+      `render_draft` 规则稿渲染）；改名从不猜（rename/remap/非加宽换型/
+      枚举增删/删表新表全留 TODO）；UInt 默认值走 canonical 邻接标签
+      形态（`yaml_to_value` mapping 先试标签解码回落 plain；渲染端含
+      UInt 一律发标签形态）规避裸标量回读 Int 族撞 E1101；字符串恒
+      单引号防 `yes`/数字回读翻型；空稿 `steps: []` 由 parse_spec 按
+      E2001 拒绝（全 TODO 稿不可直接运行）；`-o` 父目录自动创建；
+      验收已过：core 单测×7（diff/draft/typed defaults/enum TODO/
+      required 翻转/渲染往返含标签形态/空稿确定性）+ yaml_to_value
+      标签解码单测 + CLI 集成×2（draft→migrate --all --write 全链落盘
+      数据实迁；全 TODO 稿 E2001 拒绝）——本轮交付，勾选
+
 ### G 系列：Template Target（2026-10 立项，design §22；G1 随立项交付）
 
 形态定稿：Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义的

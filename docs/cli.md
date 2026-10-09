@@ -395,6 +395,38 @@ cage migrate . --to latest --write # 整链（latest 解析为链终点，与 --
   收敛）；registry 条目与远程源（registry:/mysql:/pg:/gsheet:/http）
   是只读构建输入，同样只报告。
 
+## migrate-draft（M 系列）
+
+```bash
+# 对比两份 schema 版本，起草一份迁移规则稿（write 到 stdout 或 -o 落盘）
+cage migrate-draft old-schema.yaml new-schema.yaml --from 1.0.0 --to 2.0.0
+cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0 -o migrations/0001-draft.yaml
+```
+
+从 schema 演进**起草**迁移规则（design §46）：`diff_schemas` 按表名/
+字段名对齐两版 schema，机械上安全的变换直接成步——`remove_field`
+（旧版有新版无的字段）、`widen_type`（加宽方向表内的换型）、
+`set_default`（新增字段带默认值、或 required false→true 且有默认值，
+默认值按目标字段的类型族取值——UInt 列渲染为 canonical 带标签形态
+`{type: UInt, value: 5}`，避免裸标量回读成 Int 族撞 E1101）；
+结构 diff 无法判断意图的留给作者，以 `# TODO` 注释列在文件头——
+字段/表改名（rename 是 remove+add 还是 rename 只有作者知道）、
+非加宽换型、枚举成员增删、required 无默认值翻转、被删的表。**改名
+从不猜**：`rename_field`/`rename_table`/`remap_values` 只会出现在
+手工修订里。
+
+- **产物是草稿不是规则**：带 TODO 的稿子可以直接修；无步可提的稿子
+  渲染 `steps: []`，`cage migrate` 按 `E2001` 拒绝解析——全部手写完
+  再跑。渲染-回读往返（render → `parse_spec`）有单测兜底，`set_default`
+  的值一律以字符串安全引用或 canonical 形态呈现，不会出现 `yes`/`5`
+  回读翻型。
+- **退出**：0 一律成功（含全 TODO 稿，stdout 摘要报 step/TODO 数并
+  在空步时给 `steps: [] must be filled` 提示）；1 schema 文件读不了
+  或写不出。命令不做 `validate_spec`（与 `cage migrate` 的库路径
+  不同）：`set_default` 引用的是 to-schema、`remove_field` 引用的是
+  from-schema，单独哪一版都验不全——防线由 apply 时的 `E2003` 与
+  回验时的 `E2004` 接力。
+
 ## 快速开始
 
 ```bash

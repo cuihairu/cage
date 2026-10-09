@@ -2318,7 +2318,10 @@ Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构
 均已交付，E20xx 四码全数接线（validation.md E20xx 表为准）；追加交付：
 `--to latest`（解析为整链、同 `--all`；链上字面版本 `latest` 优先）与
 Excel 报告的单元格级定位（`StepReport.affected_locations`——Excel 表
-受影响行的 `Sheet`/`Row` 定位随报告输出，文本源不采集）；下方接口块
+受影响行的 `Sheet`/`Row` 定位随报告输出，文本源不采集）；再追加：
+`cage migrate-draft`（`migrate::diff` 模块——两版 schema 的结构性
+diff → 迁移规则**草稿**：机械安全变换成步、歧义项留 `# TODO`，见下方
+规则草稿决策记录）；下方接口块
 与签名以实装为准——`apply` 实带 `from_schema` 参数（`widen_type` 方向
 检查用），`reverify(doc, schema)` 为独立入口。
 
@@ -2355,6 +2358,26 @@ Excel 报告的单元格级定位（`StepReport.affected_locations`——Excel �
   `Row.location`（`file | Sheet | Row` 渲染），文本源不采集（落盘 diff
   即变更记录）；CLI 每步骤行下按源序渲染、超 8 行折叠
   `… +K more row(s)`（确定性封顶，无时间戳无随机序）。
+
+**实装决策记录（规则草稿 `migrate-draft`，随码补充）**：
+
+- **草稿不是自动推断**（备选①弃的是「自动推断直接成规则」）：结构性
+  diff 只提**机械安全**变换——`remove_field`（旧有新无）、`widen_type`
+  （方向表内）、`set_default`（新字段带默认 / required false→true 且有
+  默认）；歧义项一律 `# TODO`（字段与表改名——rename 还是删旧增新只有
+  作者知道、非加宽换型、枚举成员增删、required 无默认翻转、删表与
+  新表），**改名从不猜**。全 TODO 稿渲染 `steps: []`，`parse_spec` 按
+  E2001 拒绝——草稿永不直接运行。
+- **UInt 默认值的带标签形态**：裸 YAML 标量无符号性（`yaml_to_value`
+  先试 i64），`5` 回读是 `Int(5)`——UInt 列的默认值若走裸标量，回验
+  必撞 E1101。定案：`set_default` 值解析对 mapping 先试 canonical
+  邻接标签形态（`{type: UInt, value: 5}`），失败回落 plain 读取；草稿
+  渲染端凡值内含 `UInt` 一律发标签形态。字符串值恒单引号（`yes`/数字
+  形态不回读翻型）。render → `parse_spec` 往返有单测兜底。
+- **草稿命令不跑 `validate_spec`**（同 M3 CLI 先例的因由更深一层）：
+  `set_default` 引用的是 to-schema 的新字段、`remove_field` 引用的是
+  from-schema 的旧字段——单独哪一版 schema 都验不全。防线由 apply 的
+  E2003 与回验 E2004 接力。
 
 **决策记录（2026-10 拍板，依「待拍板项按建议方案自行定 + 记录，用户
 后续审核再调」授权）**
@@ -2403,11 +2426,21 @@ cage-core::migrate
 │                      # 重跑已迁移文档 0 行变更）
 └── reverify(doc, schema)  # 迁移产物对新 schema L0–L6 回验（E2004 附诊断）
 
+migrate::diff
+├── diff_schemas(from, to)    # 表名/字段名对齐的结构 diff（FieldDelta 五类）
+├── draft_migration(diff)     # 机械安全变换成 Step、歧义项成 TODO 注释
+└── render_draft(draft)       # 规则稿文本（TODO 块 + steps:；空稿 `[]`）
+
 cage migrate [--all | --to <ver|latest>] [--write]   # 默认 dry-run 只报告
 └── 载入工程 → 按文件名序逐段应用 → 当前 schema 回验（E2004 迁移后
     校验失败不落盘）→ 报告（每步骤行数 / 每源文件处置）；
     --write 对本地 JSON/YAML/CSV 源按 source_file 原路写回（schema
     字段序渲染、字节未变跳过），Excel 源与 registry/远程源恒报告
+
+cage migrate-draft <from-schema> <to-schema> --from <ver> --to <ver> [-o file]
+└── 两版 schema 的规则**草稿**：机械安全变换成步、歧义项 `# TODO`；
+    默认 stdout，`-o` 落盘（父目录自动创建）；空稿 `steps: []` 需手写
+    步骤后才能被 cage migrate 解析
 ```
 
 **错误码（E20xx 族）**：E2001 迁移规则文件解析失败 / E2002 规则引用
@@ -2415,9 +2448,10 @@ cage migrate [--all | --to <ver|latest>] [--write]   # 默认 dry-run 只报告
 `codes.rs` 的 `error::codes::migration` 模块 + validation.md，每码一
 doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
 
-**留待实现期**：schema diff 辅助生成规则草稿、迁移规则与
+**留待实现期**：迁移规则与
 `[dependencies]` 版本 pin 的联动校验。（`--to latest` 与 Excel 报告的
-单元格级定位已随 M3.1 补齐，见实装状态。）
+单元格级定位已随 M3.1 补齐；schema diff 辅助生成规则草稿已随
+`cage migrate-draft` 补齐——见实装状态与规则草稿决策记录。）
 
 ---
 

@@ -176,6 +176,25 @@ enum Commands {
         #[arg(long)]
         write: bool,
     },
+    /// Draft a migration rule file from two schema versions (design §46):
+    /// mechanically safe transforms (`set_default` / `remove_field` /
+    /// `widen_type`) become steps; renames and enum remaps stay "# TODO"
+    /// comments for the author — the draft never runs by itself
+    MigrateDraft {
+        /// The schema version data is coming from (a schema YAML file)
+        from_schema: PathBuf,
+        /// The schema version data is moving to (a schema YAML file)
+        to_schema: PathBuf,
+        /// Version label for the rule's `from:` header
+        #[arg(long)]
+        from: String,
+        /// Version label for the rule's `to:` header
+        #[arg(long)]
+        to: String,
+        /// Write the draft to this file instead of stdout
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -419,6 +438,13 @@ fn main() {
             to,
             write,
         } => run_migrate(&path, all, to.as_deref(), write),
+        Commands::MigrateDraft {
+            from_schema,
+            to_schema,
+            from,
+            to,
+            out,
+        } => run_migrate_draft(&from_schema, &to_schema, &from, &to, out.as_deref()),
     };
     std::process::exit(code);
 }
@@ -1028,6 +1054,80 @@ fn run_migrate(path: &Path, all: bool, to: Option<&str>, write: bool) -> i32 {
             " — dry run, nothing written"
         }
     );
+    0
+}
+
+/// `cage migrate-draft <from-schema> <to-schema> --from <ver> --to <ver>
+/// [-o <file>]` — draft a migration rule file from two schema versions
+/// (design §46 deferred item). Mechanically safe transforms become steps;
+/// renames and enum remaps stay "# TODO" comments. The draft is never
+/// applied by this command: the author finishes it, then `cage migrate`
+/// dry-runs it. The draft skips `validate_spec` on purpose — a
+/// `set_default` on a newly-added field references the to-schema, and a
+/// `remove_field` references the from-schema, so neither schema alone
+/// satisfies the reference check; the real gates are the diff itself and
+/// apply's E2003防线.
+fn run_migrate_draft(
+    from_schema: &Path,
+    to_schema: &Path,
+    from_version: &str,
+    to_version: &str,
+    out: Option<&Path>,
+) -> i32 {
+    let from = match load_schema(from_schema) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let to = match load_schema(to_schema) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let diff = cage_core::migrate::diff::diff_schemas(&from, &to);
+    let draft = cage_core::migrate::diff::draft_migration(&diff);
+    // Versions are single-quoted so numeric-looking labels (`2.0`) cannot
+    // reparse as floats when the rule is read back.
+    let mut text = format!(
+        "from: '{}'\nto: '{}'\n",
+        from_version.replace('\'', "''"),
+        to_version.replace('\'', "''"),
+    );
+    text.push_str(&cage_core::migrate::diff::render_draft(&draft));
+    match out {
+        Some(path) => {
+            // `-o migrations/0001.yaml` with no `migrations/` yet is the
+            // documented first-run shape — create the parent, not an error.
+            if let Some(parent) = path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!("error: cannot create {}: {e}", parent.display());
+                    return 1;
+                }
+            }
+            if let Err(e) = std::fs::write(path, &text) {
+                eprintln!("error: cannot write {}: {e}", path.display());
+                return 1;
+            }
+            println!(
+                "cage migrate-draft: {} step(s), {} TODO(s) → {}{}",
+                draft.steps.len(),
+                draft.todos.len(),
+                path.display(),
+                if draft.steps.is_empty() {
+                    " — steps: [] must be filled before cage migrate can parse it"
+                } else {
+                    ""
+                }
+            );
+        }
+        None => {
+            print!("{text}");
+        }
+    }
     0
 }
 
@@ -2789,6 +2889,19 @@ mod tests {
                 path.display(),
                 to.as_deref().unwrap_or("<chain end>")
             ),
+            Commands::MigrateDraft {
+                from_schema,
+                to_schema,
+                from,
+                to,
+                out,
+            } => format!(
+                "migrate-draft {} {} {from} {to} {}",
+                from_schema.display(),
+                to_schema.display(),
+                out.as_ref()
+                    .map_or_else(|| "<stdout>".to_string(), |p| p.display().to_string(),)
+            ),
         }
     }
 
@@ -2855,6 +2968,42 @@ mod tests {
         // --all and --to are mutually exclusive segment selectors.
         let cli = Cli::try_parse_from(["cage", "migrate", "proj", "--all", "--to", "1.2.0"]);
         assert!(cli.is_err(), "--all and --to must conflict");
+    }
+
+    #[test]
+    fn parse_migrate_draft_subcommand() {
+        let cli = Cli::try_parse_from([
+            "cage",
+            "migrate-draft",
+            "old.yaml",
+            "new.yaml",
+            "--from",
+            "1.0.0",
+            "--to",
+            "2.0.0",
+        ])
+        .expect("parse migrate-draft");
+        assert_eq!(
+            describe(&cli.command),
+            "migrate-draft old.yaml new.yaml 1.0.0 2.0.0 <stdout>"
+        );
+        let cli = Cli::try_parse_from([
+            "cage",
+            "migrate-draft",
+            "old.yaml",
+            "new.yaml",
+            "--from",
+            "1.0.0",
+            "--to",
+            "2.0.0",
+            "-o",
+            "migrations/0001-draft.yaml",
+        ])
+        .expect("parse migrate-draft out");
+        assert_eq!(
+            describe(&cli.command),
+            "migrate-draft old.yaml new.yaml 1.0.0 2.0.0 migrations/0001-draft.yaml"
+        );
     }
 
     #[test]

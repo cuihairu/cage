@@ -15,6 +15,12 @@
 //!
 //! Execution ([`apply`]-style transforms, E2003) and post-migration
 //! reverification (E2004) land with M2.
+//!
+//! The [`diff`] submodule drafts a rule file from two schema versions
+//! (design §46 deferred item): mechanically safe transforms become steps,
+//! renames and enum remaps stay `# TODO` comments for the author.
+
+pub mod diff;
 
 use crate::error::codes::migration::{E2001, E2002, E2003, E2004};
 use crate::schema::{FieldType, Schema};
@@ -113,15 +119,24 @@ struct SetDefaultBody {
     table: String,
     field: String,
     /// Bare YAML scalar / array / mapping — converted via
-    /// [`yaml_to_value`] (canonical `Value` is adjacently tagged, which
-    /// `serde_yaml` cannot decode directly — see [`yaml_to_value`]).
+    /// [`yaml_to_value`] (mappings are decoded canonically first, so
+    /// adjacently-tagged values work; see [`yaml_to_value`]).
     value: serde_yaml::Value,
 }
 
 /// Convert a generic YAML value into the canonical [`Value`] model.
-/// YAML cannot express canonical `Bytes`; tagged YAML values are
-/// rejected.
+/// Mappings are decoded canonically first: the adjacently-tagged form
+/// (`{type: UInt, value: 5}`) is how the rule-draft renderer writes
+/// defaults whose family a bare scalar cannot carry (plain `5` reads
+/// back as `Int`). A mapping that does not decode as a tagged value —
+/// or anything that is not a mapping — falls through to the plain
+/// reading. YAML tags are rejected; plain YAML cannot express `Bytes`.
 fn yaml_to_value(yaml: serde_yaml::Value) -> Result<Value, String> {
+    if let serde_yaml::Value::Mapping(_) = yaml {
+        if let Ok(tagged) = serde_yaml::from_value::<Value>(yaml.clone()) {
+            return Ok(tagged);
+        }
+    }
     Ok(match yaml {
         serde_yaml::Value::Null => Value::Null,
         serde_yaml::Value::Bool(b) => Value::Bool(b),
@@ -872,6 +887,33 @@ pub fn reverify(doc: &Document, schema: &Schema) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yaml_to_value_decodes_the_canonical_tagged_form() {
+        // A bare unsigned scalar reads back Int; the tagged form keeps
+        // the family, including nested inside plain structures.
+        let tagged: serde_yaml::Value = serde_yaml::from_str("type: UInt\nvalue: 5").unwrap();
+        assert_eq!(yaml_to_value(tagged).unwrap(), Value::UInt(5));
+
+        let nested: serde_yaml::Value =
+            serde_yaml::from_str("- 1\n- type: UInt\n  value: 7").unwrap();
+        assert_eq!(
+            yaml_to_value(nested).unwrap(),
+            Value::Array(vec![Value::Int(1), Value::UInt(7)])
+        );
+
+        // A mapping that is not a valid tagged value keeps the plain
+        // reading (Object), even with type/value-looking keys.
+        let plain: serde_yaml::Value = serde_yaml::from_str("type: NotAVariant\nvalue: 5").unwrap();
+        let mut expected = IndexMap::new();
+        expected.insert("type".to_string(), Value::String("NotAVariant".into()));
+        expected.insert("value".to_string(), Value::Int(5));
+        assert_eq!(yaml_to_value(plain).unwrap(), Value::Object(expected));
+
+        // Plain scalars keep the historical i64-first reading.
+        let bare: serde_yaml::Value = serde_yaml::from_str("5").unwrap();
+        assert_eq!(yaml_to_value(bare).unwrap(), Value::Int(5));
+    }
 
     fn schema_with_table(name: &str, fields: &[&str]) -> Schema {
         let mut field_map = IndexMap::new();
