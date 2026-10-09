@@ -1194,6 +1194,10 @@ name = "client"
 format = "json"
 output_dir = "build/client"
 file_template = "{table}.json"
+
+[[profiles.client.targets]]
+format = "msgpack"
+output_dir = "build/client"
 "#,
     )
     .unwrap();
@@ -1241,12 +1245,14 @@ enums: {}
         for (path, bytes) in &files {
             fs::write(path, bytes.clone()).unwrap();
         }
-        // Ledger covers manifest + schema + artifact; HASHES.json is the
+        // Ledger covers manifest + schema + artifacts; HASHES.json is the
         // trust root and is never self-hashed.
         let ledger: serde_json::Value =
             serde_json::from_slice(&fs::read(snap_dir.join("HASHES.json")).unwrap()).unwrap();
-        assert_eq!(ledger["files"].as_object().unwrap().len(), 3);
+        assert_eq!(ledger["files"].as_object().unwrap().len(), 4);
         assert!(snap_dir.join("data/client/Item.json").is_file());
+        // msgpack is a data target: packed under data/, not generated/.
+        assert!(snap_dir.join("data/client/Item.msgpack").is_file());
         assert!(snap_dir.join("schema.json").is_file());
         files
     };

@@ -195,7 +195,7 @@ cage_core::snapshot）：
 build/snapshot/<profile>-<build_id[..12]>/
 ├── manifest.json      # 构建账本（profile / hashes / artifacts，与 build 逐字节一致）
 ├── schema.json        # profile 视图的规范 schema（构建所依据的形态）
-├── data/…             # 数据类产物（json / csv）
+├── data/…             # 数据类产物（json / csv / msgpack）
 ├── generated/…        # 代码类产物
 └── HASHES.json        # 逐文件 blake3 账本（trust root，不自我哈希）+ build_id/content_hash
 ```

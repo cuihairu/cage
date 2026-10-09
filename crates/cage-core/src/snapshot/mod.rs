@@ -2,14 +2,14 @@
 //!
 //! A snapshot packages ONE profile view of a build — the build manifest, the
 //! canonical (profile-projected) schema, the generated artifacts partitioned
-//! into data/ (json/csv) and generated/ (code targets), and a per-file hash
-//! ledger — into a directory a server can load without the build machine:
+//! into data/ (json/csv/msgpack) and generated/ (code targets), and a per-file
+//! hash ledger — into a directory a server can load without the build machine:
 //!
 //! ```text
 //! snapshot/<profile>-<build_id[..12]>/
 //! ├── manifest.json   # the build manifest (authoritative 账本)
 //! ├── schema.json     # canonical schema of the profile view
-//! ├── data/…          # data artifacts (json/csv)
+//! ├── data/…          # data artifacts (json/csv/msgpack)
 //! ├── generated/…     # code artifacts
 //! └── HASHES.json     # per-file blake3 ledger + build_id / content_hash
 //! ```
@@ -32,7 +32,7 @@ const LEDGER_FILE: &str = "HASHES.json";
 /// project-relative build root) is stripped, so the snapshot carries only
 /// the profile view — build's "build/client/Item.json" → "data/client/Item.json".
 fn snapshot_artifact_path(rel: &str, format: &str, output_dir: &str) -> String {
-    let kind = if matches!(format, "json" | "csv") {
+    let kind = if matches!(format, "json" | "csv" | "msgpack") {
         "data"
     } else {
         "generated"
@@ -220,6 +220,12 @@ mod tests {
                     Some("Item".to_string()),
                 ),
                 (
+                    "build/client/Item.msgpack".to_string(),
+                    [0x91_u8, 0x01].to_vec(),
+                    "msgpack".to_string(),
+                    Some("Item".to_string()),
+                ),
+                (
                     "build/client/client.json".to_string(),
                     br"struct Item{}".to_vec(),
                     "cs".to_string(),
@@ -238,8 +244,9 @@ mod tests {
         let b = pack();
         assert_eq!(a, b, "same inputs → same snapshot file map");
 
-        // Partitioning: json → data/, code → generated/, output_dir stripped.
+        // Partitioning: json/msgpack → data/, code → generated/, output_dir stripped.
         assert!(a.contains_key("data/client/Item.json"));
+        assert!(a.contains_key("data/client/Item.msgpack"));
         assert!(a.contains_key("generated/client/client.json"));
         assert!(a.contains_key("manifest.json") && a.contains_key("schema.json"));
 
@@ -272,7 +279,7 @@ mod tests {
 
         let clean = verify_snapshot(dir).unwrap();
         assert!(clean.ok);
-        assert_eq!(clean.files_checked, 4); // manifest + schema + 2 artifacts
+        assert_eq!(clean.files_checked, 5); // manifest + schema + 3 artifacts
 
         // Tamper with an artifact.
         std::fs::write(dir.join("data/client/Item.json"), b"{\"id\":9}").unwrap();
@@ -358,8 +365,9 @@ mod tests {
         let (manifest, schema, artifacts) = load(dir).unwrap();
         assert_eq!(manifest.profile, "client");
         assert_eq!(schema.tables.len(), 0);
-        assert_eq!(artifacts.len(), 2);
+        assert_eq!(artifacts.len(), 3);
         assert_eq!(artifacts["data/client/Item.json"], br#"{"id":1}"#);
+        assert_eq!(artifacts["data/client/Item.msgpack"], [0x91_u8, 0x01]);
 
         // Corrupted snapshot → load refuses.
         std::fs::write(dir.join("data/client/Item.json"), b"evil").unwrap();

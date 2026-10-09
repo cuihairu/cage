@@ -722,10 +722,13 @@ fn parse_source_files(files: &[PathBuf]) -> Result<Document, String> {
 }
 
 /// Data-target format fidelity for re-consumption: a snapshot entry packs
-/// every data target of one profile view — `json/` and `csv/` siblings
-/// serializing the SAME canonical tables with different fidelity (csv
+/// every data target of one profile view — `json/` / `csv/` / `msgpack/`
+/// siblings serializing the SAME canonical tables with different fidelity (csv
 /// flattens nested values to strings and absent optionals to empty cells).
-/// Resolution therefore loads the single highest-fidelity format present.
+/// Resolution therefore loads the single highest-fidelity format present;
+/// msgpack artifacts ride along packed but are never re-consumed as sources
+/// (there is no msgpack source adapter — a publishable entry needs a
+/// json/yaml/csv/excel data target).
 fn format_fidelity(ext: &str) -> u8 {
     match ext {
         "json" => 4,
