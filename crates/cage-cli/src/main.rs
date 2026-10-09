@@ -681,7 +681,7 @@ pub(crate) fn load_schema_for_config(
 fn load_sources(root: &Path) -> Result<Document, String> {
     parse_source_files(&collect_files(
         root,
-        &["json", "yaml", "yml", "csv", "xlsx", "xls"],
+        &["json", "yaml", "yml", "csv", "xlsx", "xls", "msgpack"],
     )?)
 }
 
@@ -703,6 +703,7 @@ fn parse_source_files(files: &[PathBuf]) -> Result<Document, String> {
             "yaml" | "yml" => cage_source_yaml::YamlSourceAdapter::parse_file(file),
             "csv" => cage_source_csv::CsvSourceAdapter::default().parse_file(file),
             "xlsx" | "xls" => cage_source_excel::ExcelSourceAdapter::default().parse_file(file),
+            "msgpack" => cage_source_msgpack::MsgPackSourceAdapter::parse_file(file),
             _ => continue,
         };
         match result {
@@ -722,15 +723,14 @@ fn parse_source_files(files: &[PathBuf]) -> Result<Document, String> {
 }
 
 /// Data-target format fidelity for re-consumption: a snapshot entry packs
-/// every data target of one profile view — `json/` / `csv/` / `msgpack/`
-/// siblings serializing the SAME canonical tables with different fidelity (csv
-/// flattens nested values to strings and absent optionals to empty cells).
-/// Resolution therefore loads the single highest-fidelity format present;
-/// msgpack artifacts ride along packed but are never re-consumed as sources
-/// (there is no msgpack source adapter — a publishable entry needs a
-/// json/yaml/csv/excel data target).
+/// every data target of one profile view — `msgpack/` / `json/` / `csv/`
+/// siblings serializing the SAME canonical tables with different fidelity
+/// (csv flattens nested values to strings and absent optionals to empty
+/// cells; msgpack keeps floats bit-exact and `bin` payloads as `Bytes`).
+/// Resolution therefore loads the single highest-fidelity format present.
 fn format_fidelity(ext: &str) -> u8 {
     match ext {
+        "msgpack" => 5,
         "json" => 4,
         "yaml" | "yml" => 3,
         "csv" => 2,
@@ -739,16 +739,19 @@ fn format_fidelity(ext: &str) -> u8 {
 }
 
 /// Load a resolved registry entry (R1): the entry's `data/` directory, at
-/// the highest-fidelity data-target format present (json > yaml > csv >
-/// excel). Table identity comes from the entry's manifest.json — the
+/// the highest-fidelity data-target format present (msgpack > json > yaml >
+/// csv > excel). Table identity comes from the entry's manifest.json — the
 /// authoritative artifact→table record — because target-format files don't
-/// carry it (a JSON target file is a bare row array, a CSV only has the
-/// file stem). A published profile whose top format is csv re-validates
-/// only while its tables stay flat — publish a json/yaml data target when
-/// consumers need nested types.
+/// carry it (a msgpack/JSON target file is a bare row array, a CSV only has
+/// the file stem). A published profile whose top format is csv re-validates
+/// only while its tables stay flat — publish a msgpack/json data target
+/// when consumers need nested types.
 fn load_sources_from_entry(entry_dir: &Path) -> Result<Document, String> {
     let data_dir = entry_dir.join("data");
-    let files = collect_files(&data_dir, &["json", "yaml", "yml", "csv", "xlsx", "xls"])?;
+    let files = collect_files(
+        &data_dir,
+        &["json", "yaml", "yml", "csv", "xlsx", "xls", "msgpack"],
+    )?;
     if files.is_empty() {
         return Err(format!(
             "{E1802} registry entry has no data artifacts under {}",

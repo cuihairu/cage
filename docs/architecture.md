@@ -319,6 +319,7 @@ cage/
 │   ├── cage-source-db/      # MySQL / PostgreSQL 输入源（S2，design §45：SELECT 白名单 + 会话只读 + 行集 → canonical JSON 落缓存）
 │   ├── cage-source-sheets/  # Google Sheets 输入源（S3，design §45：values UNFORMATTED_VALUE + 首行表头 + 形状门 E1903）
 │   ├── cage-source-yaml/    # YAML 输入源
+│   ├── cage-source-msgpack/ # MessagePack 输入源（registry 回灌：msgpack target 线格式重消费）
 │   ├── cage-target-json/    # JSON 产出
 │   ├── cage-target-csv/     # CSV 产出
 │   ├── cage-target-msgpack/ # MessagePack 产出（rmp 最小形，确定性二进制）

@@ -1,0 +1,19 @@
+[package]
+name = "cage-source-msgpack"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "MessagePack source adapter for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+rmpv = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+cage-target-msgpack = { path = "../cage-target-msgpack" }

@@ -22,6 +22,7 @@ cage-source-sheets = { path = "../cage-source-sheets" }
 cage-source-yaml = { path = "../cage-source-yaml" }
 cage-source-csv = { path = "../cage-source-csv" }
 cage-source-excel = { path = "../cage-source-excel" }
+cage-source-msgpack = { path = "../cage-source-msgpack" }
 cage-target-json = { path = "../cage-target-json" }
 cage-target-csv = { path = "../cage-target-csv" }
 cage-target-msgpack = { path = "../cage-target-msgpack" }

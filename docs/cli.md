@@ -203,8 +203,8 @@ main = "registry:common@1.0.0"   # 省略 @版本 = 最高点分序版本
 
 解析在载入前先过条目账本校验（篡改/增删文件 → `E1803` 拒载；包/版本
 不存在或未接 `[registry].path` → `E1802`）。条目的 `data/` 按最高保真
-格式载入（json > yaml > csv > excel），表名以条目 manifest.json 的
-artifact 记录为准。
+格式载入（msgpack > json > yaml > csv > excel；msgpack 浮点/Bytes/
+超 i64 整数往返无损），表名以条目 manifest.json 的 artifact 记录为准。
 
 Schema 侧同样可取自条目（R2）：`schema_path = "registry:common"` 读条目
 `schema.json`（发布时打包的 profile 投影 schema）。此时 schema 归发布方

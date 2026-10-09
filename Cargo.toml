@@ -9,6 +9,7 @@ members = [
     "crates/cage-source-db",
     "crates/cage-source-sheets",
     "crates/cage-source-yaml",
+    "crates/cage-source-msgpack",
     "crates/cage-target-json",
     "crates/cage-target-msgpack",
     "crates/cage-target-proto",
@@ -70,6 +71,7 @@ tar = "0.4"
 zstd = "0.13"
 
 rmp = "0.8"
+rmpv = "1.3"
 
 # Template Target engine (§22 Template Target, G series)
 tera = "1"

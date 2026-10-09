@@ -1355,3 +1355,31 @@ enums: {}
         stdout(&out)
     );
 }
+
+/// Local .msgpack sources load like any other source: the file stem names
+/// the table (CSV convention) and the binary rows flow through validation
+/// and targets like JSON rows.
+#[test]
+fn build_msgpack_source_ok() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project(root);
+    fs::remove_file(root.join("config/item.json")).unwrap();
+
+    // Hand-encoded `[{"id": 1, "name": "Sword"}]` (fixarray, fixmap,
+    // fixstr keys, positive fixint id, 5-char fixstr name).
+    let item: &[u8] = &[
+        0x91, 0x82, //
+        0xA2, b'i', b'd', 0x01, //
+        0xA4, b'n', b'a', b'm', b'e', 0xA5, b'S', b'w', b'o', b'r', b'd',
+    ];
+    // File stem names the table (CSV convention) — capital I matches the
+    // schema's `Item` table.
+    fs::write(root.join("config/Item.msgpack"), item).unwrap();
+
+    let root_s = root.to_str().unwrap().to_string();
+    let out = run_cage(&["build", &root_s]);
+    assert_code(&out, 0, "msgpack source build");
+    let built = fs::read_to_string(root.join("build/json/Item.json")).unwrap();
+    assert!(built.contains("Sword"), "built from msgpack: {built}");
+}

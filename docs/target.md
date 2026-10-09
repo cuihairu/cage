@@ -130,6 +130,11 @@ Template        ← 已实装（用户自定义模板）
 数据类 target：Canonical Model → MessagePack 二进制，每表一个
 `{table}.msgpack`（表 = 行数组，行 = 字段 map）。
 
+该线格式同时是源格式：`cage-source-msgpack` 重消费自己写的
+`.msgpack` 文件（registry 条目 `data/**` 即以此格式打包，见
+[CLI · registry](/cli#registry) 的保真度选择），浮点/Bytes/超 i64
+整数往返无损。
+
 ```toml
 [[profiles.client.targets]]
 format = "msgpack"              # 别名 messagepack

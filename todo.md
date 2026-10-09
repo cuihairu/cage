@@ -96,6 +96,26 @@
       带 E1403 与 canonical 环路径、warnings_as_errors 退码 1）+
       validation.md L5 表级引用环节与码表、需求整理.md:67 转已接线
       ——本轮交付，勾选
+- [x] msgpack source adapter（2026-10 点火之二：registry 条目
+      `data/**.msgpack` 打包后无处重消费——format_fidelity 只认
+      json/yaml/csv/excel，msgpack-only 数据 target 的条目 E1802 拒载）：
+      新 crate `cage-source-msgpack`（rmpv 解码，Cargo workspace 新成员），
+      文件形态 = msgpack target 线格式（裸行对象数组），表名 = 文件名
+      stem（CSV 惯例；registry 侧 manifest 改名兜底 stem 不符）。解码
+      保真拍板 = 浮点按位 / bin → Bytes / 超 i64::MAX 整数保留 UInt
+      （JSON 往返表达不了的三类）；非负整数归一 Int——线格式正数标记
+      不携带符号性（write_sint(7) 与 write_uint(7) 同标记），Int 族列
+      回灌 L2 需要它；空数组产出空表（往返完整）；严格报错 = 尾随
+      字节/截断 E0001、根非数组/行非对象 E0004。CLI 三处接线：
+      load_sources 扩展名清单 + parse_source_files 分派 +
+      format_fidelity msgpack = 5（registry 条目回灌新最高保真度）。
+      验收：crate 单测×7（target→source 往返全字段、数值边界、
+      非有限浮点 nil、空表、形状违规四态、stem 命名与 pk 启发、
+      plugin trait 面）+ CLI 集成×2（msgpack-only 数据 target 条目
+      publish → resolve → build 回灌 0.25 浮点、本地 .msgpack 源
+      build）+ 文档 source.md 新节与 crate 表行、cli.md 保真度序、
+      target.md 重消费注记、architecture.md 树、需求整理.md crate
+      清单——本轮交付，勾选
 - [x] 增量构建（--incremental 按 manifest 的 schema/source 哈希跳过未变更的整轮重建；按 target 的变更影响传播未做，target 配置变更不参与哈希、需全量）
 - [x] CI 集成（warnings_as_errors、GitHub Actions 模板）
 

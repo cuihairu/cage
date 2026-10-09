@@ -27,6 +27,7 @@ Excel
 CSV
 JSON
 YAML
+MessagePack
 ```
 
 ### Excel
@@ -85,10 +86,22 @@ Document
   按单行表读，null 跳过；支持 `<<: *anchor` 合并键展开
 - 保留路径定位：文本格式错误（YAML 语法错误等）精确到行号（错误码 `E0001` 族）
 
+### MessagePack
+
+- 文件形态即 msgpack target 的线格式：裸行对象数组
+  `[{"id": 1, "name": "Sword"}, …]`；二进制不带表名，文件名 stem
+  命名表（CSV 惯例）
+- 浮点按位还原、`bin` 载荷还原为 `Bytes`、超出 `i64::MAX` 的整数保留
+  `UInt` 族——JSON 往返无法表达的三类值；非负整数归一为 `Int`
+  （与 JSON 源一致：线格式的正数标记不携带符号性）
+- 空数组产出空表（不跳过），保证 target → source 往返完整
+- 形状违规（根非数组、行非对象、尾随字节、截断帧）按 `E0001` /
+  `E0004` 报错
+
 ### 源目录装载范围
 
 `[source_roots]` 目录发现收集 `json` / `yaml` / `yml` / `csv` /
-`xlsx` / `xls` 扩展名；其中 `.xls` 旧格式被收集后按 `E0001` 拒绝，
+`xlsx` / `xls` / `msgpack` 扩展名；其中 `.xls` 旧格式被收集后按 `E0001` 拒绝，
 `.xlsm`/`.ods` 不在目录收集清单内（目录模式下被静默忽略——单文件
 `schema_path`/`source` 显式指定时适配器本身支持 `.xlsx`/`.xlsm`/`.ods`）。
 远程源根（`registry:`，见 [CLI · registry](/cli#registry)）同样可作
@@ -172,6 +185,7 @@ Custom Binary
 | CSV | `cage-source-csv` | csv |
 | JSON | `cage-source-json` | serde_json |
 | YAML | `cage-source-yaml` | serde_yaml |
+| MessagePack | `cage-source-msgpack` | rmpv |
 | HTTP API | `cage-source-http` | `cage_core::remote`（取数 / 重试 / 缓存）+ cage-source-json |
 | MySQL / PostgreSQL | `cage-source-db` | mysql / postgres（纯 Rust 协议客户端）+ `cage_core::remote`（缓存键）+ cage-source-json |
 | Google Sheets | `cage-source-sheets` | `cage_core::remote`（取数 / 重试 / 缓存）+ cage-source-json |

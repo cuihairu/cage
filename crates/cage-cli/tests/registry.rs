@@ -1155,3 +1155,111 @@ file_template = "{table}.json"
     assert_code(&out, 1, "conflicting import");
     assert!(stderr(&out).contains("E1801"), "{}", stderr(&out));
 }
+
+/// The msgpack re-consumption loop (R1 end to end): the publisher carries a
+/// msgpack-only data target, so the entry's `data/` has nothing but
+/// `msgpack/Item.msgpack` — consumer resolution must read the binary
+/// format back (floats bit-exact, e.g. 0.25) and build against the entry
+/// schema. Before the msgpack source adapter this failed with E1802 "no
+/// data artifacts".
+#[test]
+fn registry_entry_with_msgpack_data_target_round_trips() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let schema = r#"tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+      ratio: { name: ratio, type: { kind: Float64 } }
+enums: {}
+"#;
+    write(
+        &root.join("pub/cage.toml"),
+        r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "msgpack"
+output_dir = "build/client/msgpack"
+file_template = "{table}.msgpack"
+"#,
+    );
+    write(&root.join("pub/schema.yaml"), schema);
+    write(
+        &root.join("pub/config/item.json"),
+        r#"{
+  "Item": [
+    { "id": 1, "name": "Sword", "ratio": 0.25 }
+  ]
+}
+"#,
+    );
+
+    // Consumer: registry source root, entry schema, plain json target.
+    write(
+        &root.join("consumer/cage.toml"),
+        r#"output_dir = "build"
+schema_path = "registry:common"
+
+[project]
+name = "consumer"
+version = "0.1.0"
+
+[source_roots]
+main = "registry:common"
+
+[registry]
+path = "../reg"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{table}.json"
+"#,
+    );
+
+    let reg = root.join("reg").to_str().unwrap().to_string();
+    let pub_root = root.join("pub").to_str().unwrap().to_string();
+
+    let out = run_cage(&[
+        "registry",
+        "publish",
+        &pub_root,
+        "--registry",
+        &reg,
+        "--version",
+        "1.0.0",
+    ]);
+    assert_code(&out, 0, "publish msgpack-only entry");
+
+    // The entry packed the msgpack artifact under data/ (profile view
+    // layout: data/<profile>/<format>/<table>.msgpack).
+    let packed = root.join("reg/common/1.0.0/data/client/msgpack/Item.msgpack");
+    assert!(packed.is_file(), "packed: {:?}", packed.display());
+
+    // Consumer build: resolution re-consumes the packed msgpack rows.
+    let consumer = root.join("consumer").to_str().unwrap().to_string();
+    let out = run_cage(&["build", &consumer]);
+    assert_code(&out, 0, "consumer build from msgpack entry");
+    let built = fs::read_to_string(root.join("consumer/build/client/json/Item.json")).unwrap();
+    assert!(built.contains("0.25"), "float survived: {built}");
+    assert!(built.contains("Sword"), "row survived: {built}");
+}
