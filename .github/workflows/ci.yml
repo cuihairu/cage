@@ -87,6 +87,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run end-to-end example
         run: bash examples/run.sh
+      - name: Compile generated proto files
+        run: |
+          protoc --proto_path=examples/game-config/build/client/proto \
+            --descriptor_set_out=/dev/null \
+            examples/game-config/build/client/proto/*.proto
 
   web-smoke:
     name: Web editor smoke
