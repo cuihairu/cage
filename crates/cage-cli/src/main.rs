@@ -1567,110 +1567,172 @@ fn build_project(
     let output_dir = project.config.output_dir.as_deref().unwrap_or("build");
     let manifest_dir = path.join(output_dir);
 
-    // Incremental build, two layers (docs/build.md 增量构建):
+    // Incremental build, three layers (docs/build.md 增量构建):
     // Layer 1: skip regeneration entirely when the previous manifest recorded
-    // the same schema/source hashes (same profile) and every artifact it
-    // lists is still on disk. Target config changes are NOT hashed — re-run
-    // a full build after editing cage.toml targets.
+    // the same schema/source/target fingerprints (same profile) and every
+    // artifact it lists is still on disk.
     // Layer 2 (dependency-graph propagation): when only data changed (schema
-    // hash identical — the schema drives code-target shapes, so any schema
-    // change falls back to a full build), per-table hashes detect which
-    // tables changed, the dependency graph propagates the change set to its
-    // transitive dependents, and only affected tables are regenerated;
-    // untouched artifacts are carried over from disk. Generators are
-    // deterministic, so the carried bytes equal a full build's — the merged
-    // manifest matches a full build byte-for-byte. Layer 2 also falls back to
-    // a full build when the previous manifest predates per-table hashes, a
+    // and target fingerprints identical — the schema drives code-target
+    // shapes, so any schema change falls back to a full build), per-table
+    // hashes detect which tables changed, the dependency graph propagates
+    // the change set to its transitive dependents, and only affected tables
+    // are regenerated; untouched artifacts are carried over from disk.
+    // Layer 3 (target propagation): when a target's config moved (or a
+    // target was added/removed) while the schema stayed put, only the
+    // changed targets' artifacts regenerate — each from the full document,
+    // since a target's bytes depend on every table it serializes — while
+    // unchanged targets keep the layer-2 table propagation. Removed or
+    // re-configured targets' stale artifacts are deleted from disk.
+    // Generators are deterministic, so the merged manifest matches a full
+    // build byte-for-byte. Layers 2/3 also fall back to a full build when
+    // the previous manifest predates per-table hashes or target records, a
     // table was deleted, or an untouched artifact is missing/unreadable.
+    let target_records = ManifestGenerator::target_records(&build_profile.targets);
+    let prev_manifest = if incremental {
+        load_manifest(&manifest_dir).ok()
+    } else {
+        None
+    };
+
     let mut affected: Option<HashSet<String>> = None;
     let mut carried: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
-    if incremental {
-        if let Ok(prev) = load_manifest(&manifest_dir) {
-            let unchanged = prev.profile == profile
-                && prev.schema_hash == schema_hash
-                && prev.source_hash == source_hash
-                && prev.artifacts.keys().all(|rel| path.join(rel).is_file());
-            if unchanged {
-                return Err(BuildFailure::UpToDate {
-                    artifacts: prev.artifacts.len(),
-                    manifest: manifest_dir.join("manifest.json"),
-                });
+    // Output dirs of targets whose config moved (or that were removed):
+    // their previous artifacts are neither carried nor trusted — the
+    // targets regenerate from the full document, and stale paths that no
+    // longer reappear are deleted after generation succeeds.
+    let mut regenerate_prefixes: Vec<String> = Vec::new();
+    if let Some(prev) = &prev_manifest {
+        let targets_match = prev.targets == target_records;
+        let unchanged = prev.profile == profile
+            && targets_match
+            && prev.schema_hash == schema_hash
+            && prev.source_hash == source_hash
+            && prev.artifacts.keys().all(|rel| path.join(rel).is_file());
+        if unchanged {
+            return Err(BuildFailure::UpToDate {
+                artifacts: prev.artifacts.len(),
+                manifest: manifest_dir.join("manifest.json"),
+            });
+        }
+        // Legacy manifests carry no target records: one full build
+        // migrates them, then target propagation participates.
+        let layer2_ok = prev.profile == profile
+            && prev.schema_hash == schema_hash
+            && !prev.table_hashes.is_empty()
+            && !prev.targets.is_empty()
+            && prev
+                .table_hashes
+                .keys()
+                .all(|t| normalized.tables.contains_key(t));
+        if layer2_ok {
+            let cur = ManifestGenerator::table_hashes(&normalized);
+            let mut changed: Vec<String> = cur
+                .keys()
+                .filter(|name| prev.table_hashes.get(*name) != cur.get(*name))
+                .cloned()
+                .collect();
+            for (rel, info) in &prev.artifacts {
+                if let Some(table) = &info.table {
+                    if !changed.contains(table) && !path.join(rel).is_file() {
+                        changed.push(table.clone());
+                    }
+                }
             }
-            let layer2_ok = prev.profile == profile
-                && prev.schema_hash == schema_hash
-                && !prev.table_hashes.is_empty()
-                && prev
-                    .table_hashes
-                    .keys()
-                    .all(|t| normalized.tables.contains_key(t));
-            if layer2_ok {
-                let cur = ManifestGenerator::table_hashes(&normalized);
-                let mut changed: Vec<String> = cur
-                    .keys()
-                    .filter(|name| prev.table_hashes.get(*name) != cur.get(*name))
-                    .cloned()
-                    .collect();
-                for (rel, info) in &prev.artifacts {
-                    if let Some(table) = &info.table {
-                        if !changed.contains(table) && !path.join(rel).is_file() {
-                            changed.push(table.clone());
-                        }
+            changed.sort();
+            let graph = DependencyGraph::from_schema(&schema);
+            let planner = IncrementalPlanner::new(&graph);
+            let aff = planner.compute_affected(&changed);
+
+            // Target-level diff, identity (format, output_dir): a hash
+            // move regenerates that target, a removal marks its old
+            // output dir stale.
+            let cur_keys: HashSet<(&str, &str)> = target_records
+                .iter()
+                .map(|r| (r.format.as_str(), r.output_dir.as_str()))
+                .collect();
+            let changed_targets: Vec<String> = target_records
+                .iter()
+                .filter(|r| {
+                    prev.targets
+                        .iter()
+                        .find(|p| p.format == r.format && p.output_dir == r.output_dir)
+                        .is_none_or(|p| p.hash != r.hash)
+                })
+                .map(|r| r.output_dir.clone())
+                .collect();
+            let removed_dirs: Vec<String> = prev
+                .targets
+                .iter()
+                .filter(|p| !cur_keys.contains(&(p.format.as_str(), p.output_dir.as_str())))
+                .map(|p| p.output_dir.clone())
+                .collect();
+            regenerate_prefixes = changed_targets;
+            regenerate_prefixes.extend(removed_dirs);
+            regenerate_prefixes.sort();
+            regenerate_prefixes.dedup();
+
+            let mut carry_ok = true;
+            for (rel, info) in &prev.artifacts {
+                // Shared units (enum files) are schema-wide and are
+                // always regenerated — never carried.
+                let Some(table) = &info.table else { continue };
+                if aff.contains(table) {
+                    continue;
+                }
+                if regenerate_prefixes
+                    .iter()
+                    .any(|dir| rel == dir || rel.starts_with(&format!("{dir}/")))
+                {
+                    continue;
+                }
+                match std::fs::read(path.join(rel)) {
+                    Ok(bytes) => {
+                        carried.push((rel.clone(), bytes, info.format.clone(), info.table.clone()));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "warning: carried artifact '{rel}' unreadable ({e}); \
+                             falling back to a full build"
+                        );
+                        carried.clear();
+                        carry_ok = false;
+                        break;
                     }
                 }
-                changed.sort();
-                let graph = DependencyGraph::from_schema(&schema);
-                let planner = IncrementalPlanner::new(&graph);
-                let aff = planner.compute_affected(&changed);
-                let mut carry_ok = true;
-                for (rel, info) in &prev.artifacts {
-                    // Shared units (enum files) are schema-wide and are
-                    // always regenerated — never carried.
-                    let Some(table) = &info.table else { continue };
-                    if aff.contains(table) {
-                        continue;
-                    }
-                    match std::fs::read(path.join(rel)) {
-                        Ok(bytes) => carried.push((
-                            rel.clone(),
-                            bytes,
-                            info.format.clone(),
-                            info.table.clone(),
-                        )),
-                        Err(e) => {
-                            eprintln!(
-                                "warning: carried artifact '{rel}' unreadable ({e}); \
-                                 falling back to a full build"
-                            );
-                            carried.clear();
-                            carry_ok = false;
-                            break;
-                        }
-                    }
-                }
-                if carry_ok {
-                    affected = Some(aff);
-                }
+            }
+            if carry_ok {
+                affected = Some(aff);
             }
         }
     }
 
-    // Generation inputs: full when layer 2 is off, otherwise filtered to the
-    // affected tables. Code targets keep the full enum set (the shared enums
-    // unit renders from schema-wide enums even when only some tables rebuild).
-    let (gen_schema, gen_doc) = match &affected {
-        Some(keep) => {
-            let mut fs = schema.clone();
-            fs.tables.retain(|name, _| keep.contains(name));
-            let mut fd = normalized.clone();
-            fd.tables.retain(|name, _| keep.contains(name));
-            (fs, fd)
+    // Generation inputs per target: full when layer 2 is off or the
+    // target's config moved (a target's bytes depend on every table it
+    // serializes); otherwise filtered to the affected tables. Code targets
+    // keep the full enum set (the shared enums unit renders from
+    // schema-wide enums even when only some tables rebuild).
+    let filtered_inputs = |keep: &HashSet<String>| {
+        let mut fs = schema.clone();
+        fs.tables.retain(|name, _| keep.contains(name));
+        let mut fd = normalized.clone();
+        fd.tables.retain(|name, _| keep.contains(name));
+        (fs, fd)
+    };
+    let target_inputs = |target: &TargetConfig| -> (Schema, Document) {
+        let target_changed = regenerate_prefixes.contains(&target.output_dir);
+        if target_changed {
+            return (schema.clone(), normalized.clone());
         }
-        None => (schema.clone(), normalized.clone()),
+        match &affected {
+            Some(keep) => filtered_inputs(keep),
+            None => (schema.clone(), normalized.clone()),
+        }
     };
 
     let carried_len = carried.len();
     let mut artifacts = carried;
     for target in &build_profile.targets {
+        let (gen_schema, gen_doc) = target_inputs(target);
         let generated = match code_target_items(target, &gen_schema, &schema_hash, path) {
             // Bundled code targets (cs/python/lua/ts/…) are schema-driven
             // and infallible; the user-template target can fail (template
@@ -1705,12 +1767,37 @@ fn build_project(
     // manifest bytes, the determinism contract).
     artifacts.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // Stale artifacts of removed or re-configured targets: only paths the
+    // previous manifest recorded, only after generation succeeded, and
+    // only when they did not reappear. Full builds leave such files on
+    // disk; the incremental path does better.
+    if !regenerate_prefixes.is_empty() {
+        if let Some(prev) = &prev_manifest {
+            let fresh: HashSet<&str> = artifacts.iter().map(|(p, ..)| p.as_str()).collect();
+            for rel in prev.artifacts.keys() {
+                let stale = regenerate_prefixes
+                    .iter()
+                    .any(|dir| rel == dir || rel.starts_with(&format!("{dir}/")))
+                    && !fresh.contains(rel.as_str());
+                if !stale {
+                    continue;
+                }
+                match std::fs::remove_file(path.join(rel)) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => eprintln!("warning: could not remove stale artifact '{rel}' ({e})"),
+                }
+            }
+        }
+    }
+
     let version = env!("CARGO_PKG_VERSION").to_string();
     let manifest = ManifestGenerator::new(
         project.config.project.name.clone(),
         profile.to_string(),
         version,
     )
+    .with_targets(&build_profile.targets)
     .generate(&schema, &normalized, &artifacts);
     let manifest_path = match write_manifest(&manifest_dir, &manifest) {
         Ok(p) => p,
@@ -2589,6 +2676,7 @@ fn run_gen(path: &Path, profile: &str, no_cache: bool) -> i32 {
         profile.to_string(),
         version,
     )
+    .with_targets(&build_profile.targets)
     .generate(&schema, &normalized, &artifacts);
     let output_dir = project.config.output_dir.as_deref().unwrap_or("build");
     let manifest_path = match write_manifest(&path.join(output_dir), &manifest) {

@@ -40,8 +40,30 @@ pub struct BuildManifest {
     /// "changed", its transitive dependents are "affected".
     #[serde(default)]
     pub table_hashes: IndexMap<String, String>,
+    /// Target configuration fingerprints (one per target of the built
+    /// profile, sorted canonically): the target-level change detector —
+    /// a target whose hash moved (or was added) regenerates all of its
+    /// artifacts, a target removed from the profile has its stale
+    /// artifacts deleted. Empty on legacy manifests; the incremental
+    /// build takes one full build to record them.
+    #[serde(default)]
+    pub targets: Vec<TargetRecord>,
     /// Artifacts by output path
     pub artifacts: IndexMap<String, ArtifactInfo>,
+}
+
+/// Fingerprint of one target's configuration: identity is
+/// `(format, output_dir)` and `hash` covers every bytes-affecting field
+/// (`format`, `output_dir`, `file_template`, `options`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetRecord {
+    /// Output format (json, csv, msgpack, csharp, ...)
+    pub format: String,
+    /// Output directory (project-relative)
+    pub output_dir: String,
+    /// Blake3 over the canonical config: `format`, `output_dir`,
+    /// `file_template` and `options` (option keys sorted)
+    pub hash: String,
 }
 
 /// Individual artifact information
@@ -66,11 +88,12 @@ pub struct ManifestGenerator {
     project_name: String,
     profile_name: String,
     cage_version: String,
+    targets: Vec<TargetRecord>,
 }
 
 impl ManifestGenerator {
     /// Manifest structure version — bump on breaking layout changes
-    pub const GENERATOR_VERSION: &str = "1.0.0";
+    pub const GENERATOR_VERSION: &str = "1.1.0";
 
     /// Create a generator for a project / profile / tool version
     pub fn new(project_name: String, profile_name: String, cage_version: String) -> Self {
@@ -78,7 +101,50 @@ impl ManifestGenerator {
             project_name,
             profile_name,
             cage_version,
+            targets: Vec::new(),
         }
+    }
+
+    /// Record the built profile's targets in the manifest (the incremental
+    /// build's target-level change detector). Without this the manifest
+    /// carries no target fingerprints.
+    pub fn with_targets(mut self, targets: &[TargetConfig]) -> Self {
+        self.targets = Self::target_records(targets);
+        self
+    }
+
+    /// Canonical target fingerprints, sorted by (`format`, `output_dir`).
+    /// The hash covers every bytes-affecting field: `format`,
+    /// `output_dir`, `file_template` and `options` (option keys sorted;
+    /// nested option values serialize as `serde_json` emits them — same
+    /// file, same bytes).
+    pub fn target_records(targets: &[TargetConfig]) -> Vec<TargetRecord> {
+        let mut records: Vec<TargetRecord> = targets
+            .iter()
+            .map(|t| {
+                let mut lines = vec![
+                    t.format.clone(),
+                    t.output_dir.clone(),
+                    t.file_template.clone().unwrap_or_default(),
+                ];
+                if let Some(opts) = &t.options {
+                    let mut keys: Vec<&String> = opts.keys().collect();
+                    keys.sort();
+                    for key in keys {
+                        lines.push(format!("{key}={}", opts[key]));
+                    }
+                }
+                TargetRecord {
+                    format: t.format.clone(),
+                    output_dir: t.output_dir.clone(),
+                    hash: blake3::hash(lines.join("\n").as_bytes())
+                        .to_hex()
+                        .to_string(),
+                }
+            })
+            .collect();
+        records.sort_by(|a, b| (&a.format, &a.output_dir).cmp(&(&b.format, &b.output_dir)));
+        records
     }
 
     /// Generate manifest from build outputs
@@ -99,6 +165,7 @@ impl ManifestGenerator {
         );
         let dependencies = Self::dependency_ledger(schema);
         let table_hashes = Self::table_hashes(document);
+        let targets = self.targets.clone();
 
         let mut artifact_infos = IndexMap::new();
         for (path, content, format, table) in artifacts {
@@ -127,6 +194,7 @@ impl ManifestGenerator {
             content_hash,
             dependencies,
             table_hashes,
+            targets,
             artifacts: artifact_infos,
         }
     }
@@ -780,6 +848,7 @@ mod tests {
             content_hash: "ghi".to_string(),
             dependencies: IndexMap::new(),
             table_hashes: IndexMap::new(),
+            targets: Vec::new(),
             artifacts: {
                 let mut m = IndexMap::new();
                 m.insert(
@@ -1316,6 +1385,43 @@ mod tests {
     }
 
     #[test]
+    fn target_records_sorted_and_hash_sensitive() {
+        let mk = |format: &str, dir: &str, template: Option<&str>, sort_keys: bool| TargetConfig {
+            format: format.to_string(),
+            output_dir: dir.to_string(),
+            file_template: template.map(str::to_string),
+            options: Some(IndexMap::from([(
+                "sort_keys".to_string(),
+                serde_json::Value::Bool(sort_keys),
+            )])),
+        };
+
+        // Records sort by (format, output_dir): list order is irrelevant.
+        let a = mk("json", "build/a", None, true);
+        let b = mk("msgpack", "build/b", Some("{table}.m"), false);
+        let forward = ManifestGenerator::target_records(&[a.clone(), b.clone()]);
+        let backward = ManifestGenerator::target_records(&[b.clone(), a.clone()]);
+        assert_eq!(forward, backward);
+        assert_eq!(forward.len(), 2);
+        assert_eq!(forward[0].format, "json");
+        assert_eq!(forward[1].format, "msgpack");
+
+        // Every bytes-affecting field rotates the hash.
+        let option_change =
+            ManifestGenerator::target_records(&[mk("json", "build/a", None, false)]);
+        assert_ne!(forward[0].hash, option_change[0].hash);
+        let template_change =
+            ManifestGenerator::target_records(&[mk("json", "build/a", Some("{t}.json"), true)]);
+        assert_ne!(forward[0].hash, template_change[0].hash);
+        let dir_change =
+            ManifestGenerator::target_records(&[mk("json", "build/other", None, true)]);
+        assert_ne!(forward[0].hash, dir_change[0].hash);
+        // Same config → same fingerprint (the determinism contract).
+        let same = ManifestGenerator::target_records(&[mk("json", "build/a", None, true)]);
+        assert_eq!(forward[0], same[0]);
+    }
+
+    #[test]
     fn test_input_hashes_match_generate() {
         let schema = make_test_schema();
         let doc = make_test_doc();
@@ -1343,6 +1449,7 @@ mod tests {
             content_hash: "ghi".to_string(),
             dependencies: IndexMap::new(),
             table_hashes: IndexMap::new(),
+            targets: Vec::new(),
             artifacts: {
                 let mut m = IndexMap::new();
                 m.insert(

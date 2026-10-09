@@ -328,6 +328,7 @@ mod tests {
                 content_hash: "c_h_0123".to_string(),
                 dependencies: IndexMap::new(),
                 table_hashes: IndexMap::new(),
+                targets: Vec::new(),
                 artifacts: IndexMap::new(),
             })
             .unwrap(),
