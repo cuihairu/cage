@@ -74,7 +74,6 @@ Java
 以后：
 
 ```text
-Protobuf
 FlatBuffers
 Binary
 SQLite
@@ -91,10 +90,12 @@ JSON            ← 已实装
 CSV             ← 已实装
 MessagePack     ← 已实装
 YAML            ← 规划
-Protobuf        ← 规划
 FlatBuffers     ← 规划
 Binary          ← 规划
 ```
+
+（Protobuf 落地为 schema 驱动的 .proto 定义文件生成（见下文
+「Protobuf Target」），不在此列——它不做数据 wire 编码。）
 
 Code Targets（代码生成）：
 
@@ -150,6 +151,59 @@ sort_keys = true                # 默认 true：行字段按名序
   直编会破坏确定性契约（JSON target 同规则：非有限 → null）
 - `sort_keys = false` 时行字段保留源字段序；嵌套对象键仍由 normalize
   的 `BTreeMap` 排序（`json` 同口径）
+
+### Protobuf Target（已实装）
+
+设计稿 §23 把 Protobuf 列在 Data Targets 下但未定 wire 编码口径，落地
+拍板（2026-10）：**输出 .proto3 定义文件**——schema 驱动、与 C#/Go 等
+代码绑定同族（数据不参与生成；消费方拿 `protoc` 与自有 runtime 编译）。
+每表一个 `{table}.proto`（表 → message，字段号按名序 1..n 分配），共享
+整数枚举集中 `cage_enums.proto`，表文件按需 `import`。
+
+```toml
+[[profiles.client.targets]]
+format = "proto"               # 别名 protobuf
+output_dir = "build/proto"
+
+[profiles.client.targets.options]
+package = "cage.generated"     # 默认 cage.generated（原样写入 package 子句）
+enums_file = "cage_enums.proto" # 默认 cage_enums.proto（import 路径随之）
+```
+
+类型映射表（proto3）：
+
+| Cage 类型 | proto3 类型 | 说明 |
+|-----------|-------------|------|
+| int8 / int16 / int32 | `int32` | 值域被完全覆盖，无损 |
+| int64 | `int64` | |
+| uint8 / uint16 / uint32 | `uint32` | |
+| uint64 | `uint64` | |
+| float32 | `float` | |
+| float64 | `double` | |
+| bool / string / bytes | `bool` / `string` / `bytes` | |
+| array\<T\> | `repeated T'` | T' 为 T 的映射；T 是 array/map 时包一层嵌套 message |
+| object | `google.protobuf.Struct` | 自由形状口径（与 C++ 的 `std::map<string, any>` 同族决策），import well-known type |
+| null / any | `google.protobuf.Value` | 同上 |
+| map\<string, V\> | `map<string, V'>` | |
+| map\<int, V\> | `map<int64, V'>` | 键 int → int64（go/cpp/java 同族口径） |
+| enum（成员全整数且在 int32 值域） | 对应 proto enum | 见下 |
+| enum（含字符串成员/缺字面量/超 int32 值域） | `string` | 同族回退口径，字段上注释标注原枚举名 |
+
+生成规则要点：
+
+- 确定性：表按名序、字段按名序、字段号 1..n 随名序分配；标识符共享
+  同一去重集合（表名先、枚举名后，冲突追加 `_`）；同 Schema 恒产出
+  字节一致的文件，文件头锤 manifest 记录的 schema 哈希
+- proto3 要求枚举首成员为 0：无 0 值成员时前置合成
+  `{Enum}_UNSPECIFIED = 0;`；成员值重复时发 `option allow_alias = true;`
+- 数组/嵌套 map 落在 repeated 元素或 map 值位置时（proto 不允许
+  `repeated repeated` / map 套 map），生成 `{字段}Value` 嵌套 message
+  承载（深度叠后缀：`{字段}ValueValue`）
+- 非必填字段带 `optional`（proto3 显式存在性）；repeated/map 恒不带
+- 保留字与标量类型名作标识符 → 尾部 `_`；非法字符归一 `_`；数字开头
+  前缀 `_`；同名成员确定性去重
+- `repeated` 元素与 map 值类型为 object/null/any 时用 well-known type
+  消息，合法无需包装
 
 Code Target 的现役生成方式（plan → render → verify 直渲染，不依赖 AST
 库）及其选型理由见仓库设计稿 `docs/design.md` 的 Code Targets 章节；

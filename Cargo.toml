@@ -11,6 +11,7 @@ members = [
     "crates/cage-source-yaml",
     "crates/cage-target-json",
     "crates/cage-target-msgpack",
+    "crates/cage-target-proto",
     "crates/cage-target-csv",
     "crates/cage-target-cs",
     "crates/cage-target-py",

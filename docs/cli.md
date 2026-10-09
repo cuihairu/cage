@@ -63,7 +63,7 @@ cage build config/ --incremental     # 哈希与上次 manifest 一致时跳过�
 cage gen config/ --profile server
 ```
 
-只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java](/target#code-targets-与-data-targets-分离)，
+只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf](/target#code-targets-与-data-targets-分离)，
 另支持 `template` 用户自定义 Tera 模板 target），
 不跑数据校验：代码生成是 Schema 驱动的，类型与元数据全部来自 Schema，
 不消费配置行数据（源文件仍需可正常加载解析）。Profile 里的数据类
@@ -453,7 +453,7 @@ cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0 -o migrations/0001-
 ```bash
 cage check config/                 # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
-cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
+cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java/proto）
 cage diff build/a build/b          # 比较两个配置版本
 cage inspect Item                  # 查看 Schema 与配置结构
 cage migrate .                     # 迁移预演（dry-run，不改任何文件）

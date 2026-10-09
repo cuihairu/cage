@@ -1,0 +1,17 @@
+[package]
+name = "cage-target-proto"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "Protobuf (.proto) target generator for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }

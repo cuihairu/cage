@@ -376,3 +376,92 @@ output_dir = "build/json"
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no code targets"));
 }
+
+/// `format = "proto"` rides the code-target lane like the language
+/// bindings: gen emits per-table `.proto` files plus the shared enums unit,
+/// byte-deterministic across runs, with map-of-array fields wrapped.
+#[test]
+fn gen_proto_target_writes_deterministic_artifacts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(
+        root.join("cage.toml"),
+        r#"output_dir = "build"
+schema_path = "schemas"
+
+[project]
+name = "protoout"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/json"
+
+[[profiles.client.targets]]
+format = "proto"
+output_dir = "build/proto"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("schemas/item.yaml"),
+        r#"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+      drops: { name: drops, type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+      - { name: Shield, value: 2 }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("config/item.json"),
+        r#"{"Item": [{"id": 1, "kind": "Sword", "drops": {"common": [1]}}]}"#,
+    )
+    .unwrap();
+
+    let out = run_cage(&["gen", root.to_str().unwrap(), "--profile", "client"]);
+    assert_success(&out, "gen with proto target");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("cage gen: OK"));
+
+    let item = fs::read_to_string(root.join("build/proto/Item.proto")).unwrap();
+    assert!(item.contains("syntax = \"proto3\";\n"));
+    assert!(item.contains("package cage.generated;\n"));
+    assert!(item.contains("import \"cage_enums.proto\";\n"));
+    assert!(item.contains("optional ItemKind kind = 3;\n"));
+    assert!(item.contains("map<string, dropsValue> drops = 1;\n"));
+    assert!(item.contains("message dropsValue {\n    repeated int32 items = 1;\n  }\n"));
+    let enums = fs::read_to_string(root.join("build/proto/cage_enums.proto")).unwrap();
+    assert!(enums.contains(
+        "enum ItemKind {\n  ItemKind_UNSPECIFIED = 0;\n  Sword = 1;\n  Shield = 2;\n}\n"
+    ));
+
+    // Byte-deterministic across runs.
+    let before = artifact_paths(root, "build/proto");
+    let out = run_cage(&["gen", root.to_str().unwrap(), "--profile", "client"]);
+    assert_success(&out, "gen rerun");
+    assert_eq!(before, artifact_paths(root, "build/proto"));
+
+    // build reaches the same generator through the same lane.
+    let out = run_cage(&["build", root.to_str().unwrap()]);
+    assert_success(&out, "build with proto target");
+    assert_eq!(before, artifact_paths(root, "build/proto"));
+    let manifest = fs::read_to_string(root.join("build/manifest.json")).unwrap();
+    assert!(manifest.contains("\"proto\""), "manifest:\n{manifest}");
+}

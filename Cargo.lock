@@ -243,6 +243,7 @@ dependencies = [
  "cage-target-json",
  "cage-target-lua",
  "cage-target-msgpack",
+ "cage-target-proto",
  "cage-target-py",
  "cage-target-template",
  "cage-target-ts",
@@ -442,6 +443,15 @@ dependencies = [
  "rmp",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "cage-target-proto"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

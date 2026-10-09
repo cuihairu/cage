@@ -56,11 +56,30 @@
       profile 过滤、from_config 三态、trait 面）+ 1 CLI 集成测试
       （构建产物 golden 字节 + 全量重建同字节 + manifest 记录），
       workspace 615 全绿
-- [ ] Protobuf 生成器（第二阶段唯一遗留收尾之二，design §23）：设计稿
-      无 wire 编码明文口径，拍板方向 = 输出 .proto3 定义文件（schema
-      驱动、与 C#/Go 代码绑定同族；类型映射表自定并入 target.md，
-      shared enums 单文件 + import，字段号按名序分配）；新 crate
+- [x] Protobuf 生成器（2026-10，第二阶段唯一遗留收尾之二，design §23；
+      与 MsgPack 同批收官）：设计稿无 wire 编码明文口径，拍板 = 输出
+      .proto3 定义文件（schema 驱动、与 C#/Go 代码绑定同族，数据不
+      参与——消费方 protoc + 自有 runtime）；新 crate
       `cage-target-proto` 进 `cage build`/`cage gen` 代码面
+      （`format = proto`/`protobuf`，`unsupported target format` 对其
+      收口）。映射口径（target.md 存表）：窄整折叠 int32/uint32、
+      int64/uint64、float32/float64 → float/double；object/null/any →
+      google.protobuf.Struct/Value（自由形状，与 C++ std::any 同族）；
+      map 键 int → int64（go/cpp/java 同族）；repeated 元素 / map 值位
+      的 array/map 包 `{字段}Value` 嵌套 message（深度叠后缀）；整数
+      枚举（成员全整数且在 int32 域）进共享 cage_enums.proto + 按需
+      import，缺 0 前置合成 `{Enum}_UNSPECIFIED = 0`、值重复
+      allow_alias，否则字段回退 string 并注释标注；确定性 = 表/字段
+      名序 + 字段号 1..n 名序分配 + 标识符共享去重集合（表先枚举后、
+      冲突追 `_`）+ 文件头锤 schema 哈希；options：package（默认
+      cage.generated）/ enums_file（默认 cage_enums.proto，import 路径
+      随之）。验收：14 单测（产物路径名序、头块、全类型映射、
+      well-known import 按需、枚举三态合成、int32 域外回退、嵌套包装
+      三形态、标识符 sanitize/去重/保留字、确定性两跑、schema 哈希
+      可选、空表、from_config、enums_file 驱动 import）+ 1 CLI 集成
+      测试（gen 产物形状 + 两跑逐字节 + build 同 lane + manifest 记
+      录），workspace 630 全绿；文档 target.md/cli.md/architecture.md/
+      README/需求整理.md 同步。至此第二阶段全部交付
 - [x] Plugin SDK + Game Rule Validator 实装（沙箱方案定稿于 design §17.1：进程内 trait 现已实装、动态库 C ABI shim 为第三方分发路线、不可信代码不执行；GameRuleValidator trait + GameRuleRegistry + 内建 power_curve 样例端到端，`cage check --level gamerule` 输出 E1601 行级诊断；动态库装载与插件市场不在本期）
 - [x] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
 - [x] 增量构建（--incremental 按 manifest 的 schema/source 哈希跳过未变更的整轮重建；按 target 的变更影响传播未做，target 配置变更不参与哈希、需全量）

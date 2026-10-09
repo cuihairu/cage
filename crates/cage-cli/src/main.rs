@@ -2572,7 +2572,7 @@ fn run_gen(path: &Path, profile: &str, no_cache: bool) -> i32 {
     }
     if artifacts.is_empty() {
         eprintln!(
-            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java/template)"
+            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java/proto/template)"
         );
         return 2;
     }
@@ -2634,6 +2634,10 @@ fn code_target_items(
         "go" | "golang" => Some(Ok(cage_target_go::GoTargetGenerator::from_config(target)
             .generate(schema, Some(schema_hash)))),
         "java" => Some(Ok(cage_target_java::JavaTargetGenerator::from_config(
+            target,
+        )
+        .generate(schema, Some(schema_hash)))),
+        "proto" | "protobuf" => Some(Ok(cage_target_proto::ProtoTargetGenerator::from_config(
             target,
         )
         .generate(schema, Some(schema_hash)))),
