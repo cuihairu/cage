@@ -89,6 +89,7 @@ jobs:
         run: bash examples/run.sh
       - name: Compile generated proto files
         run: |
+          sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler
           protoc --proto_path=examples/game-config/build/client/proto \
             --descriptor_set_out=/dev/null \
             examples/game-config/build/client/proto/*.proto
