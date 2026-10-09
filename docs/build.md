@@ -115,7 +115,7 @@ Monster
 
 - 引用检查（L5 校验消费引用拓扑）
 - 构建顺序
-- 增量构建（第二层：变更影响传播）
+- 增量构建（第二层：表级依赖图传播；第三层：target 配置传播）
 - 变更影响分析
 - 删除检查
 - 循环依赖检测
@@ -126,17 +126,18 @@ Monster
 schema 引用声明经 `DependencyGraph::from_schema` 构建（先于且独立于 L5
 校验运行），L5 校验与 cli 增量第二层共同消费它，manifest 落
 `dependencies` 引用账。核心与 cli 的接线覆盖在
-tests/incremental.rs（含第二层端到端：变更传播 + 携带 + manifest 收敛）。
+tests/incremental.rs（含第二/三层端到端：变更传播 + 携带 + target 配置
+增删改 + manifest 收敛 + 旧版 manifest 迁移）。
 
 ## 增量构建
 
-`cage build --incremental` 分两层。
+`cage build --incremental` 分三层。
 
-**第一层：哈希比对跳过。** 构建时把当前 schema/source 哈希与上一次
-`manifest.json` 记录的值比对，同 profile、同哈希且产物都在磁盘上时直接
-跳过重新生成（校验仍然全量执行）；任一输入变化或产物缺失则进入第二层或
-全量重建。注意：target 配置（cage.toml 的 targets）不参与哈希，改完请跑
-一次全量构建。
+**第一层：哈希比对跳过。** 构建时把当前 schema/source/target 指纹与
+上一次 `manifest.json` 记录的值比对，同 profile、同指纹且产物都在磁盘上
+时直接跳过重新生成（校验仍然全量执行）；任一输入变化或产物缺失则进入
+第二/三层或全量重建。旧版 manifest（无 `targets` 记录）一次全量构建即
+迁移，随后参与三层。
 
 **第二层：依赖图传播（v0.3 实装）。** 当 schema 哈希未变（schema 驱动
 code-target 形态，schema 变则整体回退全量）、prev 与当前 profile 相同、
@@ -151,10 +152,25 @@ code-target 形态，schema 变则整体回退全量）、prev 与当前 profile
   字节与全量构建完全一致），产物顺序按路径排序规范化，合并后的 manifest
   与全量构建逐字节一致（确定性契约）。
 
+**第三层：target 传播（v0.4 实装）。** manifest 记录每个 target 的配置
+指纹（`targets`：按 (format, output_dir) 排序的 `TargetRecord`，哈希覆盖
+format/output_dir/file_template/options）。schema 未变而 target 配置变动
+时：
+
+- 指纹变化的 target 只重生成自己的产物（生成输入 = 完整文档——target
+  的字节取决于它序列化的每一张表）；未变的 target 保持第二层的表级
+  传播与携带；
+- 从 profile 移除的 target：其磁盘上的旧产物删除（只删 prev manifest
+  记录过的路径，且在生成成功之后），旧 output_dir 迁移同理；file_template
+  改名产生的换路径旧产物一并清理；
+- identity 是 `(format, output_dir)`——两个 target 共用 output_dir 时
+  保守地一起重生成；
+- 合并后的 manifest 仍与全量构建逐字节一致（确定性契约）。
+
 回退全量的条件：prev 无 `table_hashes`（旧版 manifest）、删除过表（prev
 表集合 ⊄ 当前 —— 避免把过期产物错误携带）、携带产物读失败（warn 后
-回退全量）。携带产物缺文件不算回退：缺文件的表在计算受影响集合前已
-视为变更，随受影响表定向重生成。
+回退全量）、schema 变化。携带产物缺文件不算回退：缺文件的表在计算受
+影响集合前已视为变更，随受影响表定向重生成。
 
 例如 `Item.xlsx` 修改，影响：
 
