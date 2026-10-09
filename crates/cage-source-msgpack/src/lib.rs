@@ -71,7 +71,7 @@ impl MsgPackSourceAdapter {
     ///
     /// Root must be an array of row maps; the file stem names the table.
     /// Floats come back bit-exact, `bin` payloads as `Bytes`; in-range
-    /// integers normalize to `Int` (see [`Self::cage_value`]). An empty
+    /// integers normalize to `Int` (see `cage_value` below). An empty
     /// array yields an empty table, not a skipped one.
     pub fn parse_bytes(data: &[u8], path: &Path) -> Result<Document, Diagnostics> {
         let file_path = path.display().to_string();
