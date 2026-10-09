@@ -116,7 +116,25 @@
       build）+ 文档 source.md 新节与 crate 表行、cli.md 保真度序、
       target.md 重消费注记、architecture.md 树、需求整理.md crate
       清单——本轮交付，勾选
-- [x] 增量构建（--incremental 按 manifest 的 schema/source 哈希跳过未变更的整轮重建；按 target 的变更影响传播未做，target 配置变更不参与哈希、需全量）
+- [x] 增量构建（2026-10 收口为三层，docs/build.md 增量构建节）：
+      L1 哈希比对跳过——schema/source/target 指纹与上次 manifest 一致
+      且产物全在盘时整轮跳过（校验仍全量执行）；L2 表级传播（v0.3，
+      见 D2）：`IncrementalPlanner::compute_affected` 按依赖图传播受
+      影响表，未受影响表从磁盘携带，合并 manifest 与全量构建逐字节
+      收敛；L3 target 配置传播（v0.4，本轮交付）：manifest 记录每个
+      target 的配置指纹（`targets`：按 (format, output_dir) 排序的
+      `TargetRecord`，blake3 覆盖 format/output_dir/file_template/
+      options，GENERATOR_VERSION 1.0.0→1.1.0）——指纹变化的 target
+      以完整文档重生成自身产物（target 字节取决于它序列化的每张表），
+      未变 target 保持 L2 传播与携带；移除/改配置 target 的旧产物
+      失败安全删除（只删 prev manifest 记过的路径、且在生成成功之后），
+      旧版 manifest（无 `targets`）一次全量构建即迁移；identity 取
+      (format, output_dir)，共用 output_dir 的 target 保守一起重生。
+      验收达成：tests/incremental.rs L2 端到端 ×2 + L3 ×4（option
+      变更只重生该 target、移除删旧产物、新增只生成新产物、旧版
+      manifest 迁移；前三个断言增量 manifest == 全量 manifest）+
+      manifest `target_records` 单测（排序规范与哈希敏感性），workspace
+      649 全绿 + docs/build.md 三层节——本轮交付，勾选
 - [x] CI 集成（warnings_as_errors、GitHub Actions 模板）
 
 ## 第三阶段（预排）

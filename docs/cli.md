@@ -53,9 +53,9 @@ cage build config/ --incremental     # 哈希与上次 manifest 一致时跳过�
 与 check 同口径的 `--level`（默认 semantic）可上调/下调验证层级。
 
 验证并生成目标产物，同时输出 [Build Manifest](/build#build-manifest)。
-`--incremental` 依据 manifest 里的 schema/source 哈希跳过未变化的重建
-（校验仍全量执行；改了 cage.toml 的 targets 请全量重建，详见
-[增量构建](/build#增量构建)）。
+`--incremental` 依据 manifest 里的 schema/source/target 指纹做三层增量
+（校验仍全量执行；schema 变化回退全量，target 配置变更只重生对应
+target，详见[增量构建](/build#增量构建)）。
 
 ## gen
 

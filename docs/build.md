@@ -45,13 +45,16 @@ Build(A) == Build(A)
   "project": "game",
   "profile": "client",
   "cage_version": "0.1.0",
-  "generator_version": "1.0.0",
+  "generator_version": "1.1.0",
   "build_id": "...",
   "schema_hash": "...",
   "source_hash": "...",
   "content_hash": "...",
   "dependencies": { "Monster": ["DropTable"], "DropTable": ["Item"] },
   "table_hashes": { "Item": "...", "DropTable": "...", "Monster": "..." },
+  "targets": [
+    { "format": "json", "output_dir": "build/client", "hash": "..." }
+  ],
   "artifacts": {
     "item.json": { "path": "item.json", "hash": "...", "size": 123, "format": "json", "table": "Item", "encoding": "utf-8" }
   }
@@ -64,7 +67,7 @@ Build(A) == Build(A)
 | --- | --- | --- |
 | `project` / `profile` | 已实装 | 构建身份 |
 | `cage_version` | 已实装 | cage 编译器版本 |
-| `generator_version` | 已实装 | Manifest 结构版本（"1.0.0"；布局演进时自增，独立于 cage 版本） |
+| `generator_version` | 已实装 | Manifest 结构版本（"1.1.0"；布局演进时自增，独立于 cage 版本） |
 | `build_id` | 已实装 | **确定性指纹**：blake3(profile + schema_hash + source_hash + content_hash) 前 24 位。同输入同 ID（可复现/匹配/回滚），语义变更即旋转。不用时间戳——那会破坏「相同输入 → 相同 Manifest 字节」的确定性契约 |
 | `schema_hash` | 已实装 | Blake3，覆盖 schema 全量 |
 | `source_hash` | 已实装 | Blake3，覆盖全部源内容 |
@@ -72,6 +75,7 @@ Build(A) == Build(A)
 | `artifacts` | 已实装 | 每产物 path / hash / size / format / table / encoding |
 | `dependencies` | 已实装 | 表间引用账：`表 -> 引用表名有序列表`（L5 依赖图接线后由 ManifestGenerator 落账，D2；旧 manifest 缺字段经 serde(default) 兼容） |
 | `table_hashes` | 已实装 | 每表行级指纹（增量第二层变更检测） |
+| `targets` | 已实装 | 每 target 配置指纹：按 (format, output_dir) 排序的 `TargetRecord` 列表，hash 为 blake3（覆盖 format/output_dir/file_template/options，选项键排序）；identity 是 (format, output_dir)（增量第三层变更检测；旧 manifest 缺字段经 serde(default) 兼容） |
 | `ir_hash` | 随 IR 定界省略 | IR 与 Canonical 同构（见架构文档），以 schema_hash + source_hash 覆盖 |
 
 用途：
