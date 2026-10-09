@@ -32,7 +32,7 @@ features:
   - title: Profile 机制
     details: client / server 配置不同 targets 与字段可见性，一份配置两端复用，不维护两套表。
   - title: Target 插件
-    details: JSON / CSV 起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（Tera 自定义模板）（Protobuf 等留待后续）；数据序列化与代码生成分离。
+    details: JSON / CSV 数据产物起步，已扩展 MessagePack（确定性二进制）与 Protobuf `.proto` 定义文件，以及 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（Tera 自定义模板）（FlatBuffers 等留待后续）；数据序列化与代码生成分离。
   - title: 声明式数据迁移
     details: cage migrate 按版本步进链对已验证配置做规则变换（改名 / 补默认 / 删字段 / 类型加宽 / 值重映射），默认 dry-run 报告，--write 原路写回并全栈回验。
 ---
