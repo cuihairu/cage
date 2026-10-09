@@ -866,6 +866,63 @@ fn validate_reference(ctx: &mut ValidationContext) {
             }
         }
     }
+
+    report_reference_cycles(ctx, schema);
+}
+
+/// Table-level reference cycles → E1403 warnings (one per unique cycle).
+///
+/// The graph module's own contract counts self-loops as cycles
+/// (`find_cycles` includes them). A cycle cannot break check/build:
+/// generation is single-pass from the in-memory Document and incremental
+/// propagation is visited-set safe — but it makes the library build-order
+/// API (`topological_sort` / `build_order`) fail, so it is reported for
+/// authors instead of rejected. ERROR severity would over-reject
+/// legitimate mutual-reference schemas (drop tables ↔ monster tables).
+fn report_reference_cycles(ctx: &mut ValidationContext, schema: &Schema) {
+    let graph = crate::reference::DependencyGraph::from_schema(schema);
+
+    // `find_cycles` reports a cycle once per starting table ([A,B] and
+    // [B,A] for a 2-cycle); rotate each cycle so the lexicographically
+    // smallest table leads, then dedupe — rendering stays canonical and
+    // deterministic regardless of HashMap iteration order.
+    let mut canonical: std::collections::BTreeSet<Vec<String>> = std::collections::BTreeSet::new();
+    for cycle in graph.find_cycles() {
+        if cycle.is_empty() {
+            continue;
+        }
+        let lead = cycle
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.cmp(b.1))
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        let rotated: Vec<String> = cycle[lead..]
+            .iter()
+            .chain(cycle[..lead].iter())
+            .cloned()
+            .collect();
+        canonical.insert(rotated);
+    }
+
+    for cycle in canonical {
+        let chain = cycle
+            .iter()
+            .cloned()
+            .chain(std::iter::once(cycle[0].clone()))
+            .collect::<Vec<_>>()
+            .join(" → ");
+        ctx.diagnostics.add(
+            DiagnosticBuilder::warning(reference::E1403, format!("Circular reference: {chain}"))
+                .source("schema")
+                .table(cycle[0].clone())
+                .hint(
+                    "Remove one reference edge to break the cycle; cycles do not \
+                     block builds but make the topological build order impossible",
+                )
+                .build(),
+        );
+    }
 }
 
 fn validate_single_reference(
@@ -2523,6 +2580,181 @@ mod tests {
         assert!(diags.has_errors());
         let errors = diags.errors();
         assert!(errors.iter().any(|e| e.code == table::E1301));
+    }
+
+    /// UInt32 field with a cross-table reference (`table.field`).
+    fn ref_field(name: &str, table: &str, field: &str) -> FieldSchema {
+        let mut f = plain_field(name, FieldType::UInt32);
+        f.reference = Some(ReferenceSchema {
+            table: table.to_string(),
+            field: field.to_string(),
+            predicate: None,
+            cardinality: "one".to_string(),
+            compatible_with: None,
+        });
+        f
+    }
+
+    #[test]
+    fn e1403_two_table_cycle_warns_canonically() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("part_of", "Kit", "id"),
+            ],
+        ));
+        schema.add_table(plain_table(
+            "Kit",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("best_item", "Item", "id"),
+            ],
+        ));
+        let doc = doc_with_tables(&[("Item", vec![]), ("Kit", vec![])]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        assert!(!diags.has_errors(), "cycles warn, they do not error");
+        let warnings: Vec<_> = diags
+            .warnings()
+            .into_iter()
+            .filter(|d| d.code == reference::E1403)
+            .collect();
+        assert_eq!(warnings.len(), 1, "one canonical cycle, not per-start");
+        assert_eq!(warnings[0].message, "Circular reference: Item → Kit → Item");
+        assert_eq!(warnings[0].table.as_deref(), Some("Item"));
+        assert_eq!(warnings[0].source, "schema");
+    }
+
+    #[test]
+    fn e1403_three_table_cycle_is_one_warning() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "A",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("b", "B", "id"),
+            ],
+        ));
+        schema.add_table(plain_table(
+            "B",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("c", "C", "id"),
+            ],
+        ));
+        schema.add_table(plain_table(
+            "C",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("a", "A", "id"),
+            ],
+        ));
+        let doc = doc_with_tables(&[("A", vec![]), ("B", vec![]), ("C", vec![])]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        let cycles: Vec<_> = diags
+            .warnings()
+            .into_iter()
+            .filter(|d| d.code == reference::E1403)
+            .collect();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].message, "Circular reference: A → B → C → A");
+    }
+
+    #[test]
+    fn e1403_self_loop_warns_and_acyclic_is_silent() {
+        // Self-reference (unlock chains etc.): the graph contract counts it
+        // as a cycle, so it warns too.
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Stage",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("next", "Stage", "id"),
+            ],
+        ));
+        let doc = doc_with_tables(&[("Stage", vec![])]);
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        let cycles: Vec<_> = diags
+            .warnings()
+            .into_iter()
+            .filter(|d| d.code == reference::E1403)
+            .collect();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].message, "Circular reference: Stage → Stage");
+
+        // Diamond A→B→D, A→C→D is acyclic: silent.
+        let mut diamond = Schema::new();
+        diamond.add_table(plain_table(
+            "A",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("b", "B", "id"),
+                ref_field("c", "C", "id"),
+            ],
+        ));
+        diamond.add_table(plain_table(
+            "B",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("d", "D", "id"),
+            ],
+        ));
+        diamond.add_table(plain_table(
+            "C",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("d", "D", "id"),
+            ],
+        ));
+        diamond.add_table(plain_table(
+            "D",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let doc = doc_with_tables(&[("A", vec![]), ("B", vec![]), ("C", vec![]), ("D", vec![])]);
+        let diags = validate(&validated(diamond), &doc, ValidationLevel::Reference, false);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn e1403_escalates_with_warnings_as_errors() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("part_of", "Kit", "id"),
+            ],
+        ));
+        schema.add_table(plain_table(
+            "Kit",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field("best_item", "Item", "id"),
+            ],
+        ));
+        let doc = doc_with_tables(&[("Item", vec![]), ("Kit", vec![])]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, true);
+        assert!(diags.has_errors());
+        assert!(
+            diags.errors().iter().any(|e| e.code == reference::E1403),
+            "warnings_as_errors escalates the cycle warning"
+        );
     }
 
     /// Table helper with profile targets on the table and/or fields.

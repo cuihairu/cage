@@ -82,6 +82,20 @@
       README/需求整理.md 同步。至此第二阶段全部交付
 - [x] Plugin SDK + Game Rule Validator 实装（沙箱方案定稿于 design §17.1：进程内 trait 现已实装、动态库 C ABI shim 为第三方分发路线、不可信代码不执行；GameRuleValidator trait + GameRuleRegistry + 内建 power_curve 样例端到端，`cage check --level gamerule` 输出 E1601 行级诊断；动态库装载与插件市场不在本期）
 - [x] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
+- [x] E1403 循环检测接线进校验面（2026-10 点火：此前图 API 的
+      find_cycles 只服务增量/库侧，校验面不报）：L5 逐行引用检查后做
+      schema 级循环检测——`DependencyGraph::from_schema` + `find_cycles`，
+      每环旋转最小表名起头去重（两表互引 A↔B 不再按起点双报）后逐环
+      报一条 `E1403` WARNING（`Circular reference: Item → Kit → Item`），
+      自引用按图契约计环同报；语义拍板 = WARNING 而非 ERROR——环不阻断
+      构建（生成单遍、增量传播 visited 集安全），但断库 API 拓扑序
+      （`topological_sort`/`build_order` 返 Err），ERROR 会误杀合法互引
+      schema（掉落表 ↔ 怪物表）；`warnings_as_errors = true` 升级。
+      验收：core 单测×4（两表环 canonical 消息与 table/source 断言/
+      三表环单告/自环 + 菱形无环静默/升级）+ CLI 集成×1（check 退码 0
+      带 E1403 与 canonical 环路径、warnings_as_errors 退码 1）+
+      validation.md L5 表级引用环节与码表、需求整理.md:67 转已接线
+      ——本轮交付，勾选
 - [x] 增量构建（--incremental 按 manifest 的 schema/source 哈希跳过未变更的整轮重建；按 target 的变更影响传播未做，target 配置变更不参与哈希、需全量）
 - [x] CI 集成（warnings_as_errors、GitHub Actions 模板）
 

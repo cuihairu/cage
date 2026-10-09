@@ -318,6 +318,25 @@ Cardinality      基数            预留（E1404，未接线）
 Compatibility    兼容性          已实装（E1411，字段级约束）
 ```
 
+### 表级引用环（E1403，已实装）
+
+L5 在逐行引用检查之后做 schema 级循环检测：引用图
+（`DependencyGraph::from_schema`）含环时每环报一条 `E1403` WARNING，
+环路径写进诊断消息（最小表名起头、跨起点去重——两表互引只报一条）：
+
+```text
+WARNING E1403 — Circular Reference
+  Source: schema | Table: Item
+
+Circular reference: Item → Kit → Item
+```
+
+自引用（如解锁链 `Stage.next → Stage.id`）按引用图自身契约计环，同样
+提示。环不阻断构建——生成是单遍的、增量传播对环安全——但会让库 API
+的 `topological_sort` / `build_order` 失败，故以 WARNING 提示作者而
+非报错（ERROR 会误杀合法互引 schema）；`warnings_as_errors = true`
+时升级为错误（退出码 1）。
+
 ## L6 Semantic（语义）
 
 Schema 解决的是结构问题；Semantic Validation 解决：**数据组合起来有没有意义。**
@@ -520,7 +539,7 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 | --- | --- |
 | `E1401` | 引用目标不存在 |
 | `E1402` | 引用已删除实体（预留） |
-| `E1403` | 循环引用（预留） |
+| `E1403` | 循环引用（已实装：表级引用环 WARNING，warnings_as_errors 升级） |
 | `E1404` | 基数违规（预留） |
 | `E1410` | 引用对象存在但语义谓词不满足（预留：谓词求值器占位恒通过，现不可触发） |
 | `E1411` | 引用对象字段约束违规 |

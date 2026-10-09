@@ -490,6 +490,77 @@ output_dir = "build/json"
     );
 }
 
+/// Two tables referencing each other: L5 emits an E1403 cycle warning, the
+/// check still passes (cycles do not block builds), and
+/// `warnings_as_errors = true` escalates it to a validation failure.
+#[test]
+fn reference_cycle_warns_e1403_and_escalates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let schema = r#"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      kit: { name: kit, type: { kind: Int32 }, reference: { table: Kit, field: id } }
+  Kit:
+    name: Kit
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      item: { name: item, type: { kind: Int32 }, reference: { table: Item, field: id } }
+enums: {}
+"#;
+    fs::create_dir_all(tmp.path().join("schemas")).unwrap();
+    fs::create_dir_all(tmp.path().join("config")).unwrap();
+    fs::write(tmp.path().join("schemas/cycle.yaml"), schema).unwrap();
+    fs::write(
+        tmp.path().join("config/Item.json"),
+        r#"{"Item": [{"id": 1, "kit": 1}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("config/Kit.json"),
+        r#"{"Kit": [{"id": 1, "item": 1}]}"#,
+    )
+    .unwrap();
+
+    let cage_toml = |wae: bool| {
+        format!(
+            r#"output_dir = "build"
+schema_path = "schemas"
+warnings_as_errors = {wae}
+
+[project]
+name = "cycle"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/json"
+"#
+        )
+    };
+
+    fs::write(tmp.path().join("cage.toml"), cage_toml(false)).unwrap();
+    let out = run_cage(&["check", tmp.path().to_str().unwrap()]);
+    assert_code(&out, 0, "cycle warns without failing");
+    let out_str = stdout(&out);
+    assert!(out_str.contains("E1403"), "stdout:\n{out_str}");
+    assert!(
+        out_str.contains("Circular reference: Item → Kit → Item"),
+        "stdout:\n{out_str}"
+    );
+    assert!(out_str.contains("cage check: OK"), "stdout:\n{out_str}");
+
+    fs::write(tmp.path().join("cage.toml"), cage_toml(true)).unwrap();
+    let out = run_cage(&["check", tmp.path().to_str().unwrap()]);
+    assert_code(&out, 1, "warnings_as_errors escalates the cycle");
+    assert!(stdout(&out).contains("E1403"), "stdout:\n{}", stdout(&out));
+}
+
 #[test]
 fn build_csv_target_writes_artifacts() {
     let tmp = tempfile::tempdir().unwrap();
