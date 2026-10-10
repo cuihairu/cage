@@ -98,7 +98,10 @@ cage build config/ --no-cache    # check / build / gen / inspect 通用
 [source](/source#离线回退与-no-cache远程源通用s4)）的离线回退——
 默认传输类取数失败会回退上一份缓存副本并发 `E1906` WARNING，
 `--no-cache` 下取不到远端即失败（`E1901`，退出码 2），即使有缓存
-副本。适合发布前「必须以远端最新字节构建」的核对。
+副本。适合发布前「必须以远端最新字节构建」的核对。strict 不等于
+完全不缓存：HTTP 源默认走条件 GET（ETag/Last-Modified，见
+[source](/source#http-api远程源s1)），`--no-cache` 下依然发条件
+请求——304 是服务器确认缓存，不算缓存自答。
 
 ## diff
 
@@ -152,7 +155,7 @@ Cage 支持四种远程输入源，全部在 `cage.toml` 的 `[source_roots]` �
 
 | 语法 | crate | 关键特性 |
 | --- | --- | --- |
-| `https://...` / `http://...` | `cage-source-http` | GET 响应字节缓存后走标准 JSON 解析；`Link: rel="next"` 分页沿链合并（页=行数组）；429 带 `Retry-After` ≤30s 退避重试；`E1901` 取数失败 / 分页违规、`E1902` 401/403、`E0001` 坏 JSON |
+| `https://...` / `http://...` | `cage-source-http` | GET 响应字节缓存后走标准 JSON 解析；`ETag`/`Last-Modified` 条件 GET（304 复用缓存）；`Link: rel="next"` 分页沿链合并（页=行数组）；429 带 `Retry-After` ≤30s 退避重试；`E1901` 取数失败 / 分页违规、`E1902` 401/403、`E0001` 坏 JSON |
 | `mysql:<表|具名查询>` | `cage-source-db` | SELECT 白名单（单条、SELECT 开头，拒分号/注释/行锁/CTE/`INTO`）→ `dsn_env` 解析 → 会话钉只读（`SESSION TRANSACTION READ ONLY`）；DECIMAL 文本保真、`E1905` 白名单、`E1904` 凭据、`E1901` 连接/语句 |
 | `pg:<表|具名查询>` | `cage-source-db` | 同上；PG 侧只读用 `default_transaction_read_only` |
 | `gsheet:<spreadsheet_id>/<tab>` | `cage-source-sheets` | Sheets API v4 `values` + `UNFORMATTED_VALUE`；首行表头、空行跳过、短行补 null；形状门 `E1903`（非行集/空表头/majorDimension 非 ROWS） |

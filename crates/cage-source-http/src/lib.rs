@@ -9,16 +9,25 @@
 //! and enters the same L0-L7 pipeline. The remote is a data source, not
 //! a trusted one: nothing skips validation.
 //!
+//! Conditional revalidation (design §45 — the document-level core of
+//! 增量拉取): the `ETag` / `Last-Modified` validators the server handed
+//! out with the last 200 are kept beside the cached bytes
+//! (`<cache_key>.meta.json`) and sent back as `If-None-Match` /
+//! `If-Modified-Since`; a 304 answer reuses the cached bytes and touches
+//! nothing. Sources the server cannot revalidate just fetch plainly.
+//!
 //! Pagination (design §45): when the response carries an RFC 8288
 //! `Link: <...>; rel="next"` header the walk follows it — every page
 //! must be a JSON array of rows, and pages concatenate in link order
 //! into one merged document (cached bytes = merged array; a bare array
 //! parses as the `Data` table). A source without a next link keeps the
-//! single-GET contract byte-for-byte.
+//! single-GET contract byte-for-byte. Only the first GET revalidates —
+//! its validators describe the collection state; follow-up pages are
+//! plain GETs, and a 304 on the first page skips the walk entirely.
 
 use cage_core::error::codes::internal::E9902;
 use cage_core::error::codes::remote::{E1901, E1902};
-use cage_core::remote::{self, FetchFailure};
+use cage_core::remote::{self, FetchFailure, Validators};
 use cage_core::value::Document;
 use cage_source_json::JsonSourceAdapter;
 use std::collections::HashSet;
@@ -36,10 +45,12 @@ fn is_http_url(url: &str) -> bool {
 pub struct HttpSourceAdapter;
 
 impl HttpSourceAdapter {
-    /// GET `url` (following `Link: rel="next"` pagination when the
-    /// server advertises it) and land the merged document bytes at
+    /// GET `url` (revalidating against the cached validators first, and
+    /// following `Link: rel="next"` pagination when the server
+    /// advertises it) and land the merged document bytes at
     /// `.cage-cache/source/<cache_key(url)>/<cache_key(url)>.json`,
-    /// returning the cached file path. Errors: E1901 when the fetch
+    /// returning the cached file path. A 304 revalidation answer keeps
+    /// the cached bytes and meta untouched. Errors: E1901 when the fetch
     /// fails (transport after bounded retries, a rate limit past its
     /// budget, 404, any other non-auth status, or a pagination-contract
     /// violation), E1902 on 401/403, E9902 when the cache cannot be
@@ -55,8 +66,20 @@ impl HttpSourceAdapter {
         // before any bytes move — the offline fallback needs it too.
         let cache_dir = remote::source_cache_dir(project_root, url);
         let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(url)));
-        let bytes = match fetch_pages(url) {
-            Ok(bytes) => bytes,
+        // Revalidation needs the validators AND the bytes they describe:
+        // a meta without its payload is just stale bookkeeping — fetch
+        // plainly and rewrite both.
+        let validators = if cache_file.is_file() {
+            read_meta(&cache_dir, url)?
+        } else {
+            None
+        };
+        let (bytes, fresh) = match fetch_pages(url, validators.as_ref()) {
+            Ok(PageFetch::NotModified) => {
+                // The server confirmed the cached bytes are current.
+                return Ok(cache_file);
+            }
+            Ok(PageFetch::Fresh { bytes, validators }) => (bytes, validators),
             Err(PageFailure::Http(FetchFailure::Transport(e))) => {
                 if let Some(path) = remote::source_cache_fallback(&cache_file, url, strict) {
                     return Ok(path);
@@ -99,6 +122,7 @@ impl HttpSourceAdapter {
                 cache_file.display()
             )
         })?;
+        write_meta(&cache_dir, url, &fresh)?;
         Ok(cache_file)
     }
 
@@ -155,21 +179,55 @@ impl std::fmt::Display for PageFailure {
     }
 }
 
-/// Fetch `first` and, when the server advertises an RFC 8288
-/// `Link: rel="next"`, walk the pages: every page is a JSON array of
-/// rows, relative next targets resolve against their page URL (RFC
-/// 3986), pages concatenate in link order, and the merged array is the
-/// returned document. No next link on the first response returns the
-/// body bytes verbatim — the single-GET contract is untouched.
-fn fetch_pages(first: &str) -> Result<Vec<u8>, PageFailure> {
-    fetch_pages_bound(first, MAX_PAGES)
+/// One paginated fetch outcome. `NotModified` only ever comes from the
+/// first GET (the revalidation round trip); `Fresh` carries the merged
+/// bytes and the first response's validators for the cache meta.
+#[derive(Debug, PartialEq, Eq)]
+enum PageFetch {
+    NotModified,
+    Fresh {
+        bytes: Vec<u8>,
+        validators: Validators,
+    },
 }
 
-fn fetch_pages_bound(first: &str, max_pages: usize) -> Result<Vec<u8>, PageFailure> {
+/// Fetch `first` — revalidating against `validators` when the cache has
+/// them — and, when the server advertises an RFC 8288 `Link: rel="next"`,
+/// walk the pages: every page is a JSON array of rows, relative next
+/// targets resolve against their page URL (RFC 3986), pages concatenate
+/// in link order, and the merged array is the returned document. A 304
+/// on the first GET is [`PageFetch::NotModified`] — the walk is skipped
+/// entirely, the cached merged document stays authoritative. Follow-up
+/// pages are plain GETs: the first page's validators describe the
+/// collection state, so a fresh first page already means new work. No
+/// next link on the first response returns the body bytes verbatim — the
+/// single-GET contract is untouched.
+fn fetch_pages(first: &str, validators: Option<&Validators>) -> Result<PageFetch, PageFailure> {
+    fetch_pages_bound(first, validators, MAX_PAGES)
+}
+
+fn fetch_pages_bound(
+    first: &str,
+    validators: Option<&Validators>,
+    max_pages: usize,
+) -> Result<PageFetch, PageFailure> {
     let first_url = url::Url::parse(first).map_err(|_| PageFailure::BadLink(first.to_string()))?;
-    let response = remote::http_get_full(first).map_err(PageFailure::Http)?;
+    let response = match validators {
+        Some(v) => match remote::http_get_conditional(first, v).map_err(PageFailure::Http)? {
+            remote::ConditionalGet::NotModified => return Ok(PageFetch::NotModified),
+            remote::ConditionalGet::Fresh(response) => response,
+        },
+        None => remote::http_get_full(first).map_err(PageFailure::Http)?,
+    };
+    let fresh_validators = Validators {
+        etag: response.etag.clone(),
+        last_modified: response.last_modified.clone(),
+    };
     let Some(next_raw) = response.link.as_deref().and_then(next_page_link) else {
-        return Ok(response.body);
+        return Ok(PageFetch::Fresh {
+            bytes: response.body,
+            validators: fresh_validators,
+        });
     };
 
     let mut merged = page_array(&response.body, first)?;
@@ -191,7 +249,63 @@ fn fetch_pages_bound(first: &str, max_pages: usize) -> Result<Vec<u8>, PageFailu
         merged.extend(page_array(&response.body, current.as_str())?);
         next = response.link.as_deref().and_then(next_page_link);
     }
-    Ok(serde_json::to_vec(&merged).expect("serializing merged row arrays cannot fail"))
+    Ok(PageFetch::Fresh {
+        bytes: serde_json::to_vec(&merged).expect("serializing merged row arrays cannot fail"),
+        validators: fresh_validators,
+    })
+}
+
+/// The validators sidecar for one cache slot: `<key>.meta.json` beside
+/// the payload bytes. `None` when absent — revalidation is best-effort,
+/// a missing meta just means a plain fetch.
+fn read_meta(cache_dir: &Path, url: &str) -> Result<Option<Validators>, String> {
+    let meta_file = meta_path(cache_dir, url);
+    let raw = match std::fs::read(&meta_file) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(format!(
+                "{E9902} cannot read source cache meta {}: {e}",
+                meta_file.display()
+            ))
+        }
+    };
+    let meta: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|e| format!("{E9902} cannot parse {}: {e}", meta_file.display()))?;
+    let etag = meta
+        .get("etag")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let last_modified = meta
+        .get("last_modified")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Ok(Some(Validators {
+        etag,
+        last_modified,
+    }))
+}
+
+/// Store the validators a 200 response handed out — written even when
+/// the server sent neither header (an empty meta keeps the sidecar
+/// honest: the next fetch sees "no validators" instead of a stale pair).
+fn write_meta(cache_dir: &Path, url: &str, validators: &Validators) -> Result<(), String> {
+    let meta_file = meta_path(cache_dir, url);
+    let raw = serde_json::to_vec(&serde_json::json!({
+        "etag": validators.etag,
+        "last_modified": validators.last_modified,
+    }))
+    .expect("serializing the validators meta cannot fail");
+    std::fs::write(&meta_file, raw).map_err(|e| {
+        format!(
+            "{E9902} cannot write source cache meta {}: {e}",
+            meta_file.display()
+        )
+    })
+}
+
+fn meta_path(cache_dir: &Path, url: &str) -> PathBuf {
+    cache_dir.join(format!("{}.meta.json", remote::cache_key(url)))
 }
 
 /// A page body must be a JSON array of rows — the only shape that
@@ -519,6 +633,19 @@ mod tests {
   ]
 }"#;
 
+    /// A rotated representation: same shape, one extra row — the bytes differ
+    /// from [`BODY`] so a 200 refresh is observable on disk.
+    const BODY_V2: &str = r#"{
+  "Item": [
+    { "id": 1, "name": "Sword" },
+    { "id": 2, "name": "Shield" },
+    { "id": 3, "name": "Potion" }
+  ],
+  "Monster": [
+    { "id": 1, "name": "Slime", "drop": 1 }
+  ]
+}"#;
+
     #[test]
     fn fetches_parses_and_caches_bytes() {
         let server = start_server(200, "OK", BODY);
@@ -775,14 +902,17 @@ mod tests {
             ("/b.json?page=3", 200, None, "[3]"),
         ]);
         let first = format!("http://127.0.0.1:{}/b.json", server.port);
-        let err = fetch_pages_bound(&first, 2).unwrap_err();
+        let err = fetch_pages_bound(&first, None, 2).unwrap_err();
         assert!(
             matches!(err, PageFailure::TooManyPages(2, _)),
             "bound names itself: {err}"
         );
 
         // The same chain inside the bound merges fine.
-        let bytes = fetch_pages_bound(&first, 3).unwrap();
+        let fresh = fetch_pages_bound(&first, None, 3).unwrap();
+        let PageFetch::Fresh { bytes, .. } = fresh else {
+            panic!("a plain walk without validators returns Fresh")
+        };
         assert_eq!(bytes, b"[1,2,3]");
     }
 
@@ -880,5 +1010,215 @@ mod tests {
         );
         assert_eq!(next_page_link("</2>; rel=\"prev\""), None);
         assert_eq!(next_page_link("no links here"), None);
+    }
+    /// Serve one mutable `(etag, body)` representation: requests carrying
+    /// a matching `If-None-Match` are answered 304 (no body), everything
+    /// else 200 with an `ETag` header. Every request's conditional header
+    /// is recorded for asserting the revalidation round trip.
+    struct RevalidateServer {
+        port: u16,
+        hits: Arc<AtomicU32>,
+        seen_inm: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+        current: Arc<std::sync::Mutex<(String, String)>>,
+        stop: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    fn start_revalidate_server(etag: &str, body: &str) -> RevalidateServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicU32::new(0));
+        let seen_inm = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let current = Arc::new(std::sync::Mutex::new((etag.to_string(), body.to_string())));
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let hits2 = hits.clone();
+        let seen2 = seen_inm.clone();
+        let current2 = current.clone();
+        let handle = thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while !stop2.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        let mut head = Vec::new();
+                        let mut buf = [0u8; 1024];
+                        loop {
+                            match stream.read(&mut buf) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    head.extend_from_slice(&buf[..n]);
+                                    if head.windows(4).any(|w| w == b"\r\n\r\n")
+                                        || head.len() > 64 * 1024
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        let request = String::from_utf8_lossy(&head);
+                        let inm = request
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("If-None-Match")
+                                    .then(|| v.trim().to_string())
+                            })
+                            .filter(|v| !v.is_empty());
+                        let carried = inm.as_deref().map(str::to_string);
+                        seen2.lock().unwrap().push(carried);
+                        hits2.fetch_add(1, Ordering::SeqCst);
+                        let guard = current2.lock().unwrap();
+                        let (etag, body) = (guard.0.as_str(), guard.1.as_str());
+                        if inm.as_deref() == Some(etag) {
+                            let head_out = format!(
+                                "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\n\
+                                 Connection: close\r\n\r\n"
+                            );
+                            let _ = stream.write_all(head_out.as_bytes());
+                        } else {
+                            let head_out = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                                 ETag: {etag}\r\nContent-Length: {}\r\n\
+                                 Connection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = stream.write_all(head_out.as_bytes());
+                            let _ = stream.write_all(body.as_bytes());
+                        }
+                        let _ = stream.flush();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        RevalidateServer {
+            port,
+            hits,
+            seen_inm,
+            current,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    impl RevalidateServer {
+        fn rotate(&self, etag: &str, body: &str) {
+            *self.current.lock().unwrap() = (etag.to_string(), body.to_string());
+        }
+        fn inm_history(&self) -> Vec<Option<String>> {
+            self.seen_inm.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for RevalidateServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    /// RFC 7232 revalidation: the first fetch is plain and stores the
+    /// server's validators; the second sends `If-None-Match` and the 304
+    /// reuses the cached bytes untouched; a rotated representation comes
+    /// back 200 with new validators; `strict` (`--no-cache`) still
+    /// revalidates — a 304 is the server confirming the cache, not the
+    /// cache answering for itself.
+    #[test]
+    fn conditional_get_revalidates_and_refreshes() {
+        let server = start_revalidate_server("v1", BODY);
+        let tmp = tempfile::tempdir().unwrap();
+        let url = format!("http://127.0.0.1:{}/items.json", server.port);
+        let cache_dir = remote::source_cache_dir(tmp.path(), &url);
+        let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(&url)));
+        let meta_file = cache_dir.join(format!("{}.meta.json", remote::cache_key(&url)));
+
+        let first = HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        assert_eq!(
+            server.inm_history()[0],
+            None,
+            "the first fetch has nothing to revalidate"
+        );
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_file).unwrap()).unwrap();
+        assert_eq!(meta["etag"], "v1", "validators stored with the bytes");
+
+        let cached_before = std::fs::read(&cache_file).unwrap();
+        let second = HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        assert_eq!(
+            server.inm_history()[1].as_deref(),
+            Some("v1"),
+            "the second fetch revalidates with the stored ETag"
+        );
+        assert_eq!(server.hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            std::fs::read(&cache_file).unwrap(),
+            cached_before,
+            "a 304 touches nothing"
+        );
+        assert_eq!(
+            second.tables.get("Item").unwrap().rows.len(),
+            first.tables.get("Item").unwrap().rows.len(),
+            "the cached bytes still parse to the same document"
+        );
+
+        server.rotate("v2", BODY_V2);
+        HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        assert_eq!(
+            server.inm_history()[2].as_deref(),
+            Some("v1"),
+            "the rotation is still asked with the old validator"
+        );
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_file).unwrap()).unwrap();
+        assert_eq!(meta["etag"], "v2", "fresh validators replace the old");
+        assert_ne!(
+            std::fs::read(&cache_file).unwrap(),
+            cached_before,
+            "a 200 refresh lands the new bytes"
+        );
+
+        let third = HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        assert_eq!(
+            server.inm_history()[3].as_deref(),
+            Some("v2"),
+            "the next fetch revalidates with the fresh ETag"
+        );
+
+        let strict = HttpSourceAdapter::load(tmp.path(), &url, true).unwrap();
+        assert_eq!(
+            strict.tables.get("Item").unwrap().rows.len(),
+            third.tables.get("Item").unwrap().rows.len(),
+            "--no-cache still revalidates: the 304 is a server answer"
+        );
+        assert_eq!(server.hits.load(Ordering::SeqCst), 5);
+    }
+
+    /// Revalidation needs the validators AND the bytes they describe:
+    /// a meta whose payload is gone is stale bookkeeping — the next
+    /// fetch goes out plain and rebuilds both.
+    #[test]
+    fn meta_without_payload_is_ignored_and_refetched() {
+        let server = start_revalidate_server("v1", BODY);
+        let tmp = tempfile::tempdir().unwrap();
+        let url = format!("http://127.0.0.1:{}/items.json", server.port);
+        let cache_dir = remote::source_cache_dir(tmp.path(), &url);
+        let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(&url)));
+
+        HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        std::fs::remove_file(&cache_file).unwrap();
+        HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        assert_eq!(
+            server.inm_history()[1],
+            None,
+            "no payload behind the meta — plain fetch, no validator sent"
+        );
+        assert!(cache_file.is_file(), "the payload is rebuilt");
+        assert_eq!(server.hits.load(Ordering::SeqCst), 2);
     }
 }

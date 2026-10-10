@@ -196,18 +196,81 @@ pub fn http_get(url: &str) -> Result<Vec<u8>, FetchFailure> {
 }
 
 /// One successful GET: the body bytes plus the response headers the
-/// pagination consumer needs (design §45 — `Link` per RFC 8288; the
-/// source adapter resolves `rel="next"` from it, other consumers ignore
-/// it). Everything else about the response stays inside this module.
+/// consumers need (`Link` per RFC 8288 for the pagination walk; `ETag` /
+/// `Last-Modified` per RFC 7232 for the conditional revalidation round
+/// trip). Everything else about the response stays inside this module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpGet {
     /// The response body bytes
     pub body: Vec<u8>,
     /// Raw `Link` response header value when the server sent one
     pub link: Option<String>,
+    /// Raw `ETag` response header value when the server sent one
+    pub etag: Option<String>,
+    /// Raw `Last-Modified` response header value when the server sent one
+    pub last_modified: Option<String>,
 }
 
-/// [`http_get`] with the `Link` response header surfaced.
+/// The validators a server handed out with the last fetched
+/// representation (RFC 7232), sent back on the next fetch as
+/// `If-None-Match` / `If-Modified-Since`. Both optional — a server may
+/// offer either or neither; whatever is absent simply does not revalidate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Validators {
+    /// `ETag` from the last 200 response, if any
+    pub etag: Option<String>,
+    /// `Last-Modified` from the last 200 response, if any
+    pub last_modified: Option<String>,
+}
+
+/// One conditional GET outcome: `NotModified` is the server confirming
+/// the cached representation is current (304 — the bytes stay cached,
+/// nothing is re-downloaded); `Fresh` is a new representation plus the
+/// validators to store with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConditionalGet {
+    /// 304 Not Modified — the caller's cached bytes remain authoritative
+    NotModified,
+    /// A 200 response: body and headers as with a plain GET
+    Fresh(HttpGet),
+}
+
+/// [`http_get_full`] under RFC 7232 revalidation: the validators (from
+/// the cache meta) ride along as conditional request headers, and a 304
+/// comes back as [`ConditionalGet::NotModified`] instead of a failure.
+/// Retries and failure classification are the one shared policy — a 304
+/// is a success answer, never a retry candidate.
+pub fn http_get_conditional(
+    url: &str,
+    validators: &Validators,
+) -> Result<ConditionalGet, FetchFailure> {
+    with_retries(&RetryPolicy::default(), || {
+        http_get_conditional_once(url, validators)
+    })
+}
+
+fn http_get_conditional_once(
+    url: &str,
+    validators: &Validators,
+) -> Result<ConditionalGet, FetchFailure> {
+    let mut request = ureq::get(url).timeout(Duration::from_secs(30));
+    if let Some(etag) = &validators.etag {
+        request = request.set("If-None-Match", etag);
+    }
+    if let Some(last_modified) = &validators.last_modified {
+        request = request.set("If-Modified-Since", last_modified);
+    }
+    match request.call() {
+        // ureq only turns statuses >= 400 into errors, so a 304 arrives as
+        // an Ok response — the guard arm must come first; reading the body
+        // would yield empty bytes and masquerade as fresh content.
+        Ok(response) if response.status() == 304 => Ok(ConditionalGet::NotModified),
+        Ok(response) => Ok(ConditionalGet::Fresh(read_response(response, url)?)),
+        Err(e) => Err(map_fetch_error(e, url)),
+    }
+}
+
+/// [`http_get`] with the response headers surfaced.
 pub fn http_get_full(url: &str) -> Result<HttpGet, FetchFailure> {
     with_retries(&RetryPolicy::default(), || http_get_once_full(url))
 }
@@ -216,19 +279,38 @@ fn http_get_once_full(url: &str) -> Result<HttpGet, FetchFailure> {
     let response = ureq::get(url)
         .timeout(Duration::from_secs(30))
         .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(404, _) => FetchFailure::NotFound(url.to_string()),
-            ureq::Error::Status(429, response) => rate_limited(&response),
-            ureq::Error::Status(code, _) => FetchFailure::Status(code),
-            ureq::Error::Transport(t) => FetchFailure::Transport(t.to_string()),
-        })?;
+        .map_err(|e| map_fetch_error(e, url))?;
+    read_response(response, url)
+}
+
+/// The one failure classification for GETs — shared by the plain and
+/// conditional paths.
+fn map_fetch_error(e: ureq::Error, url: &str) -> FetchFailure {
+    match e {
+        ureq::Error::Status(404, _) => FetchFailure::NotFound(url.to_string()),
+        ureq::Error::Status(429, response) => rate_limited(&response),
+        ureq::Error::Status(code, _) => FetchFailure::Status(code),
+        ureq::Error::Transport(t) => FetchFailure::Transport(t.to_string()),
+    }
+}
+
+/// Drain one 2xx response: body bytes plus the `Link` / `ETag` /
+/// `Last-Modified` headers the consumers need.
+fn read_response(response: ureq::Response, url: &str) -> Result<HttpGet, FetchFailure> {
     let link = response.header("Link").map(str::to_string);
+    let etag = response.header("ETag").map(str::to_string);
+    let last_modified = response.header("Last-Modified").map(str::to_string);
     let mut bytes = Vec::new();
     response
         .into_reader()
         .read_to_end(&mut bytes)
         .map_err(|e| FetchFailure::Transport(format!("reading {url}: {e}")))?;
-    Ok(HttpGet { body: bytes, link })
+    Ok(HttpGet {
+        body: bytes,
+        link,
+        etag,
+        last_modified,
+    })
 }
 
 /// 429 → retryable only when the asked wait is one the policy honors:

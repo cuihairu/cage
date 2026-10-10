@@ -189,10 +189,11 @@
       「R 系列：Configuration Registry」：本地多版本仓库 / `[dependencies]`
       版本 pin / 远程 http(s) 只读解析 / verify 全册审计 + gc 滚动窗口 +
       remove 显式移除）；遗留的注册表鉴权与远程发布协议不在本项
-- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——S1–S7
+- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——S1–S8
       收官（2026-10，见下方「S 系列：Remote Source」：S1 HTTP API 源 /
       S2 MySQL / PostgreSQL 源 / S3 Google Sheets 源 / S4 确定性与
-      离线语义收口 / S5 错误码接线收口 / S6 文档收口）
+      离线语义收口 / S5 错误码接线收口 / S6 文档收口 / S7 分页与限流 /
+      S8 条件 GET 增量拉取）
 - [x] 分环境验证 `--env`（2026-10 拍板，design §48，约束覆盖）——已交付，见下方「分环境验证」节
 - [x] Artifact 分发与迁移——全数交付（2026-10 拍板：A 系列注册表分发
       A1–A4 收官 + M 系列声明式数据迁移 M0–M3 收官，见下方两节；设计
@@ -274,7 +275,7 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1–S7 全数交付）
+### S 系列：Remote Source（2026-10 立项，design §45；S1–S8 全数交付）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
 纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
@@ -464,6 +465,21 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       达成：core 单测 ×1（lint 收全多环境问题 + validate 仍硬失败）+
       CLI 集成 ×1（基线 warning 不阻断 + --env 硬错误 exit 2）——
       本轮交付，勾选
+- [x] S8 条件 GET 增量拉取（2026-10 交付，design §45 文档级增量）：
+      HTTP 源响应带 `ETag` / `Last-Modified` 时验证器随字节落 sidecar
+      meta（`.cage-cache/source/<key>/<key>.meta.json`）；同 URL 再取
+      先带 `If-None-Match` / `If-Modified-Since` 发条件请求，304 复用
+      缓存字节（meta 不重写），200 双双替换。只有首页 GET 带条件
+      （首页验证器描述整个集合）；meta 无伴生 payload 即按无缓存走
+      普通 GET 重建；`--no-cache`（strict）依然 revalidate——304 是
+      服务器确认缓存，不是缓存自答；304 不经传输失败分类、不触发
+      E1906。行级增量（revision / updated_at）仍留待实现期。验收
+      达成：cage-source-http 单测 ×2（旋转服务器五步：首取无条件
+      落 meta / 二取 INM 304 字节不动 / 轮换 200 落新字节新 meta /
+      下轮带新 ETag / strict 仍 revalidate，服务器计数逐次断言；meta
+      删除按无缓存重建）+ 全绿 gates（fmt / clippy -D warnings /
+      689 测试 / run.sh 实机 exit 0）+ design §45 S8 决策记录 +
+      source.md / cli.md 同步——本轮交付，勾选
 
 ### A 系列：Artifact Distribution（2026-10 立项，design §47）
 

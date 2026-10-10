@@ -2291,7 +2291,8 @@ majorDimension 非 ROWS）。
 
 ## 留待实现期（不在首期）
 
-- 增量拉取：按 revision / updated_at 只取变更行
+- 增量拉取（行级）：按 revision / updated_at 只取变更行——文档级增量
+  已实装（S8 条件 GET，见下方决策记录），行级增量需要各源的数据契约
 - OAuth 用户授权流、mTLS 与 service account 凭据（Sheets 首期只
   API key——service account 需 OAuth JWT 交换）
 - 连接池、并发多源、大表游标分页
@@ -2327,7 +2328,9 @@ DB：E1905（spec / 白名单 / 表名）+ E1904（dsn_env）+ E1901（DSN
 已交付——文档收口（source.md 后续扩展清单转正、cli.md 新增 Remote
 Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构树
 对账），S 系列 S1–S6 全数交付。S7 已交付——HTTP 分页协议与限流协商
-（原留待实现期项，见下方决策记录）。
+（原留待实现期项，见下方决策记录）。S8 已交付——HTTP 条件 GET
+增量拉取（文档级：ETag/Last-Modified revalidation，304 复用缓存
+字节；行级增量仍在留待实现期清单，见下方决策记录）。
 
 ### S7 决策记录（HTTP 分页与限流协商）
 
@@ -2744,3 +2747,38 @@ env 段、包内 manifest 记环境、schema.json 带 resolved 约束、回验�
 基线快照不受影响；`publish --env`：同版本换环境 E1801、新版本入册且
 manifest 记环境、幂等重发 no-op、registry verify 全绿）+ 示例 run.sh
 步骤 6/11 扩展（环境化快照与 E1801 实机演示）。
+
+### S8 决策记录（HTTP 条件 GET 增量拉取）
+
+**文档级增量 = RFC 7232 revalidation，按 URL 缓存验证器。** 定了什么：
+HTTP 源的每份缓存字节旁落一枚 sidecar meta（`.cage-cache/source/<key>/<key>.meta.json`，
+`{etag, last_modified}`，键取自响应头）；同 URL 再次取数时把验证器
+作为 `If-None-Match` / `If-Modified-Since` 发出去，304 → 缓存字节原样
+复用（连 meta 都不重写），200 → 新字节替换旧字节、新验证器替换旧
+meta。**为什么只做文档级**：行级增量（按 revision/updated_at 只取
+变更行）需要每家源暴露数据契约（revision 键、变更行集语义），HTTP
+API 没有通用口径——验证器是响应级的、与响应体形状无关，是唯一能
+不改各源契约就拿到收益的层级；行级留待实现期。
+
+**只有首页 GET 带条件**：分页源里只有首页的验证器描述整个集合状态；
+后续页是首页字节里的相对 URL，带自己的链接级语义，条件化没有可
+靠依据——首页 304 时整个分页链不必重走。
+
+**meta 无伴生 payload 即视为无缓存**：meta 与 payload 必须同时存在才
+允许 revalidation——半份缓存发给服务器的断言无从证实，老实地按无
+缓存处理（走普通 GET 重建两份），不新增状态、不静默复用。
+
+**`--no-cache`（strict）依然 revalidate**：strict 的语义是「缓存字节
+不充当答案」，不是「不与服务器说话」——304 是服务器确认缓存，属于
+合法回答；strict 与普通模式共用同一条 revalidation 路径，只差传输
+失败时是否回退（见 S4）。
+
+**与离线回退的关系**：304 不经过传输失败分类，不是回退候选也不触
+发 E1906；只有真传输错误才落 S4 的语义。验证器写入失败（E9902）
+不影响 payload——下一轮无 meta 即走普通 GET。
+
+**验收**：cage-source-http 单测 ×2（旋转服务器五步：首取无条件
+且落 meta ETag；二取带 INM 且 304 字节不动；轮换后 INM 旧值 200
+落新字节新 meta；下轮带新 ETag；strict 仍 revalidate——服务器计数
+逐次断言；meta 删除后按无缓存重建）+ 全绿 gates（fmt / clippy -D
+warnings / 689 测试 / run.sh 实机 exit 0）。

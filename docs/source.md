@@ -125,6 +125,18 @@ Document
 `E1901` 定错。分页契约违规与限流定错不参与离线回退——只有传输类
 失败（服务器不可达）才回退缓存（`E1906` WARNING）。
 
+条件 GET 增量拉取（S8，文档级）：响应带 `ETag` / `Last-Modified`
+头时，验证器随字节一起存进缓存旁的 sidecar meta
+（`.cage-cache/source/<URL 指纹>/<URL 指纹>.meta.json`）；同 URL
+再次取数时先带 `If-None-Match` / `If-Modified-Since` 发条件请求，
+服务器回 **304 则缓存字节原样复用**（连 meta 都不重写），200 则新
+字节新验证器双双替换。meta 与 payload 必须同时存在才做
+revalidation——缺一半即按无缓存走普通 GET 重建。只有首页 GET 带
+条件（首页的验证器描述整个集合，304 时分页链不必重走）；
+`--no-cache`（strict）依然 revalidate——304 是服务器确认缓存，
+不是缓存自答。传输失败仍走 S4 离线回退语义，304 不参与。行级
+增量（按 revision / updated_at 取变更行）仍留待实现期。
+
 ### MySQL / PostgreSQL（远程源，S2）
 
 `[source_roots]` 写 `mysql:<表|具名查询>` / `pg:<表|具名查询>`：
