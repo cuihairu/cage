@@ -10,7 +10,7 @@
 bash examples/run.sh
 ```
 
-脚本从 `cage check` 到 `cage build` 到 `cage gen` 到 `cage migrate` 到 `cage registry`（含坏数据 E1601 / E1001 断言与 `cage inspect`）13 步一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
+脚本从 `cage check` 到 `cage build` 到 `cage gen` 到 `cage migrate` 到 `cage registry`（含远程分发全链路：push 直推 / presigned 直推 / 消费方远端 resolve 构建，以及坏数据 E1601 / E1001 断言与 `cage inspect`）14 步一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
 
 <details>
 <summary>examples/run.sh 完整输出（点击展开）</summary>
@@ -19,19 +19,19 @@ bash examples/run.sh
 ==> 构建 cage 可执行文件
 
 ============================================================
-==> [1/13] cage check examples/game-config   —— L0-L6 全量校验（好数据应通过）
+==> [1/14] cage check examples/game-config   —— L0-L6 全量校验（好数据应通过）
 ============================================================
 $ cage check examples/game-config
 cage check: OK (5 tables, 0 warnings, level <= semantic)
 
 ============================================================
-==> [2/13] cage check --level gamerule examples/game-config   —— L7 业务规则（好数据应通过）
+==> [2/14] cage check --level gamerule examples/game-config   —— L7 业务规则（好数据应通过）
 ============================================================
 $ cage check examples/game-config --level gamerule
 cage check: OK (5 tables, 0 warnings, level <= gamerule)
 
 ============================================================
-==> [3/13] 分环境验证 —— --env dev/prod 放行、未知环境 exit 2
+==> [3/14] 分环境验证 —— --env dev/prod 放行、未知环境 exit 2
 ============================================================
 $ cage check examples/game-config --env dev
 cage check: OK (5 tables, 0 warnings, level <= semantic)
@@ -41,19 +41,19 @@ $ cage check examples/game-config --env staging   # 期望退出码 2
 error: unknown environment 'staging' (declared: dev, prod)
 
 ============================================================
-==> [4/13] cage build --profile client   —— 验证 + 生成全部 13 个 target（5 张表）
+==> [4/14] cage build --profile client   —— 验证 + 生成全部 13 个 target（5 张表）
 ============================================================
 $ cage build examples/game-config --profile client
 cage build: OK (profile 'client', 80 artifacts, manifest examples/game-config/build/manifest.json)
 
 ============================================================
-==> [5/13] cage build --profile client --incremental   —— 指纹一致 → 跳过重建
+==> [5/14] cage build --profile client --incremental   —— 指纹一致 → 跳过重建
 ============================================================
 $ cage build examples/game-config --profile client --incremental
 cage build: up to date (profile 'client', 80 artifacts, manifest examples/game-config/build/manifest.json)
 
 ============================================================
-==> [6/13] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验
+==> [6/14] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验
 ============================================================
 $ cage snapshot examples/game-config --profile client
 cage snapshot: OK (profile 'client', 83 files, 80 artifacts, verified, examples/game-config/build/snapshot/client-3e0930ac97c2)
@@ -65,25 +65,25 @@ $ cage snapshot <prod-dir> --verify
 cage snapshot: verified (examples/game-config/build/snapshot/client-prod-7a8aa89fa3f8/ — 82 files checked)
 
 ============================================================
-==> [7/13] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto 定义）
+==> [7/14] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto 定义）
 ============================================================
 $ cage gen examples/game-config --profile client
 cage gen: OK (profile 'client', 65 artifacts, manifest examples/game-config/build/manifest.json)
 
 ============================================================
-==> [8/13] cage diff build build   —— 同一构建前后比对（确定性：全不变）
+==> [8/14] cage diff build build   —— 同一构建前后比对（确定性：全不变）
 ============================================================
 $ cage diff examples/game-config/build examples/game-config/build
 cage diff: 0 added, 0 removed, 0 changed, 65 unchanged
 
 ============================================================
-==> [9/13] cage build --profile server   —— 服务端视图（server-only 字段 internal_note 可见，client 视图剔除）
+==> [9/14] cage build --profile server   —— 服务端视图（server-only 字段 internal_note 可见，client 视图剔除）
 ============================================================
 $ cage build examples/game-config --profile server
 cage build: OK (profile 'server', 16 artifacts, manifest examples/game-config/build/manifest.json)
 
 ============================================================
-==> [10/13] cage migrate --to 0.2.0   —— 声明式迁移 dry-run（不写盘）
+==> [10/14] cage migrate --to 0.2.0   —— 声明式迁移 dry-run（不写盘）
 ============================================================
 $ cage migrate examples/game-config --to 0.2.0
 cage migrate: segment 0001_rename_desc.yaml (0.1.0 → 0.2.0)
@@ -96,7 +96,7 @@ cage migrate: segment 0001_rename_desc.yaml (0.1.0 → 0.2.0)
 cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, nothing written
 
 ============================================================
-==> [11/13] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）
+==> [11/14] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）
 ============================================================
 $ cage registry publish examples/game-config --registry /tmp/tmp.Sl0Fdl2VoX
 cage registry: published rpg-demo/0.1.0 (profile 'client', 83 files, build_id 3e0930ac97c2, content_hash c21d96d7e142)
@@ -111,7 +111,24 @@ rpg-demo
   0.1.0-prod   build 7a8aa89fa3f8  content 6a8ef1213fa0  83 files
 
 ============================================================
-==> [12/13] 坏数据诊断   —— E1601 越过 power curve + --env prod E1001 缺昵称
+==> [12/14] 远程分发全链路   —— push 直推 + presigned 直推 + 消费方远端 resolve 构建
+============================================================
+$ cage registry publish examples/game-config   # 发布进示例本地注册表（push 源）
+cage registry: published rpg-demo/0.1.0 (profile 'client', 83 files, build_id 3e0930ac97c2, content_hash c21d96d7e142)
+(本地对象库 A=http://127.0.0.1:44315 直推 / B=http://127.0.0.1:33369 presigned)
+$ cage registry push examples/game-config --registry http://127.0.0.1:44315
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:44315 (83 file(s))
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:44315 (83 file(s)) — identical, no-op
+$ cage registry push examples/game-config --presign-map /tmp/tmp.LNsSEQyZpp/presign.json
+cage registry: pushed rpg-demo/0.1.0 → presigned targets (/tmp/tmp.LNsSEQyZpp/presign.json) (83 file(s))
+$ cage build /tmp/tmp.tA9tbMhVld/consA --profile client   # 消费方直连远端根构建（consA ← 44315）
+cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.tA9tbMhVld/consA/build/manifest.json)
+$ cage build /tmp/tmp.tA9tbMhVld/consB --profile client   # 消费方直连远端根构建（consB ← 33369）
+cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.tA9tbMhVld/consB/build/manifest.json)
+消费方产物与发布方逐字节一致（5 张表 × 2 条分发路）
+
+============================================================
+==> [13/14] 坏数据诊断   —— E1601 越过 power curve + --env prod E1001 缺昵称
 ============================================================
 $ cage check examples/game-config/bad --level gamerule   # 期望 E1601 + 退出码 1
 ERROR E1601 — Game Rule Validation Failed
@@ -160,7 +177,7 @@ ERROR E1001 — Missing Required Field
 cage check: FAILED (4 errors, 0 warnings)
 
 ============================================================
-==> [13/13] cage inspect examples/game-config   —— 查看表结构
+==> [14/14] cage inspect examples/game-config   —— 查看表结构
 ============================================================
 $ cage inspect examples/game-config
 project: rpg-demo
@@ -356,6 +373,41 @@ rpg-demo
 ```
 
 快照打成 `rpg-demo/0.1.0` 条目入册：自校验、可寻址、可滚动回收。`publish --env` 出环境化包：一版本一包——同一版本换环境是不同的包（schema/manifest 都变），E1801 拦下冲突，换个版本号（`0.1.0-prod`）即可入册；条目内的 `manifest.json` 记 `environment`。Schema 作为资产的管理与消费端加载见[资产页](/assets)。
+
+### cage registry push —— 远程分发与消费方接入
+
+示例工程声明了 `[registry] path = "reg"`（产物目录，不入版本控制），本地注册表既是 publish 目标也是 push 源。把已入册条目直推远端（design §47）：
+
+```console
+$ cage registry publish examples/game-config                       # 发布进示例本地注册表（push 源）
+cage registry: published rpg-demo/0.1.0 (profile 'client', 83 files, build_id 3e0930ac97c2, content_hash c21d96d7e142)
+$ cage registry push examples/game-config --registry http://127.0.0.1:8080   # 直推：匿名探针 + 逐文件 PUT + index 合并收尾
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:8080 (83 file(s))
+$ cage registry push examples/game-config --registry http://127.0.0.1:8080   # 重推同字节 → 幂等零 PUT
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:8080 (83 file(s)) — identical, no-op
+$ cage registry push examples/game-config --presign-map presign.json          # 对象存储直推：URL 表即凭据（无 Bearer）
+cage registry: pushed rpg-demo/0.1.0 → presigned targets (presign.json) (83 file(s))
+```
+
+消费方（另一个工程）不拉源文件，直连远端根构建——`schema_path` 与 `source_roots` 都指向注册表条目，构建期先过账本信任门再跑完整流水线：
+
+```toml
+# 消费方 cage.toml
+schema_path = "registry:rpg-demo"
+
+[source_roots]
+main = "registry:rpg-demo@0.1.0"
+
+[registry]
+path = "http://127.0.0.1:8080"
+```
+
+```console
+$ cage build ./consumer --profile client
+cage build: OK (profile 'client', 5 artifacts, manifest ./consumer/build/manifest.json)
+```
+
+远端条目就是发布方构建的同一份字节，消费方产物与发布方**逐字节一致**——`run.sh` 第 12 步对此断言（5 张表 × 直推 / presigned 两条分发路），并用本地 python3 对象库替身把两条路各推一份、各起一个消费方构建。
 
 ### cage check（坏数据）—— E1601 行级诊断 + 分环境 E1001
 
@@ -657,7 +709,7 @@ Java 列的 `primitive / wrapper` 取值取决于字段可空性（必填用 pri
 | `Jenkinsfile` | Jenkins（声明式） | `rustup` 引导工具链，`archiveArtifacts` 归档 |
 | `gitlab-ci.yml` | GitLab CI | `rust:1-bookworm` 镜像，`artifacts` 上报 |
 
-三份片段与 `run.sh` 的 13 步一一对应：check（含 `--env` 与坏数据断言）→ 双 profile 构建 → 增量 → 快照回验 → gen → diff → migrate → registry，任何一步红都是真烂。
+三份片段与 `run.sh` 的 14 步一一对应：check（含 `--env` 与坏数据断言）→ 双 profile 构建 → 增量 → 快照回验 → gen → diff → migrate → registry → 远程分发全链路（直推 / presigned / 消费方 resolve），任何一步红都是真烂。
 
 ## 资产：Schema 的管理与加载
 

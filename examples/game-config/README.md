@@ -7,9 +7,9 @@
 bash examples/run.sh
 ```
 
-13 步覆盖：check → L7 gamerule → 分环境 `--env` → 双 profile 构建 →
+14 步覆盖：check → L7 gamerule → 分环境 `--env` → 双 profile 构建 →
 增量 → 快照打包与回验 → 代码生成 → diff → 声明式迁移 → 注册表发布 →
-坏数据诊断 → inspect。
+远程分发全链路（直推 / presigned / 消费方 resolve）→ 坏数据诊断 → inspect。
 
 ## 目录
 
@@ -54,10 +54,11 @@ game-config/
 | 字段级可见性（targets + E9006 安全） | `Character.internal_note` 仅 server 视图 |
 | 声明式迁移（dry-run 不写盘，Excel 源只报告） | `migrations/0001_rename_desc.yaml` |
 | 注册表发布（版本化自校验资产） | `run.sh` 第 11 步 |
+| 远程分发（push 直推 / presigned 直推 / 消费方远端 resolve 构建，产物逐字节一致） | `run.sh` 第 12 步 |
 | MessagePack 二进制（rmp 最小形，确定性字节） | `build/client/msgpack/` |
 | Protobuf .proto3 定义（protoc 可编译） | `build/client/proto/` |
 | 标准 JSON Schema 文档（draft-07，每表自包含） | `build/client/jsonschema/` |
-| L7 Game Rule：好数据通过 / 坏数据 E1601 | `run.sh` 第 2、12 步 |
+| L7 Game Rule：好数据通过 / 坏数据 E1601 | `run.sh` 第 2、13 步 |
 | CI 集成（Jenkins / GitHub Actions / GitLab CI） | `ci/` |
 | Web 编辑器拒写目录 schema（409） | `examples/web-smoke.sh` 第 6 步 |
 
@@ -76,6 +77,8 @@ cage gen   examples/game-config --profile client   # 只生成 9 种代码绑定
 cage diff  examples/game-config/build examples/game-config/build    # 确定性比对
 cage migrate examples/game-config --to 0.2.0       # 迁移 dry-run（不写盘）
 cage registry publish examples/game-config --registry /tmp/reg   # 发布到本地仓库
+cage registry publish examples/game-config         # 发布进工程自带 [registry].path（reg/，push 源）
+cage registry push examples/game-config --registry http://127.0.0.1:8080   # 直推远端（静态托管 / CI job 皆可）
 cage check examples/game-config/bad --level gamerule  # E1601，退出码 1
 cage check examples/game-config/bad --env prod        # E1001（prod 必填 nickname），退出码 1
 cage inspect examples/game-config                   # 表结构清单

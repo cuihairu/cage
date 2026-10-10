@@ -40,3 +40,7 @@ targets = [
   { format = "csv",    output_dir = "build/server/csv" },
   { format = "csharp", output_dir = "build/server/cs", options = { namespace = "Game.Config.Server" } },
 ]
+
+# 本地注册表（run.sh 第 12 步发布并直推远端的源；产物目录，不入版本控制）
+[registry]
+path = "reg"
