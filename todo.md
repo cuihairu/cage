@@ -964,3 +964,14 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       （编辑器文档 + 项目事实 + 无 schema_path 兜底）、api_save
       （canonical YAML 落盘字节数 / 缺省 schema.yaml + note / 目录与
       registry: 目标 409 / 坏文档零写入）
+
+### R3 远端完整性防线覆盖（2026-10-10 第三批）
+
+- [x] registry_remote 新增完整性失败路径测试（「未经校验不载入」红线的
+      真实覆盖，此前 resolve_remote 区域覆盖 29.4%）：篡改载荷 → E1803
+      checksum mismatch 且篡改字节不入缓存、部分缓存条目不过信任门；
+      账本缺 'files' 对象 / 非字符串哈希 → E1803；账本列 "../evil" 逃逸
+      条目 → safe_rel 在任何写入前拒绝（cache 外零落盘）；dead 端口
+      无缓存 → E1802；暖索引缓存 + 坏条目缓存 + 服务器下线 → 索引走
+      离线回落、条目重取干净报 E1802（点名 HASHES.json），绝不半验证
+      载入。workspace 729 → 730。

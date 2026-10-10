@@ -474,3 +474,144 @@ fn remote_errors_and_readonly_commands() {
     assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
     assert!(stderr(&out).contains("cannot reach"), "{}", stderr(&out));
 }
+
+/// The «未经校验不载入» red line over the wire: every tamper path — bad
+/// payload bytes, broken ledger, escape paths — is refused with E1803
+/// before anything lands in the project cache, and a dead registry with a
+/// warm index cache still degrades to a clean E1802.
+#[test]
+fn remote_integrity_failures_stay_out_of_the_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_publisher(root);
+    let reg = root.join("reg");
+    publish_versions(root, &reg);
+
+    let server = start_registry_server(&reg);
+    let url = format!("http://127.0.0.1:{}", server.port);
+
+    let entry = reg.join("common/1.0.0");
+    let pristine_ledger = fs::read_to_string(entry.join("HASHES.json")).unwrap();
+    let pristine_item = fs::read_to_string(entry.join("data/client/json/Item.json")).unwrap();
+
+    // Each case gets its own consumer project: the cache is project-local,
+    // so a refused case never masks the next one.
+    let consumer = |name: &str| {
+        write_consumer_remote(
+            root,
+            name,
+            &url,
+            "registry:common@1.0.0",
+            None,
+            "schema.yaml",
+        );
+        root.join(name).to_str().unwrap().to_string()
+    };
+    let cached_entry = |name: &str| {
+        root.join(name)
+            .join(".cage-cache/registry")
+            .join(cage_core::registry::cache_key(&url))
+            .join("common/1.0.0")
+    };
+
+    // Tampered payload: served bytes no longer match the ledger → E1803
+    // checksum mismatch, and the entry never reaches the cache.
+    let name = consumer("tampered");
+    write(
+        &entry.join("data/client/json/Item.json"),
+        &item_rows("Forged"),
+    );
+    let out = run_cage(&["check", &name]);
+    assert_code(&out, 2, "checksum mismatch");
+    assert!(stderr(&out).contains("E1803"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("checksum mismatch"),
+        "{}",
+        stderr(&out)
+    );
+    // Sibling files may land before the bad one fails the loop, but the
+    // tampered bytes themselves never enter the cache, and the partial
+    // entry must not pass the trust gate.
+    assert!(
+        !cached_entry("tampered")
+            .join("data/client/json/Item.json")
+            .exists(),
+        "tampered bytes must not land in the cache"
+    );
+    let verifies = cage_core::snapshot::verify_snapshot(&cached_entry("tampered"))
+        .map(|r| r.ok)
+        .unwrap_or(false);
+    assert!(!verifies, "failed entry must not pass the trust gate");
+    write(&entry.join("data/client/json/Item.json"), &pristine_item);
+
+    // Ledger without a 'files' object → E1803, cache stays empty.
+    let name = consumer("nofiles");
+    write(&entry.join("HASHES.json"), "{}");
+    let out = run_cage(&["check", &name]);
+    assert_code(&out, 2, "ledger without files object");
+    assert!(
+        stderr(&out).contains("no 'files' object"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!cached_entry("nofiles").exists());
+
+    // Ledger whose hash value is not a string → E1803.
+    let name = consumer("badhash");
+    write(
+        &entry.join("HASHES.json"),
+        r#"{"files": {"data/client/json/Item.json": 123}}"#,
+    );
+    let out = run_cage(&["check", &name]);
+    assert_code(&out, 2, "non-string ledger hash");
+    assert!(stderr(&out).contains("non-string hash"), "{}", stderr(&out));
+    assert!(!cached_entry("badhash").exists());
+
+    // Ledger listing a path that would escape the cache directory → E1803
+    // from the ledger guard, before a single fetch of the escape target.
+    let name = consumer("escape");
+    write(
+        &entry.join("HASHES.json"),
+        r#"{"files": {"../../evil": "00000000000000000000000000000000"}}"#,
+    );
+    let out = run_cage(&["check", &name]);
+    assert_code(&out, 2, "ledger escape path");
+    assert!(stderr(&out).contains("unsafe path"), "{}", stderr(&out));
+    assert!(
+        !root.join("evil").exists(),
+        "nothing written outside the cache"
+    );
+    assert!(!cached_entry("escape").exists());
+    write(&entry.join("HASHES.json"), &pristine_ledger);
+
+    // Dead root with no cache → E1802 pointing at the unreachable URL.
+    let dead = format!("http://127.0.0.1:{}", dead_port());
+    write_consumer_remote(
+        root,
+        "dead",
+        &dead,
+        "registry:common@1.0.0",
+        None,
+        "schema.yaml",
+    );
+    let dead_name = root.join("dead").to_str().unwrap().to_string();
+    let out = run_cage(&["check", &dead_name]);
+    assert_code(&out, 2, "dead root");
+    assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
+
+    // Warm index cache + broken entry cache + dead root: the index falls
+    // back to its cached copy (offline discipline) and the re-download of
+    // the entry fails cleanly with E1802 — never a half-verified load.
+    let name = consumer("offline_refetch");
+    let out = run_cage(&["check", &name]);
+    assert_code(&out, 0, "warm the cache");
+    drop(server);
+    write(
+        &cached_entry("offline_refetch").join("data/client/json/Item.json"),
+        &item_rows("Corrupted"),
+    );
+    let out = run_cage(&["check", &name]);
+    assert_code(&out, 2, "broken cache without a server");
+    assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("HASHES.json"), "{}", stderr(&out));
+}
