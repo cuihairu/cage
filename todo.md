@@ -679,6 +679,16 @@ build + publish，不新造通道。决策记录（定了什么 / 为什么 / �
       required 翻转/渲染往返含标签形态/空稿确定性）+ yaml_to_value
       标签解码单测 + CLI 集成×2（draft→migrate --all --write 全链落盘
       数据实迁；全 TODO 稿 E2001 拒绝）——本轮交付，勾选
+- [x] 迁移与依赖 pin 联动校验（2026-10 交付，design §46 遗留清账）：
+      `cage migrate` 在选段后、应用规则前过联动门——`schema_path` 来自
+      `registry:<包>[@<版本>]` 且 `[dependencies]` 为该包声明 pin 时，
+      选中链终点（最后一段 `to`，默认单段 / `--to` / `--all` 同判）
+      必须满足 pin，否则 `E1802` 硬错误 exit 2（dry-run 与 `--write`
+      同判，报文点名版本 / pin / 包名）——数据不能迁到工程不认的
+      schema 版本上。本地 schema 无 pin 静默跳过；不新增 E 码（pin
+      违规归 E1802 既有语义）。验收达成：CLI 集成 ×1（发布条目 →
+      消费方窄 pin 拒绝 + 报文断言 → 放宽 pin 同链 dry-run 通过）——
+      本轮交付，勾选
 
 ### G 系列：Template Target（2026-10 立项，design §22；G1 随立项交付）
 

@@ -409,6 +409,9 @@ cage migrate . --to latest --write # 整链（latest 解析为链终点，与 --
 `set_default`（只补缺失或 null）、`remove_field`、`widen_type`（安全
 加宽方向表 + 逐行值域）、`remap_values`（未映射值原样通过）、
 `rename_table`（表序保持）。执行完对**当前 schema**（L0–L6 全栈）回验。
+当 schema 来自 `registry:<包>` 且 `[dependencies]` 为该包声明了 pin
+时，选中链的终点版本必须落在 pin 内，否则 `E1802` 拒绝（dry-run 与
+`--write` 同判）——数据不能迁到工程不认的 schema 版本上。
 
 - **流程**：载入工程 → 逐段 apply（每步报行数，失败即失败整段中止，
   `E2003`；Excel 表的步骤行下附受影响行的单元格级定位——

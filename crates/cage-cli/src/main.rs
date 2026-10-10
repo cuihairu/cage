@@ -1128,6 +1128,18 @@ fn run_migrate(path: &Path, all: bool, to: Option<&str>, write: bool) -> i32 {
         vec![chain.into_iter().next().expect("non-empty chain")]
     };
 
+    // Linkage gate (design §46, deferred item): the chain end and the
+    // `[dependencies]` pin are two independent declarations of the schema
+    // version the data must satisfy — migrating outside the pin leaves
+    // the rewritten data no schema to validate under. Gate both dry-run
+    // and write.
+    if let Some(chain_end) = selected.last().map(|(_, spec)| spec.to.as_str()) {
+        if let Err(message) = check_migrate_pin_linkage(&project.config, chain_end) {
+            eprintln!("error: {message}");
+            return 2;
+        }
+    }
+
     let mut doc = project.document;
     let mut migrated_rows = 0usize;
     for (file, spec) in &selected {
@@ -1187,6 +1199,37 @@ fn run_migrate(path: &Path, all: bool, to: Option<&str>, write: bool) -> i32 {
         }
     );
     0
+}
+
+/// Gate the migration chain end against the `[dependencies]` pin of the
+/// registry package providing the schema (design §46 linkage): the pin
+/// declares which schema versions this project accepts, so a chain end
+/// outside it would leave the migrated data no schema to validate under.
+/// Local-schema projects have no pin and nothing to link; a registry
+/// `schema_path` without a pin is governed by its explicit version alone.
+fn check_migrate_pin_linkage(config: &ProjectConfig, chain_end: &str) -> Result<(), String> {
+    let Some(rel) = config
+        .schema_path
+        .as_deref()
+        .filter(|r| r.starts_with("registry:"))
+    else {
+        return Ok(());
+    };
+    let (package, _) = cage_core::registry::parse_spec(rel)?;
+    let Some(pin) = config.dependencies.get(&package) else {
+        return Ok(());
+    };
+    let req = cage_core::registry::parse_version_req(pin)
+        .map_err(|e| format!("{e} (dependency '{package}')"))?;
+    if cage_core::registry::satisfies(chain_end, &req) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{E1802} migrate target version {chain_end} is outside the \
+             [dependencies] pin '{pin}' for '{package}' — widen the pin or \
+             migrate to a version it admits"
+        ))
+    }
 }
 
 /// `cage migrate-draft <from-schema> <to-schema> --from <ver> --to <ver>

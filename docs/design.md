@@ -2514,8 +2514,9 @@ cage migrate-draft <from-schema> <to-schema> --from <ver> --to <ver> [-o file]
 `codes.rs` 的 `error::codes::migration` 模块 + validation.md，每码一
 doc（预留标注到 M1 接线清零，与 S 系列同纪律）。
 
-**留待实现期**：迁移规则与
-`[dependencies]` 版本 pin 的联动校验。（`--to latest` 与 Excel 报告的
+**留待实现期**：~~迁移规则与
+`[dependencies]` 版本 pin 的联动校验~~（已实装，见下方决策记录）。
+（`--to latest` 与 Excel 报告的
 单元格级定位已随 M3.1 补齐；schema diff 辅助生成规则草稿已随
 `cage migrate-draft` 补齐——见实装状态与规则草稿决策记录。）
 
@@ -2782,3 +2783,32 @@ API 没有通用口径——验证器是响应级的、与响应体形状无关�
 落新字节新 meta；下轮带新 ETag；strict 仍 revalidate——服务器计数
 逐次断言；meta 删除后按无缓存重建）+ 全绿 gates（fmt / clippy -D
 warnings / 689 测试 / run.sh 实机 exit 0）。
+
+### 迁移与依赖 pin 联动校验决策记录（2026-10，design §46 遗留清账）
+
+**链终点必须落在 pin 内。** 定了什么：`cage migrate` 在选段之后、
+应用任何规则之前做一道联动门——当 `schema_path` 来自
+`registry:<包>[@<版本>]` 且 `[dependencies]` 为该包声明了 pin 时，
+选中链的终点版本（最后一段的 `to`，默认单段 / `--to` / `--all` 同
+判）必须满足 pin，否则 `E1802` 硬错误（exit 2，dry-run 与 `--write`
+同判，报文点名版本 / pin / 包名）。**为什么**：链终点与 pin 是同一
+件事（「数据要迁到哪个 schema 版本」）的两份独立声明——pin 管这个
+工程认哪些 schema 版本，迁移链管数据实际走到哪；数据迁到 pin 之外
+的版本，回验与后续构建都无法在工程可解析的任何 schema 下成立。这两
+份声明此前的唯一交集是装载时的版本解析，迁移目标本身无人把关。
+
+**备选与取舍**：只告警不拦截（同基线 env lint 口径）弃——迁移是
+改写源数据的动作，dry-run 报告本身就承担「提醒」职能，放行一个
+注定回验无门的版本只会把失败推迟到 reverify（E2004）或下一次
+build；挂到 E20xx 新码弃——这是 pin 违规，不是规则引用/变换/回验
+问题，E1802 的既有语义（「显式版本必须落在 pin 内」）原样覆盖。
+
+**边界**：本地 schema（非 `registry:`）无 pin 可联，门静默跳过；
+`registry:` 无 pin 的规范由显式版本单独管辖（R2 既有语义）。迁移
+链自身的连续性（from 衔接）仍是 `parse_migration_dir` 的职责，本门
+只看终点。
+
+**验收**：CLI 集成 ×1（发布 schema 条目 → 消费方 `registry:cfg@1.0.0`
++ pin `>=1.0.0, <1.1.0` → `migrate --to 1.1.0` exit 2 且报文带
+E1802/版本/pin/包名 → 放宽 pin 后同链 dry-run 通过）——本轮交付，
+勾选。

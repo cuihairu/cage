@@ -546,3 +546,134 @@ fn to_latest_resolves_the_literal_chain_version_before_the_symbol() {
     assert_code(&out, 0, "--all over literal latest chain");
     assert!(stdout(&out).contains("2 segment(s)"), "{}", stdout(&out));
 }
+
+/// The published (pre-migration) schema: `title` exists and is optional,
+/// so the chain's one `set_default` applies and reverifies under it.
+const PIN_ENTRY_SCHEMA: &str = r#"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      title: { name: title, type: { kind: String } }
+enums: {}
+"#;
+
+const PIN_ITEM_DATA: &str = r#"{ "Item": [ { "id": 1 } ] }"#;
+
+const PIN_AUTHOR_TOML: &str = r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "cfg"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{table}.json"
+"#;
+
+fn pin_consumer_toml(pin: &str) -> String {
+    format!(
+        r#"output_dir = "build"
+schema_path = "registry:cfg@1.0.0"
+
+[project]
+name = "cfgconsumer"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[registry]
+path = "../reg"
+
+[dependencies]
+cfg = "{pin}"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{{table}}.json"
+"#
+    )
+}
+
+const PIN_ONE_SEGMENT: &str = r#"from: "1.0.0"
+to: "1.1.0"
+steps:
+  - set_default:
+      table: Item
+      field: title
+      value: "common"
+"#;
+
+/// Linkage gate (design §46 deferred item): when the schema comes from a
+/// registry package with a `[dependencies]` pin, the migration chain end
+/// must land inside the pin — migrating outside it would leave the
+/// rewritten data no schema to validate under. Narrow pin → E1802 and
+/// nothing applied; widening the pin lets the same run through.
+#[test]
+fn migrate_chain_end_outside_dependencies_pin_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let author = root.join("author");
+    write(&author.join("cage.toml"), PIN_AUTHOR_TOML);
+    write(&author.join("schema.yaml"), PIN_ENTRY_SCHEMA);
+    write(&author.join("config/item.json"), PIN_ITEM_DATA);
+    let reg = root.join("reg");
+    let out = run_cage(&[
+        "registry",
+        "publish",
+        author.to_str().unwrap(),
+        "--registry",
+        reg.to_str().unwrap(),
+        "--version",
+        "1.0.0",
+    ]);
+    assert_code(&out, 0, "publish the schema entry");
+
+    let proj = root.join("consumer");
+    fs::create_dir_all(proj.join("config")).unwrap();
+    write(&proj.join("config/item.json"), PIN_ITEM_DATA);
+    write(&proj.join("migrations/0001-title.yaml"), PIN_ONE_SEGMENT);
+    let proj_s = proj.to_str().unwrap();
+
+    write(
+        &proj.join("cage.toml"),
+        &pin_consumer_toml(">=1.0.0, <1.1.0"),
+    );
+    let out = run_cage(&["migrate", proj_s, "--to", "1.1.0"]);
+    assert_code(&out, 2, "chain end outside the pin");
+    let err = stderr(&out);
+    assert!(err.contains("E1802"), "{err}");
+    assert!(
+        err.contains(
+            "migrate target version 1.1.0 is outside the [dependencies] pin '>=1.0.0, <1.1.0' for 'cfg'"
+        ),
+        "{err}"
+    );
+
+    // The same chain inside a widened pin goes through, dry run included.
+    write(
+        &proj.join("cage.toml"),
+        &pin_consumer_toml(">=1.0.0, <2.0.0"),
+    );
+    let out = run_cage(&["migrate", proj_s, "--to", "1.1.0"]);
+    assert_code(&out, 0, "chain end inside the pin");
+    assert!(
+        stdout(&out).contains("OK (1 segment(s)"),
+        "{}",
+        stdout(&out)
+    );
+}
