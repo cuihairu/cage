@@ -2615,13 +2615,18 @@ cage-core::registry 增
 │              dry_run)
 │    # resolve_entry + 账本重建 index 记录 → 匿名探针 GET 远端包 index
 │    #   （同 hash 幂等早退 / 异 hash E1801 / 404 空远端 / 401·403 E2102）
+├── parse_presign_map(bytes) + push_entry_presigned(source_root, map,
+│              package, version, dry_run)      # presigned 路线（A3 拍板）
+│    # 同一 push 主体（PushRoute::Direct | Presigned）：每对象一个
+│    # presigned URL，index 自带 GET/PUT 对——合并 / E1801 / 幂等不变；
+│    # coverage 缺口在任何 PUT 之前失败关闭；无 Bearer（URL 即凭据）
 └── 签名账本（A6）：generate_signing_key + key_material（keygen，种子只落
      用户指定文件）、signing_key_from_env / verifying_key_from_env（E2106
      密钥材料不可用）、sign_bundle_bytes / verify_bundle_bytes（E2107
      验签不过）、read/write_bundle_signature（`<bundle>.sig` sidecar）
      # → 逐文件 PUT（remote::http_put，RetryPolicy 与 http_get 同口径，
      #   Bearer 仅随 PUT）→ index 合并远端条目最后 PUT
-     # E2101 传输 / 远端 index 不可读 / 非 http(s) 根
+     # E2101 传输 / 远端 index 不可读 / 非 http(s) 根 / presign map 畸形
      # E2102 鉴权被拒（401/403，探针与 PUT 同映射）
      # E2104 服务端拒写（405/501 等明确 4xx）
      # E2105 凭据缺失（env 未设或空，网络触达前失败）
@@ -2631,21 +2636,44 @@ cage registry export <pkg>[@<ver>] -o <file> [--compress zstd]
     [--sign --key-env <VAR>] [--registry <local-root>]
 cage registry import <file> [--verify-sig --key-env <VAR>] [--registry <local-root>] [--dry-run]
 cage registry keygen -o <file>
-cage registry push <project> [pkg[@ver]] --registry <remote-root>
-    [--auth-env <VAR>] [--dry-run]
+cage registry push <project> [pkg[@ver]] (--registry <remote-root>
+    | --presign-map <file>) [--auth-env <VAR>] [--dry-run]
+    # presign map（JSON）：{"uploads": {"pkg/1.0.0/文件": "https://…"},
+    #   "index": {"get": "https://…（可省）", "put": "https://…"}}
 ```
 
-**错误码（E21xx 族）**：E2101 分发传输 / 条目读取失败 / E2102 鉴权被拒
-（HTTP 401/403）/ E2103 bundle 账本校验失败 / E2104 服务端拒写（405 /
-409 / 明确 4xx）/ E2105 push 凭据缺失（auth_env 未设）/ E2106 签名密钥
-不可用（A6）/ E2107 bundle 签名校验失败（A6）。全族随 A1 起逐签进
-`codes.rs` 的 `error::codes::distribution` 模块 + validation.md，每码
-一 doc；A6 收口时七码全部转已接线。
+**错误码（E21xx 族）**：E2101 分发传输 / 条目读取失败 / presign map 畸形
+或覆盖缺口 / E2102 鉴权被拒（HTTP 401/403）/ E2103 bundle 账本校验失败 /
+E2104 服务端拒写（405 / 409 / 明确 4xx）/ E2105 push 凭据缺失（auth_env
+未设；presigned 路线不读凭据）/ E2106 签名密钥不可用（A6）/ E2107 bundle
+签名校验失败（A6）。全族随 A1 起逐签进 `codes.rs` 的
+`error::codes::distribution` 模块 + validation.md，每码一 doc；A6 收口时
+七码全部转已接线。
 
-**留待实现期**：增量 delta 分发、S3 presigned 直推、pull-through 缓存
-代理。（压缩容器已实装——固定级别 19 的 bulk 编码本就不依赖字典态，
-「zstd 确定性字典」变体随之失效；签名账本已随 A6 实装——见实装状态与
-A6 决策记录。）
+**A3 批次决策记录（2026-10-10 拍板）**——三条「留待实现期」全部闭账：
+
+- **增量 delta 分发 → 拒绝**。push 已是逐文件 PUT（4 个小文件 + 1 个
+  index），粒度足够；`<版本>/<文件>` 路径跨版本从不共享字节，没有可
+  delta 的公共基底；真做内容寻址存储（CAS）等于换协议——那是新协议
+  版本的事，永不静默变更。条目体积小（配置快照，非二进制资产），delta
+  收益不抵复杂度。
+- **S3 presigned 直推 → 实装为 provider 无关的 `--presign-map`**。
+  拒绝原生 SigV4：凭据保管属于 CI / 云角色，cage 不持有云密钥；
+  presigned URL 是业界标准委托，S3 / GCS / Azure Blob 通吃。形态：
+  上传方（CI job）先向对象存储要一张 `{uploads, index.get, index.put}`
+  的 URL 表，`cage registry push --presign-map` 照单 PUT——push 主体
+  （探针 / 合并 / E1801 / 幂等 / index 最后）一字不改，只是 URL 与
+  鉴权（无 Bearer）换源。coverage 缺口在任何 PUT 之前失败关闭，绝不
+  留半个条目让 index 指着空气。
+- **pull-through 缓存代理 → 不实现**（红线：不做服务端产品）。读协议
+  天然 CDN / 代理友好——对象字节不可变（同版本永不同字节，E1801 保证）、
+  index 是唯一可变文件、GET 全匿名：任何静态托管 / CDN / 反向代理
+  原样工作，无需 cage 侧组件。
+
+**留待实现期**：（§47 三项随 A3 批次闭账——delta 拒绝、presigned 实装、
+代理拒绝，见上方决策记录；压缩容器已实装——固定级别 19 的 bulk 编码本
+就不依赖字典态，「zstd 确定性字典」变体随之失效；签名账本已随 A6 实装
+——见实装状态与 A6 决策记录。）
 
 ---
 

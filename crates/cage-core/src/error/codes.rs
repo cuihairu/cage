@@ -140,7 +140,10 @@ pub mod registry {
 pub mod distribution {
     /// E2101 - Distribution transfer failed: bundle export could not read
     /// the entry (missing package/version, entry directory or ledger) or
-    /// write the bundle file (A1, `cage registry export`)
+    /// write the bundle file (A1, `cage registry export`); in `registry
+    /// push` a transport failure, an unreadable state probe/index, or a
+    /// malformed presign map / one whose URLs are not absolute http(s) or
+    /// that misses an entry file (checked before any PUT)
     pub const E2101: &str = "E2101";
     /// E2102 - Distribution target rejected the credentials: the state
     /// probe or a file/index PUT answered HTTP 401 / 403 (A3,

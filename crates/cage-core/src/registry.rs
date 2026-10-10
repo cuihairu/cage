@@ -28,6 +28,7 @@ use crate::error::codes::distribution::{E2101, E2102, E2103, E2104, E2105, E2106
 use crate::error::codes::registry::{E1801, E1802, E1803};
 use crate::snapshot;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -1086,11 +1087,6 @@ pub fn push_entry(
         ));
     }
 
-    // Local side first: the entry must read cleanly before anything remote
-    // is contacted.
-    let (version, entry_dir, rels) = resolve_entry(source_root, package, version)?;
-    let record = entry_record(&entry_dir, &version, rels.len())?;
-
     // Credential resolution precedes any network contact (E2105); only the
     // env var NAME may appear in errors — never the token itself.
     let token = match auth_env {
@@ -1110,13 +1106,236 @@ pub fn push_entry(
         }
         None => None,
     };
+    let route = PushRoute::Direct {
+        base,
+        token: token.as_deref(),
+    };
+    push_entry_inner(source_root, package, version, &route, dry_run)
+}
+
+/// One presigned upload target set (A3 presigned route, design §47):
+/// every URL is issued by whoever owns the object store — cage never
+/// derives one URL from another. `uploads` maps an entry-relative path
+/// (`cfg/1.0.0/schema.json`) to its presigned PUT URL; the package
+/// index rides its own GET/PUT pair, so the client-side merge and the
+/// E1801 conflict guard survive unchanged (a presigned GET is still a
+/// GET). The URL issuer owns immutability enforcement — S3 conditional
+/// writes, versioned buckets, one-shot key conventions — because a
+/// presigned PUT carries no cage-side state probe of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresignMap {
+    /// entry-relative path (leading `/` tolerated on input) → PUT URL
+    pub uploads: BTreeMap<String, String>,
+    /// Presigned GET for the package index (absent = no remote index yet)
+    pub index_get: Option<String>,
+    /// Presigned PUT for the merged package index
+    pub index_put: String,
+}
+
+impl PresignMap {
+    /// The presigned PUT for an entry-relative path (`/pkg/1.0.0/f` or
+    /// `pkg/1.0.0/f` both resolve, whether the map came from
+    /// [`parse_presign_map`] or was built directly).
+    fn upload_url(&self, rel_path: &str) -> Option<&str> {
+        self.uploads
+            .get(rel_path.trim_start_matches('/'))
+            .or_else(|| self.uploads.get(rel_path))
+            .map(String::as_str)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PresignMapFile {
+    #[serde(default)]
+    uploads: BTreeMap<String, String>,
+    index: Option<PresignIndexUrls>,
+}
+
+#[derive(serde::Deserialize)]
+struct PresignIndexUrls {
+    #[serde(default)]
+    get: Option<String>,
+    put: Option<String>,
+}
+
+/// Parse a presign map (`--presign-map <file>`): a JSON object with an
+/// `uploads` path → URL map and an `index` object carrying `get`
+/// (optional) and `put`. Every URL must be absolute http(s) — a
+/// relative path here would silently PUT somewhere unintended — and
+/// keys normalize by dropping a leading `/`. Malformed input is E2101
+/// (a local input problem, same family as an unreadable entry).
+pub fn parse_presign_map(bytes: &[u8]) -> Result<PresignMap, String> {
+    let file: PresignMapFile = serde_json::from_slice(bytes)
+        .map_err(|e| format!("{E2101} unreadable presign map: {e}"))?;
+    let check_url = |what: &str, url: &str| -> Result<(), String> {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            Ok(())
+        } else {
+            Err(format!(
+                "{E2101} presign map {what} is not an absolute http(s) URL: {url}"
+            ))
+        }
+    };
+    let mut uploads = BTreeMap::new();
+    for (path, url) in &file.uploads {
+        check_url(&format!("upload '{path}'"), url)?;
+        uploads.insert(path.trim_start_matches('/').to_string(), url.clone());
+    }
+    let index = file
+        .index
+        .ok_or_else(|| format!("{E2101} presign map has no 'index' object"))?;
+    if let Some(get) = &index.get {
+        check_url("index.get", get)?;
+    }
+    let index_put = index
+        .put
+        .ok_or_else(|| format!("{E2101} presign map has no 'index.put' URL"))?;
+    check_url("index.put", &index_put)?;
+    Ok(PresignMap {
+        uploads,
+        index_get: index.get,
+        index_put,
+    })
+}
+
+/// Push a published entry through a presign map (A3 presigned route,
+/// design §47): the same discipline as [`push_entry`] — local entry
+/// first, remote index read for merge/conflict, every entry file
+/// uploaded, the merged package index last — with the URLs, and the
+/// only authorization, coming from the map. No bearer token is read or
+/// sent: the URLs are the grant. Coverage is checked before the first
+/// PUT — a path the map does not cover fails the push outright rather
+/// than uploading a partial entry whose index would point at nothing.
+pub fn push_entry_presigned(
+    source_root: &Path,
+    map: &PresignMap,
+    package: &str,
+    version: Option<&str>,
+    dry_run: bool,
+) -> Result<PushReport, String> {
+    push_entry_inner(
+        source_root,
+        package,
+        version,
+        &PushRoute::Presigned(map),
+        dry_run,
+    )
+}
+
+/// How a push reaches its destinations — the shared body reads the
+/// local entry, probes the remote index and merges; the route supplies
+/// the index probe and the PUTs.
+enum PushRoute<'a> {
+    /// Plain PUTs against a registry root, optional bearer token.
+    Direct {
+        base: &'a str,
+        token: Option<&'a str>,
+    },
+    /// Per-object presigned URLs; the index has its own GET/PUT pair.
+    Presigned(&'a PresignMap),
+}
+
+impl PushRoute<'_> {
+    /// Read the remote package index: `Ok(Some(bytes))` when it exists,
+    /// `Ok(None)` when the remote has no such package yet. Errors carry
+    /// their E-code and the URL they failed on.
+    fn probe_index(&self, package: &str) -> Result<Option<Vec<u8>>, String> {
+        let (url, presigned) = match self {
+            PushRoute::Direct { base, .. } => (format!("{base}/{package}/index.json"), false),
+            PushRoute::Presigned(map) => match &map.index_get {
+                Some(url) => (url.clone(), true),
+                None => return Ok(None),
+            },
+        };
+        let what = if presigned {
+            "presigned index GET"
+        } else {
+            "remote index"
+        };
+        match crate::remote::http_get(&url) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(crate::remote::FetchFailure::NotFound(_)) => Ok(None),
+            // An auth rejection on the state probe is an auth rejection,
+            // full stop — mapped before the generic unreachable case.
+            Err(crate::remote::FetchFailure::Status(code)) if code == 401 || code == 403 => Err(
+                format!("{E2102} push rejected at {url}: http status {code}"),
+            ),
+            Err(e) => Err(format!("{E2101} cannot read {what} {url}: {e}")),
+        }
+    }
+
+    /// Upload one object. `rel_path` is the registry-relative path
+    /// (`/pkg/1.0.0/file`) — the message key and, on the direct route,
+    /// the URL suffix.
+    fn put(&self, rel_path: &str, body: &[u8]) -> Result<(), String> {
+        let (url, token) = match self {
+            PushRoute::Direct { base, token } => (format!("{base}{rel_path}"), *token),
+            PushRoute::Presigned(map) => match map.upload_url(rel_path) {
+                Some(url) => (url.to_string(), None),
+                // Unreachable: coverage is checked before the first PUT.
+                None => {
+                    return Err(format!(
+                        "{E2101} presign map does not cover {rel_path} — nothing uploaded"
+                    ))
+                }
+            },
+        };
+        Self::send_put(rel_path, &url, token, body)
+    }
+
+    /// Upload the merged package index. The direct route uses the same
+    /// root path as every file; the presigned route has its dedicated
+    /// `index_put` URL — the map's `uploads` never carries the index.
+    fn put_index(&self, package: &str, body: &[u8]) -> Result<(), String> {
+        let rel_path = format!("/{package}/index.json");
+        let (url, token) = match self {
+            PushRoute::Direct { base, token } => (format!("{base}{rel_path}"), *token),
+            PushRoute::Presigned(map) => (map.index_put.clone(), None),
+        };
+        Self::send_put(&rel_path, &url, token, body)
+    }
+
+    /// One PUT with the shared failure mapping (E2101 transport /
+    /// E2102 auth / E2104 no-write-channel), keyed by `rel_path`.
+    fn send_put(rel_path: &str, url: &str, token: Option<&str>, body: &[u8]) -> Result<(), String> {
+        crate::remote::http_put(url, token, body).map_err(|e| match e {
+            crate::remote::PutFailure::Transport(detail) => {
+                format!("{E2101} push transport failed for {rel_path}: {detail}")
+            }
+            crate::remote::PutFailure::AuthRejected(code) => {
+                format!("{E2102} push rejected for {rel_path}: http status {code}")
+            }
+            crate::remote::PutFailure::WriteRefused(code) => {
+                format!(
+                    "{E2104} push refused for {rel_path}: http status {code} (the server has \
+                     no write channel — publish locally and host statically)"
+                )
+            }
+        })
+    }
+}
+
+/// The shared push body (direct and presigned routes): local entry read
+/// → remote index probe (merge / no-op / E1801 conflict) → coverage
+/// check (presigned) → optional dry-run stop → file PUTs → merged index
+/// PUT last.
+fn push_entry_inner(
+    source_root: &Path,
+    package: &str,
+    version: Option<&str>,
+    route: &PushRoute<'_>,
+    dry_run: bool,
+) -> Result<PushReport, String> {
+    // Local side first: the entry must read cleanly before anything remote
+    // is contacted.
+    let (version, entry_dir, rels) = resolve_entry(source_root, package, version)?;
+    let record = entry_record(&entry_dir, &version, rels.len())?;
 
     // Remote state: the package index decides merge vs no-op vs conflict.
-    let index_url = format!("{base}/{package}/index.json");
-    let remote_entries: Vec<IndexEntry> = match crate::remote::http_get(&index_url) {
-        Ok(bytes) => {
+    let remote_entries: Vec<IndexEntry> = match route.probe_index(package)? {
+        Some(bytes) => {
             let remote: RegistryIndex = serde_json::from_slice(&bytes)
-                .map_err(|e| format!("{E2101} cannot parse remote index {index_url}: {e}"))?;
+                .map_err(|e| format!("{E2101} cannot parse remote index for '{package}': {e}"))?;
             if let Some(existing) = remote.entries.iter().find(|e| e.version == version) {
                 if existing.content_hash == record.content_hash {
                     return Ok(PushReport {
@@ -1135,16 +1354,26 @@ pub fn push_entry(
             }
             remote.entries
         }
-        Err(crate::remote::FetchFailure::NotFound(_)) => Vec::new(),
-        // An auth rejection on the state probe is an auth rejection, full
-        // stop — mapped before the generic unreachable-index case.
-        Err(crate::remote::FetchFailure::Status(code)) if code == 401 || code == 403 => {
+        None => Vec::new(),
+    };
+
+    // Coverage before any PUT (presigned): a partial upload would leave
+    // the remote index pointing at files that never landed.
+    if let PushRoute::Presigned(map) = route {
+        let missing: Vec<String> = rels
+            .iter()
+            .map(|rel| format!("/{package}/{version}/{}", rel.to_string_lossy()))
+            .filter(|rel| map.upload_url(rel).is_none())
+            .collect();
+        if !missing.is_empty() {
             return Err(format!(
-                "{E2102} push rejected at {index_url}: http status {code}"
+                "{E2101} presign map covers {} of {} entry file(s) — missing: {} (nothing uploaded)",
+                rels.len() - missing.len(),
+                rels.len(),
+                missing.join(", ")
             ));
         }
-        Err(e) => return Err(format!("{E2101} cannot read remote index {index_url}: {e}")),
-    };
+    }
 
     if dry_run {
         return Ok(PushReport {
@@ -1156,30 +1385,11 @@ pub fn push_entry(
         });
     }
 
-    let put = |rel_path: &str, body: &[u8]| -> Result<(), String> {
-        crate::remote::http_put(&format!("{base}{rel_path}"), token.as_deref(), body).map_err(|e| {
-            match e {
-                crate::remote::PutFailure::Transport(detail) => {
-                    format!("{E2101} push transport failed for {rel_path}: {detail}")
-                }
-                crate::remote::PutFailure::AuthRejected(code) => {
-                    format!("{E2102} push rejected for {rel_path}: http status {code}")
-                }
-                crate::remote::PutFailure::WriteRefused(code) => {
-                    format!(
-                        "{E2104} push refused for {rel_path}: http status {code} (the server has \
-                         no write channel — publish locally and host statically)"
-                    )
-                }
-            }
-        })
-    };
-
     for rel in &rels {
         let source = entry_dir.join(rel);
         let body = fs::read(&source)
             .map_err(|e| format!("{E2101} cannot read entry file {}: {e}", source.display()))?;
-        put(
+        route.put(
             &format!("/{package}/{version}/{}", rel.to_string_lossy()),
             &body,
         )?;
@@ -1202,7 +1412,7 @@ pub fn push_entry(
     let mut index_bytes = serde_json::to_vec_pretty(&merged_index)
         .map_err(|e| format!("{E2101} cannot serialize merged index: {e}"))?;
     index_bytes.push(b'\n');
-    put(&format!("/{package}/index.json"), &index_bytes)?;
+    route.put_index(package, &index_bytes)?;
 
     Ok(PushReport {
         package: package.to_string(),
@@ -1746,7 +1956,6 @@ pub fn sidecar_path(bundle_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use std::fs;
     use std::io::Read;
     use std::sync::{Arc, Mutex};
@@ -2613,6 +2822,243 @@ mod tests {
                 .unwrap();
         assert_eq!(index.entries.len(), 1);
         assert_ne!(index.entries[0].content_hash, "");
+        server.shutdown();
+    }
+
+    /// A presign map pointing at the stand-in server, covering exactly
+    /// the published entry's files (keys carry a leading `/` on purpose —
+    /// normalization must tolerate it). `with_get` controls whether the
+    /// map knows about an existing remote index.
+    fn presign_map_for(
+        base: &str,
+        package: &str,
+        source: &Path,
+        version: Option<&str>,
+        with_get: bool,
+    ) -> (PresignMap, String) {
+        let (version, _dir, rels) = resolve_entry(source, package, version).unwrap();
+        let mut uploads = BTreeMap::new();
+        for rel in &rels {
+            let key = format!("/{package}/{version}/{}", rel.to_string_lossy());
+            uploads.insert(
+                key,
+                format!("{base}/{package}/{version}/{}", rel.to_string_lossy()),
+            );
+        }
+        let map = PresignMap {
+            uploads,
+            index_get: with_get.then(|| format!("{base}/{package}/index.json")),
+            index_put: format!("{base}/{package}/index.json"),
+        };
+        (map, version)
+    }
+
+    #[test]
+    fn parse_presign_map_accepts_and_enforces_the_shape() {
+        let ok = parse_presign_map(
+            br#"{"uploads": {"/cfg/1.0.0/manifest.json": "https://s3/put-one"},
+                 "index": {"get": "https://s3/get-index", "put": "https://s3/put-index"}}"#,
+        )
+        .unwrap();
+        // Leading `/` normalized away on keys.
+        assert_eq!(
+            ok.uploads
+                .get("cfg/1.0.0/manifest.json")
+                .map(String::as_str),
+            Some("https://s3/put-one")
+        );
+        assert_eq!(ok.index_get.as_deref(), Some("https://s3/get-index"));
+        assert_eq!(ok.index_put, "https://s3/put-index");
+
+        // index.get is optional (fresh package, nothing to merge yet).
+        let fresh =
+            parse_presign_map(br#"{"uploads": {}, "index": {"put": "https://s3/put-index"}}"#)
+                .unwrap();
+        assert_eq!(fresh.index_get, None);
+        assert!(fresh.uploads.is_empty());
+
+        // Missing index object → E2101.
+        let err = parse_presign_map(br#"{"uploads": {}}"#).unwrap_err();
+        assert!(err.starts_with(E2101), "{err}");
+        // Missing index.put → E2101 (a push without an index write is
+        // invisible to consumers).
+        let err = parse_presign_map(br#"{"uploads": {}, "index": {"get": "https://s3/get"}}"#)
+            .unwrap_err();
+        assert!(err.starts_with(E2101) && err.contains("index.put"), "{err}");
+        // Any non-absolute URL (bare path, ftp) → E2101.
+        for bad in [
+            br#"{"uploads": {"cfg/1.0.0/f": "cfg/1.0.0/f"}, "index": {"put": "https://x"}}"#
+                .as_slice(),
+            br#"{"uploads": {}, "index": {"put": "ftp://s3/put"}}"#,
+        ] {
+            let err = parse_presign_map(bad).unwrap_err();
+            assert!(err.starts_with(E2101), "{err}");
+        }
+        // Malformed JSON → E2101.
+        let err = parse_presign_map(b"{not json").unwrap_err();
+        assert!(err.starts_with(E2101), "{err}");
+    }
+
+    #[test]
+    fn push_entry_presigned_follows_the_same_discipline_without_a_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+
+        let (server, store, requests) = start_push_server(None);
+        let (map, version) = presign_map_for(&server.url(), "common", &source, Some("1.0.0"), true);
+        assert_eq!(version, "1.0.0");
+        let report = push_entry_presigned(&source, &map, "common", Some("1.0.0"), false).unwrap();
+        assert_eq!(report.files, 4);
+        assert!(!report.already_identical);
+
+        // Order preserved: index GET first, entry files, merged index PUT
+        // last; no request carries an Authorization header — the URLs are
+        // the grant, no bearer token is read or sent.
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(log[0], "GET /common/index.json ");
+        assert_eq!(log.last().unwrap(), "PUT /common/index.json ");
+        assert_eq!(put_count(&log), 5, "4 entry files + merged index");
+        assert!(
+            log.iter().all(|r| !r.ends_with("Bearer")),
+            "presigned requests must stay anonymous: {log:?}"
+        );
+
+        // The stored merged index holds the pushed entry.
+        let stored = store
+            .lock()
+            .unwrap()
+            .get("/common/index.json")
+            .cloned()
+            .unwrap();
+        let index: RegistryIndex = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(
+            index
+                .entries
+                .iter()
+                .map(|e| e.version.clone())
+                .collect::<Vec<_>>(),
+            ["1.0.0"]
+        );
+
+        // A second push of another version merges over the remote index
+        // read through the presigned GET.
+        let snap2 = tmp.path().join("snap2");
+        make_snapshot(&snap2, "two");
+        publish(&source, "common", "0.2.0", &snap2).unwrap();
+        let (map2, _) = presign_map_for(&server.url(), "common", &source, Some("0.2.0"), true);
+        push_entry_presigned(&source, &map2, "common", Some("0.2.0"), false).unwrap();
+        let stored = store
+            .lock()
+            .unwrap()
+            .get("/common/index.json")
+            .cloned()
+            .unwrap();
+        let index: RegistryIndex = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(
+            index
+                .entries
+                .iter()
+                .map(|e| e.version.clone())
+                .collect::<Vec<_>>(),
+            ["0.2.0", "1.0.0"]
+        );
+
+        // Re-pushing identical bytes through presigned URLs is the same
+        // zero-PUT no-op: one GET, nothing stored twice.
+        let before = requests.lock().unwrap().len();
+        let again = push_entry_presigned(&source, &map, "common", Some("1.0.0"), false).unwrap();
+        assert!(again.already_identical);
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(log.len(), before + 1);
+        assert_eq!(put_count(&log[before..]), 0);
+        server.shutdown();
+    }
+
+    #[test]
+    fn push_entry_presigned_fresh_package_skips_the_get_and_conflicts_through_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+
+        // No index.get in the map = fresh package: the push goes straight
+        // to the PUTs (the remote index is treated as empty).
+        let (server, _store, requests) = start_push_server(None);
+        let (map, _) = presign_map_for(&server.url(), "common", &source, Some("1.0.0"), false);
+        push_entry_presigned(&source, &map, "common", Some("1.0.0"), false).unwrap();
+        let log = requests.lock().unwrap().clone();
+        assert!(
+            !log.iter().any(|r| r.starts_with("GET ")),
+            "no index_get means no probe GET: {log:?}"
+        );
+        assert_eq!(put_count(&log), 5);
+        server.shutdown();
+
+        // The conflict guard survives the presigned route: same version,
+        // different bytes already on the remote (read via the presigned
+        // GET) → E1801, nothing uploaded.
+        let (server, store, requests) = start_push_server(None);
+        push_entry(&source, &server.url(), "common", Some("1.0.0"), None, false).unwrap();
+        let other = tmp.path().join("snap2");
+        make_snapshot(&other, "hacked");
+        let conflicting = tmp.path().join("regB");
+        publish(&conflicting, "common", "1.0.0", &other).unwrap();
+        let (bad_map, _) =
+            presign_map_for(&server.url(), "common", &conflicting, Some("1.0.0"), true);
+        let err = push_entry_presigned(&conflicting, &bad_map, "common", Some("1.0.0"), false)
+            .unwrap_err();
+        assert!(err.starts_with(E1801), "{err}");
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(
+            put_count(&log),
+            5,
+            "the seeding push's 5 PUTs only — the refused push uploaded nothing"
+        );
+        let index: RegistryIndex =
+            serde_json::from_slice(store.lock().unwrap().get("/common/index.json").unwrap())
+                .unwrap();
+        assert_eq!(index.entries.len(), 1, "the refused push changed nothing");
+        server.shutdown();
+    }
+
+    #[test]
+    fn push_entry_presigned_coverage_gap_and_dry_run_upload_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+
+        // A map missing one entry file fails closed BEFORE any PUT — a
+        // partial upload would leave the index pointing at nothing.
+        let (server, store, requests) = start_push_server(None);
+        let (map, version) = presign_map_for(&server.url(), "common", &source, Some("1.0.0"), true);
+        let mut short = map.clone();
+        let dropped = short.uploads.keys().next().cloned().unwrap();
+        short.uploads.remove(&dropped);
+        let err =
+            push_entry_presigned(&source, &short, "common", Some("1.0.0"), false).unwrap_err();
+        assert!(err.starts_with(E2101), "{err}");
+        assert!(err.contains("nothing uploaded"), "{err}");
+        assert!(err.contains(&dropped), "{err}");
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(log[0], "GET /common/index.json ", "the probe still ran");
+        assert_eq!(put_count(&log), 0, "coverage gap → zero PUTs");
+        assert!(store.lock().unwrap().is_empty());
+        assert_eq!(version, "1.0.0");
+
+        // Dry run through the presigned route: state check + coverage
+        // check pass, zero PUTs.
+        let report = push_entry_presigned(&source, &map, "common", Some("1.0.0"), true).unwrap();
+        assert!(report.dry_run);
+        assert!(!report.already_identical);
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(put_count(&log[1..]), 0, "dry run PUTs nothing");
+        assert!(store.lock().unwrap().is_empty());
         server.shutdown();
     }
 

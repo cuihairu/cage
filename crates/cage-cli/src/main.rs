@@ -39,8 +39,10 @@
 use clap::{Parser, Subcommand};
 use indexmap::IndexMap;
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 
+use cage_core::error::codes::distribution::E2101;
 use cage_core::error::codes::registry::E1802;
 use cage_core::error::codes::remote::E1905;
 use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig, TargetConfig};
@@ -365,16 +367,25 @@ enum RegistryCmd {
     /// entry file, the package index written last, merged over the remote's
     /// existing entries (remote history is never rewritten). The bearer
     /// token resolves from the env var named by `--auth-env` or
-    /// `[registry].auth_env`; anonymous when neither is set.
+    /// `[registry].auth_env`; anonymous when neither is set. With
+    /// `--presign-map` the entry pushes through per-object presigned URLs
+    /// instead — no token is read or sent, the URLs are the grant.
     Push {
         /// Configuration project root directory
         path: PathBuf,
         /// Package name, optionally suffixed `@<version>` (defaults to
         /// project.name at the source registry's latest)
         package: Option<String>,
-        /// Remote http(s) registry root to push to
+        /// Remote http(s) registry root to push to (ignored with
+        /// --presign-map)
         #[arg(long)]
-        registry: String,
+        registry: Option<String>,
+        /// Presign map (JSON): `{"uploads": {"pkg/1.0.0/file": "https://…"},
+        /// "index": {"get": "https://…", "put": "https://…"}}` — per-object
+        /// presigned URLs issued by whoever owns the object store; the
+        /// merged index PUTs last through `index.put`
+        #[arg(long, conflicts_with_all = ["registry", "auth_env"])]
+        presign_map: Option<PathBuf>,
         /// Environment variable carrying the bearer token (overrides
         /// `[registry].auth_env`)
         #[arg(long)]
@@ -560,12 +571,14 @@ fn main() {
                 path,
                 package,
                 registry,
+                presign_map,
                 auth_env,
                 dry_run,
             } => run_registry_push(
                 &path,
                 package.as_deref(),
-                &registry,
+                registry.as_deref(),
+                presign_map.as_deref(),
                 auth_env.as_deref(),
                 dry_run,
             ),
@@ -2610,7 +2623,8 @@ fn run_registry_keygen(output: &Path) -> i32 {
 fn run_registry_push(
     path: &Path,
     package_spec: Option<&str>,
-    remote_flag: &str,
+    remote_flag: Option<&str>,
+    presign_map_path: Option<&Path>,
     auth_env_flag: Option<&str>,
     dry_run: bool,
 ) -> i32 {
@@ -2629,15 +2643,6 @@ fn run_registry_push(
         return 2;
     };
     let source_root = path.join(&registry_cfg.path);
-    // Flag overrides the config declaration; neither set pushes anonymously.
-    let auth_env = auth_env_flag.or(registry_cfg.auth_env.as_deref());
-    if !remote::is_remote_root(remote_flag) {
-        eprintln!(
-            "error: push targets a remote http(s) registry root, got '{remote_flag}' — local \
-             destinations belong to 'cage registry publish'"
-        );
-        return 2;
-    }
     // Package/version defaults mirror publish: the project's own name, at
     // the source registry's latest when no @version is given.
     let (package, version) = match package_spec {
@@ -2647,6 +2652,78 @@ fn run_registry_push(
         },
         None => (config.project.name.clone(), None),
     };
+
+    // Presigned route (design §47 A3): the map is the only credential —
+    // no bearer token is read or sent, and --registry is meaningless.
+    if let Some(map_path) = presign_map_path {
+        let bytes = match fs::read(map_path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "error: {E2101} cannot read presign map {}: {e}",
+                    map_path.display()
+                );
+                return 2;
+            }
+        };
+        let map = match cage_core::registry::parse_presign_map(&bytes) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 2;
+            }
+        };
+        return match cage_core::registry::push_entry_presigned(
+            &source_root,
+            &map,
+            &package,
+            version.as_deref(),
+            dry_run,
+        ) {
+            Ok(report) => {
+                println!(
+                    "cage registry: {}{}/{} → presigned targets ({}) ({} file(s){}){}",
+                    if report.dry_run {
+                        "would push "
+                    } else {
+                        "pushed "
+                    },
+                    report.package,
+                    report.version,
+                    map_path.display(),
+                    report.files,
+                    if report.dry_run { ", zero PUT" } else { "" },
+                    if report.already_identical {
+                        " — identical, no-op"
+                    } else {
+                        ""
+                    }
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        };
+    }
+
+    // Direct route.
+    let Some(remote_flag) = remote_flag else {
+        eprintln!(
+            "error: push needs a destination: --registry <http(s) root> or --presign-map <file>"
+        );
+        return 2;
+    };
+    // Flag overrides the config declaration; neither set pushes anonymously.
+    let auth_env = auth_env_flag.or(registry_cfg.auth_env.as_deref());
+    if !remote::is_remote_root(remote_flag) {
+        eprintln!(
+            "error: push targets a remote http(s) registry root, got '{remote_flag}' — local \
+             destinations belong to 'cage registry publish'"
+        );
+        return 2;
+    }
     match cage_core::registry::push_entry(
         &source_root,
         remote_flag,
@@ -3395,12 +3472,17 @@ mod tests {
                     path,
                     package,
                     registry,
+                    presign_map,
                     auth_env,
                     dry_run,
                 } => format!(
-                    "registry push {} {} {registry} {dry_run} {}",
+                    "registry push {} {} {} {dry_run} {} {}",
                     path.display(),
                     package.as_deref().unwrap_or("<project.name>"),
+                    registry.as_deref().unwrap_or("<no registry>"),
+                    presign_map
+                        .as_deref()
+                        .map_or_else(|| Path::new("<no presign-map>").display(), Path::display),
                     auth_env.as_deref().unwrap_or("<no auth_env>")
                 ),
             },

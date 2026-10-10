@@ -425,3 +425,196 @@ fn registry_push_maps_refusals_to_e2102_e2104() {
     ]);
     assert_code(&out, 2, "local push target refused");
 }
+
+/// Every file under `dir`, as `/`-separated paths relative to it, sorted —
+/// the shape of a published entry's file list.
+fn entry_rels(entry_dir: &Path) -> Vec<String> {
+    let mut rels = Vec::new();
+    let mut stack = vec![entry_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in fs::read_dir(&dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                rels.push(
+                    p.strip_prefix(entry_dir)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    rels.sort();
+    rels
+}
+
+#[test]
+fn registry_push_presign_map_end_to_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_push_publisher(root);
+    let pub_root = root.join("pub").to_str().unwrap().to_string();
+    let out = run_cage(&["registry", "publish", &pub_root]);
+    assert_code(&out, 0, "publish into local reg");
+
+    let (server, store, requests) = start_push_server(None);
+
+    // The presign map: one PUT URL per entry file plus the index pair —
+    // here the URLs just point at the stand-in server's own layout.
+    let entry_dir = root.join("pub/reg/common/0.1.0");
+    let rels = entry_rels(&entry_dir);
+    assert!(rels.len() >= 4, "{rels:?}");
+    let mut uploads = serde_json::Map::new();
+    for rel in &rels {
+        uploads.insert(
+            format!("common/0.1.0/{rel}"),
+            serde_json::Value::String(format!("{}/common/0.1.0/{rel}", server.url)),
+        );
+    }
+    let map = serde_json::json!({
+        "uploads": uploads,
+        "index": {
+            "get": format!("{}/common/index.json", server.url),
+            "put": format!("{}/common/index.json", server.url),
+        }
+    });
+    let map_path = root.join("presign.json");
+    write(&map_path, &serde_json::to_string(&map).unwrap());
+    let map_arg = map_path.to_str().unwrap();
+
+    // A map that misses one entry file fails closed before any PUT —
+    // tried first, against the fresh remote, while the push would still
+    // have real work to do (identical no-op returns before coverage).
+    let mut short = map.clone();
+    let dropped = format!("common/0.1.0/{}", rels[0]);
+    short["uploads"].as_object_mut().unwrap().remove(&dropped);
+    let short_path = root.join("presign-short.json");
+    write(&short_path, &serde_json::to_string(&short).unwrap());
+    let out = run_cage(&[
+        "registry",
+        "push",
+        &pub_root,
+        "common@0.1.0",
+        "--presign-map",
+        short_path.to_str().unwrap(),
+    ]);
+    assert_code(&out, 1, "coverage gap");
+    assert!(
+        stderr(&out).contains("E2101") && stderr(&out).contains("nothing uploaded"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        put_count(&requests.lock().unwrap()),
+        0,
+        "zero PUTs on the gap"
+    );
+
+    // Push through the map — no --registry, no --auth-env anywhere.
+    let out = run_cage(&[
+        "registry",
+        "push",
+        &pub_root,
+        "common@0.1.0",
+        "--presign-map",
+        map_arg,
+    ]);
+    assert_code(&out, 0, "presigned push");
+    assert!(
+        stdout(&out).contains("pushed common/0.1.0 → presigned targets")
+            && stdout(&out).contains("presign.json"),
+        "{}",
+        stdout(&out)
+    );
+    // The URLs are the grant: no request carries an Authorization header.
+    let log = requests.lock().unwrap().clone();
+    assert_eq!(log[0], "GET /common/index.json ");
+    assert!(
+        log.iter().all(|r| !r.contains("Bearer")),
+        "presigned requests stay anonymous: {log:?}"
+    );
+    assert_eq!(put_count(&log), rels.len() + 1, "files + merged index");
+    let index: serde_json::Value = serde_json::from_slice(
+        &store
+            .lock()
+            .unwrap()
+            .get("/common/index.json")
+            .cloned()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["entries"][0]["version"], "0.1.0");
+
+    // Re-pushing identical bytes: the same zero-PUT no-op as direct.
+    let before = requests.lock().unwrap().len();
+    let out = run_cage(&[
+        "registry",
+        "push",
+        &pub_root,
+        "common@0.1.0",
+        "--presign-map",
+        map_arg,
+    ]);
+    assert_code(&out, 0, "presigned re-push");
+    assert!(
+        stdout(&out).contains("identical, no-op"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(put_count(&requests.lock().unwrap()[before..]), 0);
+
+    // Dry run through the map: zero PUTs, "would push".
+    let before = requests.lock().unwrap().len();
+    let out = run_cage(&[
+        "registry",
+        "push",
+        &pub_root,
+        "--presign-map",
+        map_arg,
+        "--dry-run",
+    ]);
+    assert_code(&out, 0, "presigned dry-run");
+    assert!(stdout(&out).contains("would push"), "{}", stdout(&out));
+    assert_eq!(put_count(&requests.lock().unwrap()[before..]), 0);
+
+    // --presign-map and --auth-env are mutually exclusive (clap, exit 2):
+    // the URLs are the only credential on this route.
+    let out = run_cage_env(
+        &[
+            "registry",
+            "push",
+            &pub_root,
+            "--presign-map",
+            map_arg,
+            "--auth-env",
+            "CAGE_TOK_CLI",
+        ],
+        "CAGE_TOK_CLI",
+        "tok-cli",
+    );
+    assert_code(&out, 2, "presign-map + auth-env refused");
+    // And likewise with --registry.
+    let out = run_cage(&[
+        "registry",
+        "push",
+        &pub_root,
+        "--presign-map",
+        map_arg,
+        "--registry",
+        &server.url,
+    ]);
+    assert_code(&out, 2, "presign-map + registry refused");
+
+    // Neither destination given → usage error.
+    let out = run_cage(&["registry", "push", &pub_root]);
+    assert_code(&out, 2, "no destination");
+    assert!(
+        stderr(&out).contains("needs a destination"),
+        "{}",
+        stderr(&out)
+    );
+
+    shutdown(server);
+}

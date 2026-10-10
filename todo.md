@@ -605,6 +605,32 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       （--sign/--verify-sig 与 --key-env clap requires 方向）——本轮
       交付，勾选
 
+- [x] A7 §47 留待实现期三项闭账（2026-10-10 自行拍板 + presigned 实装，
+      决策记录已进 design §47「A3 批次决策记录」）：① **增量 delta
+      分发 → 拒绝**（push 已逐文件 PUT 粒度足够；`<版本>/<文件>` 路径
+      跨版本从不共享字节无可 delta 基底；CAS = 换协议 = 新协议版本的事，
+      永不静默变更；条目小收益不抵复杂度）；② **S3 presigned 直推 →
+      实装为 provider 无关 `--presign-map`**（拒绝原生 SigV4：凭据保管
+      属于 CI/云角色，cage 不持云密钥；presigned URL 是业界标准委托，
+      S3/GCS/Azure 通吃）；③ **pull-through 缓存代理 → 不实现**（红线：
+      不做服务端产品；读协议天然 CDN 友好——对象不可变、GET 全匿名，
+      任何静态托管/CDN 原样工作）。实装：`parse_presign_map` +
+      `push_entry_presigned`（push 主体重构为 `PushRoute::Direct |
+      Presigned` 共享——探针/合并/E1801/幂等/index 最后 PUT 一字不改，
+      presigned 只换 URL 与鉴权源：无 Bearer、URL 即凭据，index 自带
+      GET/PUT 对故 `index.get` 可省）；coverage 缺口在任何 PUT 之前
+      E2101 失败关闭（不留半条目让 index 指空气）；map 畸形/URL 非绝对
+      http(s)/缺 `index.put` 同 E2101；CLI `registry push` 增
+      `--presign-map <file>`（与 `--registry`/`--auth-env` clap 互斥，
+      `--registry` 转 Option，缺两者报「needs a destination」）；验收
+      已过：core 单测×4（map 解析形态七路 + presigned 全流程序断言
+      GET 首零 Bearer index 末 + 合并点分序 + 重推幂等零 PUT；fresh
+      包跳过 GET + E1801 经 presigned GET 照拦；coverage 缺口零 PUT +
+      dry-run 零 PUT）+ CLI 集成×1（map 端到端：先 gap 零 PUT 后成功
+      推 + 全请求匿名 + 重推 no-op + gap/dry-run 零 PUT + 互斥 exit 2 +
+      无目的地 exit 2）+ design §47 接口块与 E2101 语义补 presign +
+      cli.md「presigned 直推」小节——本轮交付，勾选
+
 ### M 系列：Migration（2026-10 立项，design §46）
 
 形态定稿：Schema 演进下的声明式数据迁移——`migrations/` 目录文件名序即

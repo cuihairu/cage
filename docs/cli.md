@@ -214,7 +214,7 @@ cage registry remove  <package> <version> --registry <dir> [--dry-run]
 cage registry export  <package>[@<version>] -o <file> --registry <dir> [--compress zstd] [--sign --key-env VAR]
 cage registry import  <file> [--verify-sig --key-env VAR] [--dry-run] --registry <dir>
 cage registry keygen  -o <file>
-cage registry push    <project> [package[@version]] --registry <remote-url> [--auth-env VAR] [--dry-run]
+cage registry push    <project> [package[@version]] (--registry <remote-url> | --presign-map <file>) [--auth-env VAR] [--dry-run]
 ```
 
 本地 Configuration Registry（第三阶段 R 系列，[design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)）。
@@ -409,6 +409,41 @@ PUT（`Authorization: Bearer $TOKEN` 只随 PUT，探针不带）→ index 与�
 文本）；405/409 等明确 4xx → `E2104`（服务端无写通道，回退「本地
 publish + 静态托管」的部署形态）。`--dry-run` 跑完整本地读取与状态
 探针，零 PUT。
+
+#### presigned 直推（--presign-map）
+
+```bash
+cage registry push ./game common@0.1.0 --presign-map presign.json
+```
+
+对象存储直推的另一条路（design §47 A3 拍板）：CI job 先向对象存储
+要一张 **presigned URL 表**（S3 / GCS / Azure Blob 通用的业界标准
+委托——cage 不持有云密钥，凭据保管属于发 URL 的一方），存成 JSON
+map 后交给 `--presign-map`：
+
+```json
+{
+  "uploads": {
+    "common/0.1.0/manifest.json": "https://bucket…X-Amz-Signature=…",
+    "common/0.1.0/schema.json":   "https://bucket…X-Amz-Signature=…"
+  },
+  "index": {
+    "get": "https://bucket…/common/index.json?…X-Amz-Signature=…",
+    "put": "https://bucket…/common/index.json?…X-Amz-Signature=…"
+  }
+}
+```
+
+`uploads` 是条目相对路径（`包/版本/文件`，键带不带前导 `/` 均可）→
+presigned PUT URL；`index.get` 可省（远端尚无此包），`index.put`
+必需。推送纪律与直推**一字不改**——探针 GET（走 `index.get`）、
+合并、`E1801` 冲突、同字节幂等零 PUT、index 最后 PUT——只有 URL 与
+鉴权换源：**不读不发送任何 Bearer**，URL 即凭据（与 `--auth-env`
+互斥，clap 层面直接拒绝）。条目文件覆盖不全（map 缺任一文件 URL）
+在任何 PUT 之前 `E2101` 失败关闭——绝不留半个条目让 index 指着
+空气。map 畸形 / URL 非绝对 http(s) / 缺 `index.put` 同报 `E2101`。
+不可变性由发 URL 的一方保证（S3 条件写 / 版本化桶 / 一次性 key 约定
+皆可）——presigned PUT 本身不带 cage 侧状态探查。
 
 ## migrate（M 系列）
 
