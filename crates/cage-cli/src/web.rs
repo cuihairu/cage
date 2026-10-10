@@ -263,3 +263,168 @@ fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
 fn json(v: &serde_json::Value) -> String {
     serde_json::to_string(v).expect("api response serializes")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cage_core::schema::Schema;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Editor document for a schema with one table whose primary key points
+    /// at a declared field — the smallest document the API accepts.
+    fn good_doc() -> String {
+        let schema = Schema::new();
+        to_editor_json(&schema).to_string()
+    }
+
+    /// Editor document whose table primary key references an undeclared
+    /// field — parses as a Schema but fails the L1 consistency checks
+    /// (E1004) that `POST /api/validate` runs.
+    fn dangling_pk_doc() -> String {
+        use cage_core::schema::TableSchema;
+        let mut schema = Schema::new();
+        schema.add_table(TableSchema {
+            name: "Item".to_string(),
+            description: None,
+            primary_key: vec!["ghost".to_string()],
+            fields: indexmap::IndexMap::new(),
+            unique_constraints: vec![],
+            order_by: None,
+            targets: vec![],
+            env_overrides: indexmap::IndexMap::new(),
+        });
+        to_editor_json(&schema).to_string()
+    }
+
+    fn ctx_in(dir: &TempDir, schema_path: Option<&str>) -> Ctx {
+        let mut config = ProjectConfig::default();
+        config.project.name = "demo".to_string();
+        config.schema_path = schema_path.map(str::to_string);
+        Ctx {
+            root: dir.path().to_path_buf(),
+            config,
+        }
+    }
+
+    #[test]
+    fn api_validate_accepts_clean_and_rejects_broken_documents() {
+        let ok = api_validate(&good_doc());
+        assert_eq!(ok["ok"], serde_json::json!(true));
+        assert_eq!(ok["diagnostics"], serde_json::json!([]));
+
+        // Not JSON at all → E1701 from the editor-door parse.
+        let bad = api_validate("{not json");
+        assert_eq!(bad["ok"], serde_json::json!(false));
+        assert_eq!(bad["diagnostics"].as_array().map(Vec::len), Some(1));
+        assert_eq!(bad["diagnostics"][0]["code"], serde_json::json!("E1701"));
+
+        // Parses as a Schema but the primary key dangles → E1004.
+        let dangling = api_validate(&dangling_pk_doc());
+        assert_eq!(dangling["ok"], serde_json::json!(false));
+        let codes: Vec<&str> = dangling["diagnostics"]
+            .as_array()
+            .expect("diagnostics list")
+            .iter()
+            .filter_map(|d| d["code"].as_str())
+            .collect();
+        assert!(codes.contains(&"E1004"), "expected E1004, got {codes:?}");
+    }
+
+    #[test]
+    fn api_schema_serves_the_editor_document_and_project_facts() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::write(dir.path().join("schema.yaml"), "tables: {}\nenums: {}\n").expect("write schema");
+        let ctx = ctx_in(&dir, Some("schema.yaml"));
+
+        let doc = api_schema(&ctx);
+        assert_eq!(doc["ok"], serde_json::json!(true));
+        assert_eq!(doc["project"], serde_json::json!("demo"));
+        assert_eq!(doc["schema_path"], serde_json::json!("schema.yaml"));
+        assert!(doc["schema"].is_object(), "editor schema present");
+        let profiles = doc["profile_names"].as_array().expect("profiles");
+        assert!(profiles.iter().any(|p| p == "client"));
+
+        // No schema_path configured → an empty editor document, still ok.
+        let empty = ctx_in(&dir, None);
+        let doc = api_schema(&empty);
+        assert_eq!(doc["ok"], serde_json::json!(true));
+        assert_eq!(doc["schema_path"], serde_json::json!(null));
+    }
+
+    #[test]
+    fn api_save_writes_canonical_yaml_and_reports_the_target() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = ctx_in(&dir, Some("schema.yaml"));
+        let doc = good_doc();
+
+        let (status, payload) = api_save(&ctx, &doc);
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        // bytes counts the canonical YAML payload, not the request
+        let schema = from_editor_json(&doc).expect("doc parses");
+        let yaml = to_canonical_yaml(&schema);
+        assert_eq!(payload["bytes"], serde_json::json!(yaml.len()));
+        let written = fs::read_to_string(dir.path().join("schema.yaml")).expect("saved file");
+        assert_eq!(written, yaml);
+        assert!(
+            payload.get("note").is_none(),
+            "no note when schema_path is set"
+        );
+    }
+
+    #[test]
+    fn api_save_without_schema_path_defaults_and_notes_the_gap() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = ctx_in(&dir, None);
+
+        let (status, payload) = api_save(&ctx, &good_doc());
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert!(
+            fs::exists(dir.path().join("schema.yaml")).expect("stat"),
+            "default target written"
+        );
+        assert!(payload["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("schema_path = \"schema.yaml\"")));
+    }
+
+    #[test]
+    fn api_save_refuses_directory_and_registry_targets_without_writing() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::create_dir(dir.path().join("schemas")).expect("mkdir");
+
+        let (status, payload) = api_save(&ctx_in(&dir, Some("schemas")), &good_doc());
+        assert_eq!(status, 409);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        assert!(payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("is a directory")));
+        assert!(!dir.path().join("schemas").is_file(), "nothing written");
+
+        let (status, payload) = api_save(&ctx_in(&dir, Some("registry:pkg")), &good_doc());
+        assert_eq!(status, 409);
+        assert!(payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("Configuration Registry")));
+    }
+
+    #[test]
+    fn api_save_reports_broken_documents_as_diagnostics_without_writing() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = ctx_in(&dir, Some("schema.yaml"));
+
+        let (status, payload) = api_save(&ctx, "{not json");
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        assert_eq!(
+            payload["diagnostics"][0]["code"],
+            serde_json::json!("E1701")
+        );
+        assert!(
+            !fs::exists(dir.path().join("schema.yaml")).expect("stat"),
+            "nothing written for a broken document"
+        );
+    }
+}

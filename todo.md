@@ -948,3 +948,19 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       真实行为断言
 - [x] 文档：validation.md L6 段落与 E1004/E1410/E1501 行、codes.rs
       三码注释同步
+
+### 外部/拍板卡点登记（2026-10-10 巡检发现）
+
+- [ ] E1404 基数校验接线：`cardinality`（one/many/optional，默认 one）
+      解析在位但全仓无消费点。两种互斥语义需拍板——①源侧（本字段
+      恰引用一条目标；optional 容忍 present-null；many 要求数组逐元素
+      解析）②目标侧（目标行至多被一条源行引用 = 1:1 门禁；作默认
+      `one` 会误杀全部合法 many-to-one 配置，不可作默认读法）。
+      拍板后接线点：L5 `validate_single_reference`，与 E1401 同源。
+      **卡点：语义契约拍板，非外部依赖**——拍板即可开工。
+
+- [x] cage-cli web API 单测补齐（覆盖率 0% → 71.6%）：api_validate
+      （干净文档通过 / 非 JSON E1701 / 悬空 pk E1004）、api_schema
+      （编辑器文档 + 项目事实 + 无 schema_path 兜底）、api_save
+      （canonical YAML 落盘字节数 / 缺省 schema.yaml + note / 目录与
+      registry: 目标 409 / 坏文档零写入）

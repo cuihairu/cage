@@ -73,9 +73,11 @@ enums:
 ```
 
 `reference` 还有三个可选子键：`predicate`（引用对象须满足的语义谓词，
-求值器当前为占位、恒通过）、`cardinality`（`one`/`many`/`optional`，
-默认 `one`，基数校验预留未接线）、`compatible_with`（引用对象类型
-兼容性检查，产出 `E1411`）。
+L5 在目标行上求值，产出 `E1410`，口径见
+[validation](/validation#l6-semantic语义)）、`cardinality`
+（`one`/`many`/`optional`，默认 `one`；**基数校验未接线**——语义契约
+需先拍板，见 validation.md 的 E1404 行）、`compatible_with`（引用对象
+类型兼容性检查，产出 `E1411`）。
 
 ## 字段类型（19 种）
 
