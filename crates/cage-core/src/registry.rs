@@ -2484,7 +2484,20 @@ mod tests {
         Arc<Mutex<Vec<String>>>,
     );
 
+    /// A stand-in that refuses every write with `force_status` (reads still
+    /// serve from the store).
     fn start_push_server(force_status: Option<u16>) -> PushServerState {
+        start_push_server_inner(force_status, None)
+    }
+
+    /// A stand-in that refuses every request — reads included — with
+    /// `force_status`: a registry that demands credentials even for the
+    /// anonymous state probe (the probe-rejection path).
+    fn start_push_server_refusing_reads(force_status: u16) -> PushServerState {
+        start_push_server_inner(None, Some(force_status))
+    }
+
+    fn start_push_server_inner(force_put: Option<u16>, force_get: Option<u16>) -> PushServerState {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -2555,15 +2568,18 @@ mod tests {
                     .unwrap()
                     .push(format!("{method} {path} {auth}"));
                 let (status, reason, payload): (u16, &str, Vec<u8>) =
-                    match (force_status, method.as_str()) {
-                        // GETs serve from the store regardless — a static
-                        // host reads fine even when it refuses writes.
-                        (_, "GET") => match store2.lock().unwrap().get(&path) {
+                    match (force_put, force_get, method.as_str()) {
+                        // GETs serve from the store unless the read side is
+                        // forced too — a static host reads fine even when it
+                        // refuses writes.
+                        (_, Some(code), "GET") | (Some(code), _, "PUT") => {
+                            (code, "Refused", b"refused".to_vec())
+                        }
+                        (_, None, "GET") => match store2.lock().unwrap().get(&path) {
                             Some(bytes) => (200, "OK", bytes.clone()),
                             None => (404, "Not Found", b"not found".to_vec()),
                         },
-                        (Some(code), "PUT") => (code, "Refused", b"refused".to_vec()),
-                        (None, "PUT") => {
+                        (None, _, "PUT") => {
                             store2.lock().unwrap().insert(path.clone(), body);
                             (200, "OK", Vec::new())
                         }
@@ -3060,6 +3076,59 @@ mod tests {
         assert_eq!(put_count(&log[1..]), 0, "dry run PUTs nothing");
         assert!(store.lock().unwrap().is_empty());
         server.shutdown();
+    }
+
+    /// The presigned route maps refusals through the same shared failure
+    /// mapping as the direct route (E2102 auth / E2104 no write channel),
+    /// and never carries a bearer token even when the server refuses.
+    #[test]
+    fn push_entry_presigned_maps_refusals_to_e2102_and_e2104() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("regA");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "one");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+
+        // 401 on the writes: the presigned index probe (anonymous, served
+        // from the empty store → 404) passes, the first PUT is refused.
+        let (server, _store, requests) = start_push_server(Some(401));
+        let (map, _) = presign_map_for(&server.url(), "common", &source, Some("1.0.0"), true);
+        let err = push_entry_presigned(&source, &map, "common", Some("1.0.0"), false).unwrap_err();
+        assert!(err.starts_with(E2102), "{err}");
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(put_count(&log), 1, "fail fast — one PUT attempted");
+        assert!(
+            log.iter().all(|r| !r.ends_with("Bearer")),
+            "presigned requests stay anonymous even on refusal: {log:?}"
+        );
+        server.shutdown();
+
+        // 405 on the writes → E2104 (the server has no write channel).
+        let (server, _store, _requests) = start_push_server(Some(405));
+        let (map, _) = presign_map_for(&server.url(), "common", &source, Some("1.0.0"), true);
+        let err = push_entry_presigned(&source, &map, "common", Some("1.0.0"), false).unwrap_err();
+        assert!(err.starts_with(E2104), "{err}");
+        server.shutdown();
+
+        // A presigned probe that answers 401 is an auth rejection, not a
+        // transport failure — mapped before the generic case, and nothing
+        // is uploaded afterwards.
+        let (server, _store, requests) = start_push_server_refusing_reads(401);
+        let (map, _) = presign_map_for(&server.url(), "common", &source, Some("1.0.0"), true);
+        let err = push_entry_presigned(&source, &map, "common", Some("1.0.0"), false).unwrap_err();
+        assert!(err.starts_with(E2102), "{err}");
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(log.len(), 1, "the refused probe is the only request");
+        assert_eq!(put_count(&log), 0);
+        server.shutdown();
+
+        // Probe unreachable (closed port) → E2101, and the message names the
+        // presigned GET so an operator knows which URL to reissue.
+        let (map, _) =
+            presign_map_for("http://127.0.0.1:1", "common", &source, Some("1.0.0"), true);
+        let err = push_entry_presigned(&source, &map, "common", Some("1.0.0"), false).unwrap_err();
+        assert!(err.starts_with(E2101), "{err}");
+        assert!(err.contains("presigned index GET"), "{err}");
     }
 
     #[test]

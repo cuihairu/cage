@@ -616,5 +616,52 @@ fn registry_push_presign_map_end_to_end() {
         stderr(&out)
     );
 
+    // A malformed map is a local input problem → E2101, exit 2, zero PUTs.
+    let bad_map = root.join("presign-bad.json");
+    write(&bad_map, "{not json");
+    let before = requests.lock().unwrap().len();
+    let out = run_cage(&[
+        "registry",
+        "push",
+        &pub_root,
+        "--presign-map",
+        bad_map.to_str().unwrap(),
+    ]);
+    assert_code(&out, 2, "malformed presign map");
+    assert!(stderr(&out).contains("E2101"), "{}", stderr(&out));
+    // A map with a relative URL is refused the same way.
+    write(
+        &bad_map,
+        r#"{"uploads": {"common/0.1.0/manifest.json": "common/0.1.0/manifest.json"}, "index": {"put": "https://x"}}"#,
+    );
+    let out = run_cage(&[
+        "registry",
+        "push",
+        &pub_root,
+        "--presign-map",
+        bad_map.to_str().unwrap(),
+    ]);
+    assert_code(&out, 2, "relative URL in presign map");
+    assert!(stderr(&out).contains("E2101"), "{}", stderr(&out));
+    // A map file that does not exist → E2101, exit 2.
+    let out = run_cage(&[
+        "registry",
+        "push",
+        &pub_root,
+        "--presign-map",
+        root.join("no-such-map.json").to_str().unwrap(),
+    ]);
+    assert_code(&out, 2, "missing presign map file");
+    assert!(
+        stderr(&out).contains("E2101") && stderr(&out).contains("no-such-map.json"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        before,
+        "map errors happen before any network contact"
+    );
+
     shutdown(server);
 }

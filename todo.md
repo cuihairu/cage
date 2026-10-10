@@ -918,3 +918,17 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       `snapshot/<profile>-<build_id[..12]>`（弃日期命名——破坏确定性契约），
       构建后自校验；`cage snapshot <dir> --verify` 载入前校验；core 提供
       verify_snapshot/load 服务器入口（篡改/增删文件均暴露）
+
+### 验收打磨（2026-10-10 巡检批次）
+
+- [x] 错误码全量走查：66 码跨 15 模块，18 码预留未引用、5 码预留但被引用
+      （E0003/E1003/E1005 仅渲染器测试；E1410/E1501 占位发射点不可达），
+      与 docs/validation.md 逐条一致，无文档/代码不匹配
+- [x] presign 拒绝路径测试补齐：core `push_entry_presigned_maps_refusals_to_e2102_and_e2104`
+      （PUT 401→E2102 无 Bearer 快速失败 / PUT 405→E2104 / 探测 401→E2102 仅 1 请求 0 PUT /
+      端口关闭→E2101 含 "presigned index GET"）；PushServer 替身重构为
+      `start_push_server_inner(force_put, force_get)` + `start_push_server_refusing_reads`，
+      修正此前一个从未真正测探测拒绝的误导性子用例
+- [x] CLI presign-map 错误路径端到端：`registry_push_presign_map_end_to_end`
+      （畸形 JSON / 相对 URL / 缺文件均 E2101 退出 2，且全部发生在任何网络接触之前——
+      请求数不变断言）
