@@ -5849,13 +5849,24 @@ output_dir = "o"
         let bytes = render_csv(&[&bare], "config/Item.csv", &schema).expect("csv");
         assert_eq!(bytes, Vec::<u8>::new());
 
-        // A row missing a schema column renders an empty cell.
+        // A row missing a schema column renders an empty cell there.
         let mut sparse = item_table();
-        sparse.rows[0].fields.shift_remove("name");
+        let mut second = sparse.rows[0].clone();
+        second.fields.shift_remove("name");
+        second.fields.insert(
+            "id".to_string(),
+            cage_core::value::TypedValue::new(
+                cage_core::value::Value::Int(2),
+                second.location.clone(),
+            ),
+        );
+        second.primary_key[0] = cage_core::value::Value::Int(2);
+        second.index = 1;
+        sparse.rows.push(second);
         let bytes = render_csv(&[&sparse], "config/Item.csv", &schema).expect("csv");
         assert_eq!(
             String::from_utf8(bytes).expect("utf8"),
-            "id,rarity,season_only\n1,3,true\n"
+            "id,name,rarity,season_only\n1,Sword,3,true\n2,,3,true\n"
         );
 
         // write_migrated_sources reports non-text sources instead of

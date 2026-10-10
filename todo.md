@@ -1006,3 +1006,31 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       草稿级补臂：新增必填无默认 TODO、新增可选无默认沉默、
       RequiredChanged 带不可表示默认 TODO（bad_default 两侧同置才走
       该臂）、required→optional 无操作。workspace 735 → 741。
+
+### cage-cli main.rs 覆盖收口（2026-10-10 续批第三、四项）
+
+- [x] main.rs 未覆盖行 84.90% → 94.36% → 98.50%（本轮 177 → 57 行，workspace
+      741 → 764）：第三批覆盖 registry 全 runner 成功/失败臂（list/verify/gc/
+      remove 本地仓走查 + publish 幂等重发 + export/import 往返含 zstd 容器与
+      ed25519 签名门 + push 直推与 presigned 拒绝 + snapshot/verify + gen），
+      均经 mod tests 直调私有 run_*，tiny-http 端口 0 起真实 PUT 服务器。
+      第四批收尾：增量构建三层（table 变更携带未触表工件 → chmod 000 携带
+      回退全量重建 → 目标 output_dir 迁移后陈旧工件 NotFound/不可删双警告臂）、
+      template 目标缺目录/lang_filters 未知语言 → BuildFailure::Io、
+      gen 的 java/cpp/lua 过滤库挂载 + E9006 必填投影冲突 + 未声明 --env、
+      snapshot/publish 打包失败（父路径为文件 / 包目录混入账本外散文件）、
+      数据校验失败、migrate 链空目录/apply E2003/--write 只读源失败与恢复、
+      migrate-draft 加载与写失败臂、pin 联动三态直调、注册表条目加载
+      （缺/坏 schema.json、缺/空 data、裸数组工件按 manifest 恢复表名）、
+      小助手残形（fidelity 全档、未知扩展跳过、无 schema 列序、缺列空单元格、
+      无表头 CSV、lang_filters 四态、describe snapshot/web/schema-draft 变体）。
+- [x] 顺带修复：pack_snapshot 自校验由 debug_assert! 改为硬错误——包目录混入
+      账本外文件时 release 构建此前会静默发放未验证快照，现报
+      "snapshot self-verification failed" 退出 2（测试以散文件触发该臂）。
+- [ ] 剩余 57 行均为不可达/受阻项：main() 内 Web 分发臂（仅真实二进制可达，
+      归 web-smoke.sh）、export/import 的 --sign/--verify-sig 缺 --key-env
+      （std::process::exit 直接杀测试进程，不可测）、snapshot/publish 的
+      UpToDate 不可达臂（incremental 恒 false）、keygen 熵源失败臂、
+      filter_by_profile 的防御性死分支、schema-draft 的 mysql/pg 内省成功路
+      （§45 外部依赖：需真实数据库）、以及 lcov 对 if-let 块尾花括号的
+      计数伪影（932/1176/2021/2307 等，逻辑行均已覆盖）。
