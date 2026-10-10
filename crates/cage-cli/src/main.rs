@@ -2129,13 +2129,16 @@ fn pack_snapshot(path: &Path, out: &BuildOutput) -> Result<(PathBuf, usize), Str
     };
     let snap_dir = path.join(&out.output_dir).join("snapshot").join(dir_name);
     write_snapshot_files(&snap_dir, &files)?;
-    // Self-check: the just-written snapshot must verify clean.
+    // Self-check: the just-written snapshot must verify clean — a stray
+    // file in the pack directory (a leftover pack, a mid-pack write) must
+    // refuse the pack, not hand out unverified bytes.
     let report = cage_core::snapshot::verify_snapshot(&snap_dir)?;
-    debug_assert!(
-        report.ok,
-        "self-verification mismatch: {:?}",
-        report.mismatches
-    );
+    if !report.ok {
+        return Err(format!(
+            "snapshot self-verification failed: {}",
+            report.mismatches.join("; ")
+        ));
+    }
     Ok((snap_dir, files.len()))
 }
 
@@ -5062,6 +5065,912 @@ file_template = "{table}.cs"
                 &["cage", "registry", "push", "proj", "--registry", "http://host/reg"],
                 "registry push proj <project.name> http://host/reg false <no presign-map> <no auth_env>"
                     .to_string(),
+            ),
+        ];
+        for (args, want) in cases {
+            let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert_eq!(describe(&cli.command), want, "{args:?}");
+        }
+    }
+
+    /// Two independent tables (no cross references) so an incremental build
+    /// can move one while carrying the other's artifacts. The csv target's
+    /// output dir is a parameter — moving it is what makes old artifacts
+    /// stale (layer 3).
+    const TWO_TABLE_SCHEMA: &str = r"tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+  Tag:
+    name: Tag
+    description: A tag label
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      label: { name: label, type: { kind: String }, required: true }
+enums: {}
+";
+
+    fn two_table_toml(csv_dir: &str) -> String {
+        format!(
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+version = "1.0.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{{table}}.json"
+
+[[profiles.client.targets]]
+format = "csv"
+output_dir = "build/client/{csv_dir}"
+file_template = "{{table}}.csv"
+"#
+        )
+    }
+
+    fn two_table_fixture(root: &Path, dir_name: &str, csv_dir: &str) -> PathBuf {
+        let proj = root.join(dir_name);
+        write_text(
+            &proj.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        );
+        write_text(
+            &proj.join("config/tag.json"),
+            r#"{"Tag": [{"id": 1, "label": "red"}]}"#,
+        );
+        write_text(&proj.join("schema.yaml"), TWO_TABLE_SCHEMA);
+        write_text(&proj.join("cage.toml"), &two_table_toml(csv_dir));
+        proj
+    }
+
+    #[test]
+    fn build_incremental_carries_untouched_tables_and_recovers() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let proj = two_table_fixture(root, "carry", "csv");
+        assert_eq!(
+            run_build(&proj, "gamerule", "client", None, false, false),
+            0
+        );
+
+        // One table moves: the other's artifacts are carried from disk
+        // (layer 2), so only Item regenerates.
+        write_text(
+            &proj.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Blade"}]}"#,
+        );
+        assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 0);
+
+        // A carried artifact that became unreadable falls back to a full
+        // build — which then fails writing the unreadable file back.
+        let tag_csv = proj.join("build/client/csv/Tag.csv");
+        std::fs::set_permissions(&tag_csv, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod 000");
+        write_text(
+            &proj.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Clay"}]}"#,
+        );
+        assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 2);
+        std::fs::set_permissions(&tag_csv, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod 644");
+        assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 0);
+    }
+
+    #[test]
+    fn build_stale_target_artifacts_are_removed_with_warnings() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let proj = two_table_fixture(root, "stale", "csvout");
+        assert_eq!(
+            run_build(&proj, "gamerule", "client", None, false, false),
+            0
+        );
+
+        // One stale file is already gone (the NotFound arm), the other sits
+        // in a read-only directory (the denied arm): both warn, neither
+        // fails the build.
+        std::fs::remove_file(proj.join("build/client/csvout/Item.csv")).expect("rm stale");
+        std::fs::set_permissions(
+            proj.join("build/client/csvout"),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .expect("chmod 500");
+        write_text(&proj.join("cage.toml"), &two_table_toml("csvout2"));
+        assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 0);
+        std::fs::set_permissions(
+            proj.join("build/client/csvout"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .expect("chmod back");
+        assert!(proj.join("build/client/csvout2/Tag.csv").is_file());
+    }
+
+    #[test]
+    fn build_template_target_failures_surface_as_io_errors() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let proj = root.join("tpl");
+        write_text(
+            &proj.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        );
+        write_text(&proj.join("schema.yaml"), PUBLISHER_SCHEMA);
+        write_text(
+            &proj.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+
+[source_roots]
+main = "config"
+
+[profiles.tpl]
+name = "tpl"
+
+[[profiles.tpl.targets]]
+format = "template"
+output_dir = "build/tpl/out"
+file_template = "out.txt"
+
+[profiles.tpl.targets.options]
+template_dir = ".cage/nope"
+
+[profiles.tplbad]
+name = "tplbad"
+
+[[profiles.tplbad.targets]]
+format = "template"
+output_dir = "build/tplbad/out"
+file_template = "out.txt"
+
+[profiles.tplbad.targets.options]
+lang_filters = "nope"
+"#,
+        );
+
+        // A missing template directory fails generation → BuildFailure::Io.
+        assert_eq!(run_build(&proj, "gamerule", "tpl", None, false, false), 2);
+        // An unknown lang_filters entry is refused up front, same surface.
+        assert_eq!(
+            run_build(&proj, "gamerule", "tplbad", None, false, false),
+            2
+        );
+    }
+
+    #[test]
+    fn gen_language_filters_projection_safety_and_unknown_env() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // The java/cpp/lua filter libraries mount into the template engine
+        // during generation (register_filters arms).
+        let proj = root.join("filters");
+        write_text(
+            &proj.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        );
+        write_text(&proj.join("schema.yaml"), PUBLISHER_SCHEMA);
+        write_text(
+            &proj.join(".cage/templates/Items.txt.tera"),
+            "hello from the user template",
+        );
+        write_text(
+            &proj.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+
+[source_roots]
+main = "config"
+
+[profiles.tpl]
+name = "tpl"
+
+[[profiles.tpl.targets]]
+format = "template"
+output_dir = "build/tpl/out"
+file_template = "out.txt"
+
+[profiles.tpl.targets.options]
+template_dir = ".cage/templates"
+lang_filters = "java,cpp,lua"
+"#,
+        );
+        assert_eq!(run_gen(&proj, "tpl", None, false), 0);
+        let out = proj.join("build/tpl/out/Items.txt");
+        let text = std::fs::read_to_string(&out).expect("template output");
+        assert_eq!(text, "hello from the user template");
+
+        // A projection that strips a required field is E9006, not a silent
+        // generation.
+        let safety = root.join("safety");
+        write_text(
+            &safety.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        );
+        write_text(
+            &safety.join("schema.yaml"),
+            r"tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+      secret: { name: secret, type: { kind: String }, required: true, targets: ['server'] }
+enums: {}
+",
+        );
+        write_text(
+            &safety.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+
+[source_roots]
+main = "config"
+
+[profiles.genclient]
+name = "genclient"
+
+[[profiles.genclient.targets]]
+format = "cs"
+output_dir = "build/genclient/cs"
+file_template = "{table}.cs"
+"#,
+        );
+        assert_eq!(run_gen(&safety, "genclient", None, false), 1);
+
+        // An env the schema does not declare is a usage error.
+        let envs = root.join("envs");
+        write_text(
+            &envs.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        );
+        write_text(
+            &envs.join("schema.yaml"),
+            r"tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    env_overrides:
+      prod:
+        name:
+          required: true
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+enums: {}
+",
+        );
+        write_text(
+            &envs.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "cs"
+output_dir = "build/client/cs"
+file_template = "{table}.cs"
+"#,
+        );
+        assert_eq!(run_gen(&envs, "client", Some("dev"), false), 2);
+    }
+
+    #[test]
+    fn snapshot_reports_pack_validation_and_usage_failures() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // Pack failure: the snapshot parent path is a regular file.
+        let snapfile = publisher_fixture(root, "snapfile", Some("1.0.0"), None);
+        std::fs::create_dir_all(snapfile.join("build")).expect("dirs");
+        std::fs::File::create(snapfile.join("build/snapshot")).expect("blocker");
+        assert_eq!(run_snapshot(&snapfile, "client", None), 2);
+
+        // Pack failure: a stray file inside the (deterministically named)
+        // pack directory is not in the ledger, so the pack's self-check
+        // refuses it. Dropping one recorded artifact forces the rebuild
+        // while keeping every content hash — and thus the pack name.
+        let proj = publisher_fixture(root, "snapnest", Some("1.0.0"), None);
+        assert_eq!(run_snapshot(&proj, "client", None), 0);
+        let snap_root = proj.join("build/snapshot");
+        let mut names = std::fs::read_dir(&snap_root)
+            .expect("snapshot dir")
+            .map(|e| e.expect("entry").file_name());
+        let name = names.next().expect("one pack");
+        assert!(names.next().is_none(), "exactly one pack");
+        let snap_dir = snap_root.join(name);
+        std::fs::remove_dir_all(&snap_dir).expect("rm pack");
+        std::fs::create_dir(&snap_dir).expect("recreate pack");
+        std::fs::write(snap_dir.join("notes.txt"), b"stray").expect("stray file");
+        std::fs::remove_file(proj.join("build/client/json/Item.json")).expect("rm artifact");
+        assert_eq!(run_snapshot(&proj, "client", None), 2);
+
+        // Validation failure: the data misses a required field.
+        let bad = publisher_fixture(root, "snapbad", Some("1.0.0"), None);
+        write_text(&bad.join("config/item.json"), r#"{"Item": [{"id": 1}]}"#);
+        assert_eq!(run_snapshot(&bad, "client", None), 1);
+
+        // Usage failure: unknown profile is an Io error.
+        assert_eq!(run_snapshot(&bad, "ghost", None), 2);
+    }
+
+    #[test]
+    fn registry_publish_reports_config_root_pack_and_validation_failures() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // Unparsable cage.toml.
+        let broken = root.join("pubbad");
+        write_text(&broken.join("cage.toml"), "not [toml");
+        assert_eq!(
+            run_registry_publish(&broken, "client", None, None, None, None),
+            2
+        );
+
+        // No registry root: neither flag nor '[registry] path'.
+        let noroot = publisher_fixture(root, "pub_noroot", Some("1.0.0"), None);
+        assert_eq!(
+            run_registry_publish(&noroot, "client", None, None, None, None),
+            2
+        );
+
+        // Pack failure: the snapshot parent path is a regular file.
+        let packfail = publisher_fixture(root, "pub_packfail", Some("1.0.0"), Some("reg"));
+        std::fs::create_dir_all(packfail.join("build")).expect("dirs");
+        std::fs::File::create(packfail.join("build/snapshot")).expect("blocker");
+        assert_eq!(
+            run_registry_publish(
+                &packfail,
+                "client",
+                None,
+                None,
+                None,
+                Some(&root.join("reg"))
+            ),
+            2
+        );
+
+        // Validation failure: the data misses a required field.
+        let bad = publisher_fixture(root, "pub_baddat", Some("1.0.0"), Some("reg2"));
+        write_text(&bad.join("config/item.json"), r#"{"Item": [{"id": 1}]}"#);
+        assert_eq!(
+            run_registry_publish(&bad, "client", None, None, None, Some(&root.join("reg2"))),
+            1
+        );
+    }
+
+    #[test]
+    fn registry_export_sign_keygen_and_gc_error_paths() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let reg = root.join("reg");
+        std::fs::create_dir_all(&reg).expect("reg");
+        publish_version(&reg, &root.join("snap"), "1.0.0", br#"[{"id": 1}]"#);
+
+        // --sign with a key env that is not set: the bundle itself was
+        // written, the signature step fails with exit 1.
+        std::env::remove_var("CAGE_TEST_ABSENT_SIGNING_KEY");
+        let bundle = root.join("b.tar");
+        assert_eq!(
+            run_registry_export(
+                "common@1.0.0",
+                &bundle,
+                None,
+                true,
+                Some("CAGE_TEST_ABSENT_SIGNING_KEY"),
+                Some(&reg),
+            ),
+            1
+        );
+        assert!(bundle.is_file());
+
+        // keygen into a missing directory cannot write the seed.
+        assert_eq!(run_registry_keygen(&root.join("no_dir/k.seed")), 1);
+
+        // gc on a missing root is a usage error.
+        assert_eq!(run_registry_gc(1, false, Some(&root.join("absent"))), 2);
+    }
+
+    #[test]
+    fn registry_push_plain_spec_and_broken_config() {
+        let port = start_push_server();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // A package spec without @version pushes the source registry's
+        // latest entry.
+        let proj = publisher_fixture(root, "push_plain", Some("1.0.0"), Some("reg"));
+        assert_eq!(
+            run_registry_publish(&proj, "client", None, None, None, None),
+            0
+        );
+        assert_eq!(
+            run_registry_push(
+                &proj,
+                Some("common"),
+                Some(&format!("http://127.0.0.1:{port}")),
+                None,
+                None,
+                false,
+            ),
+            0
+        );
+
+        // Unparsable cage.toml.
+        let broken = root.join("pushbad");
+        write_text(&broken.join("cage.toml"), "not [toml");
+        assert_eq!(
+            run_registry_push(&broken, None, Some("http://host/reg"), None, None, false),
+            2
+        );
+    }
+
+    /// A migrate fixture: the schema already declares `description` (the
+    /// post-migration shape), the data still carries the pre-rename `desc`
+    /// extra field.
+    fn migrate_fixture(root: &Path, dir_name: &str) -> PathBuf {
+        let proj = root.join(dir_name);
+        write_text(
+            &proj.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword", "desc": "sharp"}]}"#,
+        );
+        write_text(
+            &proj.join("schema.yaml"),
+            r"tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+      description: { name: description, type: { kind: String } }
+enums: {}
+",
+        );
+        write_text(
+            &proj.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{table}.json"
+"#,
+        );
+        write_text(
+            &proj.join("migrations/0001_rename_desc.yaml"),
+            r#"from: "0.1.0"
+to: "0.2.0"
+steps:
+  - rename_field:
+      table: Item
+      from: desc
+      to: description
+"#,
+        );
+        proj
+    }
+
+    #[test]
+    fn migrate_reports_chain_apply_and_write_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // Unparsable cage.toml.
+        let broken = root.join("migbad");
+        write_text(&broken.join("cage.toml"), "not [toml");
+        assert_eq!(run_migrate(&broken, false, None, false), 2);
+
+        // An empty migrations directory has nothing to apply.
+        let empty = publisher_fixture(root, "mig_empty", None, None);
+        std::fs::create_dir_all(empty.join("migrations")).expect("migrations");
+        assert_eq!(run_migrate(&empty, false, None, false), 0);
+
+        // A migration naming a table the data lacks fails at apply time.
+        let apply = publisher_fixture(root, "mig_apply", None, None);
+        write_text(
+            &apply.join("migrations/0001_ghost.yaml"),
+            r#"from: "0.1.0"
+to: "0.2.0"
+steps:
+  - rename_field:
+      table: Ghost
+      from: a
+      to: b
+"#,
+        );
+        assert_eq!(run_migrate(&apply, false, None, false), 1);
+
+        // A read-only source file fails the --write landing, then succeeds
+        // once writable again.
+        let wr = migrate_fixture(root, "mig_write");
+        let source = wr.join("config/item.json");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444))
+            .expect("chmod 444");
+        assert_eq!(run_migrate(&wr, false, Some("0.2.0"), true), 1);
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod 644");
+        assert_eq!(run_migrate(&wr, false, Some("0.2.0"), true), 0);
+        let text = std::fs::read_to_string(&source).expect("rewritten");
+        assert!(text.contains("\"description\": \"sharp\""), "{text}");
+    }
+
+    #[test]
+    fn migrate_draft_reports_load_and_write_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let v1 = root.join("v1.yaml");
+        write_text(
+            &v1,
+            r"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+",
+        );
+        let v2 = root.join("v2.yaml");
+        write_text(
+            &v2,
+            r"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String } }
+enums: {}
+",
+        );
+        let garbage = root.join("garbage.yaml");
+        write_text(&garbage, "!!! [ not a schema");
+
+        // Unloadable schemas are each refused.
+        assert_eq!(
+            run_migrate_draft(&root.join("missing.yaml"), &v2, "1", "2", None),
+            1
+        );
+        assert_eq!(run_migrate_draft(&v1, &garbage, "1", "2", None), 1);
+        // Without -o the draft prints to stdout.
+        assert_eq!(run_migrate_draft(&v1, &v2, "1.0.0", "2.0.0", None), 0);
+        // -o under a file-shaped parent cannot create its directory.
+        let blocker = root.join("blocker");
+        write_text(&blocker, "x");
+        assert_eq!(
+            run_migrate_draft(&v1, &v2, "1", "2", Some(&blocker.join("d.yaml"))),
+            1
+        );
+        // -o into a read-only directory cannot write.
+        let ro = root.join("rodir");
+        std::fs::create_dir_all(&ro).expect("rodir");
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).expect("chmod 500");
+        assert_eq!(
+            run_migrate_draft(&v1, &v2, "1", "2", Some(&ro.join("d.yaml"))),
+            1
+        );
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).expect("chmod back");
+    }
+
+    #[test]
+    fn migrate_pin_linkage_and_entry_loading_edges() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // A registry schema_path with no pin is governed by its explicit
+        // version alone; a pin that admits the chain end passes; a pin
+        // that excludes it is refused.
+        let pinned: ProjectConfig = toml::from_str(
+            r#"schema_path = "registry:common@1.0.0"
+
+[project]
+name = "c"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "o"
+
+[dependencies]
+common = "0.1.0"
+"#,
+        )
+        .expect("config");
+        assert!(check_migrate_pin_linkage(&pinned, "0.2.0")
+            .unwrap_err()
+            .contains("outside the"));
+        let mut wide = pinned.clone();
+        wide.dependencies
+            .insert("common".to_string(), ">=0.1.0".to_string());
+        assert!(check_migrate_pin_linkage(&wide, "0.2.0").is_ok());
+        let unpinned: ProjectConfig = toml::from_str(
+            r#"schema_path = "registry:common@1.0.0"
+
+[project]
+name = "c"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "o"
+"#,
+        )
+        .expect("config");
+        assert!(check_migrate_pin_linkage(&unpinned, "0.2.0").is_ok());
+
+        // Entry schema loading: missing and corrupt schema.json.
+        let entry = root.join("e1");
+        std::fs::create_dir_all(&entry).expect("entry");
+        assert!(load_schema_from_entry(&entry)
+            .unwrap_err()
+            .contains("schema missing"));
+        write_text(&entry.join("schema.json"), "not json");
+        assert!(load_schema_from_entry(&entry)
+            .unwrap_err()
+            .contains("corrupt registry entry schema"));
+
+        // Entry data loading: missing and empty data directories.
+        assert!(load_sources_from_entry(&root.join("e2"))
+            .unwrap_err()
+            .contains("path not found"));
+        let empty_data = root.join("e3");
+        std::fs::create_dir_all(empty_data.join("data")).expect("data");
+        assert!(load_sources_from_entry(&empty_data)
+            .unwrap_err()
+            .contains("no data artifacts"));
+
+        // A published entry's bare-array artifact has no table name of its
+        // own — the manifest's artifact record restores it.
+        let published = root.join("e4");
+        write_text(&published.join("data/json/Item.json"), r#"[{"id": 1}]"#);
+        let manifest = serde_json::json!({
+            "project": "common",
+            "profile": "client",
+            "cage_version": "test",
+            "schema_hash": "s",
+            "source_hash": "c",
+            "content_hash": "h",
+            "artifacts": {
+                "build/client/json/Item.json": {
+                    "path": "build/client/json/Item.json",
+                    "hash": "abc",
+                    "size": 12,
+                    "format": "json",
+                    "table": "Item",
+                    "encoding": "utf-8"
+                }
+            }
+        });
+        write_text(
+            &published.join("manifest.json"),
+            &serde_json::to_string_pretty(&manifest).expect("manifest json"),
+        );
+        let doc = load_sources_from_entry(&published).expect("entry loads");
+        let table = doc.tables.get("Item").expect("table name restored");
+        assert_eq!(table.rows.len(), 1);
+    }
+
+    #[test]
+    fn small_helpers_cover_residual_shapes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let schema = render_schema();
+
+        // Fidelity ranks every supported extension (xlsx/xls share the
+        // lowest tier).
+        assert_eq!(format_fidelity("msgpack"), 5);
+        assert_eq!(format_fidelity("json"), 4);
+        assert_eq!(format_fidelity("yml"), 3);
+        assert_eq!(format_fidelity("csv"), 2);
+        assert_eq!(format_fidelity("xlsx"), 1);
+        assert_eq!(format_fidelity("xls"), 1);
+
+        // parse_source_files skips files with no adapter for their
+        // extension.
+        write_text(&root.join("notes.txt"), "hello");
+        let doc = parse_source_files(&[root.join("notes.txt")]).expect("parse");
+        assert_eq!(doc.tables.len(), 0);
+
+        // A table outside the schema orders columns in load order.
+        assert_eq!(
+            ordered_columns(&item_table(), &cage_core::schema::Schema::new()),
+            vec!["id", "name", "rarity", "season_only"]
+        );
+
+        // A column absent from one row renders no key there.
+        let mut gapped = item_table();
+        gapped.rows[0].fields.shift_remove("rarity");
+        let rows = rows_to_json(&gapped, "config/Item.json", &schema).expect("rows");
+        assert!(!rows[0].contains_key("rarity"));
+        assert!(rows[0].contains_key("id"));
+
+        // A column-less table with no primary key renders no header row.
+        let mut bare = item_table();
+        bare.rows.clear();
+        bare.primary_key_fields.clear();
+        let bytes = render_csv(&[&bare], "config/Item.csv", &schema).expect("csv");
+        assert_eq!(bytes, Vec::<u8>::new());
+
+        // A row missing a schema column renders an empty cell.
+        let mut sparse = item_table();
+        sparse.rows[0].fields.shift_remove("name");
+        let bytes = render_csv(&[&sparse], "config/Item.csv", &schema).expect("csv");
+        assert_eq!(
+            String::from_utf8(bytes).expect("utf8"),
+            "id,rarity,season_only\n1,3,true\n"
+        );
+
+        // write_migrated_sources reports non-text sources instead of
+        // writing them.
+        let proj = root.join("mig");
+        write_text(&proj.join("config/keep.txt"), "unrelated");
+        let mut table = item_table();
+        table.source_file = proj.join("config/Tag.msgpack").display().to_string();
+        let mut tables = IndexMap::new();
+        tables.insert("Tag".to_string(), table);
+        let doc = cage_core::value::Document {
+            tables,
+            source_files: Vec::new(),
+            metadata: cage_core::value::DocumentMetadata::default(),
+        };
+        let config: ProjectConfig = toml::from_str(
+            r#"[project]
+name = "c"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "o"
+
+[source_roots]
+main = "config"
+"#,
+        )
+        .expect("config");
+        let lines =
+            write_migrated_sources(&doc, &proj, &config, &schema, false).expect("report lines");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("not a text source") && l.contains("Tag.msgpack")),
+            "{lines:?}"
+        );
+
+        // lang_filters: absent, mistyped, unknown, and accepted entries.
+        let target_with = |options: &str| -> cage_core::manifest::TargetConfig {
+            toml::from_str(&format!(
+                "format = \"template\"\noutput_dir = \"o\"\nfile_template = \"f\"\n{options}"
+            ))
+            .expect("target")
+        };
+        assert_eq!(
+            lang_filters(&target_with("")).expect("no options"),
+            Vec::<String>::new()
+        );
+        let mistyped = target_with("[options]\nlang_filters = 3\n");
+        assert!(lang_filters(&mistyped)
+            .unwrap_err()
+            .contains("must be a string"));
+        let unknown = target_with("[options]\nlang_filters = \"nope\"\n");
+        assert!(lang_filters(&unknown)
+            .unwrap_err()
+            .contains("unknown lang_filters entry"));
+        let langs = target_with("[options]\nlang_filters = \"java, cpp, lua\"\n");
+        assert_eq!(
+            lang_filters(&langs).expect("langs"),
+            vec!["java".to_string(), "cpp".to_string(), "lua".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_snapshot_web_and_schema_draft_describe_variants() {
+        let cases: Vec<(&[&str], String)> = vec![
+            (
+                &[
+                    "cage",
+                    "snapshot",
+                    "proj",
+                    "--profile",
+                    "server",
+                    "--verify",
+                ],
+                "snapshot proj server <base> true".to_string(),
+            ),
+            (
+                &[
+                    "cage",
+                    "snapshot",
+                    "proj",
+                    "--profile",
+                    "server",
+                    "--env",
+                    "prod",
+                ],
+                "snapshot proj server prod false".to_string(),
+            ),
+            (
+                &["cage", "snapshot", "proj"],
+                "snapshot proj client <base> false".to_string(),
+            ),
+            (
+                &["cage", "web", "proj", "--port", "9000"],
+                "web proj 9000".to_string(),
+            ),
+            (
+                &[
+                    "cage",
+                    "schema-draft",
+                    "proj",
+                    "mysql:users",
+                    "pg:orders",
+                    "-o",
+                    "d.yaml",
+                ],
+                "schema-draft proj mysql:users,pg:orders d.yaml".to_string(),
+            ),
+            (
+                &["cage", "schema-draft", "proj", "mysql:users"],
+                "schema-draft proj mysql:users <stdout>".to_string(),
             ),
         ];
         for (args, want) in cases {
