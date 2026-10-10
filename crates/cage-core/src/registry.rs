@@ -3612,4 +3612,473 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
     }
+
+    /// Assemble an in-memory tar bundle from named members — the raw
+    /// material for `import_bundle`'s malformed-member guards.
+    fn tar_bytes(members: &[(String, Vec<u8>)]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, data) in members {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name.as_str(), data.as_slice())
+                .unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    #[test]
+    fn parse_version_req_covers_eq_caret_zero_and_tilde_label() {
+        // the `=` comparator arm
+        let req = parse_version_req("=1.2.3").unwrap();
+        assert_eq!(render_req(&req), "=1.2.3");
+
+        // an all-zero caret base bumps the last given component: ^0 → [0, 1)
+        let req = parse_version_req("^0").unwrap();
+        assert_eq!(render_req(&req), ">=0, <1");
+
+        // a caret base carrying a label renders the label back into bounds
+        let req = parse_version_req("^1.0-beta").unwrap();
+        assert!(req.comparators[0].version.contains("beta"));
+
+        // a tilde whose second-to-last slot is a label is a bad tilde version
+        let err = parse_version_req("~beta").unwrap_err();
+        assert!(err.contains("bad tilde version 'beta'"), "{err}");
+
+        // the > and <= rendering arms
+        let req = parse_version_req(">2.0,<=1.0").unwrap();
+        assert_eq!(render_req(&req), ">2.0, <=1.0");
+    }
+
+    #[test]
+    fn read_index_rejects_unreadable_and_corrupt_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("common");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join(INDEX_FILE), b"not-json").unwrap();
+        let err = read_index(tmp.path(), "common").unwrap_err();
+        assert!(err.contains("corrupt registry index"), "{err}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(pkg.join(INDEX_FILE), fs::Permissions::from_mode(0o000)).unwrap();
+            let err = read_index(tmp.path(), "common").unwrap_err();
+            assert!(err.contains("cannot read registry index"), "{err}");
+        }
+    }
+
+    #[test]
+    fn write_index_reports_create_and_write_failures() {
+        let index = RegistryIndex {
+            package: "common".to_string(),
+            entries: Vec::new(),
+        };
+        // the package path occupied by a file blocks directory creation
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("common"), b"file").unwrap();
+        let err = write_index(tmp.path(), &index).unwrap_err();
+        assert!(err.contains("cannot create"), "{err}");
+
+        // an index.json occupied by a directory fails the write itself
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("common").join(INDEX_FILE)).unwrap();
+        let err = write_index(tmp.path(), &index).unwrap_err();
+        assert!(err.contains("cannot write registry index"), "{err}");
+    }
+
+    #[test]
+    fn publish_rejects_bad_names_unverifiable_packs_and_blocked_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "alpha");
+
+        // invalid package / version components
+        let err = publish(tmp.path(), "bad/name", "1.0.0", &snap).unwrap_err();
+        assert!(err.contains("invalid registry package name"), "{err}");
+        let err = publish(tmp.path(), "common", "bad version", &snap).unwrap_err();
+        assert!(err.contains("invalid registry version"), "{err}");
+
+        // a tampered pack fails the publish trust gate
+        let snap2 = tmp.path().join("snap2");
+        make_snapshot(&snap2, "beta");
+        fs::write(snap2.join("data/client/json/Item.json"), b"tampered").unwrap();
+        let err = publish(tmp.path(), "common", "1.0.0", &snap2).unwrap_err();
+        assert!(err.contains("E1803"), "{err}");
+
+        // the entry path occupied by a file fails the copy staging
+        let root2 = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root2.path().join("common")).unwrap();
+        fs::write(root2.path().join("common").join("1.0.0"), b"occupied").unwrap();
+        let err = publish(root2.path(), "common", "1.0.0", &snap).unwrap_err();
+        assert!(err.contains("cannot create"), "{err}");
+    }
+
+    #[test]
+    fn packages_lists_only_index_backed_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "alpha");
+        publish(tmp.path(), "common", "1.0.0", &snap).unwrap();
+        fs::create_dir_all(tmp.path().join("not-a-package")).unwrap();
+        let names: Vec<String> = packages(tmp.path())
+            .unwrap()
+            .into_iter()
+            .map(|i| i.package)
+            .collect();
+        assert_eq!(names, ["common"]);
+    }
+
+    #[test]
+    fn resolve_entry_reports_missing_entry_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_index(
+            tmp.path(),
+            &RegistryIndex {
+                package: "common".to_string(),
+                entries: vec![IndexEntry {
+                    version: "2.0.0".to_string(),
+                    build_id: "b2222222222222222222222".to_string(),
+                    content_hash: "c".to_string(),
+                    files: 1,
+                }],
+            },
+        )
+        .unwrap();
+        let err = resolve_entry(tmp.path(), "common", Some("2.0.0")).unwrap_err();
+        assert!(err.contains("entry directory missing"), "{err}");
+    }
+
+    #[test]
+    fn import_bundle_rejects_malformed_member_structures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index_empty = br#"{"package":"common","entries":[]}"#.to_vec();
+        let entry = br#"{"package":"common","entries":[{"version":"1.0.0","build_id":"b","content_hash":"c","files":1}]}"#.to_vec();
+
+        // a non-plain member path (`.` — the tar writer's builder refuses
+        // `..` outright) is refused on import
+        let bundle = tmp.path().join("escape.tar");
+        fs::write(&bundle, tar_bytes(&[(".".to_string(), b"x".to_vec())])).unwrap();
+        let err = import_bundle(tmp.path(), &bundle, false).unwrap_err();
+        assert!(err.contains("unsafe bundle member path"), "{err}");
+
+        // two riding index excerpts
+        let bundle = tmp.path().join("dup.tar");
+        fs::write(
+            &bundle,
+            tar_bytes(&[
+                ("index.json".to_string(), index_empty.clone()),
+                ("index.json".to_string(), index_empty.clone()),
+            ]),
+        )
+        .unwrap();
+        let err = import_bundle(tmp.path(), &bundle, false).unwrap_err();
+        assert!(err.contains("duplicate index.json"), "{err}");
+
+        // an excerpt without exactly one entry
+        let bundle = tmp.path().join("empty.tar");
+        fs::write(
+            &bundle,
+            tar_bytes(&[("index.json".to_string(), index_empty)]),
+        )
+        .unwrap();
+        let err = import_bundle(tmp.path(), &bundle, false).unwrap_err();
+        assert!(err.contains("exactly one entry, got 0"), "{err}");
+
+        // a member outside the excerpt's package/version prefix
+        let bundle = tmp.path().join("outside.tar");
+        fs::write(
+            &bundle,
+            tar_bytes(&[
+                ("index.json".to_string(), entry.clone()),
+                ("other/1.0.0/x".to_string(), b"x".to_vec()),
+            ]),
+        )
+        .unwrap();
+        let err = import_bundle(tmp.path(), &bundle, false).unwrap_err();
+        assert!(err.contains("is outside common/1.0.0/"), "{err}");
+
+        // prefix honored but no riding ledger
+        let bundle = tmp.path().join("noledger.tar");
+        fs::write(
+            &bundle,
+            tar_bytes(&[
+                ("index.json".to_string(), entry),
+                ("common/1.0.0/data.json".to_string(), b"x".to_vec()),
+            ]),
+        )
+        .unwrap();
+        let err = import_bundle(tmp.path(), &bundle, false).unwrap_err();
+        assert!(err.contains("bundle has no HASHES.json ledger"), "{err}");
+    }
+
+    #[test]
+    fn import_bundle_rejects_file_count_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "gamma");
+
+        // members carry the real pack verbatim; the excerpt claims far too
+        // many files — the trust gate passes, the count audit refuses
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(snap.join(LEDGER_FILE)).unwrap()).unwrap();
+        let build_id = ledger["build_id"].as_str().unwrap();
+        let content_hash = ledger["content_hash"].as_str().unwrap();
+        let excerpt = format!(
+            r#"{{"package":"common","entries":[{{"version":"1.0.0","build_id":"{build_id}","content_hash":"{content_hash}","files":99999}}]}}"#
+        );
+        let mut members = vec![("index.json".to_string(), excerpt.into_bytes())];
+        let mut stack = vec![snap.clone()];
+        while let Some(cur) = stack.pop() {
+            for e in fs::read_dir(&cur).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let rel = p
+                        .strip_prefix(&snap)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    members.push((format!("common/1.0.0/{rel}"), fs::read(p).unwrap()));
+                }
+            }
+        }
+        let bundle = tmp.path().join("count.tar");
+        fs::write(&bundle, tar_bytes(&members)).unwrap();
+        let err = import_bundle(tmp.path(), &bundle, false).unwrap_err();
+        assert!(
+            err.contains("record claims 99999 files, ledger covers"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn push_entry_requires_http_root_and_maps_transport_failure() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let err = push_entry(
+            tmp.path(),
+            "ftp://example.com/reg",
+            "common",
+            None,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("remote http(s) registry root"), "{err}");
+
+        // a server that serves reads but black-holes PUTs exhausts the
+        // transport retries → E2101 on the first entry file
+        let source = tmp.path().join("reg");
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "delta");
+        publish(&source, "common", "1.0.0", &snap).unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let handle = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            listener.set_nonblocking(true).unwrap();
+            while !stop2.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                // Read just the request head — the method decides the fate:
+                // a GET gets a 404 (fresh remote), a PUT gets silence (the
+                // socket closes under the in-flight request and ureq
+                // reports a transport failure).
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                if buf.starts_with(b"GET ") {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            }
+        });
+        let err = push_entry(
+            &source,
+            &format!("http://127.0.0.1:{port}"),
+            "common",
+            Some("1.0.0"),
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("E2101") && err.contains("push transport failed"),
+            "{err}"
+        );
+        stop.store(true, Ordering::SeqCst);
+        handle.join().ok();
+    }
+
+    #[test]
+    fn verify_registry_reports_unreadable_ledger_and_skips_unnameable_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "epsilon");
+        publish(tmp.path(), "common", "1.0.0", &snap).unwrap();
+        let entry = tmp.path().join("common").join("1.0.0");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(entry.join(LEDGER_FILE), fs::Permissions::from_mode(0o000))
+                .unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let ghost = std::ffi::OsStr::from_bytes(b"ghost-\xff");
+            fs::create_dir_all(tmp.path().join("common").join(ghost)).unwrap();
+        }
+        let report = verify_registry(tmp.path()).unwrap();
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("common/1.0.0") && p.contains("E1803")),
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn verify_registry_clean_pass_ledger_mismatch_and_named_orphans() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "eta");
+        publish(tmp.path(), "common", "1.0.0", &snap).unwrap();
+
+        // a clean registry: the entry verifies and its ledger matches the
+        // index record — checked, no problems
+        let report = verify_registry(tmp.path()).unwrap();
+        assert_eq!(report.packages, 1);
+        assert_eq!(report.entries_checked, 1);
+        assert_eq!(report.problems.len(), 0);
+
+        // the pack stays valid but the index record now disagrees with the
+        // ledger — flagged as a record mismatch
+        let idx_path = tmp.path().join("common").join(INDEX_FILE);
+        let mut index: RegistryIndex =
+            serde_json::from_slice(&fs::read(&idx_path).unwrap()).unwrap();
+        index.entries[0].content_hash = "deadbeef".to_string();
+        fs::write(&idx_path, serde_json::to_vec_pretty(&index).unwrap()).unwrap();
+
+        // and an entry directory on disk no index record names
+        fs::create_dir_all(tmp.path().join("common").join("0.9.0")).unwrap();
+
+        let report = verify_registry(tmp.path()).unwrap();
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("index record does not match ledger")),
+            "{report:?}"
+        );
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("0.9.0: entry directory without index record")),
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn gc_registry_reports_removals_and_skips_unchanged_packages() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (v, tag) in [("0.1.0", "one"), ("0.2.0", "two"), ("1.0.0", "three")] {
+            let snap = tmp.path().join(format!("snap-{v}"));
+            make_snapshot(&snap, tag);
+            publish(tmp.path(), "common", v, &snap).unwrap();
+        }
+
+        // keep 2: the oldest version is dropped, the index rewritten
+        let report = gc_registry(tmp.path(), 2, false).unwrap();
+        assert_eq!(report.removed, ["common/0.1.0"]);
+        assert_eq!(report.rewritten, 1);
+        assert!(!tmp.path().join("common").join("0.1.0").exists());
+        let index = read_index(tmp.path(), "common").unwrap();
+        assert_eq!(
+            index
+                .entries
+                .iter()
+                .map(|e| e.version.clone())
+                .collect::<Vec<_>>(),
+            ["0.2.0", "1.0.0"]
+        );
+
+        // a window that keeps everything changes nothing
+        let report = gc_registry(tmp.path(), 8, false).unwrap();
+        assert_eq!(report.removed.len(), 0);
+        assert_eq!(report.rewritten, 0);
+        assert!(tmp.path().join("common").join("0.2.0").exists());
+    }
+
+    #[test]
+    fn verifying_key_from_env_rejects_empty_and_malformed_values() {
+        std::env::set_var("CAGE_TEST_VK_EMPTY", "   ");
+        let err = verifying_key_from_env("CAGE_TEST_VK_EMPTY").unwrap_err();
+        assert!(err.contains("is empty"), "{err}");
+
+        std::env::set_var("CAGE_TEST_VK_BAD", "not-base64!!");
+        let err = verifying_key_from_env("CAGE_TEST_VK_BAD").unwrap_err();
+        assert!(err.contains("not base64 of a 32-byte key"), "{err}");
+
+        std::env::remove_var("CAGE_TEST_VK_EMPTY");
+        std::env::remove_var("CAGE_TEST_VK_BAD");
+    }
+
+    #[test]
+    fn remove_entry_rejects_bad_version_and_tolerates_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = remove_entry(tmp.path(), "common", "1 0", false).unwrap_err();
+        assert!(err.contains("invalid registry version"), "{err}");
+
+        let snap = tmp.path().join("snap");
+        make_snapshot(&snap, "zeta");
+        publish(tmp.path(), "common", "1.0.0", &snap).unwrap();
+
+        // a dry run validates but removes nothing
+        remove_entry(tmp.path(), "common", "1.0.0", true).unwrap();
+        assert!(tmp.path().join("common").join("1.0.0").exists());
+        let index = read_index(tmp.path(), "common").unwrap();
+        assert_eq!(index.entries.len(), 1);
+
+        // the version directory vanished out from under the index — the
+        // record is still removable
+        fs::remove_dir_all(tmp.path().join("common").join("1.0.0")).unwrap();
+        remove_entry(tmp.path(), "common", "1.0.0", false).unwrap();
+        let index = read_index(tmp.path(), "common").unwrap();
+        assert_eq!(index.entries.len(), 0);
+    }
+
+    #[test]
+    fn read_bundle_signature_rejects_malformed_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("b.tar");
+        fs::write(&bundle, b"payload").unwrap();
+        fs::write(sidecar_path(&bundle), b"{\"nope\":1}").unwrap();
+        let err = read_bundle_signature(&bundle).unwrap_err();
+        assert!(err.contains("malformed"), "{err}");
+    }
 }
