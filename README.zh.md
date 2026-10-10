@@ -44,7 +44,7 @@ Authoring Sources → Source Adapters → Canonical Model
 - Configuration Snapshot：`cage snapshot` 打包自校验配置快照（manifest + schema + 产物 + 逐文件哈希账本），服务器启动载入前验证，篡改/增删文件即暴露
 - Configuration Registry：`cage registry` 多版本配置仓库（发布/列表/审计/GC/移除 + bundle 导出/导入/直推远端），消费方 `registry:包@版本` 引用 + `[dependencies]` 版本 pin，远程 http(s) 根解析（消费侧缓存离线可用，`registry push` 直推远端）
 - 声明式数据迁移：`cage migrate` 按版本步进链对已验证配置做规则变换（改名/补默认/删字段/类型加宽/值重映射），默认 dry-run 报告，`--write` 原路写回并全栈回验
-- Target 插件：JSON / CSV 数据产物起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（用户自定义 Tera 模板 + 语言过滤器库），并交付 MessagePack 数据产物与 Protobuf `.proto` 定义文件生成；后续 FlatBuffers 等（数据序列化与代码生成分离）
+- Target 插件：JSON / CSV 数据产物起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（用户自定义 Tera 模板 + 语言过滤器库），并交付 MessagePack 数据产物、Protobuf `.proto` 定义文件与标准 JSON Schema 文档（draft-07 / 2020-12）生成；后续 FlatBuffers 等（数据序列化与代码生成分离）
 
 ## 快速开始
 

@@ -242,6 +242,7 @@ dependencies = [
  "cage-target-go",
  "cage-target-java",
  "cage-target-json",
+ "cage-target-jsonschema",
  "cage-target-lua",
  "cage-target-msgpack",
  "cage-target-proto",
@@ -433,6 +434,17 @@ dependencies = [
  "cage-core",
  "indexmap",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "cage-target-jsonschema"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "indexmap",
+ "serde_json",
+ "serde_yaml",
  "tempfile",
 ]
 

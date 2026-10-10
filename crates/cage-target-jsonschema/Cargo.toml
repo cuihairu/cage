@@ -1,0 +1,21 @@
+[package]
+name = "cage-target-jsonschema"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "JSON Schema target generator for Cage"
+
+[dependencies]
+cage-core = { path = "../cage-core" }
+indexmap = { workspace = true }
+# preserve_order：文档键序 = 声明序（$schema → title → description → type →
+# properties → required → additionalProperties），字节确定性由插入序锚定
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }
+tempfile = { workspace = true }

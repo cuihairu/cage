@@ -42,7 +42,7 @@ echo "$ENV_OUT"
 [ "$ENV_CODE" -eq 2 ] || { echo "FAIL: 未知环境期望退出码 2，实际 ${ENV_CODE}" >&2; exit 1; }
 case "$ENV_OUT" in *"unknown environment 'staging'"*) ;; *) echo "FAIL: 输出未点名 unknown environment" >&2; exit 1 ;; esac
 
-step "[4/13] cage build --profile client   —— 验证 + 生成全部 12 个 target（5 张表）"
+step "[4/13] cage build --profile client   —— 验证 + 生成全部 13 个 target（5 张表）"
 echo "\$ cage build examples/game-config --profile client"
 "$CAGE_BIN" build "$EX" --profile client
 # 新源产物抽查：Excel 源 Quest.json / MsgPack 源 Shop.json + 新 target 的 proto/msgpack
@@ -74,7 +74,7 @@ SNAP_DIR="$(ls -d "$EX"/build/snapshot/client-*/ | head -1)"
 echo "\$ cage snapshot <dir> --verify"
 "$CAGE_BIN" snapshot "$SNAP_DIR" --verify
 
-step "[7/13] cage gen --profile client   —— 只生成 9 种代码绑定（含 proto 定义）"
+step "[7/13] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto 定义）"
 echo "\$ cage gen examples/game-config --profile client"
 "$CAGE_BIN" gen "$EX" --profile client
 
@@ -131,4 +131,4 @@ step "[13/13] cage inspect examples/game-config   —— 查看表结构"
 echo "\$ cage inspect examples/game-config"
 "$CAGE_BIN" inspect "$EX"
 
-printf '\n全部通过。\n产物目录：examples/game-config/build/{client,server}/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java}\n快照目录：examples/game-config/build/snapshot/\n'
+printf '\n全部通过。\n产物目录：examples/game-config/build/{client,server}/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java,jsonschema}\n快照目录：examples/game-config/build/snapshot/\n'

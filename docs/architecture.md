@@ -325,6 +325,7 @@ cage/
 │   ├── cage-target-csv/     # CSV 产出
 │   ├── cage-target-msgpack/ # MessagePack 产出（rmp 最小形，确定性二进制）
 │   ├── cage-target-proto/   # Protobuf .proto3 定义文件（schema 驱动，代码绑定族）
+│   ├── cage-target-jsonschema/ # 标准 JSON Schema 文档（draft-07/2020-12，每表自包含，非 cage 工具链消费）
 │   ├── cage-target-cs/      # C# 代码绑定
 │   ├── cage-target-py/      # Python 代码绑定
 │   ├── cage-target-lua/     # Lua 代码绑定

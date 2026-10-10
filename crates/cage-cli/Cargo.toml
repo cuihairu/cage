@@ -27,6 +27,7 @@ cage-target-json = { path = "../cage-target-json" }
 cage-target-csv = { path = "../cage-target-csv" }
 cage-target-msgpack = { path = "../cage-target-msgpack" }
 cage-target-proto = { path = "../cage-target-proto" }
+cage-target-jsonschema = { path = "../cage-target-jsonschema" }
 cage-target-cs = { path = "../cage-target-cs" }
 cage-target-py = { path = "../cage-target-py" }
 cage-target-lua = { path = "../cage-target-lua" }

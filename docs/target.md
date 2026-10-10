@@ -108,6 +108,7 @@ JavaScript      ← 已实装
 C++             ← 已实装
 Go              ← 已实装
 Java            ← 已实装
+JSON Schema     ← 已实装（标准 JSON Schema 文档）
 Template        ← 已实装（用户自定义模板）
 ```
 
@@ -209,6 +210,55 @@ enums_file = "cage_enums.proto" # 默认 cage_enums.proto（import 路径随之�
   前缀 `_`；同名成员确定性去重
 - `repeated` 元素与 map 值类型为 object/null/any 时用 well-known type
   消息，合法无需包装
+
+### JSON Schema Target（已实装）
+
+标准 JSON Schema 文档生成：每表一个**自包含**的 `{table}.schema.json`
+（`properties` 按 schema 字段声明序），编辑器、ajv 等非 cage 工具链直接
+消费——不需要 cage 运行时。draft-07 默认（工具支持面最宽），2020-12 经
+`options.draft` 切换。文档是纯标准 JSON Schema（不带自定义扩展键），
+确定性 = 表名序 × 声明序键插入序；枚举一律内联 `enum` 数组，无共享枚举
+文件。
+
+```toml
+[[profiles.client.targets]]
+format = "jsonschema"          # 别名 json-schema / json_schema
+output_dir = "build/jsonschema"
+
+[profiles.client.targets.options]
+draft = "07"                   # 默认 07；2020-12 切换；未知值报错（exit 2）
+```
+
+类型映射表（JSON Schema 关键字）：
+
+| Cage 类型 | JSON Schema | 说明 |
+|-----------|-------------|------|
+| null | `{"type": "null"}` | |
+| bool | `{"type": "boolean"}` | |
+| int8–64 / uint8–64 | `{"type": "integer"}` | 整数族同型，`min`/`max` → `minimum`/`maximum`（整值边界渲染为整数） |
+| float32 / float64 | `{"type": "number"}` | 同上 |
+| string | `{"type": "string"}` | `min_length`/`max_length`/`pattern` → `minLength`/`maxLength`/`pattern` |
+| bytes | `{"type": "string", "contentEncoding": "base64"}` | `contentEncoding` 仅 draft-07（2020-12 已删该关键字） |
+| array\<T\> | `{"type": "array", "items": T}` | `min_items`/`max_items` → `minItems`/`maxItems` |
+| object | `{"type": "object", "properties": …, "additionalProperties": false}` | 声明了属性的类型化对象闭形（与校验器一致：未知键拒绝）；空 Object 自由形状 |
+| map\<string, V\> | `{"type": "object", "additionalProperties": V}` | 开形对象，值域即 V |
+| map\<int, V\> | 同上 + `propertyNames.pattern: ^-?[0-9]+$` | int 键在数据模型里是数字字符串，与校验器同口径 |
+| enum | `{"type": "string", "enum": [成员名…]}` | **实例恒为成员名**（L2 把 enum 字段类型定为 string，整型字面量只是代码生成元数据）；悬空枚举名降级纯 `string`（L1 另行报错） |
+| any | `{}` | 不加约束 |
+
+生成规则要点：
+
+- 表文档键序固定：`$schema` → `title` → `description` → `type` →
+  `properties` → `required` → `additionalProperties`；属性内键序同理
+  固定（type → description → default → 约束关键字）——固定插入序锁字节
+  确定性
+- `required` 收集必填字段（声明序）；非有限 min/max 不落盘（JSON 无
+  NaN/Inf）；内联 `enum_values` 的整数字符串域在整型字段上渲染为数字
+  枚举（实例是 JSON 数字，字符串枚举会错配）
+- 跨表引用（reference）与语义规则（rules）无标准 JSON Schema 拼写，
+  不进文档——它们仍由 cage 自己的流水线在事实源上执行
+- `options.draft` 未知值是唯一失败路径（与 template 同族：配置错在
+  generate 期报 exit 2），产物一个不落
 
 Code Target 的现役生成方式（plan → render → verify 直渲染，不依赖 AST
 库）及其选型理由见仓库设计稿 `docs/design.md` 的 Code Targets 章节；

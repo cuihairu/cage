@@ -59,8 +59,11 @@ game = "0.1.0"                            # 版本 pin：构建期解析并校�
 ## JSON Schema（标准）形态
 
 cage 的 schema 是自有 DSL（YAML，见 [Schema 文档](/schema)）——它是
-规则事实源，不是 JSON Schema 标准文档。对外提供 JSON Schema 形态的
-导出（给非 cage 工具链消费）目前**没有**对应的生成器；需要时按 proto/
-csharp 同款路线新增 `format = jsonschema` 的 target（schema 驱动、确定
-性，随源 schema 演进）。现阶段需要 JSON Schema 的下游可用快照里的
-`schema.json`（profile 投影的规范结构，编辑器 / 前端已同形消费）。
+规则事实源，不是 JSON Schema 标准文档。给非 cage 工具链（编辑器、ajv、
+前端表单等）消费的标准 JSON Schema 形态由 **`format = "jsonschema"`
+target** 产出：每表一个自包含 `{table}.schema.json`（draft-07 默认、
+2020-12 可选，枚举内联、闭形对象），schema 驱动、确定性字节，随源
+schema 演进——详见 [Target · JSON Schema](/target#json-schema-target-已实装)。
+快照里的 `schema.json`（profile 投影的规范结构）是 cage 自有形态，
+编辑器 / 前端同形消费；两者各司其职：自有形态管编译链内消费，标准
+形态管链外工具。

@@ -1176,7 +1176,29 @@ TypeScript / JavaScript
 C++
 Go
 Java
+JSON Schema（标准文档，2026-10 实装）
 ```
+
+### JSON Schema Target 决策记录（2026-10）
+
+**定了什么**：标准 JSON Schema 形态的 schema 导出走 `format =
+"jsonschema"` target（`cage-target-jsonschema`，代码绑定族面板）——
+每表一个**自包含** `{table}.schema.json`，draft-07 默认、2020-12 经
+`options.draft` 切换；枚举一律内联 `enum` 数组（**实例恒为成员名**——
+L2 把 enum 字段类型定为 string，整型字面量只是代码生成元数据，故整数
+枚举也发字符串枚举）；类型化 Object 与表文档都发
+`additionalProperties: false`（与校验器「未知键拒绝」同口径）；
+`map<int, V>` 的键发 `propertyNames.pattern` 数字串约束（数据模型里
+int 键是数字字符串）；bytes 在 draft-07 发 `contentEncoding: base64`
+（2020-12 已删该关键字，不发）；文档不带自定义扩展键，跨表引用与语义
+规则无标准拼写不进文档（仍由 cage 流水线在事实源执行）。确定性 =
+表名序 × 固定键插入序（serde_json preserve_order），两跑逐字节一致。
+**为什么**：让非 cage 工具链（编辑器、ajv、前端表单）零运行时消费
+schema——这是「Schema 即资产」的链外形态；自包含单文件避免 `$ref`
+解析负担；draft-07 兼容面最宽，2020-12 留升级口。**备选**：带
+`$defs` + `$ref` 的合并单文档（消费方要做引用解析，弃）；共享枚举
+文件（JSON Schema 无跨文件 import 标准机制，`$ref` 相对路径在分发
+场景易碎，弃）；默认 2020-12（工具支持面窄于 07，只留 options）。
 
 例如同一份数据：
 

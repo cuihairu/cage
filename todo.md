@@ -80,6 +80,33 @@
       测试（gen 产物形状 + 两跑逐字节 + build 同 lane + manifest 记
       录），workspace 630 全绿；文档 target.md/cli.md/architecture.md/
       README/需求整理.md 同步。至此第二阶段全部交付
+- [x] JSON Schema 生成器（2026-10，Schema 即资产的链外形态——用户问
+      「JSON Schema 这种也算资产吧，如何管理如何加载」，管理侧由
+      docs/assets.md 收口，加载侧补标准形态导出）：新 crate
+      `cage-target-jsonschema` 进 build/gen 代码面板（`format =
+      jsonschema`/`json-schema`/`json_schema`）。拍板（design
+      §Code Targets 决策记录）：每表一个**自包含** `{table}.schema.json`
+      （无 `$ref`/共享枚举文件——分发场景引用易碎），draft-07 默认、
+      2020-12 经 `options.draft`（唯一失败路径，与 template 同族配置错
+      在 generate 期 exit 2）；枚举一律内联成员名（L2 把 enum 字段类型
+      定为 string，整型字面量只是代码生成元数据——整数值枚举也发字符串
+      枚举，悬空枚举名降级纯 string 由 L1 另行报错）；类型化 Object 与
+      表文档都发 `additionalProperties: false`（校验器「未知键拒绝」同
+      口径）；`map<int, V>` 键发 `propertyNames.pattern` 数字串约束；
+      bytes 仅 draft-07 发 `contentEncoding: base64`（2020-12 已删该
+      关键字）；整值 f64 边界渲染为整数；非有限 min/max 不落盘；内联
+      `enum_values` 整数域在整型字段上渲染数字枚举；跨表引用与语义
+      规则无标准拼写不进文档。确定性 = 表名序 × 固定键插入序
+      （serde_json preserve_order）。验收达成：crate 单测 ×11（文档
+      形状与 required/声明序、标量与约束映射、枚举成员名两态与悬空
+      降级、复合类型四态、2020-12 差异、未知 draft 报错、最小表闭形、
+      确定性两跑、from_config 默认与覆盖）+ CLI 集成 ×2（gen 产物形状
+      + 两跑逐字节 + build 同 lane + manifest 记录；draft-99 exit 2
+      产物零落盘）+ 文档（target.md JSON Schema 节与码表、cli.md、
+      assets.md 转已交付、architecture.md 结构树、design 决策记录、
+      需求整理.md、todo 本条）+ 示例工程 client profile 增第 13 个
+      target（80 产物/83 快照文件全链重验，docs/example.md 与
+      README 同步）——本轮交付，勾选
 - [x] Plugin SDK + Game Rule Validator 实装（沙箱方案定稿于 design §17.1：进程内 trait 现已实装、动态库 C ABI shim 为第三方分发路线、不可信代码不执行；GameRuleValidator trait + GameRuleRegistry + 内建 power_curve 样例端到端，`cage check --level gamerule` 输出 E1601 行级诊断；动态库装载与插件市场不在本期）
 - [x] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
 - [x] E1403 循环检测接线进校验面（2026-10 点火：此前图 API 的

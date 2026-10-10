@@ -2749,7 +2749,7 @@ fn run_gen(path: &Path, profile: &str, env: Option<&str>, no_cache: bool) -> i32
     }
     if artifacts.is_empty() {
         eprintln!(
-            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java/proto/template)"
+            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java/proto/jsonschema/template)"
         );
         return 2;
     }
@@ -2820,6 +2820,13 @@ fn code_target_items(
             target,
         )
         .generate(schema, Some(schema_hash)))),
+        // Standard JSON Schema documents (draft-07 default, 2020-12 via
+        // options.draft) — the one bundled target that can fail on config
+        // alone (an unknown draft value), like the template target.
+        "jsonschema" | "json-schema" | "json_schema" => {
+            let gen = cage_target_jsonschema::JsonSchemaTargetGenerator::from_config(target);
+            Some(gen.generate(schema, Some(schema_hash)))
+        }
         "template" => {
             let mut gen = cage_target_template::TemplateTargetGenerator::from_config(target);
             // `options.template_dir` (default `.cage/templates`) is relative

@@ -465,3 +465,148 @@ enums:
     let manifest = fs::read_to_string(root.join("build/manifest.json")).unwrap();
     assert!(manifest.contains("\"proto\""), "manifest:\n{manifest}");
 }
+
+/// `format = "jsonschema"` rides the code-target lane like the other
+/// schema-driven bindings: gen emits one self-contained standard document
+/// per table, byte-deterministic across runs, with member-name string enums
+/// and closed object shapes.
+#[test]
+fn gen_jsonschema_target_writes_deterministic_documents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(
+        root.join("cage.toml"),
+        r#"output_dir = "build"
+schema_path = "schemas"
+
+[project]
+name = "schemaout"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/json"
+
+[[profiles.client.targets]]
+format = "jsonschema"
+output_dir = "build/jsonschema"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("schemas/item.yaml"),
+        r#"tables:
+  Item:
+    name: Item
+    description: Equipment definitions.
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true, min: 1 }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind } }
+      drops: { name: drops, type: { kind: Map, value: { key_type: int, value_type: { kind: Array, value: { kind: Int32 } } } } }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+      - { name: Shield, value: 2 }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("config/item.json"),
+        r#"{"Item": [{"id": 1, "kind": "Sword", "drops": {"1": [1]}}]}"#,
+    )
+    .unwrap();
+
+    let out = run_cage(&["gen", root.to_str().unwrap(), "--profile", "client"]);
+    assert_success(&out, "gen with jsonschema target");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("cage gen: OK"));
+
+    let item = fs::read_to_string(root.join("build/jsonschema/Item.schema.json")).unwrap();
+    assert!(item.contains("\"$schema\": \"http://json-schema.org/draft-07/schema#\""));
+    assert!(item.contains("\"title\": \"Item\""));
+    assert!(item.contains("\"required\": [\n    \"id\"\n  ]"));
+    assert!(item.contains("\"additionalProperties\": false"));
+    // Enum domain = member names (instances are strings, not literals).
+    assert!(item.contains("\"enum\": [\n        \"Sword\",\n        \"Shield\"\n      ]"));
+    // Int-keyed map: keys constrained to numeric strings.
+    assert!(item.contains("\"propertyNames\": {\n        \"pattern\": \"^-?[0-9]+$\"\n      }"));
+
+    // Byte-deterministic across runs.
+    let before = artifact_paths(root, "build/jsonschema");
+    let out = run_cage(&["gen", root.to_str().unwrap(), "--profile", "client"]);
+    assert_success(&out, "gen rerun");
+    assert_eq!(before, artifact_paths(root, "build/jsonschema"));
+
+    // build reaches the same generator through the same lane.
+    let out = run_cage(&["build", root.to_str().unwrap()]);
+    assert_success(&out, "build with jsonschema target");
+    assert_eq!(before, artifact_paths(root, "build/jsonschema"));
+    let manifest = fs::read_to_string(root.join("build/manifest.json")).unwrap();
+    assert!(manifest.contains("\"jsonschema\""), "manifest:\n{manifest}");
+}
+
+/// An unusable `options.draft` value fails like a template fault: exit 2
+/// with a message naming the supported drafts, before any artifact lands.
+#[test]
+fn gen_jsonschema_unknown_draft_fails_with_usage_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(
+        root.join("cage.toml"),
+        r#"output_dir = "build"
+schema_path = "schemas"
+
+[project]
+name = "schemabad"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "jsonschema"
+output_dir = "build/jsonschema"
+
+[profiles.client.targets.options]
+draft = "draft-99"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("schemas/item.yaml"),
+        r#"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+"#,
+    )
+    .unwrap();
+    fs::write(root.join("config/item.json"), r#"{"Item": [{"id": 1}]}"#).unwrap();
+
+    let out = run_cage(&["gen", root.to_str().unwrap(), "--profile", "client"]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown draft 'draft-99'") && stderr.contains("supported: 07, 2020-12"),
+        "stderr:\n{stderr}"
+    );
+    assert!(!root.join("build/jsonschema").exists());
+}

@@ -29,6 +29,7 @@ targets = [
   { format = "cpp",          output_dir = "build/client/cpp", options = { namespace = "game::config" } },
   { format = "go",           output_dir = "build/client/go",  options = { package = "config" } },
   { format = "java",         output_dir = "build/client/java", options = { package = "game.config" } },
+  { format = "jsonschema",   output_dir = "build/client/jsonschema" },
 ]
 
 [profiles.server]

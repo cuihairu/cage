@@ -15,7 +15,7 @@ bash examples/run.sh
 
 ```
 game-config/
-├── cage.toml          # 工程配置：client（12 target）/ server（3 target）双 profile
+├── cage.toml          # 工程配置：client（13 target）/ server（3 target）双 profile
 ├── schemas/           # 五个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
 │   ├── character.yaml # 角色成长：枚举/唯一约束/正则/范围/默认值/保留字字段 class
 │   │                  #   + nickname：env_overrides（dev 放宽、prod 必填）
@@ -56,6 +56,7 @@ game-config/
 | 注册表发布（版本化自校验资产） | `run.sh` 第 11 步 |
 | MessagePack 二进制（rmp 最小形，确定性字节） | `build/client/msgpack/` |
 | Protobuf .proto3 定义（protoc 可编译） | `build/client/proto/` |
+| 标准 JSON Schema 文档（draft-07，每表自包含） | `build/client/jsonschema/` |
 | L7 Game Rule：好数据通过 / 坏数据 E1601 | `run.sh` 第 2、12 步 |
 | CI 集成（Jenkins / GitHub Actions / GitLab CI） | `ci/` |
 | Web 编辑器拒写目录 schema（409） | `examples/web-smoke.sh` 第 6 步 |
@@ -66,7 +67,7 @@ game-config/
 cage check examples/game-config                    # L0-L6 校验（5 张表）
 cage check examples/game-config --level gamerule   # 加上 L7 业务规则
 cage check examples/game-config --env prod         # 分环境：nickname 必填、折扣 ≤ 0.5
-cage build examples/game-config --profile client   # 12 个 target 全量构建（5 张表）
+cage build examples/game-config --profile client   # 13 个 target 全量构建（5 张表）
 cage build examples/game-config --profile client --incremental  # up to date
 cage build examples/game-config --profile server   # 服务端视图（internal_note 可见）
 cage snapshot examples/game-config --profile client        # 自校验快照打包
@@ -80,5 +81,5 @@ cage check examples/game-config/bad --env prod        # E1001（prod 必填 nick
 cage inspect examples/game-config                   # 表结构清单
 ```
 
-产物在 `build/client/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java}/`
+产物在 `build/client/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java,jsonschema}/`
 与 `build/server/{json,csv,cs}/`（已 gitignore，按需重新生成）。
