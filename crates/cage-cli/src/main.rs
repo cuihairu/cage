@@ -4022,4 +4022,376 @@ enums: {}
         );
         allow_read(&sources, 0o755);
     }
+
+    // ------------------------------------------------------------------
+    // Source re-rendering: the text formats (json / yaml / csv)
+    // ------------------------------------------------------------------
+
+    /// The schema every CLI-level fixture project loads (one table, two
+    /// required fields, an enum-free document).
+    const PUBLISHER_SCHEMA: &str = r"tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    fields:
+      id:
+        name: id
+        type: { kind: Int32 }
+        required: true
+      name:
+        name: name
+        type: { kind: String }
+        required: true
+enums: {}
+";
+
+    fn render_schema() -> Schema {
+        serde_yaml::from_str(
+            r"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String } }
+      rarity: { name: rarity, type: { kind: String } }
+enums: {}
+",
+        )
+        .expect("schema yaml")
+    }
+
+    fn item_table() -> cage_core::value::Table {
+        use cage_core::value::{Row, SourceLocation, Table, TypedValue, Value};
+        let loc = SourceLocation::new("config/Item.json");
+        let mut fields = IndexMap::new();
+        for (name, value) in [
+            ("id", Value::Int(1)),
+            ("name", Value::String("Sword".to_string())),
+            ("rarity", Value::Int(3)),
+        ] {
+            fields.insert(name.to_string(), TypedValue::new(value, loc.clone()));
+        }
+        // Off-schema field: appended in load order, after the schema
+        // columns (ordered_columns' `extra` arm).
+        fields.insert(
+            "season_only".to_string(),
+            TypedValue::new(Value::Bool(true), loc.clone()),
+        );
+        Table {
+            name: "Item".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![Row {
+                primary_key: vec![Value::Int(1)],
+                fields,
+                location: loc,
+                index: 0,
+            }],
+            source_file: "config/Item.json".to_string(),
+            sheet: None,
+        }
+    }
+
+    #[test]
+    fn render_source_file_orders_columns_and_refuses_unwritable_shapes() {
+        let schema = render_schema();
+        let table = item_table();
+        let tables: Vec<&cage_core::value::Table> = vec![&table];
+
+        // Schema declaration order wins; off-schema fields follow in load
+        // order (the JSON reader loses the file's original key order).
+        assert_eq!(
+            ordered_columns(&table, &schema),
+            vec!["id", "name", "rarity", "season_only"]
+        );
+        // A table with no rows renders no columns at all.
+        let empty = cage_core::value::Table {
+            rows: Vec::new(),
+            ..table.clone()
+        };
+        assert_eq!(ordered_columns(&empty, &schema), Vec::<String>::new());
+
+        let json = render_source_file("json", &tables, "config/Item.json", &schema).expect("json");
+        let text = String::from_utf8(json).expect("utf8");
+        assert!(text.starts_with("{\n  \"Item\": [\n"), "{text}");
+        assert!(text.contains("\"season_only\": true"), "{text}");
+        assert!(text.ends_with("}\n"), "{text}");
+
+        let yaml = render_source_file("yaml", &tables, "config/Item.json", &schema).expect("yaml");
+        assert!(String::from_utf8(yaml)
+            .expect("utf8")
+            .starts_with("Item:\n"));
+
+        // CSV: headers in the same column order, cells formatted so each
+        // value reads back as itself.
+        let csv = render_source_file("csv", &tables, "config/Item.json", &schema).expect("csv");
+        assert_eq!(
+            String::from_utf8(csv).expect("utf8"),
+            "id,name,rarity,season_only\n1,Sword,3,true\n"
+        );
+        // An empty table with a primary key renders the key columns.
+        let csv_empty =
+            render_source_file("csv", &[&empty], "config/Item.json", &schema).expect("csv");
+        assert_eq!(String::from_utf8(csv_empty).expect("utf8"), "id\n");
+
+        // A CSV file carries exactly one table.
+        let err = render_source_file("csv", &[&table, &table], "config/Item.json", &schema)
+            .expect_err("two tables");
+        assert!(err.contains("exactly one table"), "{err}");
+        // No text form for an unknown extension either.
+        let err = render_source_file("toml", &tables, "config/Item.json", &schema)
+            .expect_err("unsupported");
+        assert!(err.contains("unsupported text format 'toml'"), "{err}");
+    }
+
+    #[test]
+    fn csv_cell_and_value_to_json_cover_every_shape() {
+        use cage_core::value::Value;
+        let (source, table, field) = ("config/Item.json", "Item", "rarity");
+        // An empty cell reads back as null; integral floats carry `.0` so
+        // the reader's integer branches never swallow them.
+        assert_eq!(
+            csv_cell(&Value::Null, source, table, field).expect("null"),
+            ""
+        );
+        assert_eq!(
+            csv_cell(&Value::Bool(true), source, table, field).expect("bool"),
+            "true"
+        );
+        assert_eq!(
+            csv_cell(&Value::Bool(false), source, table, field).expect("bool"),
+            "false"
+        );
+        assert_eq!(
+            csv_cell(&Value::Int(-7), source, table, field).expect("int"),
+            "-7"
+        );
+        assert_eq!(
+            csv_cell(&Value::UInt(9), source, table, field).expect("uint"),
+            "9"
+        );
+        assert_eq!(
+            csv_cell(&Value::Float(3.0), source, table, field).expect("float"),
+            "3.0"
+        );
+        assert_eq!(
+            csv_cell(&Value::Float(3.5), source, table, field).expect("float"),
+            "3.5"
+        );
+        assert_eq!(
+            csv_cell(&Value::String("Sword".into()), source, table, field).expect("string"),
+            "Sword"
+        );
+
+        // Bytes / array / object have no round-trippable cell form.
+        for value in [
+            Value::Bytes(vec![1]),
+            Value::Array(vec![]),
+            Value::Object(IndexMap::new()),
+        ] {
+            let err = csv_cell(&value, source, table, field).expect_err("no cell form");
+            assert!(err.contains("no CSV cell form"), "{value:?}: {err}");
+        }
+        // value_to_json recurses into containers; only bytes have no text
+        // form, and a nested one refuses the whole value.
+        for value in [
+            Value::Bytes(vec![1]),
+            Value::Array(vec![Value::Bytes(vec![1])]),
+            Value::Object(IndexMap::from([("k".to_string(), Value::Bytes(vec![1]))])),
+        ] {
+            let err = value_to_json(&value, source, table, field).expect_err("no text form");
+            assert!(err.contains("no text-source form"), "{value:?}: {err}");
+        }
+        // Scalars, null, arrays and objects serialize directly.
+        assert_eq!(
+            value_to_json(&Value::Null, source, table, field).expect("null"),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            value_to_json(&Value::Int(7), source, table, field).expect("int"),
+            serde_json::json!(7)
+        );
+        assert_eq!(
+            value_to_json(&Value::UInt(7), source, table, field).expect("uint"),
+            serde_json::json!(7u64)
+        );
+        assert_eq!(
+            value_to_json(&Value::Bool(true), source, table, field).expect("bool"),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value_to_json(&Value::Float(3.5), source, table, field).expect("float"),
+            serde_json::json!(3.5)
+        );
+        assert_eq!(
+            value_to_json(&Value::String("Sword".into()), source, table, field).expect("string"),
+            serde_json::json!("Sword")
+        );
+        assert_eq!(
+            value_to_json(
+                &Value::Array(vec![Value::Int(1), Value::String("a".into())]),
+                source,
+                table,
+                field
+            )
+            .expect("array"),
+            serde_json::json!([1, "a"])
+        );
+        assert_eq!(
+            value_to_json(
+                &Value::Object(IndexMap::from([("k".to_string(), Value::Int(1))])),
+                source,
+                table,
+                field
+            )
+            .expect("object"),
+            serde_json::json!({"k": 1})
+        );
+        // rows_to_json renders schema-ordered objects through that path.
+        let rows = rows_to_json(&item_table(), "config/Item.json", &render_schema()).expect("rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].keys().collect::<Vec<&String>>(),
+            vec!["id", "name", "rarity", "season_only"]
+        );
+    }
+
+    /// The on-disk text source holds a stale row: the re-render rewrites it.
+    #[test]
+    fn write_migrated_sources_groups_and_skips_unwritable_sources() {
+        use cage_core::value::{Document, Row, SourceLocation, Table, TypedValue, Value};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("config")).expect("config");
+        std::fs::create_dir_all(root.join("shared")).expect("shared");
+        std::fs::write(
+            root.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{table}.json"
+"#,
+        )
+        .expect("cage.toml");
+        std::fs::write(root.join("schema.yaml"), PUBLISHER_SCHEMA).expect("schema");
+        std::fs::write(
+            root.join("config/Item.json"),
+            r#"{"Item": [{"id": 1, "name": "Old"}]}"#,
+        )
+        .expect("item.json");
+
+        let config = load_project_config(root).expect("config");
+        let schema = load_schema(&root.join("schema.yaml")).expect("schema");
+
+        // The tables' source_file paths are absolute (the source reader
+        // hands back the walked path), which is what makes the writable
+        // check `file.starts_with(root)` work.
+        let item_src = root.join("config/Item.json");
+        let quest_src = root.join("config/Quest.xlsx");
+        let shared_src = root.join("shared/Item.json");
+        let loc = SourceLocation::new("config/Item.json");
+        let mut fields = IndexMap::new();
+        fields.insert(
+            "id".to_string(),
+            TypedValue::new(Value::Int(1), loc.clone()),
+        );
+        fields.insert(
+            "name".to_string(),
+            TypedValue::new(Value::String("Sword".to_string()), loc),
+        );
+        let item = Table {
+            name: "Item".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![Row {
+                primary_key: vec![Value::Int(1)],
+                fields,
+                location: SourceLocation::new("config/Item.json"),
+                index: 0,
+            }],
+            source_file: root.join("config/Item.json").to_string_lossy().into_owned(),
+            sheet: None,
+        };
+        // An Excel source: reported, never written.
+        let quest = Table {
+            name: "Quest".to_string(),
+            source_file: root
+                .join("config/Quest.xlsx")
+                .to_string_lossy()
+                .into_owned(),
+            ..item.clone()
+        };
+        // A text source outside the project's local roots: read-only.
+        let shared = Table {
+            name: "Shared".to_string(),
+            source_file: root.join("shared/Item.json").to_string_lossy().into_owned(),
+            ..item.clone()
+        };
+        let doc = Document {
+            tables: IndexMap::from([
+                ("Item".to_string(), item),
+                ("Quest".to_string(), quest),
+                ("Shared".to_string(), shared),
+            ]),
+            source_files: Vec::new(),
+            metadata: cage_core::value::DocumentMetadata::default(),
+        };
+
+        // Dry run: every branch reports, nothing is written.
+        let lines = write_migrated_sources(&doc, root, &config, &schema, false).expect("dry run");
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains(&format!("would write {}", item_src.display())),
+            "{joined}"
+        );
+        assert!(
+            joined.contains(&format!("skip {} (Excel source", quest_src.display())),
+            "{joined}"
+        );
+        assert!(
+            joined.contains(&format!(
+                "skip {} (registry/remote source",
+                shared_src.display()
+            )),
+            "{joined}"
+        );
+        let on_disk = std::fs::read_to_string(&item_src).expect("read back");
+        assert!(
+            on_disk.contains("Old"),
+            "dry run leaves the file alone: {on_disk}"
+        );
+
+        // Real run: the text source is rewritten, the others are skipped.
+        let lines = write_migrated_sources(&doc, root, &config, &schema, true).expect("write");
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains(&format!("wrote {}", item_src.display())),
+            "{joined}"
+        );
+        let on_disk = std::fs::read_to_string(&item_src).expect("read back");
+        assert!(on_disk.contains("Sword"), "rewritten: {on_disk}");
+        assert!(!on_disk.contains("Old"), "stale row gone: {on_disk}");
+
+        // A second run is byte-identical: skipped outright.
+        let lines = write_migrated_sources(&doc, root, &config, &schema, true).expect("second");
+        assert!(
+            lines
+                .join("\n")
+                .contains(&format!("unchanged {}", item_src.display())),
+            "{lines:?}"
+        );
+    }
 }
