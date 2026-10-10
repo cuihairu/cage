@@ -215,9 +215,9 @@ Dependency Graph 传播 → 受影响表
 cage_core::snapshot）：
 
 ```text
-build/snapshot/<profile>-<build_id[..12]>/
-├── manifest.json      # 构建账本（profile / hashes / artifacts，与 build 逐字节一致）
-├── schema.json        # profile 视图的规范 schema（构建所依据的形态）
+build/snapshot/<profile>[-<env>]-<build_id[..12]>/
+├── manifest.json      # 构建账本（profile / hashes / artifacts，与 build 逐字节一致；--env 时记 environment）
+├── schema.json        # profile 视图的规范 schema（构建所依据的形态；--env 时即 resolved 形态）
 ├── data/…             # 数据类产物（json / csv / msgpack）
 ├── generated/…        # 代码类产物
 └── HASHES.json        # 逐文件 blake3 账本（trust root，不自我哈希）+ build_id/content_hash
@@ -226,12 +226,15 @@ build/snapshot/<profile>-<build_id[..12]>/
 与规划草稿的差异：目录名用 **profile + build_id 指纹**而非日期——时间戳
 命名会破坏确定性构建契约（同输入 → 同快照字节、同名目录，重建即覆盖）。
 数据/代码产物按 target format 分区，路径剥掉 `output_dir` 前缀、保留目标
-子目录（`build/client/Item.json` → `data/client/Item.json`）。
+子目录（`build/client/Item.json` → `data/client/Item.json`）。`--env`
+出环境化包：目录名带 env 段（`client-prod-<id>`），包内 manifest 记
+`environment`、schema.json 即该环境的 resolved 规则。
 
 使用：
 
 ```text
 cage snapshot <project> --profile <p>   # 构建 + 打包 + 自校验
+cage snapshot <project> --env prod      # 环境化出包（env_overrides 先解析再打包）
 cage snapshot <snapshot-dir> --verify   # 载入前校验（内核入口同服务器）
 ```
 
@@ -269,7 +272,9 @@ build_id / content_hash / 文件数），消费方经 `registry:<包>[@<版本>]
   `schema_path: registry:` 解析；
 - R3 远程 http(s) 根只读解析（匿名 GET 三资源 + 项目内
   `.cage-cache` 缓存、离线复用）；
-- R4 全册 `verify` 审计、滚动窗口 `gc`、显式 `remove` 与同字节重发。
+- R4 全册 `verify` 审计、滚动窗口 `gc`、显式 `remove` 与同包重发
+  （幂等判定按整包指纹 `build_id + content_hash`——schema/环境变了
+  就是不同的包，同版本重发报 E1801）。
 
 命令、配置句法与回滚纪律见 [CLI：registry](/cli#registry)；
 协议与错误码见 [design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry) 与

@@ -53,12 +53,16 @@ $ cage build examples/game-config --profile client --incremental
 cage build: up to date (profile 'client', 80 artifacts, manifest examples/game-config/build/manifest.json)
 
 ============================================================
-==> [6/13] cage snapshot --profile client + --verify   —— 自校验快照打包与回验
+==> [6/13] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验
 ============================================================
 $ cage snapshot examples/game-config --profile client
 cage snapshot: OK (profile 'client', 83 files, 80 artifacts, verified, examples/game-config/build/snapshot/client-3e0930ac97c2)
 $ cage snapshot <dir> --verify
 cage snapshot: verified (examples/game-config/build/snapshot/client-3e0930ac97c2/ — 82 files checked)
+$ cage snapshot examples/game-config --profile client --env prod   —— 环境化出包（目录名带 env 段）
+cage snapshot: OK (profile 'client', env 'prod', 83 files, 80 artifacts, verified, examples/game-config/build/snapshot/client-prod-7a8aa89fa3f8)
+$ cage snapshot <prod-dir> --verify
+cage snapshot: verified (examples/game-config/build/snapshot/client-prod-7a8aa89fa3f8/ — 82 files checked)
 
 ============================================================
 ==> [7/13] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto 定义）
@@ -92,14 +96,19 @@ cage migrate: segment 0001_rename_desc.yaml (0.1.0 → 0.2.0)
 cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, nothing written
 
 ============================================================
-==> [11/13] cage registry publish + list   —— 版本化自校验资产发布到本地仓库
+==> [11/13] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）
 ============================================================
-$ cage registry publish examples/game-config --registry /tmp/tmp.IpsC5EIsbU
+$ cage registry publish examples/game-config --registry /tmp/tmp.Sl0Fdl2VoX
 cage registry: published rpg-demo/0.1.0 (profile 'client', 83 files, build_id 3e0930ac97c2, content_hash c21d96d7e142)
-$ cage registry list --registry /tmp/tmp.IpsC5EIsbU
-cage registry: 1 package(s) in /tmp/tmp.IpsC5EIsbU
+$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.Sl0Fdl2VoX   # 同版本换环境 → E1801（一版本一包）
+error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id 3e0930ac97c26df1e1f65988 / content_hash c21d96d7e142204ec3115ddd4c52d7f67217894c1685a973dfaf9893186b0399 — republish under a new version
+$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.Sl0Fdl2VoX --version 0.1.0-prod
+cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 83 files, build_id 7a8aa89fa3f8, content_hash 6a8ef1213fa0)
+$ cage registry list --registry /tmp/tmp.Sl0Fdl2VoX
+cage registry: 1 package(s) in /tmp/tmp.Sl0Fdl2VoX
 rpg-demo
   0.1.0        build 3e0930ac97c2  content c21d96d7e142  83 files
+  0.1.0-prod   build 7a8aa89fa3f8  content 6a8ef1213fa0  83 files
 
 ============================================================
 ==> [12/13] 坏数据诊断   —— E1601 越过 power curve + --env prod E1001 缺昵称
@@ -281,9 +290,11 @@ $ cage snapshot examples/game-config --profile client
 cage snapshot: OK (profile 'client', 83 files, 80 artifacts, verified, examples/game-config/build/snapshot/client-3e0930ac97c2)
 $ cage snapshot examples/game-config/build/snapshot/client-3e0930ac97c2/ --verify
 cage snapshot: verified (examples/game-config/build/snapshot/client-3e0930ac97c2/ — 82 files checked)
+$ cage snapshot examples/game-config --profile client --env prod
+cage snapshot: OK (profile 'client', env 'prod', 83 files, 80 artifacts, verified, examples/game-config/build/snapshot/client-prod-7a8aa89fa3f8)
 ```
 
-快照 = profile 投影的规范 schema（`schema.json`）+ 全部产物 + 逐文件哈希账本（`HASHES.json`），自校验、可回滚、可审计。
+快照 = profile 投影的规范 schema（`schema.json`）+ 全部产物 + 逐文件哈希账本（`HASHES.json`），自校验、可回滚、可审计。`--env` 出环境化包：`env_overrides` 先解析进 schema 再验证打包，目录名带 env 段（`client-prod-<build_id>`）、包内 `manifest.json` 记 `environment`、`schema.json` 即 prod 规则。
 
 ### cage gen —— 只生成代码绑定
 
@@ -333,13 +344,18 @@ cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, no
 ```console
 $ cage registry publish examples/game-config --registry /tmp/reg
 cage registry: published rpg-demo/0.1.0 (profile 'client', 83 files, build_id 3e0930ac97c2, content_hash c21d96d7e142)
+$ cage registry publish examples/game-config --env prod --registry /tmp/reg   # 同版本换环境 → E1801（一版本一包）
+error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id 3e0930ac97c26df1e1f65988 / content_hash c21d96d7e142204ec3115ddd4c52d7f67217894c1685a973dfaf9893186b0399 — republish under a new version
+$ cage registry publish examples/game-config --env prod --registry /tmp/reg --version 0.1.0-prod
+cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 83 files, build_id 7a8aa89fa3f8, content_hash 6a8ef1213fa0)
 $ cage registry list --registry /tmp/reg
 cage registry: 1 package(s) in /tmp/reg
 rpg-demo
   0.1.0        build 3e0930ac97c2  content c21d96d7e142  83 files
+  0.1.0-prod   build 7a8aa89fa3f8  content 6a8ef1213fa0  83 files
 ```
 
-快照打成 `rpg-demo/0.1.0` 条目入册：自校验、可寻址、可滚动回收。Schema 作为资产的管理与消费端加载见[资产页](/assets)。
+快照打成 `rpg-demo/0.1.0` 条目入册：自校验、可寻址、可滚动回收。`publish --env` 出环境化包：一版本一包——同一版本换环境是不同的包（schema/manifest 都变），E1801 拦下冲突，换个版本号（`0.1.0-prod`）即可入册；条目内的 `manifest.json` 记 `environment`。Schema 作为资产的管理与消费端加载见[资产页](/assets)。
 
 ### cage check（坏数据）—— E1601 行级诊断 + 分环境 E1001
 
@@ -437,6 +453,7 @@ schemas:
 | Map<K,V>（含嵌套，空 map 合法） | `Stage.drop_table: map<string, Array<Int32>>` |
 | 行排序约束（E1304） | `Quest.order_by: [id]` |
 | 分环境约束覆盖（`--env`） | `Character.nickname`（dev 放宽 max_length / prod 必填）、`Shop.discount`（prod 上限 0.5） |
+| 环境化出包（snapshot / registry publish `--env`） | 目录名 env 段 `client-prod-*`、条目 `0.1.0-prod`、同版本换环境 E1801 |
 | 字段级可见性（targets + E9006 安全） | `Character.internal_note` 仅 server 视图 |
 | 保留字字段自动转义（`class`） | `Character.class` → cs `@class`、py/java `class_`、go `Class`；lua/ts/js 不转义（消费端按键名取值） |
 | 标准 JSON Schema 文档（draft-07，枚举内联、闭形对象） | `build/client/jsonschema/` |

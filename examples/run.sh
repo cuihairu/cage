@@ -66,13 +66,19 @@ INC_OUT="$("$CAGE_BIN" build "$EX" --profile client --incremental)"
 echo "$INC_OUT"
 case "$INC_OUT" in *"up to date"*) ;; *) echo "FAIL: 增量期望 up to date" >&2; exit 1 ;; esac
 
-step "[6/13] cage snapshot --profile client + --verify   —— 自校验快照打包与回验"
+step "[6/13] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验"
 echo "\$ cage snapshot examples/game-config --profile client"
 "$CAGE_BIN" snapshot "$EX" --profile client
 SNAP_DIR="$(ls -d "$EX"/build/snapshot/client-*/ | head -1)"
 [ -n "$SNAP_DIR" ] || { echo "FAIL: 未生成快照目录" >&2; exit 1; }
 echo "\$ cage snapshot <dir> --verify"
 "$CAGE_BIN" snapshot "$SNAP_DIR" --verify
+echo "\$ cage snapshot examples/game-config --profile client --env prod   —— 环境化出包（目录名带 env 段）"
+"$CAGE_BIN" snapshot "$EX" --profile client --env prod
+PROD_SNAP_DIR="$(ls -d "$EX"/build/snapshot/client-prod-*/ | head -1)"
+[ -n "$PROD_SNAP_DIR" ] || { echo "FAIL: 未生成环境化快照目录" >&2; exit 1; }
+echo "\$ cage snapshot <prod-dir> --verify"
+"$CAGE_BIN" snapshot "$PROD_SNAP_DIR" --verify
 
 step "[7/13] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto 定义）"
 echo "\$ cage gen examples/game-config --profile client"
@@ -101,10 +107,20 @@ echo "$MIG_OUT"
 case "$MIG_OUT" in *"dry run, nothing written"*) ;; *) echo "FAIL: migrate 期望 dry run" >&2; exit 1 ;; esac
 case "$MIG_OUT" in *"rename_field"*) ;; *) echo "FAIL: migrate 期望 rename_field 步骤" >&2; exit 1 ;; esac
 
-step "[11/13] cage registry publish + list   —— 版本化自校验资产发布到本地仓库"
+step "[11/13] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）"
 REG_DIR="$(mktemp -d)"
 echo "\$ cage registry publish examples/game-config --registry $REG_DIR"
 "$CAGE_BIN" registry publish "$EX" --registry "$REG_DIR"
+echo "\$ cage registry publish examples/game-config --env prod --registry $REG_DIR   # 同版本换环境 → E1801（一版本一包）"
+set +e
+ENV_PUB_OUT="$("$CAGE_BIN" registry publish "$EX" --env prod --registry "$REG_DIR" 2>&1)"
+ENV_PUB_CODE=$?
+set -e
+echo "$ENV_PUB_OUT"
+[ "$ENV_PUB_CODE" -eq 1 ] || { echo "FAIL: 同版本换环境期望 E1801 退出码 1，实际 ${ENV_PUB_CODE}" >&2; exit 1; }
+case "$ENV_PUB_OUT" in *E1801*) ;; *) echo "FAIL: 输出未点名 E1801" >&2; exit 1 ;; esac
+echo "\$ cage registry publish examples/game-config --env prod --registry $REG_DIR --version 0.1.0-prod"
+"$CAGE_BIN" registry publish "$EX" --env prod --registry "$REG_DIR" --version 0.1.0-prod
 echo "\$ cage registry list --registry $REG_DIR"
 "$CAGE_BIN" registry list --registry "$REG_DIR"
 rm -rf "$REG_DIR"

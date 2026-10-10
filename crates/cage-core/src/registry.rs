@@ -514,9 +514,13 @@ fn files_under(dir: &Path) -> Result<Vec<PathBuf>, String> {
 
 /// Publish a verified snapshot directory into the registry as
 /// `<package>/<version>`. The snapshot must verify clean before anything
-/// is written (E1803 otherwise). Re-publishing a byte-identical version is
-/// an idempotent no-op; the same version with different bytes is an E1801
-/// version conflict. The package index is rewritten deterministically.
+/// is written (E1803 otherwise). Re-publishing the identical pack is an
+/// idempotent no-op; the same version with a different pack is an E1801
+/// version conflict. Pack identity is the whole pack — `build_id` and
+/// `content_hash` — not artifact bytes alone: a schema-only change (e.g.
+/// an environment-ized pack of the same data) rotates `build_id` and must
+/// conflict, never silently no-op onto the old pack. The package index is
+/// rewritten deterministically.
 pub fn publish(
     root: &Path,
     package: &str,
@@ -565,7 +569,10 @@ pub fn publish(
     let mut index = read_index(root, package)?;
     let existing = index.entries.iter().find(|e| e.version == version);
     if let Some(existing) = existing {
-        if existing.content_hash == content_hash {
+        // Pack identity spans the whole entry: same artifacts AND same
+        // schema/build. Artifact bytes alone would let an environment-ized
+        // repack of identical data silently no-op onto the old pack.
+        if existing.content_hash == content_hash && existing.build_id == build_id {
             return Ok(PublishReport {
                 entry_path: format!("{package}/{version}"),
                 already_identical: true,
@@ -573,8 +580,8 @@ pub fn publish(
         }
         return Err(format!(
             "{E1801} registry version conflict: {package}/{version} already published with \
-             content_hash {} — republish under a new version",
-            existing.content_hash
+             build_id {} / content_hash {} — republish under a new version",
+            existing.build_id, existing.content_hash
         ));
     }
 
@@ -994,16 +1001,17 @@ pub fn import_bundle(root: &Path, file: &Path, dry_run: bool) -> Result<ImportRe
         ));
     }
 
-    // Conflict pre-check shares publish's rule so dry runs report the exact
-    // outcome a real import would produce.
+    // Conflict pre-check shares publish's rule (whole-pack identity:
+    // build_id + content_hash) so dry runs report the exact outcome a real
+    // import would produce.
     let existing_index = read_index(root, &package)?;
     let mut already_identical = false;
     if let Some(existing) = existing_index.entries.iter().find(|e| e.version == version) {
-        if existing.content_hash != content_hash {
+        if existing.content_hash != content_hash || existing.build_id != build_id {
             return Err(format!(
                 "{E1801} registry version conflict: {package}/{version} already published with \
-                 content_hash {} — import refused",
-                existing.content_hash
+                 build_id {} / content_hash {} — import refused",
+                existing.build_id, existing.content_hash
             ));
         }
         already_identical = true;
@@ -1747,6 +1755,12 @@ mod tests {
     /// ledger's `content_hash` derives from `content`, so different contents
     /// really conflict and equal contents really dedupe.
     fn make_snapshot(dir: &Path, content: &str) {
+        make_snapshot_with_build(dir, content, "b111111111111111111111111");
+    }
+
+    /// Same, with an explicit `build_id` — the second axis of pack
+    /// identity (same data, different schema/environment).
+    fn make_snapshot_with_build(dir: &Path, content: &str, build_id: &str) {
         let artifacts = vec![(
             "build/client/json/Item.json".to_string(),
             content.as_bytes().to_vec(),
@@ -1759,7 +1773,7 @@ mod tests {
             br#"{"tables":{},"enums":{},"metadata":null}"#,
             &artifacts,
             "build",
-            "b111111111111111111111111",
+            build_id,
             &content_hash,
         );
         for (rel, bytes) in &files {
@@ -2615,6 +2629,30 @@ mod tests {
         let err = publish(&root, "common", "1.0.0", &snap2).unwrap_err();
         assert!(err.contains("E1801"), "{err}");
         assert!(err.contains("conflict"), "{err}");
+    }
+
+    /// Pack identity spans the whole pack: identical artifact bytes but a
+    /// different `build_id` (schema-only change, e.g. an environment-ized
+    /// repack) must conflict — a content_hash-only check would silently
+    /// no-op onto the old pack and the env bytes would never land.
+    #[test]
+    fn publish_same_artifacts_different_build_is_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("reg");
+        let snap = tmp.path().join("snap");
+        make_snapshot_with_build(&snap, "one", "baaaaaaaaaaaaaaaaaaaaaa1");
+        let report = publish(&root, "common", "1.0.0", &snap).unwrap();
+        assert!(!report.already_identical);
+
+        let snap2 = tmp.path().join("snap2");
+        make_snapshot_with_build(&snap2, "one", "baaaaaaaaaaaaaaaaaaaaaa2");
+        let err = publish(&root, "common", "1.0.0", &snap2).unwrap_err();
+        assert!(err.contains("E1801"), "{err}");
+        assert!(err.contains("build_id"), "{err}");
+
+        // Same build_id and content: the true no-op.
+        let report = publish(&root, "common", "1.0.0", &snap).unwrap();
+        assert!(report.already_identical);
     }
 
     #[test]

@@ -151,6 +151,10 @@ enum Commands {
         /// Build profile to snapshot
         #[arg(long, default_value = "client")]
         profile: String,
+        /// Environment to apply before packaging (schema `env_overrides`);
+        /// the packed schema.json and artifacts carry the resolved rules
+        #[arg(long, conflicts_with = "verify")]
+        env: Option<String>,
         /// Verify an existing snapshot directory instead of building
         #[arg(long)]
         verify: bool,
@@ -220,6 +224,11 @@ enum RegistryCmd {
         /// Build profile to publish
         #[arg(long, default_value = "client")]
         profile: String,
+        /// Environment to apply before packaging (schema `env_overrides`);
+        /// one version stays one pack — a different environment at the
+        /// same version is a different pack (E1801 guards the conflict)
+        #[arg(long)]
+        env: Option<String>,
         /// Package name (defaults to project.name)
         #[arg(long)]
         package: Option<String>,
@@ -448,12 +457,13 @@ fn main() {
         Commands::Snapshot {
             path,
             profile,
+            env,
             verify,
         } => {
             if verify {
                 run_snapshot_verify(&path)
             } else {
-                run_snapshot(&path, &profile)
+                run_snapshot(&path, &profile, env.as_deref())
             }
         }
         Commands::Web { path, port } => match web::run_web(&path, port) {
@@ -467,12 +477,14 @@ fn main() {
             RegistryCmd::Publish {
                 path,
                 profile,
+                env,
                 package,
                 version,
                 registry,
             } => run_registry_publish(
                 &path,
                 &profile,
+                env.as_deref(),
                 package.as_deref(),
                 version.as_deref(),
                 registry.as_deref(),
@@ -1942,11 +1954,13 @@ fn run_build(
 }
 
 /// Pack a finished build into its self-verifying snapshot directory
-/// (`<output_dir>/snapshot/<profile>-<build_id[..12]>`) and self-verify it
-/// clean before handing it out. Shared by `cage snapshot` and
-/// `cage registry publish` — the packing format is core's
+/// (`<output_dir>/snapshot/<profile>[-<env>]-<build_id[..12]>`) and
+/// self-verify it clean before handing it out. Shared by `cage snapshot`
+/// and `cage registry publish` — the packing format is core's
 /// (`cage_core::snapshot`), the deterministic directory name is the
-/// fingerprint, not a date.
+/// fingerprint, not a date. Environment-ized builds tag the name so packs
+/// are distinguishable at a glance; the `build_id` segment already rotates
+/// with the environment (the resolved schema feeds the `schema_hash`).
 fn pack_snapshot(path: &Path, out: &BuildOutput) -> Result<(PathBuf, usize), String> {
     let schema_json =
         serde_json::to_vec_pretty(&out.schema).map_err(|e| format!("schema serialization: {e}"))?;
@@ -1960,11 +1974,11 @@ fn pack_snapshot(path: &Path, out: &BuildOutput) -> Result<(PathBuf, usize), Str
         &out.manifest.build_id,
         &out.manifest.content_hash,
     );
-    let snap_dir = path.join(&out.output_dir).join("snapshot").join(format!(
-        "{}-{}",
-        out.profile,
-        &out.manifest.build_id[..12]
-    ));
+    let dir_name = match &out.manifest.environment {
+        Some(env) => format!("{}-{env}-{}", out.profile, &out.manifest.build_id[..12]),
+        None => format!("{}-{}", out.profile, &out.manifest.build_id[..12]),
+    };
+    let snap_dir = path.join(&out.output_dir).join("snapshot").join(dir_name);
     write_snapshot_files(&snap_dir, &files)?;
     // Self-check: the just-written snapshot must verify clean.
     let report = cage_core::snapshot::verify_snapshot(&snap_dir)?;
@@ -1978,15 +1992,18 @@ fn pack_snapshot(path: &Path, out: &BuildOutput) -> Result<(PathBuf, usize), Str
 
 /// `cage snapshot` — build the profile, then package the build into a
 /// self-verifying Configuration Snapshot under
-/// `<output_dir>/snapshot/<profile>-<build_id[..12]>`. Identical inputs →
-/// identical snapshot bytes (the determinism contract).
-fn run_snapshot(path: &Path, profile: &str) -> i32 {
+/// `<output_dir>/snapshot/<profile>[-<env>]-<build_id[..12]>`. Identical
+/// inputs → identical snapshot bytes (the determinism contract). With
+/// `--env` the schema's `env_overrides` are resolved before validation,
+/// and the packed schema.json/artifacts carry the environment's rules.
+fn run_snapshot(path: &Path, profile: &str, env: Option<&str>) -> i32 {
     // A snapshot packages a fresh full build — no incremental carry-over.
-    match build_project(path, "gamerule", profile, None, false, false) {
+    match build_project(path, "gamerule", profile, env, false, false) {
         Ok(out) => match pack_snapshot(path, &out) {
             Ok((snap_dir, files)) => {
+                let env_note = env.map_or_else(String::new, |e| format!(", env '{e}'"));
                 println!(
-                    "cage snapshot: OK (profile '{profile}', {files} files, {} artifacts, verified, {})",
+                    "cage snapshot: OK (profile '{profile}'{env_note}, {files} files, {} artifacts, verified, {})",
                     out.artifacts.len(),
                     snap_dir.display()
                 );
@@ -2085,9 +2102,13 @@ fn registry_root(
 /// `project.version`. Only a ledger-verified snapshot is written; a
 /// byte-identical re-publish is a no-op, different bytes for the same
 /// version are an E1801 conflict (the registry never rewrites history).
+/// With `--env` the entry's packed manifest names the environment; one
+/// version stays one pack — a different environment packs differently and
+/// the same E1801 conflict guards it.
 fn run_registry_publish(
     path: &Path,
     profile: &str,
+    env: Option<&str>,
     package: Option<&str>,
     version: Option<&str>,
     registry_flag: Option<&Path>,
@@ -2134,13 +2155,14 @@ fn run_registry_publish(
     }
 
     // A publish is a fresh full build — no incremental carry-over.
-    match build_project(path, "gamerule", profile, None, false, false) {
+    match build_project(path, "gamerule", profile, env, false, false) {
         Ok(out) => match pack_snapshot(path, &out) {
             Ok((snap_dir, files)) => {
                 match cage_core::registry::publish(&reg_root, &package, &version, &snap_dir) {
                     Ok(report) => {
+                        let env_note = env.map_or_else(String::new, |e| format!(", env '{e}'"));
                         println!(
-                            "cage registry: published {package}/{version} (profile '{profile}', {files} files, build_id {}, content_hash {}){}",
+                            "cage registry: published {package}/{version} (profile '{profile}'{env_note}, {files} files, build_id {}, content_hash {}){}",
                             &out.manifest.build_id[..12],
                             &out.manifest.content_hash[..12],
                             if report.already_identical {
@@ -3141,19 +3163,26 @@ mod tests {
             Commands::Snapshot {
                 path,
                 profile,
+                env,
                 verify,
-            } => format!("snapshot {} {profile} {verify}", path.display()),
+            } => format!(
+                "snapshot {} {profile} {} {verify}",
+                path.display(),
+                env.as_deref().unwrap_or("<base>")
+            ),
             Commands::Web { path, port } => format!("web {} {port}", path.display()),
             Commands::Registry { cmd } => match cmd {
                 RegistryCmd::Publish {
                     path,
                     profile,
+                    env,
                     package,
                     version,
                     registry,
                 } => format!(
-                    "registry publish {} {profile} {} {} {}",
+                    "registry publish {} {profile} {} {} {} {}",
                     path.display(),
+                    env.as_deref().unwrap_or("<base>"),
                     package.as_deref().unwrap_or("<project.name>"),
                     version.as_deref().unwrap_or("<project.version>"),
                     registry

@@ -2699,8 +2699,9 @@ lint）留待后续，需要新增 E 码时再立。
 environment——**换环境永不复用上一环境的构建产物**。同环境确定性
 不变：同输入同环境 → manifest 逐字节一致。
 `generator_version` 1.1.0 → 1.2.0（布局演进：新增 `environment`
-字段）。`cage snapshot` / `registry publish` 暂以基线构建（无
-`--env`）出包；环境化出包留待后续。
+字段）。~~`cage snapshot` / `registry publish` 暂以基线构建（无
+`--env`）出包；环境化出包留待后续。~~ **环境化出包已实装
+（2026-10，见下批决策记录）。**
 
 **验收**：cage-core 单测（declared_envs 并集 / 结构检查拦未知字段与
 空补丁 / resolve_env 抹补丁且基线不被修改 / 无覆盖环境解析等于基
@@ -2708,3 +2709,34 @@ environment——**换环境永不复用上一环境的构建产物**。同环�
 E1201/E1204 换档；未声明环境与无覆盖 Schema 均 exit 2 并列出已声明
 集；manifest 记录 `environment` 且换环境轮换 build_id、增量守卫按
 环境失配；dev → prod 增量构建与全量构建逐字节收敛）。
+
+### 环境化出包决策记录（2026-10）
+
+**一版本一包，整包指纹判同。** 定了什么：`cage snapshot` 与
+`cage registry publish` 都挂 `--env`（与 check/build/gen 同语义：
+`env_overrides` 先解析进 schema 再走全量验证与打包）；快照目录名带
+env 段 `<profile>-<env>-<build_id[..12]>`（基线不带 env 段），包内
+`manifest.json` 的 `environment` 字段与 resolved 形态的 `schema.json`
+随包走；publish 沿用既有流程，环境化条目入册时 manifest 即声明环境。
+
+**E1801 从「同 content_hash」放宽判定面到整包指纹**：幂等/冲突判定
+改为 `build_id + content_hash` 双比对（publish 与 import 预检同步）。
+为什么：content_hash 只盖产物字节——环境化重打包时产物可能逐字节相同
+（数据没变、变的只是规则），只看 content_hash 会把新包误判成
+「identical, no-op」，prod 字节永远落不了地。`build_id` 盖
+profile+schema_hash+source_hash+content_hash，schema 一变它必变——
+同版本换环境（或任何仅 schema 变化）从此正确报 E1801，提示换版本号
+（如 `0.1.0-prod`，版本词法本就允许 label 段）。
+
+备选与取舍：给同版本挂多环境子目录（`<version>/<env>/`）弃——破坏
+「一版本一包」的可寻址性与 bundle/export 形态，消费端 pin 语义复杂化；
+resolve/verify/gc/remove/push 保持按字节与账本工作，不感知环境——
+环境只是打包时的一条构建参数，入了册就是普通字节。`--env` 与
+`snapshot --verify` 互斥（回验只看字节，不看环境）。
+
+**验收**：core 单测（同产物异 build_id 冲突且报文点 build_id、同
+build_id+content 幂等 no-op）+ CLI 集成 ×2（`snapshot --env`：目录名
+env 段、包内 manifest 记环境、schema.json 带 resolved 约束、回验通过、
+基线快照不受影响；`publish --env`：同版本换环境 E1801、新版本入册且
+manifest 记环境、幂等重发 no-op、registry verify 全绿）+ 示例 run.sh
+步骤 6/11 扩展（环境化快照与 E1801 实机演示）。

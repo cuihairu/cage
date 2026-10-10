@@ -440,6 +440,21 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       cli.md --env 行 + build.md manifest 表与环境守卫 +
       architecture.md Manifest 13 字段与 Environment 行 +
       validation.md E9006 环境次序——本轮交付，勾选
+- [x] 环境化出包（2026-10 交付，design §48 遗留清账）：`cage snapshot`
+      与 `cage registry publish` 挂 `--env`（与 check/build/gen 同语义，
+      resolved schema 走全量验证再打包）；快照目录名带 env 段
+      `<profile>-<env>-<build_id[..12]>`（基线不变），包内 manifest 的
+      `environment` 与 resolved 形态 `schema.json` 随包走；E1801 判定
+      面从「同 content_hash」放宽到整包指纹 `build_id + content_hash`
+      （publish 与 import 预检同步）——修复：环境化重打包产物字节相同
+      时旧判定误判 identical no-op，prod 字节永不落地；同版本换环境报
+      E1801 换版本号入册（`0.1.0-prod`，版本词法允许 label 段）；
+      resolve/verify/gc/remove/push 不感知环境（入册即普通字节）；
+      `--env` 与 `snapshot --verify` 互斥。验收达成：core 单测 ×1（同
+      产物异 build_id 冲突 + 真 no-op 回归）+ CLI 集成 ×2（snapshot
+      --env 目录名/manifest/schema.json/回验 + 基线并存；publish --env
+      E1801/入册/幂等/verify 全绿）+ 示例 run.sh 步骤 6/11 实机演示 +
+      example.md/cli.md/design.md 文档同步——本轮交付，勾选
 
 ### A 系列：Artifact Distribution（2026-10 立项，design §47）
 

@@ -110,15 +110,19 @@ cage diff build/a build/b
 
 ```bash
 cage snapshot <project> --profile client    # 构建 + 打包自校验快照
+cage snapshot <project> --env prod          # 环境化出包（env_overrides 先解析再打包）
 cage snapshot <snapshot-dir> --verify       # 载入前校验（服务器入口）
 ```
 
 打包[Configuration Snapshot](/build#configuration-snapshot)：把 profile
 构建产物打成可独立加载、自带 blake3 账本的目录
-`<output_dir>/snapshot/<profile>-<build_id[..12]>`（manifest.json /
+`<output_dir>/snapshot/<profile>[-<env>]-<build_id[..12]>`（manifest.json /
 schema.json / data/ / generated/ / HASHES.json），构建后自校验。`--verify` 对既有快照
 目录载入前校验：逐文件重哈希比对，篡改/增删文件逐条列出并以退出码 1
-失败。`--profile` 默认 `client`。
+失败。`--profile` 默认 `client`。`--env` 出环境化包：schema 的
+`env_overrides` 先解析进 schema 再验证打包，目录名带 env 段、包内
+`manifest.json` 记 `environment`、`schema.json` 即该环境的规则；`--env`
+与 `--verify` 互斥（回验不看环境）。
 
 ## verify（规划中）
 
@@ -177,7 +181,7 @@ Ctrl+C 停止服务。`--port` 默认 8765。
 ## registry
 
 ```bash
-cage registry publish <project> [--registry <dir>] [--package name] [--version 1.0.0] [--profile client]
+cage registry publish <project> [--registry <dir>] [--package name] [--version 1.0.0] [--profile client] [--env prod]
 #                                     └ 可省：缺省回落 cage.toml [registry].path
 cage registry list    --registry <dir>
 cage registry verify  --registry <dir>
@@ -192,8 +196,11 @@ cage registry push    <project> [package[@version]] --registry <remote-url> [--a
 本地 Configuration Registry（第三阶段 R 系列，[design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)）。
 `publish` 全量构建 → 打包[自校验快照](/build#configuration-snapshot) → 账本
 校验通过后入册 `<registry>/<包>/<版本>/`（包默认 `project.name`、版本默认
-`project.version`）；同版本同字节重发是幂等 no-op，同版本异字节报
-`E1801` 版本冲突：注册表不改写历史。`list` 按确定性序列出包/版本/
+`project.version`）；同一版本只装一包——重发按整包指纹（`build_id` +
+`content_hash`）判幂等，指纹一致是 no-op，任何不同（数据、schema、
+`--env` 环境）报 `E1801` 版本冲突：注册表不改写历史。`--env` 出环境化包
+（入册条目的 `manifest.json` 记 `environment`），同版本换环境即冲突，
+换版本号（如 `0.1.0-prod`）入册。`list` 按确定性序列出包/版本/
 build_id/content_hash/文件数。
 
 消费方在 cage.toml 里声明注册表根并引用包作为源根（R1 源解析）：

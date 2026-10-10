@@ -21,8 +21,9 @@ Schema 的演进走**显式版本链**，而不是「文件改了就是改了」
 1. **源头是文本**：schema 文件随代码仓走，评审、diff、回滚都按普通
    代码对待。`metadata.version` 是它对外自称的版本号。
 2. **冻结进快照**：`cage snapshot <project>` 把**当前 profile 投影
-   后的规范 schema** 落进 `snapshot/<profile>-<build_id[..12]>/schema.json`
-   （构建所依据的形态，不是源文件本身）。快照自带 `HASHES.json` 逐文件
+   后的规范 schema** 落进 `snapshot/<profile>[-<env>]-<build_id[..12]>/schema.json`
+   （构建所依据的形态，不是源文件本身；`--env` 时即该环境的 resolved
+   形态，目录名带 env 段）。快照自带 `HASHES.json` 逐文件
    账本与 `--verify` 回验——资产完整性不靠承诺，靠哈希。
 3. **发布进注册表**：`cage registry publish` 把快照打成
    `rpg-demo/0.1.0` 式条目（自校验 bundle）入册。注册表（R3）是资产
