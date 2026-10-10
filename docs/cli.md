@@ -12,14 +12,17 @@ cage snapshot
 cage web
 cage registry
 cage migrate
+cage migrate-draft
+cage schema-draft
 ```
 
 MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`gen` / `snapshot`
 为第二阶段（均已实装），`web` 为第三阶段（Schema 编辑器本地服务），
 `registry` 为第三阶段 R 系列（本地 Configuration Registry 发布/列表，
 R1–R4 均已实装），A 系列分发（bundle 导出/导入、直推远端，design §47）
-已随 A1–A3 实装，M 系列迁移（`cage migrate`，design §46）已随 M1–M3
-实装。`cage verify runtime/`（验证已生成产物）与
+已随 A1–A3 实装，M 系列迁移（`cage migrate` 执行 + `cage migrate-draft`
+起草，design §46）已随 M1–M3 实装，`cage schema-draft`（库表内省起草
+schema，design §45 / S9）已实装。`cage verify runtime/`（验证已生成产物）与
 `cage graph`（读依赖图）在 [design §30](https://github.com/cuihairu/cage/blob/main/docs/design.md#30-cli) 是规划命令，
 尚未实装：配置依赖图经 `cage build --incremental` 实时参与构建决策。
 
