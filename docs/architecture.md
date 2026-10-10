@@ -253,7 +253,8 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 | Validation Context | 已实装：validation/mod.rs（schema / document / diagnostics / max_level / profile / reference_cache / warnings_as_errors） | — |
 | Dependency Graph | 已实装并接线：reference/mod.rs `DependencyGraph`（环检测 / 拓扑）+ `IncrementalPlanner`；cli 构建真实接线，增量第二层按表哈希 + 依赖传播只重建受影响表，manifest 落 `dependencies`/`table_hashes` 账（D2） | 增量删除表回退全量（不沿边传播删除语义） |
 | Profile | 已实装（D3 语义化）：表 + 字段双层面板过滤裁剪 Schema 与 Document 产物视图；校验在**完整** schema/document 上执行（profile 只裁剪产物视图、不豁免数据校验）；ValidationContext 携带 profile，结构不可缺字段（required 无默认 / 主键 / 唯一约束 / 引用目标）被 profile 隐藏报 E9006 冲突而非静默过滤 | 可选字段裁剪保持合法视图语义；整表剔除是表级可见性语义 |
-| Manifest | 已实装（D4 + 增量第三层）：12 顶层字段（project / profile / cage_version / generator_version / build_id / schema_hash / source_hash / content_hash / dependencies / table_hashes / targets / artifacts） | — |
+| Environment | 已实装（§48 分环境验证）：Schema 表级 `env_overrides` 声明「环境名 → 字段 → 约束补丁」（部分补丁、整值替换、类型不可覆盖），`--env` 在校验/生成前解析为一份普通 Schema（校验器与代码生成零改动）；环境名 Schema 自声明（declared_envs 并集），manifest 记 `environment`、schema_hash/build_id 随环境轮换，增量守卫按环境失配 | 非选中环境的坏覆盖 lint（需新 E 码）与 snapshot / registry publish 环境化出包留待 |
+| Manifest | 已实装（D4 + 增量第三层 + 环境 §48）：13 顶层字段（project / profile / environment / cage_version / generator_version / build_id / schema_hash / source_hash / content_hash / dependencies / table_hashes / targets / artifacts；`environment` 基线构建缺省） | — |
 | Snapshot | 已实装（D5）：`cage snapshot` 打包 profile 视图 + `--verify` 校验；`snapshot/<profile>-<build_id[..12]>` 确定性目录（manifest / schema.json / data / generated / HASHES 逐文件账本），core 提供 verify/load 服务器入口 | 删除/回滚策略（多快照共存管理）见 Registry 阶段——R1–R4 已实装（`cage registry` 本地发布/列表 + `registry:` 源与 schema_path 解析 + `[dependencies]` 版本 pin + 远程 http(s) 只读解析，条目即自校验快照 + verify 全册审计 / gc 滚动窗口 / remove 显式移除与重发）；§47 A 系列分发已实装（export 确定性 tar bundle / import 信任门入册 / push 直推 http(s) 远端根，E21xx 五码接线） |
 
 ### 评审对照修正（2026-10 外部评审）

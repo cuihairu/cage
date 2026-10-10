@@ -2618,3 +2618,71 @@ cage registry push <project> [pkg[@ver]] --registry <remote-root>
 代理。（压缩容器已实装——固定级别 19 的 bulk 编码本就不依赖字典态，
 「zstd 确定性字典」变体随之失效；签名账本已随 A6 实装——见实装状态与
 A6 决策记录。）
+
+---
+
+# 48. Environment Validation（分环境验证，2026-10 拍板）
+
+游戏的配置是分环境的：同一张表，dev 环境允许 `hp` 缺省，prod 环境不但
+必填还要求下限 100。Schema 是唯一的规则载体，所以环境语义落在
+Schema 上——每个环境是同一套字段形状的一档「严格度旋钮」，不是另一
+张 Schema。
+
+**拍板：约束覆盖（方案 1）。** 2026-10 用户拍板取「约束覆盖」方向
+（分环境 = 对既有约束的覆盖，而非「每环境独立 Schema」或「数据分叉」
+两案），并授权巡检按决策记录口径代定实现细节。**授权口径**：实现期
+发现方案 1 与既有约束机制冲突 → 记录冲突与理由、停下上报；未发现冲
+突，开批交付。
+
+**线格式（实现期裁定，同语义下的载体偏离）**：采用**表级侧表**
+`env_overrides`（TableSchema 新字段：环境名 → 字段名 → 约束补丁
+`FieldOverride`），而非拍板预览里的「逐键内联 `{default, envs}`」
+形态。**为什么偏离**：内联形态要求把 `FieldSchema` 的每个约束字段改
+造成包装结构，波及全仓 12 个 crate（含 7 个 golden 锁定的代码生成
+crate）约百处 `.required` / 约束读取点，机械改动量大且触golden；
+侧表形态语义完全一致（每环境一组约束 delta），但零波及——校验器、
+代码生成、编辑器往返全部不变。**分类**：既定方向内的实现载体选择，
+非机制冲突（约束覆盖与 `rules`/`reference`/profile 投影互不侵占：
+覆盖只调同形状的严格度，不增删字段、不改类型），故不停批，记录在
+案。
+
+**语义**：`FieldOverride` 是字段的**部分补丁**——只列某环境要动
+的约束键（required/min/max/min_length/max_length/pattern/
+enum_values/min_items/max_items），未列的键保持基线值；列出的键是
+**整值替换**（如 `enum_values` 覆盖为生产白名单，不是与基线并集）。
+**类型不在补丁里**：环境只调严格度，永不重塑字段形状。空补丁（一个
+键都没设）在 schema 结构检查时定错。
+
+**解析点**：`Schema::resolve_env(env)` 在 load 之后、profile 投影与
+校验之前一次性执行——克隆 Schema、把该环境的补丁抹到普通字段上，交
+付给下游的永远是「一份普通 Schema」。全部校验器（L0–L7、profile 语
+义、E9006）、代码生成、哈希都消费 resolved 结果，**零改动**；基线
+Schema 从不被修改。E9006（投影剥掉结构必需字段）按 resolved 的
+`required` 判定——环境先收紧、投影再触发冲突，次序自然正确。
+
+**环境名来源**：Schema 自声明——`env_overrides` 各表键名的并集
+（`declared_envs`），不在 cage.toml 里登记第二份名单（单一事实源）。
+`--env` 未声明 → 用法错误 exit 2，报错列出全部已声明环境；Schema
+完全无 `env_overrides` 时 `--env` → exit 2「declares no
+environments」。**不新增 E 码**：环境名错误与 unknown profile 同类
+（CLI 用法错误，非文档校验失败）；`--env` 路径上对全部环境的覆盖做
+结构检查（字段存在、非空补丁，报错带 table/env/field 定位）——坏覆
+盖在选中该环境时必被拦下。非选中环境的坏覆盖告警（无 `--env` 的
+lint）留待后续，需要新增 E 码时再立。
+
+**构建账本**：`schema_hash` 对 resolved Schema 全量哈希（环境改变
+→ 字段约束变 → schema_hash 变 → build_id 变）；manifest 新增
+`environment: Option<String>`（serde default，基线构建不写该键），
+显式记录构建所处的环境；L1 / layer-2 增量守卫在 profile 之外再比对
+environment——**换环境永不复用上一环境的构建产物**。同环境确定性
+不变：同输入同环境 → manifest 逐字节一致。
+`generator_version` 1.1.0 → 1.2.0（布局演进：新增 `environment`
+字段）。`cage snapshot` / `registry publish` 暂以基线构建（无
+`--env`）出包；环境化出包留待后续。
+
+**验收**：cage-core 单测（declared_envs 并集 / 结构检查拦未知字段与
+空补丁 / resolve_env 抹补丁且基线不被修改 / 无覆盖环境解析等于基
+线）+ CLI 集成 ×4（同表三套规则：基线 E1001、dev 放行、prod
+E1201/E1204 换档；未声明环境与无覆盖 Schema 均 exit 2 并列出已声明
+集；manifest 记录 `environment` 且换环境轮换 build_id、增量守卫按
+环境失配；dev → prod 增量构建与全量构建逐字节收敛）。

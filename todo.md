@@ -166,6 +166,7 @@
       收官（2026-10，见下方「S 系列：Remote Source」：S1 HTTP API 源 /
       S2 MySQL / PostgreSQL 源 / S3 Google Sheets 源 / S4 确定性与
       离线语义收口 / S5 错误码接线收口 / S6 文档收口）
+- [x] 分环境验证 `--env`（2026-10 拍板，design §48，约束覆盖）——已交付，见下方「分环境验证」节
 - [x] Artifact 分发与迁移——全数交付（2026-10 拍板：A 系列注册表分发
       A1–A4 收官 + M 系列声明式数据迁移 M0–M3 收官，见下方两节；设计
       定稿 design §46/§47，决策记录随稿——定了什么 / 为什么 / 备选）
@@ -380,6 +381,38 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       manifest 逐字节一致）+ design §45 S7 决策记录（分页协议选型 /
       限流协商 / 回退边界）+ source.md / validation.md E1901 行同步
       ——本轮交付，勾选
+
+### 分环境验证（2026-10 拍板，design §48）
+
+游戏配置分环境：同一张表 dev 放宽、prod 收紧。拍板取**约束覆盖**方向
+（用户令，巡检按决策记录口径代定实现细节；线格式实现期裁定为表级侧表
+`env_overrides`，语义与拍板一致、零波及既有约束读取点——裁定与理由
+记录于 design §48）。
+
+- [x] 分环境约束覆盖 `--env`（2026-10 交付）：TableSchema 新增
+      `env_overrides`（环境名 → 字段名 → `FieldOverride` 部分补丁：
+      required/min/max/min_length/max_length/pattern/enum_values/
+      min_items/max_items，未列键保持基线、列出的键整值替换、类型不在
+      补丁里、空补丁与未知字段定错）；`Schema::resolve_env` 在 load 后
+      / 校验与投影前一次性克隆抹补丁，全部校验器（含 E9006 按 resolved
+      required 判定）、代码生成、编辑器往返、哈希零改动；环境名 Schema
+      自声明（`declared_envs` 并集，不在 cage.toml 重复登记），CLI
+      check/build/gen 新增 `--env`（未声明环境与无覆盖 Schema 传
+      `--env` 均 exit 2 用法错误并列出已声明集，不新增 E 码）；
+      manifest 新增 `environment` 字段（基线构建不写该键，
+      generator_version 1.1.0 → 1.2.0），schema_hash 对 resolved
+      Schema 全量哈希 → build_id 随环境轮换，L1/layer-2 增量守卫显式
+      比对环境——换环境永不复用上一环境产物；snapshot / registry
+      publish 暂以基线出包（环境化出包留待）。验收达成：cage-core
+      单测 ×4（declared_envs 并集 / 结构检查拦未知字段与空补丁 /
+      resolve_env 抹补丁且基线不被修改 / 无覆盖环境解析等于基线）+
+      CLI 集成 ×4（同表三套规则基线 E1001、dev 放行、prod
+      E1201/E1204 换档；未声明与无覆盖 exit 2；manifest 记 environment
+      且换环境轮换 build_id、增量按环境失配；dev → prod 增量与全量
+      逐字节收敛）+ design §48 决策记录 + schema.md 线格式节 +
+      cli.md --env 行 + build.md manifest 表与环境守卫 +
+      architecture.md Manifest 13 字段与 Environment 行 +
+      validation.md E9006 环境次序——本轮交付，勾选
 
 ### A 系列：Artifact Distribution（2026-10 立项，design §47）
 

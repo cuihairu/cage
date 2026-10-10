@@ -54,6 +54,7 @@ See [`examples/game-config/`](examples/game-config/README.md) and the full-examp
 
 ```bash
 cage check config/                 # validate only, generate nothing
+cage check config/ --env prod        # validate under a schema-declared environment (env_overrides)
 cage build config/ --profile client  # validate and generate the target artifacts
 cage snapshot config/ --profile client  # build + pack a self-verifying snapshot; load a snapshot directory with --verify to check it first
 cage gen config/ --profile server    # generate code bindings only (cs/python/lua/ts/js/cpp/go/java)

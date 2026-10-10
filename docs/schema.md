@@ -130,3 +130,35 @@ enums:
 Schema 校验由 [Validation 流水线](/validation) 分级执行：required 在
 L1、类型在 L2、值域（min/max/length/pattern/enum/items）在 L3、唯一性
 与主键在 L4、跨表引用在 L5。
+
+## 分环境约束覆盖（`env_overrides`，设计 §48）
+
+同一张表在不同环境用不同严格度——dev 放宽、prod 收紧。环境是同一字
+段形状的一档「严格度旋钮」：表级侧表 `env_overrides` 声明
+**环境名 → 字段名 → 约束补丁**，补丁只列该环境要动的约束键
+（`required` / `min` / `max` / `min_length` / `max_length` /
+`pattern` / `enum_values` / `min_items` / `max_items`），未列的键保
+持基线值，列出的键整值替换；**类型不在补丁里**（环境只调严格度，不
+重塑形状），空补丁定错，补丁里的字段名必须存在于本表。
+
+```yaml
+tables:
+  Hero:
+    # … 基线字段 …
+    env_overrides:
+      dev:
+        hp: { required: false }          # 放宽
+      prod:
+        hp: { required: true, min: 100 } # 收紧
+        rarity: { enum_values: [common, rare, epic] }
+```
+
+环境名来自各表 `env_overrides` 键的并集（Schema 自声明，不在
+cage.toml 登记）。`cage check` / `build` / `gen` 以 `--env <名>` 选
+环境：解析发生在校验与生成之前（基线字段被抹成该环境的值，基线本身
+不被修改），所有校验器与代码生成看到的都是一份普通 Schema；未声明
+的环境名与无 `env_overrides` 的 Schema 传 `--env` 都是用法错误
+（exit 2）。构建账本随环境轮换：`schema_hash` 对解析后 Schema 计
+算，manifest 记录 `environment` 字段，换环境不复用上一环境的构建产
+物。
+

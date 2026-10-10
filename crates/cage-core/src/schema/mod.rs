@@ -26,6 +26,95 @@ pub struct SchemaMetadata {
     pub author: Option<String>,
 }
 
+impl Schema {
+    /// Every environment name declared by any table's `env_overrides`,
+    /// sorted — the valid `--env` inputs for this schema.
+    pub fn declared_envs(&self) -> std::collections::BTreeSet<String> {
+        self.tables
+            .values()
+            .flat_map(|table| table.env_overrides.keys().cloned())
+            .collect()
+    }
+
+    /// Structural check of every table's `env_overrides`: each override
+    /// must name a field that exists in its table and set at least one
+    /// constraint key. Errors carry the table/env/field path — the CLI
+    /// renders them as plain load errors, before any `--env` is chosen.
+    pub fn validate_env_overrides(&self) -> Result<(), String> {
+        for (table_name, table) in &self.tables {
+            for (env, overrides) in &table.env_overrides {
+                for (field_name, patch) in overrides {
+                    if !table.fields.contains_key(field_name) {
+                        return Err(format!(
+                            "env_overrides[{env}] names unknown field '{field_name}' in table \
+                             '{table_name}'"
+                        ));
+                    }
+                    if *patch == FieldOverride::default() {
+                        return Err(format!(
+                            "env_overrides[{env}].{field_name} in table '{table_name}' sets no \
+                             constraint"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The schema as it validates under `env`: every `env_overrides[env]`
+    /// patch applied onto the base fields (later keys in one patch win —
+    /// an override is a whole-constraint replacement, not a merge). The
+    /// base schema is never mutated; an environment that declares no
+    /// overrides for a table leaves that table untouched. The result is
+    /// what every downstream stage — validation, codegen, hashing —
+    /// consumes, so `--env` changes exactly the rules those stages see.
+    pub fn resolve_env(&self, env: &str) -> Result<Schema, String> {
+        let mut resolved = self.clone();
+        for (table_name, table) in &mut resolved.tables {
+            let Some(overrides) = table.env_overrides.get(env) else {
+                continue;
+            };
+            for (field_name, patch) in overrides {
+                let Some(field) = table.fields.get_mut(field_name) else {
+                    return Err(format!(
+                        "env_overrides[{env}] names unknown field '{field_name}' in table \
+                         '{table_name}'"
+                    ));
+                };
+                if let Some(v) = patch.required {
+                    field.required = v;
+                }
+                if let Some(v) = patch.min {
+                    field.min = Some(v);
+                }
+                if let Some(v) = patch.max {
+                    field.max = Some(v);
+                }
+                if let Some(v) = patch.min_length {
+                    field.min_length = Some(v);
+                }
+                if let Some(v) = patch.max_length {
+                    field.max_length = Some(v);
+                }
+                if let Some(v) = patch.pattern.clone() {
+                    field.pattern = Some(v);
+                }
+                if let Some(v) = patch.enum_values.clone() {
+                    field.enum_values = Some(v);
+                }
+                if let Some(v) = patch.min_items {
+                    field.min_items = Some(v);
+                }
+                if let Some(v) = patch.max_items {
+                    field.max_items = Some(v);
+                }
+            }
+        }
+        Ok(resolved)
+    }
+}
+
 /// Table schema definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableSchema {
@@ -46,6 +135,48 @@ pub struct TableSchema {
     /// Target profiles this table applies to
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub targets: Vec<String>,
+    /// Per-environment constraint overrides (`--env` validation, design
+    /// §48): environment name → field name → constraint deltas. Applied
+    /// by [`Schema::resolve_env`] before validation; the base fields
+    /// stay untouched.
+    #[serde(skip_serializing_if = "IndexMap::is_empty", default)]
+    pub env_overrides: IndexMap<String, IndexMap<String, FieldOverride>>,
+}
+
+/// One environment's constraint deltas for one field (design §48): a
+/// partial field patch — only the constraint keys an environment may
+/// tighten or loosen. Keys absent here keep the base value. Types stay
+/// out on purpose: an environment never re-shapes a field, it re-tunes
+/// how strictly the same shape is checked.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FieldOverride {
+    /// Override `required`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    /// Override `min`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Override `max`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Override `min_length`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    /// Override `max_length`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// Override `pattern`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// Override `enum_values`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
+    /// Override `min_items`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<usize>,
+    /// Override `max_items`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<usize>,
 }
 
 /// Unique constraint on multiple fields
@@ -513,6 +644,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         };
         table.fields.insert(
             "id".to_string(),
@@ -556,6 +688,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         };
         item.fields.insert(
             "id".to_string(),
@@ -592,6 +725,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         };
         monster.fields.insert(
             "id".to_string(),
@@ -1182,6 +1316,167 @@ enums: {}
         assert!(
             err.contains("Circular dependency detected involving:"),
             "unexpected error: {err}"
+        );
+    }
+
+    /// A two-table fixture: `Item.hp` is required with `min: 1`,
+    /// `Monster.drop_table` is optional; only `Item` carries env
+    /// overrides.
+    fn env_schema() -> Schema {
+        let mut schema = Schema::new();
+        let field = |name: &str, required: bool| FieldSchema {
+            name: name.to_string(),
+            field_type: FieldType::Int32,
+            description: None,
+            required,
+            default: None,
+            min: None,
+            max: None,
+            min_length: None,
+            max_length: None,
+            pattern: None,
+            enum_values: None,
+            min_items: None,
+            max_items: None,
+            items: None,
+            properties: None,
+            additional_properties: None,
+            reference: None,
+            targets: vec![],
+            rules: vec![],
+            metadata: IndexMap::new(),
+        };
+        let mut item = TableSchema {
+            name: "Item".to_string(),
+            description: None,
+            primary_key: vec!["id".to_string()],
+            fields: IndexMap::new(),
+            unique_constraints: vec![],
+            order_by: None,
+            targets: vec![],
+            env_overrides: IndexMap::new(),
+        };
+        item.fields.insert("id".to_string(), field("id", true));
+        item.fields.insert("hp".to_string(), field("hp", true));
+        let mut prod = IndexMap::new();
+        let hp = FieldOverride {
+            required: Some(false),
+            min: Some(100.0),
+            ..FieldOverride::default()
+        };
+        prod.insert("hp".to_string(), hp);
+        item.env_overrides.insert("prod".to_string(), prod);
+        schema.add_table(item);
+
+        let mut monster = TableSchema {
+            name: "Monster".to_string(),
+            description: None,
+            primary_key: vec!["id".to_string()],
+            fields: IndexMap::new(),
+            unique_constraints: vec![],
+            order_by: None,
+            targets: vec![],
+            env_overrides: IndexMap::new(),
+        };
+        monster.fields.insert("id".to_string(), field("id", true));
+        monster
+            .fields
+            .insert("drop_table".to_string(), field("drop_table", false));
+        schema.add_table(monster);
+        schema
+    }
+
+    #[test]
+    fn declared_envs_unions_table_override_keys() {
+        let schema = env_schema();
+        assert_eq!(
+            schema.declared_envs(),
+            ["prod".to_string()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+
+        let plain = Schema::new();
+        assert!(plain.declared_envs().is_empty());
+    }
+
+    #[test]
+    fn validate_env_overrides_rejects_unknown_fields_and_empty_patches() {
+        let mut schema = env_schema();
+
+        // unknown field → named in the error
+        let mut prod = IndexMap::new();
+        prod.insert("ghost".to_string(), FieldOverride::default());
+        schema
+            .tables
+            .get_mut("Item")
+            .unwrap()
+            .env_overrides
+            .insert("prod".to_string(), prod);
+        let err = schema.validate_env_overrides().unwrap_err();
+        assert!(
+            err.contains("unknown field 'ghost' in table 'Item'"),
+            "{err}"
+        );
+
+        // empty patch → also rejected
+        let mut schema = env_schema();
+        let mut prod = IndexMap::new();
+        prod.insert(
+            "hp".to_string(),
+            FieldOverride {
+                min: Some(1.0),
+                ..FieldOverride::default()
+            },
+        );
+        prod.insert("id".to_string(), FieldOverride::default());
+        schema
+            .tables
+            .get_mut("Item")
+            .unwrap()
+            .env_overrides
+            .insert("prod".to_string(), prod);
+        let err = schema.validate_env_overrides().unwrap_err();
+        assert!(err.contains("sets no constraint"), "{err}");
+
+        // well-formed overrides pass
+        assert!(env_schema().validate_env_overrides().is_ok());
+    }
+
+    #[test]
+    fn resolve_env_patches_fields_and_keeps_base_untouched() {
+        let schema = env_schema();
+
+        // base: hp required, no min
+        let base = schema.tables["Item"].fields["hp"].clone();
+        assert!(base.required);
+        assert_eq!(base.min, None);
+
+        // prod: hp optional with min 100 — same shape, tighter/looser rules
+        let prod = schema.resolve_env("prod").unwrap();
+        let hp = &prod.tables["Item"].fields["hp"];
+        assert!(!hp.required, "prod loosens required");
+        assert_eq!(hp.min, Some(100.0), "prod tightens min");
+        assert!(
+            prod.tables["Item"].fields["id"].required,
+            "untouched field stays"
+        );
+
+        // Monster has no overrides: identical in both
+        assert_eq!(
+            schema.tables["Monster"].fields["drop_table"].required,
+            prod.tables["Monster"].fields["drop_table"].required
+        );
+
+        // the base schema is never mutated
+        assert!(schema.tables["Item"].fields["hp"].required);
+        assert_eq!(schema.tables["Item"].fields["hp"].min, None);
+
+        // an env with no overrides anywhere resolves to the base
+        let dev = schema.resolve_env("dev").unwrap();
+        assert_eq!(
+            serde_yaml::to_string(&dev).unwrap(),
+            serde_yaml::to_string(&schema).unwrap()
         );
     }
 }

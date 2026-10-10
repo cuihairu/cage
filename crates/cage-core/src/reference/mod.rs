@@ -488,6 +488,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         };
         item.fields.insert(
             "id".to_string(),
@@ -524,6 +525,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         };
         monster.fields.insert(
             "id".to_string(),
@@ -737,6 +739,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         }
     }
 

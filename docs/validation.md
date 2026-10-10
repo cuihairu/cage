@@ -108,7 +108,9 @@ Unknown field:
 有 `default` 的 required 字段、非必需字段、整表被 `targets` 剔除，都是
 合法视图，不报错。检查对完整 schema 执行（`profile` 只裁剪产物视图、不
 豁免数据校验），`cage check/build --profile <p>` 与 `cage gen` 均按此
-语义运行。示例：
+语义运行。`--env`（分环境约束覆盖，设计 §48）与 profile 正交且先于
+profile 生效：环境补丁先抹到基线字段上（`required` 随之变化），E9006
+按解析后的 `required` 判定——环境收紧后被子 profile 隐藏即冲突。示例：
 
 ```text
 ERROR E9006

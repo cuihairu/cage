@@ -44,8 +44,9 @@ Build(A) == Build(A)
 {
   "project": "game",
   "profile": "client",
+  "environment": "prod",
   "cage_version": "0.1.0",
-  "generator_version": "1.1.0",
+  "generator_version": "1.2.0",
   "build_id": "...",
   "schema_hash": "...",
   "source_hash": "...",
@@ -66,8 +67,9 @@ Build(A) == Build(A)
 | 字段 | 现状 | 说明 |
 | --- | --- | --- |
 | `project` / `profile` | 已实装 | 构建身份 |
+| `environment` | 已实装 | 构建所处环境（`--env`，Schema `env_overrides`，设计 §48）；基线构建（无 `--env`）不写该键。环境改变 → 解析后 Schema 变 → `schema_hash`/`build_id` 轮换，增量守卫显式比对环境，换环境不复用产物 |
 | `cage_version` | 已实装 | cage 编译器版本 |
-| `generator_version` | 已实装 | Manifest 结构版本（"1.1.0"；布局演进时自增，独立于 cage 版本） |
+| `generator_version` | 已实装 | Manifest 结构版本（"1.2.0"；布局演进时自增，独立于 cage 版本） |
 | `build_id` | 已实装 | **确定性指纹**：blake3(profile + schema_hash + source_hash + content_hash) 前 24 位。同输入同 ID（可复现/匹配/回滚），语义变更即旋转。不用时间戳——那会破坏「相同输入 → 相同 Manifest 字节」的确定性契约 |
 | `schema_hash` | 已实装 | Blake3，覆盖 schema 全量 |
 | `source_hash` | 已实装 | Blake3，覆盖全部源内容 |
@@ -138,13 +140,14 @@ tests/incremental.rs（含第二/三层端到端：变更传播 + 携带 + targe
 `cage build --incremental` 分三层。
 
 **第一层：哈希比对跳过。** 构建时把当前 schema/source/target 指纹与
-上一次 `manifest.json` 记录的值比对，同 profile、同指纹且产物都在磁盘上
-时直接跳过重新生成（校验仍然全量执行）；任一输入变化或产物缺失则进入
-第二/三层或全量重建。旧版 manifest（无 `targets` 记录）一次全量构建即
-迁移，随后参与三层。
+上一次 `manifest.json` 记录的值比对，同 profile、同环境、同指纹且产物
+都在磁盘上时直接跳过重新生成（校验仍然全量执行）；任一输入变化、环境
+切换或产物缺失则进入第二/三层或全量重建。旧版 manifest（无 `targets`
+记录）一次全量构建即迁移，随后参与三层。
 
 **第二层：依赖图传播（v0.3 实装）。** 当 schema 哈希未变（schema 驱动
-code-target 形态，schema 变则整体回退全量）、prev 与当前 profile 相同、
+code-target 形态，schema 变则整体回退全量）、prev 与当前 profile 和
+环境相同、
 `table_hashes` 非空且没有
 删除表时，按表哈希找出变更表，经依赖图
 （`IncrementalPlanner::compute_affected`）传播出受影响表集合，只重建这

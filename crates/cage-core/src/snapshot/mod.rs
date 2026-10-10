@@ -320,6 +320,7 @@ mod tests {
             serde_json::to_vec(&crate::manifest::BuildManifest {
                 project: "demo".to_string(),
                 profile: "client".to_string(),
+                environment: None,
                 cage_version: "0.1.0".to_string(),
                 generator_version: "1.0.0".to_string(),
                 build_id: "b1d_012".to_string(),

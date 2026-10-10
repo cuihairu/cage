@@ -11,6 +11,12 @@ pub struct BuildManifest {
     pub project: String,
     /// Build profile name
     pub profile: String,
+    /// Environment the build validated under (`--env`), when one was
+    /// given; `None` = base schema, no environment overrides applied.
+    /// Environments rotate `schema_hash`/`build_id` through the resolved
+    /// schema — this field names the environment itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
     /// Cage version that produced the build
     pub cage_version: String,
     /// Manifest structure version (bump when the field layout evolves);
@@ -89,11 +95,12 @@ pub struct ManifestGenerator {
     profile_name: String,
     cage_version: String,
     targets: Vec<TargetRecord>,
+    environment: Option<String>,
 }
 
 impl ManifestGenerator {
     /// Manifest structure version — bump on breaking layout changes
-    pub const GENERATOR_VERSION: &str = "1.1.0";
+    pub const GENERATOR_VERSION: &str = "1.2.0";
 
     /// Create a generator for a project / profile / tool version
     pub fn new(project_name: String, profile_name: String, cage_version: String) -> Self {
@@ -102,7 +109,15 @@ impl ManifestGenerator {
             profile_name,
             cage_version,
             targets: Vec::new(),
+            environment: None,
         }
+    }
+
+    /// Record the build's environment (`--env`). `None` (or `Some("")`)
+    /// means base schema.
+    pub fn with_environment(mut self, env: Option<&str>) -> Self {
+        self.environment = env.filter(|e| !e.is_empty()).map(str::to_string);
+        self
     }
 
     /// Record the built profile's targets in the manifest (the incremental
@@ -186,6 +201,7 @@ impl ManifestGenerator {
         BuildManifest {
             project: self.project_name.clone(),
             profile: self.profile_name.clone(),
+            environment: self.environment.clone(),
             cage_version: self.cage_version.clone(),
             generator_version: Self::GENERATOR_VERSION.to_string(),
             build_id,
@@ -619,6 +635,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         };
         table.fields.insert(
             "id".to_string(),
@@ -840,6 +857,7 @@ mod tests {
         BuildManifest {
             project: "test".to_string(),
             profile: "client".to_string(),
+            environment: None,
             cage_version: "0.1.0".to_string(),
             generator_version: ManifestGenerator::GENERATOR_VERSION.to_string(),
             build_id: "test-build-id".to_string(),
@@ -1261,6 +1279,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         };
         item.fields.insert(
             "id".to_string(),
@@ -1295,6 +1314,7 @@ mod tests {
             unique_constraints: vec![],
             order_by: None,
             targets: vec![],
+            env_overrides: IndexMap::new(),
         };
         monster.fields.insert(
             "drop_item".to_string(),
@@ -1441,6 +1461,7 @@ mod tests {
         let manifest = BuildManifest {
             project: "test".to_string(),
             profile: "client".to_string(),
+            environment: None,
             cage_version: "0.1.0".to_string(),
             generator_version: ManifestGenerator::GENERATOR_VERSION.to_string(),
             build_id: "test-build-id".to_string(),

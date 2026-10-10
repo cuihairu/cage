@@ -35,19 +35,23 @@ cage check config/
 cage check --level schema       # 只做 Schema 层
 cage check --level reference    # 只做到引用层
 cage check --profile client     # 按 Profile 验证
+cage check --env prod           # 按 Schema 的 prod 环境约束验证
 ```
 
 `--level` 取值：parse / schema / type / value / table / reference /
 semantic / gamerule（默认 `semantic`，即默认执行到 L6，含 L7 业务规则
 需显式 `--level gamerule`）。`--profile` 默认 `client`（check / build /
-gen 同）。
+gen 同）。`--env`（check / build / gen 同）按 Schema `env_overrides`
+声明的环境抹约束后验证——未声明的环境名是用法错误（exit 2），详见
+[Schema 分环境约束覆盖](/schema#分环境约束覆盖env_overrides设计-48)。
 
 ## build
 
 ```bash
 cage build config/ --profile client
 cage build config/ --profile server
-cage build config/ --incremental     # 哈希与上次 manifest 一致时跳过重新生成
+cage build config/ --env prod          # 按环境约束验证并生成
+cage build config/ --incremental       # 哈希与上次 manifest 一致时跳过重新生成
 ```
 
 与 check 同口径的 `--level`（默认 semantic）可上调/下调验证层级。
@@ -61,6 +65,7 @@ target，详见[增量构建](/build#增量构建)）。
 
 ```bash
 cage gen config/ --profile server
+cage gen config/ --env prod    # 按环境约束生成
 ```
 
 只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf](/target#code-targets-与-data-targets-分离)，

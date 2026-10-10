@@ -955,6 +955,7 @@ mod tests {
                 unique_constraints: Vec::new(),
                 order_by: None,
                 targets: Vec::new(),
+                env_overrides: IndexMap::new(),
             },
         );
         Schema {
@@ -1397,6 +1398,7 @@ steps:
                 unique_constraints: Vec::new(),
                 order_by: None,
                 targets: Vec::new(),
+                env_overrides: IndexMap::new(),
             },
         );
         schema.metadata = Some(crate::schema::SchemaMetadata {

@@ -79,6 +79,10 @@ enum Commands {
         /// Build profile to check against
         #[arg(long, default_value = "client")]
         profile: String,
+        /// Environment to validate under (schema `env_overrides` applied
+        /// to field constraints before validation)
+        #[arg(long)]
+        env: Option<String>,
         /// Refuse the remote-source offline fallback: an unreachable
         /// remote source is a hard error even with a cached copy
         #[arg(long)]
@@ -94,6 +98,10 @@ enum Commands {
         /// Build profile to generate artifacts for
         #[arg(long, default_value = "client")]
         profile: String,
+        /// Environment to validate under (schema `env_overrides` applied
+        /// to field constraints before validation)
+        #[arg(long)]
+        env: Option<String>,
         /// Skip rebuilding if hashes match last build's manifest
         #[arg(long)]
         incremental: bool,
@@ -120,6 +128,9 @@ enum Commands {
         /// Build profile to generate code for
         #[arg(long, default_value = "client")]
         profile: String,
+        /// Environment to apply before generation (schema `env_overrides`)
+        #[arg(long)]
+        env: Option<String>,
         /// Refuse the remote-source offline fallback: an unreachable
         /// remote source is a hard error even with a cached copy
         #[arg(long)]
@@ -363,6 +374,40 @@ struct Project {
     document: Document,
 }
 
+/// Apply `--env` to a loaded project: the environment name must be
+/// declared by some table's `env_overrides`, every override must be
+/// structurally sound, then the overrides for this environment are
+/// resolved into plain field constraints. Everything downstream —
+/// validation, codegen, hashing — sees one coherent schema, so an
+/// environment changes exactly the rules those stages apply. `None`
+/// keeps the base schema.
+fn project_with_env(project: Project, env: Option<&str>) -> Result<Project, String> {
+    let Some(env) = env else {
+        return Ok(project);
+    };
+    if let Err(e) = project.schema.validate_env_overrides() {
+        return Err(format!("invalid env_overrides: {e}"));
+    }
+    let declared = project.schema.declared_envs();
+    if declared.is_empty() {
+        return Err(format!(
+            "--env '{env}': schema declares no environments (no env_overrides)"
+        ));
+    }
+    if !declared.contains(env) {
+        return Err(format!(
+            "unknown environment '{env}' (declared: {})",
+            declared.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let schema = project.schema.resolve_env(env)?;
+    Ok(Project {
+        config: project.config,
+        schema,
+        document: project.document,
+    })
+}
+
 fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
@@ -370,15 +415,24 @@ fn main() {
             path,
             level,
             profile,
+            env,
             no_cache,
-        } => run_check(&path, &level, &profile, no_cache),
+        } => run_check(&path, &level, &profile, env.as_deref(), no_cache),
         Commands::Build {
             path,
             level,
             profile,
+            env,
             incremental,
             no_cache,
-        } => run_build(&path, &level, &profile, incremental, no_cache),
+        } => run_build(
+            &path,
+            &level,
+            &profile,
+            env.as_deref(),
+            incremental,
+            no_cache,
+        ),
         Commands::Inspect {
             path,
             table,
@@ -387,8 +441,9 @@ fn main() {
         Commands::Gen {
             path,
             profile,
+            env,
             no_cache,
-        } => run_gen(&path, &profile, no_cache),
+        } => run_gen(&path, &profile, env.as_deref(), no_cache),
         Commands::Diff { baseline, target } => run_diff(&baseline, &target),
         Commands::Snapshot {
             path,
@@ -895,7 +950,7 @@ fn filter_by_profile<'a>(
     (filtered_schema, filtered_doc)
 }
 
-fn run_check(path: &Path, level: &str, profile: &str, no_cache: bool) -> i32 {
+fn run_check(path: &Path, level: &str, profile: &str, env: Option<&str>, no_cache: bool) -> i32 {
     let level = match level.parse::<ValidationLevel>() {
         Ok(l) => l,
         Err(e) => {
@@ -904,6 +959,13 @@ fn run_check(path: &Path, level: &str, profile: &str, no_cache: bool) -> i32 {
         }
     };
     let project = match load_project(path, no_cache) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let project = match project_with_env(project, env) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1514,6 +1576,7 @@ fn build_project(
     path: &Path,
     level: &str,
     profile: &str,
+    env: Option<&str>,
     incremental: bool,
     no_cache: bool,
 ) -> Result<BuildOutput, BuildFailure> {
@@ -1522,6 +1585,10 @@ fn build_project(
         Err(e) => return Err(BuildFailure::Io(e)),
     };
     let project = match load_project(path, no_cache) {
+        Ok(p) => p,
+        Err(e) => return Err(BuildFailure::Io(e)),
+    };
+    let project = match project_with_env(project, env) {
         Ok(p) => p,
         Err(e) => return Err(BuildFailure::Io(e)),
     };
@@ -1604,6 +1671,7 @@ fn build_project(
     if let Some(prev) = &prev_manifest {
         let targets_match = prev.targets == target_records;
         let unchanged = prev.profile == profile
+            && prev.environment.as_deref() == env
             && targets_match
             && prev.schema_hash == schema_hash
             && prev.source_hash == source_hash
@@ -1617,6 +1685,7 @@ fn build_project(
         // Legacy manifests carry no target records: one full build
         // migrates them, then target propagation participates.
         let layer2_ok = prev.profile == profile
+            && prev.environment.as_deref() == env
             && prev.schema_hash == schema_hash
             && !prev.table_hashes.is_empty()
             && !prev.targets.is_empty()
@@ -1797,6 +1866,7 @@ fn build_project(
         profile.to_string(),
         version,
     )
+    .with_environment(env)
     .with_targets(&build_profile.targets)
     .generate(&schema, &normalized, &artifacts);
     let manifest_path = match write_manifest(&manifest_dir, &manifest) {
@@ -1816,8 +1886,15 @@ fn build_project(
     })
 }
 
-fn run_build(path: &Path, level: &str, profile: &str, incremental: bool, no_cache: bool) -> i32 {
-    match build_project(path, level, profile, incremental, no_cache) {
+fn run_build(
+    path: &Path,
+    level: &str,
+    profile: &str,
+    env: Option<&str>,
+    incremental: bool,
+    no_cache: bool,
+) -> i32 {
+    match build_project(path, level, profile, env, incremental, no_cache) {
         Ok(out) => {
             if out.layer2 {
                 println!(
@@ -1905,7 +1982,7 @@ fn pack_snapshot(path: &Path, out: &BuildOutput) -> Result<(PathBuf, usize), Str
 /// identical snapshot bytes (the determinism contract).
 fn run_snapshot(path: &Path, profile: &str) -> i32 {
     // A snapshot packages a fresh full build — no incremental carry-over.
-    match build_project(path, "gamerule", profile, false, false) {
+    match build_project(path, "gamerule", profile, None, false, false) {
         Ok(out) => match pack_snapshot(path, &out) {
             Ok((snap_dir, files)) => {
                 println!(
@@ -2057,7 +2134,7 @@ fn run_registry_publish(
     }
 
     // A publish is a fresh full build — no incremental carry-over.
-    match build_project(path, "gamerule", profile, false, false) {
+    match build_project(path, "gamerule", profile, None, false, false) {
         Ok(out) => match pack_snapshot(path, &out) {
             Ok((snap_dir, files)) => {
                 match cage_core::registry::publish(&reg_root, &package, &version, &snap_dir) {
@@ -2596,8 +2673,15 @@ fn run_registry_remove(
 /// needed. Data targets (json/csv) in the profile are skipped — run
 /// `cage build` for those. The manifest is written like a build's, so gen
 /// and build manifests share the same 口径 (schema/source/content hashes).
-fn run_gen(path: &Path, profile: &str, no_cache: bool) -> i32 {
+fn run_gen(path: &Path, profile: &str, env: Option<&str>, no_cache: bool) -> i32 {
     let project = match load_project(path, no_cache) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let project = match project_with_env(project, env) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
@@ -2676,6 +2760,7 @@ fn run_gen(path: &Path, profile: &str, no_cache: bool) -> i32 {
         profile.to_string(),
         version,
     )
+    .with_environment(env)
     .with_targets(&build_profile.targets)
     .generate(&schema, &normalized, &artifacts);
     let output_dir = project.config.output_dir.as_deref().unwrap_or("build");
@@ -3003,19 +3088,26 @@ mod tests {
                 path,
                 level,
                 profile,
+                env,
                 no_cache,
             } => {
-                format!("check {} {level} {profile} {no_cache}", path.display())
+                let env = env.as_deref().unwrap_or("<base>");
+                format!(
+                    "check {} {level} {profile} {env} {no_cache}",
+                    path.display()
+                )
             }
             Commands::Build {
                 path,
                 level,
                 profile,
+                env,
                 incremental,
                 no_cache,
             } => format!(
-                "build {} {level} {profile} {incremental} {no_cache}",
-                path.display()
+                "build {} {level} {profile} {} {incremental} {no_cache}",
+                path.display(),
+                env.as_deref().unwrap_or("<base>")
             ),
             Commands::Inspect {
                 path,
@@ -3029,8 +3121,13 @@ mod tests {
             Commands::Gen {
                 path,
                 profile,
+                env,
                 no_cache,
-            } => format!("gen {} {profile} {no_cache}", path.display()),
+            } => format!(
+                "gen {} {profile} {} {no_cache}",
+                path.display(),
+                env.as_deref().unwrap_or("<base>")
+            ),
             Commands::Diff { baseline, target } => {
                 format!("diff {} {}", baseline.display(), target.display())
             }
@@ -3164,10 +3261,16 @@ mod tests {
     #[test]
     fn parse_check_subcommand() {
         let cli = Cli::try_parse_from(["cage", "check", "proj"]).expect("parse check");
-        assert_eq!(describe(&cli.command), "check proj semantic client false");
+        assert_eq!(
+            describe(&cli.command),
+            "check proj semantic client <base> false"
+        );
         // The offline-strictness flag round-trips (S4).
         let cli = Cli::try_parse_from(["cage", "check", "proj", "--no-cache"]).expect("parse flag");
-        assert_eq!(describe(&cli.command), "check proj semantic client true");
+        assert_eq!(
+            describe(&cli.command),
+            "check proj semantic client <base> true"
+        );
     }
 
     #[test]
@@ -3176,7 +3279,7 @@ mod tests {
             .expect("parse build");
         assert_eq!(
             describe(&cli.command),
-            "build proj table client false false"
+            "build proj table client <base> false false"
         );
     }
 
@@ -3199,7 +3302,7 @@ mod tests {
     fn parse_gen_subcommand() {
         let cli =
             Cli::try_parse_from(["cage", "gen", "proj", "--profile", "server"]).expect("parse gen");
-        assert_eq!(describe(&cli.command), "gen proj server false");
+        assert_eq!(describe(&cli.command), "gen proj server <base> false");
     }
 
     #[test]
