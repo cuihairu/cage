@@ -615,3 +615,75 @@ fn remote_integrity_failures_stay_out_of_the_cache() {
     assert!(stderr(&out).contains("E1802"), "{}", stderr(&out));
     assert!(stderr(&out).contains("HASHES.json"), "{}", stderr(&out));
 }
+
+/// A stale local cache heals by re-download (never hands out the corrupted
+/// copy), and a naive publisher that self-hashes the ledger is refused at
+/// the final trust gate — the verbatim ledger copy can never match a hash
+/// recorded inside itself.
+#[test]
+fn remote_heals_stale_cache_and_refuses_self_hashing_ledgers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_publisher(root);
+    let reg = root.join("reg");
+    publish_versions(root, &reg);
+    let server = start_registry_server(&reg);
+    let url = format!("http://127.0.0.1:{}", server.port);
+    let entry = reg.join("common/1.0.0");
+    let pristine_item = fs::read_to_string(entry.join("data/client/json/Item.json")).unwrap();
+    let pristine_ledger = fs::read_to_string(entry.join("HASHES.json")).unwrap();
+    let cached_entry = |name: &str| {
+        root.join(name)
+            .join(".cage-cache/registry")
+            .join(cage_core::registry::cache_key(&url))
+            .join("common/1.0.0")
+    };
+
+    // Full resolve, then corrupt the cached payload with the server still
+    // up: the next resolve distrusts the cache, wipes it, and re-downloads
+    // — the healed bytes match the publisher again.
+    write_consumer_remote(
+        root,
+        "heal",
+        &url,
+        "registry:common@1.0.0",
+        None,
+        "schema.yaml",
+    );
+    let heal = root.join("heal").to_str().unwrap().to_string();
+    let out = run_cage(&["check", &heal]);
+    assert_code(&out, 0, "initial resolve");
+    write(
+        &cached_entry("heal").join("data/client/json/Item.json"),
+        &item_rows("Rot"),
+    );
+    let out = run_cage(&["check", &heal]);
+    assert_code(&out, 0, "stale cache self-heals");
+    let healed =
+        fs::read_to_string(cached_entry("heal").join("data/client/json/Item.json")).unwrap();
+    assert_eq!(healed, pristine_item, "cache re-downloaded the true bytes");
+
+    // Ledger that lists (and hashes) itself: the download loop skips the
+    // self-entry, the verbatim copy lands, and the trust gate refuses the
+    // entry — a self-hash cannot be a fixed point.
+    let mut ledger: serde_json::Value = serde_json::from_str(&pristine_ledger).unwrap();
+    ledger["files"]["HASHES.json"] = serde_json::Value::String("0".repeat(64));
+    write(&entry.join("HASHES.json"), &ledger.to_string());
+    write_consumer_remote(
+        root,
+        "selfhash",
+        &url,
+        "registry:common@1.0.0",
+        None,
+        "schema.yaml",
+    );
+    let selfhash = root.join("selfhash").to_str().unwrap().to_string();
+    let out = run_cage(&["check", &selfhash]);
+    assert_code(&out, 2, "self-hashing ledger");
+    assert!(
+        stderr(&out).contains("remote entry verification failed"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stderr(&out).contains("1 problem"), "{}", stderr(&out));
+}
