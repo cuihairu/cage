@@ -26,7 +26,7 @@ tables:
         type:
           kind: Array
           value: { kind: Int32 }
-        description: 关卡掉落道具列表 —— 引用 Item.id 数组（cardinality: many，逐元素 L5 校验）
+        description: '关卡掉落道具列表 —— 引用 Item.id 数组（cardinality: many，逐元素 L5 校验）'
         reference:
           table: Item
           field: id

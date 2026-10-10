@@ -951,13 +951,20 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
 
 ### 外部/拍板卡点登记（2026-10-10 巡检发现）
 
-- [ ] E1404 基数校验接线：`cardinality`（one/many/optional，默认 one）
-      解析在位但全仓无消费点。两种互斥语义需拍板——①源侧（本字段
-      恰引用一条目标；optional 容忍 present-null；many 要求数组逐元素
-      解析）②目标侧（目标行至多被一条源行引用 = 1:1 门禁；作默认
-      `one` 会误杀全部合法 many-to-one 配置，不可作默认读法）。
-      拍板后接线点：L5 `validate_single_reference`，与 E1401 同源。
-      **卡点：语义契约拍板，非外部依赖**——拍板即可开工。
+- [x] E1404 基数校验接线（2026-10-10 续批拍板：**源侧语义**。用户令
+      「继续 todo 的 E1404 基数校验接线」即授权开工；目标侧 1:1 读法
+      否决——作默认 `one` 会误杀全部合法 many-to-one 配置）。契约：
+      `one`（默认）与 `optional` 取单值引用，`optional` 容忍 present-null、
+      `one` 下 null 违例；`many` 要求数组并逐元素走 E1401/E1410（含谓词
+      与 compatible_with）；形状不符（数组配 one/optional、标量或 null
+      配 many）报 E1404 并点名改法；未知拼写报 E1004（预解析一次，空表
+      也报，行循环跳过该字段）。接线点：validate_reference 预解析 +
+      行循环分派，validate_single_reference 按元素复用。顺带修复：数组
+      引用字段此前被整值 coerce 成空键查缓存，报出误导性 E1401。测试
+      +3（many 逐元素 / 形状失配三向 / 未知拼写），示例新增
+      Stage.loot_item_ids（many → Item.id）。已知边界：L2 对 present-null
+      一律 E1101（无 optional 旁路），故 one/optional 的 null 分流只在
+      Any/Null 类型字段上可达——L5 层契约自洽，双层防御。
 
 - [x] cage-cli web API 单测补齐（覆盖率 0% → 71.6%）：api_validate
       （干净文档通过 / 非 JSON E1701 / 悬空 pk E1004）、api_schema

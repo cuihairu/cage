@@ -84,7 +84,10 @@ pub mod reference {
     pub const E1402: &str = "E1402";
     /// E1403 - Circular reference detected
     pub const E1403: &str = "E1403";
-    /// E1404 - Reference cardinality violation (e.g., one-to-many exceeded)
+    /// E1404 - Reference cardinality violation: the value's shape does not
+    /// match the declared source-side `cardinality` (`one`/`optional` take
+    /// a single value — null violates `one`; `many` takes an array checked
+    /// element by element). An unknown cardinality spelling is E1004.
     pub const E1404: &str = "E1404";
     /// E1410 - Referenced object exists but fails semantic predicate
     /// (assert evaluated on the target row; an absent optional field does

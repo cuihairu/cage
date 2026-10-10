@@ -75,9 +75,12 @@ enums:
 `reference` 还有三个可选子键：`predicate`（引用对象须满足的语义谓词，
 L5 在目标行上求值，产出 `E1410`，口径见
 [validation](/validation#l6-semantic语义)）、`cardinality`
-（`one`/`many`/`optional`，默认 `one`；**基数校验未接线**——语义契约
-需先拍板，见 validation.md 的 E1404 行）、`compatible_with`（引用对象
-类型兼容性检查，产出 `E1411`）。
+（`one`/`many`/`optional`，默认 `one`；**源侧语义**已实装——`one`/
+`optional` 要求单值引用（`optional` 容忍 null，`one` 下 null 报
+`E1404`），`many` 要求数组并逐元素校验存在性与谓词；未知拼写报
+`E1004`）、`compatible_with`（引用对象类型兼容性检查，产出
+`E1411`）。示例见 `examples/game-config` 的 `Stage.loot_item_ids`
+（`cardinality: many` 引用 `Item.id`）。
 
 ## 字段类型（19 种）
 

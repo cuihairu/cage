@@ -1059,12 +1059,7 @@ fn validate_reference(ctx: &mut ValidationContext) {
                                         schema_type: typed_value.schema_type.clone(),
                                     };
                                     validate_single_reference(
-                                        ctx,
-                                        table_name,
-                                        row,
-                                        field_name,
-                                        &element,
-                                        ref_schema,
+                                        ctx, table_name, row, field_name, &element, ref_schema,
                                         parsed,
                                     );
                                 }
@@ -2687,7 +2682,10 @@ mod tests {
         let doc = doc_with_tables(&[
             (
                 "Item",
-                vec![row(0, &[("id", Value::UInt(1))]), row(1, &[("id", Value::UInt(2))])],
+                vec![
+                    row(0, &[("id", Value::UInt(1))]),
+                    row(1, &[("id", Value::UInt(2))]),
+                ],
             ),
             (
                 "Drop",
@@ -2696,7 +2694,10 @@ mod tests {
                         0,
                         &[
                             ("id", Value::UInt(1)),
-                            ("item_ids", Value::Array(vec![Value::UInt(1), Value::UInt(99)])),
+                            (
+                                "item_ids",
+                                Value::Array(vec![Value::UInt(1), Value::UInt(99)]),
+                            ),
                         ],
                     ),
                     // Empty list is vacuously fine; every element resolving
@@ -2707,7 +2708,10 @@ mod tests {
                     ),
                     row(
                         2,
-                        &[("id", Value::UInt(3)), ("item_ids", Value::Array(vec![Value::UInt(2)]))],
+                        &[
+                            ("id", Value::UInt(3)),
+                            ("item_ids", Value::Array(vec![Value::UInt(2)])),
+                        ],
                     ),
                 ],
             ),
@@ -2770,21 +2774,19 @@ mod tests {
             ("Item", vec![row(0, &[("id", Value::UInt(1))])]),
             (
                 "Drop",
-                vec![
-                    row(
-                        0,
-                        &[
-                            ("id", Value::UInt(1)),
-                            ("tag_ids", Value::UInt(1)),
-                            (
-                                "item_id",
-                                Value::Array(vec![Value::UInt(1), Value::UInt(1)]),
-                            ),
-                            ("maybe_item", Value::Null),
-                            ("spare_item", Value::Null),
-                        ],
-                    ),
-                ],
+                vec![row(
+                    0,
+                    &[
+                        ("id", Value::UInt(1)),
+                        ("tag_ids", Value::UInt(1)),
+                        (
+                            "item_id",
+                            Value::Array(vec![Value::UInt(1), Value::UInt(1)]),
+                        ),
+                        ("maybe_item", Value::Null),
+                        ("spare_item", Value::Null),
+                    ],
+                )],
             ),
         ]);
 
@@ -2792,24 +2794,28 @@ mod tests {
         let errors = diags.errors();
         assert_eq!(errors.len(), 3, "optional null passes, the rest violate");
         assert!(errors.iter().all(|d| d.code == reference::E1404));
-        let many_scalar = errors.iter().find(|d| d.field.as_deref() == Some("tag_ids"));
-        assert!(many_scalar.is_some_and(|d| d
-            .hint
-            .as_deref()
-            .is_some_and(|h| h.contains("array of Item references")
-                && h.contains("a single uint"))));
-        let one_array = errors.iter().find(|d| d.field.as_deref() == Some("item_id"));
+        let many_scalar = errors
+            .iter()
+            .find(|d| d.field.as_deref() == Some("tag_ids"));
+        assert!(
+            many_scalar.is_some_and(|d| d.hint.as_deref().is_some_and(|h| h
+                .contains("array of Item references")
+                && h.contains("a single uint")))
+        );
+        let one_array = errors
+            .iter()
+            .find(|d| d.field.as_deref() == Some("item_id"));
         assert!(one_array.is_some_and(|d| d
             .hint
             .as_deref()
             .is_some_and(|h| h.contains("expects a single Item reference")
                 && h.contains("use cardinality: many"))));
-        let one_null = errors.iter().find(|d| d.field.as_deref() == Some("maybe_item"));
-        assert!(one_null.is_some_and(|d| d
-            .hint
-            .as_deref()
-            .is_some_and(|h| h.contains("the value is null")
-                && h.contains("use cardinality: optional"))));
+        let one_null = errors
+            .iter()
+            .find(|d| d.field.as_deref() == Some("maybe_item"));
+        assert!(one_null.is_some_and(|d| d.hint.as_deref().is_some_and(|h| h
+            .contains("the value is null")
+            && h.contains("use cardinality: optional"))));
     }
 
     #[test]
@@ -2836,9 +2842,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, schema::E1004);
         assert_eq!(errors[0].field.as_deref(), Some("item_id"));
-        assert!(errors[0]
-            .message
-            .contains("unknown cardinality 'banana'"));
+        assert!(errors[0].message.contains("unknown cardinality 'banana'"));
         assert!(errors[0]
             .hint
             .as_deref()

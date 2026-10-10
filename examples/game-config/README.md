@@ -24,7 +24,7 @@ game-config/
 │   ├── item.yaml      # 道具：整型枚举 + 字符串枚举 + 可选字段
 │   ├── quest.yaml     # 任务：Excel 源、跨表引用、order_by 行排序
 │   ├── shop.yaml      # 商店：MsgPack 源、env_overrides（prod 收紧折扣上限）
-│   └── stage.yaml     # 关卡：数组/对象/跨表引用/Map<string, Array<Int32>>
+│   └── stage.yaml     # 关卡：数组/对象/跨表引用（含 cardinality: many 数组引用）/Map<string, Array<Int32>>
 ├── config/            # 五种源格式（同一 profile 一起加载）
 │   ├── Character.csv  # CSV：文件名即表名
 │   ├── Item.yaml      # YAML：根键 = 表名
@@ -48,6 +48,7 @@ game-config/
 | 整型枚举（带整数值） / 字符串枚举（无值） / 无值枚举 | `CharacterClass` / `Rarity` / `Difficulty` |
 | 可选字段与默认值 | `Item.attack_bonus` 缺省、`Character.unlocked` 默认 true |
 | 跨表引用（L5 校验） | `Stage.boss_item_id / Quest.reward_item_id / Shop.item_id → Item.id` |
+| 数组引用 `cardinality: many`（逐元素 L5 校验） | `Stage.loot_item_ids → Item.id` |
 | 保留字字段自动转义（`class`） | `Character.class` |
 | Map<K,V> 字段（含嵌套，空 map 合法） | `Stage.drop_table: map<string, Array<Int32>>` |
 | 行排序约束（E1304） | `Quest.order_by: [id]` |
