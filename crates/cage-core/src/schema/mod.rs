@@ -41,17 +41,30 @@ impl Schema {
     /// constraint key. Errors carry the table/env/field path — the CLI
     /// renders them as plain load errors, before any `--env` is chosen.
     pub fn validate_env_overrides(&self) -> Result<(), String> {
+        match self.lint_env_overrides().into_iter().next() {
+            Some(problem) => Err(problem),
+            None => Ok(()),
+        }
+    }
+
+    /// Every `env_overrides` structural problem, all of them, not just the
+    /// first — the base lane's lint. A schema with a broken override in an
+    /// environment nobody selected would otherwise validate clean until
+    /// someone runs `--env` on it; the CLI prints these as warnings on the
+    /// base path (no `--env`) and hard-errors on the `--env` path.
+    pub fn lint_env_overrides(&self) -> Vec<String> {
+        let mut problems = Vec::new();
         for (table_name, table) in &self.tables {
             for (env, overrides) in &table.env_overrides {
                 for (field_name, patch) in overrides {
                     if !table.fields.contains_key(field_name) {
-                        return Err(format!(
+                        problems.push(format!(
                             "env_overrides[{env}] names unknown field '{field_name}' in table \
                              '{table_name}'"
                         ));
                     }
                     if *patch == FieldOverride::default() {
-                        return Err(format!(
+                        problems.push(format!(
                             "env_overrides[{env}].{field_name} in table '{table_name}' sets no \
                              constraint"
                         ));
@@ -59,7 +72,7 @@ impl Schema {
                 }
             }
         }
-        Ok(())
+        problems
     }
 
     /// The schema as it validates under `env`: every `env_overrides[env]`
@@ -1441,6 +1454,49 @@ enums: {}
 
         // well-formed overrides pass
         assert!(env_schema().validate_env_overrides().is_ok());
+    }
+
+    /// The lint reports every broken override at once — the base lane can
+    /// see all unselected-environment breakage, not just the first.
+    #[test]
+    fn lint_env_overrides_collects_all_problems() {
+        let mut schema = env_schema();
+        let mut prod = IndexMap::new();
+        prod.insert("ghost".to_string(), FieldOverride::default());
+        schema
+            .tables
+            .get_mut("Item")
+            .unwrap()
+            .env_overrides
+            .insert("prod".to_string(), prod);
+        // A second break in another env, on another table.
+        let mut dev = IndexMap::new();
+        dev.insert("hp".to_string(), FieldOverride::default());
+        schema
+            .tables
+            .get_mut("Item")
+            .unwrap()
+            .env_overrides
+            .insert("dev".to_string(), dev);
+
+        let problems = schema.lint_env_overrides();
+        // `ghost` reports twice (unknown field AND empty patch — an empty
+        // patch is also a break in its own right), `dev.hp` once.
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("unknown field 'ghost'")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("env_overrides[dev]")
+                && p.contains(
+                    "sets no \
+             constraint"
+                )),
+            "{problems:?}"
+        );
+        // validate still fails on the first one (the hard path).
+        assert!(schema.validate_env_overrides().is_err());
     }
 
     #[test]

@@ -300,3 +300,53 @@ fn publish_env_conflict_guards_one_version_one_pack() {
     assert_code(&out, 0, "registry verifies with both packs");
     assert!(stdout(&out).contains("2 entry"), "{}", stdout(&out));
 }
+
+/// Broken overrides in an unselected environment: base lanes lint a
+/// warning and keep going, the `--env` path hard-errors before any
+/// validation runs.
+#[test]
+fn broken_overrides_lint_on_base_and_error_on_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project(root);
+    // A separate table (duplicate names would be shadowed whole by the
+    // first schema file) whose `staging` override names a ghost field;
+    // the fixture declares dev/prod on Hero, so staging would never be
+    // selected by the data below.
+    write(
+        &root.join("schemas/broken.yaml"),
+        r#"tables:
+  Pet:
+    name: Pet
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+    env_overrides:
+      staging:
+        ghost:
+          required: false
+enums: {}
+"#,
+    );
+    fs::write(root.join("config/hero.json"), LENIENT_SOURCE).unwrap();
+    let proj = root.to_str().unwrap();
+
+    // Base lane: warning, then a clean build.
+    let out = run_cage(&["build", proj]);
+    assert_code(&out, 0, "base build with a broken unselected env");
+    assert!(
+        stderr(&out)
+            .contains("warning: env_overrides[staging] names unknown field 'ghost' in table 'Pet'"),
+        "{}",
+        stderr(&out)
+    );
+
+    // The --env path hard-errors on the structural defect.
+    let out = run_cage(&["build", proj, "--env", "prod"]);
+    assert_code(&out, 2, "--env path rejects broken overrides");
+    assert!(
+        stderr(&out).contains("invalid env_overrides"),
+        "{}",
+        stderr(&out)
+    );
+}

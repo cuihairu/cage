@@ -455,6 +455,15 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       --env 目录名/manifest/schema.json/回验 + 基线并存；publish --env
       E1801/入册/幂等/verify 全绿）+ 示例 run.sh 步骤 6/11 实机演示 +
       example.md/cli.md/design.md 文档同步——本轮交付，勾选
+- [x] 未选中环境坏覆盖 lint（2026-10 交付，design §48 遗留清账）：
+      `Schema::lint_env_overrides` 收集全部结构性坏覆盖（未知字段 /
+      空补丁，报错带 table/env/field 定位），validate 退化为取首条
+      硬错误；CLI 基线路径（不选环境）逐条 `warning:` 提示不阻断，
+      `--env` 路径维持硬错误——坏覆盖不再潜伏到有人 `--env` 才爆。
+      不新增 E 码（装载期纯文本诊断，与 `--env` 结构错误同构）。验收
+      达成：core 单测 ×1（lint 收全多环境问题 + validate 仍硬失败）+
+      CLI 集成 ×1（基线 warning 不阻断 + --env 硬错误 exit 2）——
+      本轮交付，勾选
 
 ### A 系列：Artifact Distribution（2026-10 立项，design §47）
 

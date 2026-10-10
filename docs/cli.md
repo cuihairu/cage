@@ -44,6 +44,9 @@ semantic / gamerule（默认 `semantic`，即默认执行到 L6，含 L7 业务�
 gen 同）。`--env`（check / build / gen 同）按 Schema `env_overrides`
 声明的环境抹约束后验证——未声明的环境名是用法错误（exit 2），详见
 [Schema 分环境约束覆盖](/schema#分环境约束覆盖env_overrides设计-48)。
+不带 `--env` 时坏覆盖也有守卫：任一已声明环境的结构性坏覆盖（指向
+不存在字段 / 空补丁）在装载期逐条 `warning:` 提示（不阻断）；带上
+`--env` 时同一缺陷是硬错误（exit 2）。
 
 ## build
 

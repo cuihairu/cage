@@ -160,5 +160,9 @@ cage.toml 登记）。`cage check` / `build` / `gen` 以 `--env <名>` 选
 的环境名与无 `env_overrides` 的 Schema 传 `--env` 都是用法错误
 （exit 2）。构建账本随环境轮换：`schema_hash` 对解析后 Schema 计
 算，manifest 记录 `environment` 字段，换环境不复用上一环境的构建产
-物。
+物。结构性坏覆盖（指向不存在字段 / 空补丁）两道守卫：不带 `--env`
+时装载期逐条 `warning:` 提示（不阻断，坏覆盖不会潜伏到有人选环境才
+暴露）；带 `--env` 时硬错误（exit 2）。`cage snapshot` /
+`registry publish` 同样支持 `--env` 出环境化包（见
+[build](/build#configuration-snapshot) 与 [cli](/cli#snapshot)）。
 

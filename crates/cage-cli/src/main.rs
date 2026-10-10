@@ -392,6 +392,12 @@ struct Project {
 /// keeps the base schema.
 fn project_with_env(project: Project, env: Option<&str>) -> Result<Project, String> {
     let Some(env) = env else {
+        // Base lane: nobody selected an environment, but a broken override
+        // in any declared one would surface as a hard error the moment
+        // someone runs `--env` on it — lint it now, don't wait.
+        for problem in project.schema.lint_env_overrides() {
+            eprintln!("warning: {problem}");
+        }
         return Ok(project);
     };
     if let Err(e) = project.schema.validate_env_overrides() {

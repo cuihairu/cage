@@ -2690,7 +2690,11 @@ environments」。**不新增 E 码**：环境名错误与 unknown profile 同�
 （CLI 用法错误，非文档校验失败）；`--env` 路径上对全部环境的覆盖做
 结构检查（字段存在、非空补丁，报错带 table/env/field 定位）——坏覆
 盖在选中该环境时必被拦下。非选中环境的坏覆盖告警（无 `--env` 的
-lint）留待后续，需要新增 E 码时再立。
+lint）已实装（2026-10）：`Schema::lint_env_overrides` 收集全部结构性
+问题，基线路径（不选环境）逐条 `warning:` 提示不阻断，`--env` 路径
+维持硬错误——同一结构缺陷两种口径，与 unknown field 的
+告警/升级同构；沿用「不新增 E 码」的既有裁定（装载期纯文本诊断，
+与 `--env` 结构错误的呈现一致）。
 
 **构建账本**：`schema_hash` 对 resolved Schema 全量哈希（环境改变
 → 字段约束变 → schema_hash 变 → build_id 变）；manifest 新增
