@@ -1,0 +1,26 @@
+# GitHub Actions: 在 CI 中跑 cage —— 拉取可执行文件或源码构建后，一条
+# run.sh 走完示例工程的验证 / 构建 / 生成 / 快照 / 坏数据断言。
+# 把本文件内容粘进 .github/workflows/cage.yml 即可（仓库根已有同款 CI）。
+name: cage
+on:
+  push:
+    paths:
+      - 'examples/game-config/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run cage example end-to-end
+        run: bash examples/run.sh
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cage-build
+          path: examples/game-config/build

@@ -1,0 +1,20 @@
+# 任务（源：config/Quest.xlsx —— Excel 源演示，表名取自工作表名）
+tables:
+  Quest:
+    name: Quest
+    description: 任务表（Excel 源；reward_item_id 引用 Item.id，order_by 演示行排序约束 E1304）
+    primary_key: [id]
+    order_by: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true, min: 1 }
+      name: { name: name, type: { kind: String }, required: true, min_length: 1, max_length: 64 }
+      reward_item_id:
+        name: reward_item_id
+        type: { kind: Int32 }
+        required: true
+        description: 完成奖励道具 —— 引用 Item.id（L5 跨表引用校验）
+        reference:
+          table: Item
+          field: id
+      min_level: { name: min_level, type: { kind: Int8 }, required: true, min: 1, max: 100 }
+enums: {}

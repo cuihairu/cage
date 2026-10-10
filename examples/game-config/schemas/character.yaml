@@ -39,6 +39,22 @@ tables:
         type: { kind: Bool }
         default: true
         description: 可选布尔，带 Schema 默认值（生成端渲染为初始化字面量）
+      nickname:
+        name: nickname
+        type: { kind: String }
+        max_length: 16
+        description: 昵称（可选；prod 环境必填 —— env_overrides 演示）
+      internal_note:
+        name: internal_note
+        type: { kind: String }
+        max_length: 128
+        targets: ["server"]
+        description: 运营内部备注 —— 仅 server profile 可见（字段级 targets 演示）
+    env_overrides:
+      dev:
+        nickname: { max_length: 32 }
+      prod:
+        nickname: { required: true }
 enums:
   CharacterClass:
     name: CharacterClass

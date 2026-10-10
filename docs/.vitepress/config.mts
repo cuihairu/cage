@@ -32,6 +32,7 @@ export default defineConfig({
       { text: 'CLI', link: '/cli' },
       { text: 'Build', link: '/build' },
       { text: 'Web', link: '/web' },
+      { text: '资产', link: '/assets' },
       { text: '完整示例', link: '/example' }
     ],
 
@@ -60,6 +61,7 @@ export default defineConfig({
           items: [
             { text: 'CLI', link: '/cli' },
             { text: 'Build：确定性构建', link: '/build' },
+            { text: '资产：Schema 管理与加载', link: '/assets' },
             { text: 'Web：Schema 编辑器', link: '/web' }
           ]
         }

@@ -1,0 +1,36 @@
+// Jenkins: 在 CI 中跑 cage —— 适合自托管 agent（装好 Rust 工具链即可）。
+// pipeline 跑完 examples/run.sh；任一断言失败 step 非零退出，pipeline 红。
+pipeline {
+  agent any
+  options { timestamps(); timeout(time: 15, unit: 'MINUTES') }
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+    stage('Toolchain') {
+      steps {
+        sh '''
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            . "$HOME/.cargo/env"
+          fi
+        '''
+      }
+    }
+    stage('Cage example') {
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
+          . "$HOME/.cargo/env" 2>/dev/null || true
+          bash examples/run.sh
+        '''
+      }
+    }
+  }
+  post {
+    always {
+      archiveArtifacts artifacts: 'examples/game-config/build/**', allowEmpty: true
+      junit allowEmpty: true, testResults: ''  // 占位：cage 不产 JUnit，留作扩展点
+    }
+  }
+}

@@ -1,0 +1,14 @@
+# GitLab CI: 在 CI 中跑 cage —— 模板自带 Rust 镜像，run.sh 走完端到端示例。
+# 复制到仓库根 .gitlab-ci.yml 即可。cage 产物作为 job artifact 归档。
+stages:
+  - build
+cage:example:
+  stage: build
+  image: rust:1-bookworm
+  script:
+    - bash examples/run.sh
+  artifacts:
+    when: always
+    paths:
+      - examples/game-config/build/
+    expire_in: 1 week

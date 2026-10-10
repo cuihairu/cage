@@ -1,0 +1,21 @@
+# 商店（源：config/Shop.msgpack —— MsgPack 源演示；env_overrides 演示分环境）
+tables:
+  Shop:
+    name: Shop
+    description: 商店表（MsgPack 源；prod 环境把折扣上限收紧到 0.5 —— 同表不同环境不同规则）
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true, min: 1 }
+      item_id:
+        name: item_id
+        type: { kind: Int32 }
+        required: true
+        description: 货架道具 —— 引用 Item.id（L5 跨表引用校验）
+        reference:
+          table: Item
+          field: id
+      discount: { name: discount, type: { kind: Float64 }, required: true, min: 0, max: 0.9 }
+    env_overrides:
+      prod:
+        discount: { max: 0.5 }
+enums: {}

@@ -30,3 +30,12 @@ targets = [
   { format = "go",           output_dir = "build/client/go",  options = { package = "config" } },
   { format = "java",         output_dir = "build/client/java", options = { package = "game.config" } },
 ]
+
+[profiles.server]
+name = "server"
+description = "服务端视图：json + csv 数据 target + C# 绑定（含 server-only 字段 internal_note）"
+targets = [
+  { format = "json",   output_dir = "build/server/json" },
+  { format = "csv",    output_dir = "build/server/csv" },
+  { format = "csharp", output_dir = "build/server/cs", options = { namespace = "Game.Config.Server" } },
+]
