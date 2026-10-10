@@ -28,7 +28,9 @@ pub mod schema {
     pub const E1002: &str = "E1002";
     /// E1003 - Duplicate field definition in schema
     pub const E1003: &str = "E1003";
-    /// E1004 - Invalid schema definition (e.g., circular reference in schema)
+    /// E1004 - Invalid schema definition (dangling schema references via the
+    /// web load path; malformed rule/predicate asserts or asserts referencing
+    /// undeclared fields at L5/L6 evaluation, once per rule)
     pub const E1004: &str = "E1004";
     /// E1005 - Schema file not found or unreadable
     pub const E1005: &str = "E1005";
@@ -84,7 +86,9 @@ pub mod reference {
     pub const E1403: &str = "E1403";
     /// E1404 - Reference cardinality violation (e.g., one-to-many exceeded)
     pub const E1404: &str = "E1404";
-    /// E1410 - Referenced object exists but fails semantic predicate (type/compatibility)
+    /// E1410 - Referenced object exists but fails semantic predicate
+    /// (assert evaluated on the target row; an absent optional field does
+    /// not state anything, incomparable operand types also report here)
     pub const E1410: &str = "E1410";
     /// E1411 - Referenced object field constraint violation
     pub const E1411: &str = "E1411";
@@ -92,7 +96,9 @@ pub mod reference {
 
 /// Semantic validation errors (L6)
 pub mod semantic {
-    /// E1501 - Assertion expression evaluated to false
+    /// E1501 - Assertion expression evaluated to false (single-comparison
+    /// asserts: `operand OP operand`; absent optional fields pass,
+    /// incomparable operand types are violations; `warning_only` downgrades)
     pub const E1501: &str = "E1501";
     /// E1502 - Cross-field constraint violation
     pub const E1502: &str = "E1502";

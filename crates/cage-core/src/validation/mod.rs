@@ -3,11 +3,12 @@
 
 pub mod rules;
 
+mod expr;
+
 use crate::diagnostics::{Diagnostic, DiagnosticBuilder, Diagnostics, Severity};
 use crate::error::codes::{build, parse, reference, schema, semantic, table, type_val, value};
 use crate::schema::{
-    ExpressionRule, FieldSchema, FieldType, MapKeyType, ReferenceSchema, Schema, TableSchema,
-    ValidatedSchema,
+    ExpressionRule, FieldSchema, FieldType, MapKeyType, ReferenceSchema, Schema, ValidatedSchema,
 };
 use crate::value::{Document, Row, SourceLocation, TypedValue, Value};
 use std::collections::HashMap;
@@ -842,6 +843,77 @@ fn validate_reference(ctx: &mut ValidationContext) {
     let schema = &ctx.schema.schema;
     let doc = ctx.document;
 
+    // Parse every reference predicate once up front: a malformed assert or a
+    // reference to a field the target table does not declare is a schema
+    // defect (E1004) reported once, independent of how many rows consult
+    // it. `None` marks a defective predicate so the row loop skips it.
+    let mut predicates: HashMap<(&str, &str), Option<expr::Comparison>> = HashMap::new();
+    for (table_name, table_schema) in &schema.tables {
+        for (field_name, field_schema) in &table_schema.fields {
+            let Some(ref_schema) = &field_schema.reference else {
+                continue;
+            };
+            let Some(predicate) = &ref_schema.predicate else {
+                continue;
+            };
+            let parsed = match expr::parse_assert(&predicate.assert) {
+                Err(err) => {
+                    ctx.diagnostics.add(
+                        DiagnosticBuilder::error(
+                            schema::E1004,
+                            format!(
+                                "reference predicate '{}' on {}.{} has a malformed assert: {}",
+                                predicate.name, table_name, field_name, err
+                            ),
+                        )
+                        .source("schema")
+                        .table(table_name)
+                        .field(field_name)
+                        .hint("Asserts are `operand OP operand` — e.g. min_level <= max_level")
+                        .build(),
+                    );
+                    None
+                }
+                Ok(cmp) => {
+                    let unknown = schema.tables.get(&ref_schema.table).and_then(|target| {
+                        cmp.field_refs()
+                            .into_iter()
+                            .find(|name| !target.fields.contains_key(*name))
+                    });
+                    match unknown {
+                        Some(name) => {
+                            ctx.diagnostics.add(
+                                DiagnosticBuilder::error(
+                                    schema::E1004,
+                                    format!(
+                                        "reference predicate '{}' on {}.{} references \
+                                         undeclared field '{}' of table '{}'",
+                                        predicate.name,
+                                        table_name,
+                                        field_name,
+                                        name,
+                                        ref_schema.table
+                                    ),
+                                )
+                                .source("schema")
+                                .table(table_name)
+                                .field(field_name)
+                                .hint(
+                                    "Predicates may only reference fields declared in the \
+                                     referenced table",
+                                )
+                                .build(),
+                            );
+                            None
+                        }
+                        None => Some(cmp),
+                    }
+                }
+            };
+            predicates.insert((table_name.as_str(), field_name.as_str()), parsed);
+        }
+    }
+
     for (table_name, table) in &doc.tables {
         let Some(table_schema) = schema.tables.get(table_name) else {
             continue;
@@ -854,6 +926,9 @@ fn validate_reference(ctx: &mut ValidationContext) {
                 };
 
                 if let Some(ref_schema) = &field_schema.reference {
+                    let parsed = predicates
+                        .get(&(table_name.as_str(), field_name.as_str()))
+                        .and_then(|p| p.as_ref());
                     validate_single_reference(
                         ctx,
                         table_name,
@@ -861,6 +936,7 @@ fn validate_reference(ctx: &mut ValidationContext) {
                         field_name,
                         typed_value,
                         ref_schema,
+                        parsed,
                     );
                 }
             }
@@ -924,6 +1000,7 @@ fn report_reference_cycles(ctx: &mut ValidationContext, schema: &Schema) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_single_reference(
     ctx: &mut ValidationContext,
     table_name: &str,
@@ -931,6 +1008,7 @@ fn validate_single_reference(
     field_name: &str,
     typed_value: &TypedValue,
     ref_schema: &ReferenceSchema,
+    parsed_predicate: Option<&expr::Comparison>,
 ) {
     let value = &typed_value.value;
     let loc = typed_value.location.clone();
@@ -961,30 +1039,43 @@ fn validate_single_reference(
     let target_row_idx = target_row_idx.unwrap();
     let target_row = ctx.document.tables[&ref_schema.table].rows[target_row_idx].clone();
 
-    // E1410: Check predicate (semantic compatibility)
+    // E1410: Check predicate (semantic compatibility). The parsed form comes
+    // from the caller's pre-pass; a defective predicate was already reported
+    // as E1004 and arrives here as None. An absent (optional) field on the
+    // target row says nothing about the predicate — pass.
     if let Some(predicate) = &ref_schema.predicate {
-        if !evaluate_predicate(predicate, &target_row, &ctx.schema.schema) {
-            ctx.diagnostics.add(
-                DiagnosticBuilder::error(
-                    reference::E1410,
-                    "Referenced object exists but fails semantic predicate",
-                )
-                .location(loc.clone())
-                .table(table_name)
-                .row(format!("{}", row.index))
-                .field(field_name)
-                .value(serde_json::to_value(value).unwrap_or_default())
-                .hint(format!(
+        if let Some(cmp) = parsed_predicate {
+            let hint = match expr::evaluate(cmp, &target_row) {
+                expr::Outcome::Holds(true) | expr::Outcome::MissingField(_) => None,
+                expr::Outcome::Holds(false) => Some(format!(
                     "Predicate '{}' not satisfied by referenced {}",
                     predicate.assert, ref_schema.table
-                ))
-                .related(
-                    reference::E1410,
-                    "Referenced row here",
-                    target_row.location.clone(),
-                )
-                .build(),
-            );
+                )),
+                expr::Outcome::Incomparable { lhs, rhs } => Some(format!(
+                    "Predicate '{}' is not evaluable on the referenced {}: operands are {lhs} and {rhs}",
+                    predicate.assert, ref_schema.table
+                )),
+            };
+            if let Some(hint) = hint {
+                ctx.diagnostics.add(
+                    DiagnosticBuilder::error(
+                        reference::E1410,
+                        "Referenced object exists but fails semantic predicate",
+                    )
+                    .location(loc.clone())
+                    .table(table_name)
+                    .row(format!("{}", row.index))
+                    .field(field_name)
+                    .value(serde_json::to_value(value).unwrap_or_default())
+                    .hint(hint)
+                    .related(
+                        reference::E1410,
+                        "Referenced row here",
+                        target_row.location.clone(),
+                    )
+                    .build(),
+                );
+            }
         }
     }
 
@@ -1027,61 +1118,99 @@ fn validate_single_reference(
     }
 }
 
-fn evaluate_predicate(predicate: &ExpressionRule, _target_row: &Row, _schema: &Schema) -> bool {
-    // Simplified expression evaluation - in practice would use a proper expression engine
-    // For now, just check simple field comparisons
-    // This is a placeholder - real implementation would parse and evaluate expressions
-    let _ = predicate;
-    true
-}
-
 /// L6: Semantic validation - expression rules on rows
 fn validate_semantic(ctx: &mut ValidationContext) {
     let schema = &ctx.schema.schema;
     let doc = ctx.document;
 
+    // Pre-resolve every rule once per table: a malformed assert or a
+    // reference to an undeclared field is a schema defect (E1004) reported
+    // once per rule, whether or not the table carries rows. Rules that
+    // resolve cleanly are evaluated per row below.
+    let mut active: HashMap<&str, Vec<(&ExpressionRule, expr::Comparison)>> = HashMap::new();
+    for (table_name, table_schema) in &schema.tables {
+        for (field_name, field_schema) in &table_schema.fields {
+            for rule in &field_schema.rules {
+                let cmp = match expr::parse_assert(&rule.assert) {
+                    Ok(cmp) => cmp,
+                    Err(err) => {
+                        ctx.diagnostics.add(
+                            DiagnosticBuilder::error(
+                                schema::E1004,
+                                format!(
+                                    "semantic rule '{}' on {}.{} has a malformed assert: {}",
+                                    rule.name, table_name, field_name, err
+                                ),
+                            )
+                            .source("schema")
+                            .table(table_name)
+                            .field(field_name)
+                            .hint("Asserts are `operand OP operand` — e.g. min_level <= max_level")
+                            .build(),
+                        );
+                        continue;
+                    }
+                };
+                let unknown = cmp
+                    .field_refs()
+                    .into_iter()
+                    .find(|name| !table_schema.fields.contains_key(*name));
+                if let Some(name) = unknown {
+                    ctx.diagnostics.add(
+                        DiagnosticBuilder::error(
+                            schema::E1004,
+                            format!(
+                                "semantic rule '{}' on {}.{} references undeclared field '{}'",
+                                rule.name, table_name, field_name, name
+                            ),
+                        )
+                        .source("schema")
+                        .table(table_name)
+                        .field(field_name)
+                        .hint("Asserts may only reference fields declared in the same table")
+                        .build(),
+                    );
+                    continue;
+                }
+                active.entry(table_name).or_default().push((rule, cmp));
+            }
+        }
+    }
+
     for (table_name, table) in &doc.tables {
-        let Some(table_schema) = schema.tables.get(table_name) else {
+        let Some(rules) = active.get(table_name.as_str()) else {
             continue;
         };
 
         for row in &table.rows {
-            // Table-level semantic rules
-            for rule in table_schema.fields.values().flat_map(|f| f.rules.iter()) {
-                if !evaluate_expression(rule, row, table_schema, schema) {
-                    let severity = if rule.warning_only {
-                        Severity::Warning
-                    } else {
-                        Severity::Error
-                    };
-                    let mut diag =
-                        DiagnosticBuilder::error(semantic::E1501, "Semantic rule violation")
-                            .location(row.location.clone())
-                            .table(table_name)
-                            .row(format!("{}", row.index))
-                            .hint(
-                                rule.message.clone().unwrap_or_else(|| {
-                                    format!("Assertion '{}' failed", rule.assert)
-                                }),
-                            )
-                            .build();
-                    diag.severity = severity;
-                    ctx.diagnostics.add(diag);
-                }
+            for (rule, cmp) in rules {
+                let hint = match expr::evaluate(cmp, row) {
+                    expr::Outcome::Holds(true) | expr::Outcome::MissingField(_) => continue,
+                    expr::Outcome::Holds(false) => rule
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| format!("Assertion '{}' failed", rule.assert)),
+                    expr::Outcome::Incomparable { lhs, rhs } => format!(
+                        "Assertion '{}' is not evaluable: operands are {lhs} and {rhs}",
+                        rule.assert
+                    ),
+                };
+                let severity = if rule.warning_only {
+                    Severity::Warning
+                } else {
+                    Severity::Error
+                };
+                let mut diag = DiagnosticBuilder::error(semantic::E1501, "Semantic rule violation")
+                    .location(row.location.clone())
+                    .table(table_name)
+                    .row(format!("{}", row.index))
+                    .hint(hint)
+                    .build();
+                diag.severity = severity;
+                ctx.diagnostics.add(diag);
             }
         }
     }
-}
-
-fn evaluate_expression(
-    _rule: &ExpressionRule,
-    _row: &Row,
-    _table_schema: &TableSchema,
-    _schema: &Schema,
-) -> bool {
-    // Placeholder for expression evaluation
-    // Real implementation would use a proper expression parser/evaluator
-    true
 }
 
 /// L7: Game Rule validation - plugin validators (see [`rules`]).
@@ -2304,12 +2433,13 @@ mod tests {
     }
 
     #[test]
-    fn l5_predicate_gate_runs_but_placeholder_never_rejects() {
+    fn l5_predicate_gate_accepts_when_target_row_satisfies_it() {
         let mut schema = Schema::new();
+        let tradable = plain_field("tradable", FieldType::Bool);
         schema.add_table(plain_table(
             "Item",
             &["id"],
-            vec![plain_field("id", FieldType::UInt32)],
+            vec![plain_field("id", FieldType::UInt32), tradable],
         ));
         let item_id = FieldSchema {
             reference: Some(ReferenceSchema {
@@ -2333,20 +2463,42 @@ mod tests {
         ));
         let vs = validated(schema);
         let doc = doc_with_tables(&[
-            ("Item", vec![row(0, &[("id", Value::UInt(1))])]),
+            (
+                "Item",
+                vec![
+                    row(
+                        0,
+                        &[("id", Value::UInt(1)), ("tradable", Value::Bool(true))],
+                    ),
+                    row(
+                        1,
+                        &[("id", Value::UInt(2)), ("tradable", Value::Bool(false))],
+                    ),
+                ],
+            ),
             (
                 "Drop",
-                vec![row(
-                    0,
-                    &[("id", Value::UInt(1)), ("item_id", Value::UInt(1))],
-                )],
+                vec![
+                    row(0, &[("id", Value::UInt(1)), ("item_id", Value::UInt(1))]),
+                    row(1, &[("id", Value::UInt(2)), ("item_id", Value::UInt(2))]),
+                ],
             ),
         ]);
 
-        // The predicate is evaluated against the resolved target row; the
-        // placeholder engine always accepts, so no E1410 is emitted.
+        // Row 0 targets a tradable item (holds); row 1 targets a
+        // non-tradable item (E1410). An absent optional field would say
+        // nothing and pass, but here the target field is declared Bool and
+        // present in both rows.
         let diags = validate(&vs, &doc, ValidationLevel::Reference, false);
-        assert!(diags.is_empty());
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, reference::E1410);
+        assert_eq!(errors[0].table.as_deref(), Some("Drop"));
+        assert_eq!(errors[0].row.as_deref(), Some("1"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("not satisfied")));
     }
 
     #[test]
@@ -2491,7 +2643,7 @@ mod tests {
     }
 
     #[test]
-    fn l6_evaluates_field_rules_with_placeholder_engine() {
+    fn l6_rejects_violating_rule_with_e1501() {
         let mut schema = Schema::new();
         let price = FieldSchema {
             rules: vec![ExpressionRule {
@@ -2516,10 +2668,212 @@ mod tests {
             )],
         );
 
-        // Every field rule is evaluated per row; the placeholder expression
-        // engine accepts everything today, so no E1501 is emitted yet.
+        let diags = validate(&vs, &doc, ValidationLevel::Semantic, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, semantic::E1501);
+        assert_eq!(errors[0].table.as_deref(), Some("Item"));
+        assert_eq!(errors[0].row.as_deref(), Some("0"));
+        assert_eq!(
+            errors[0].hint.as_deref(),
+            Some("price must stay under 10000")
+        );
+    }
+
+    #[test]
+    fn l6_satisfying_rule_and_absent_optional_field_pass() {
+        let mut schema = Schema::new();
+        let price = FieldSchema {
+            rules: vec![ExpressionRule {
+                name: "price_bounds".to_string(),
+                assert: "price <= bonus".to_string(),
+                message: None,
+                warning_only: false,
+            }],
+            ..plain_field("price", FieldType::UInt32)
+        };
+        let bonus = FieldSchema {
+            rules: vec![ExpressionRule {
+                name: "bonus_pos".to_string(),
+                assert: "bonus >= 0".to_string(),
+                message: None,
+                warning_only: true,
+            }],
+            ..plain_field("bonus", FieldType::UInt32)
+        };
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), price, bonus],
+        ));
+        let vs = validated(schema);
+        // price=5 <= bonus=9 holds; the bonus_pos rule references the
+        // declared field, which is optional and absent here → passes.
+        let doc = doc_with(
+            "Item",
+            vec![row(0, &[("id", Value::UInt(1)), ("price", Value::UInt(5))])],
+        );
         let diags = validate(&vs, &doc, ValidationLevel::Semantic, false);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn l6_warning_only_rule_reports_a_warning_not_an_error() {
+        let mut schema = Schema::new();
+        let price = FieldSchema {
+            rules: vec![ExpressionRule {
+                name: "price_bounds".to_string(),
+                assert: "price <= 10".to_string(),
+                message: None,
+                warning_only: true,
+            }],
+            ..plain_field("price", FieldType::UInt32)
+        };
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), price],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[("id", Value::UInt(1)), ("price", Value::UInt(50))],
+            )],
+        );
+        let diags = validate(&vs, &doc, ValidationLevel::Semantic, false);
+        assert!(diags.errors().is_empty());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags.warnings().len(), 1);
+        assert_eq!(diags.warnings()[0].code, semantic::E1501);
+        assert_eq!(diags.warnings()[0].severity, Severity::Warning);
+        assert!(diags.warnings()[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("Assertion 'price <= 10' failed")));
+    }
+
+    #[test]
+    fn l6_incomparable_operands_report_e1501_with_types() {
+        let mut schema = Schema::new();
+        let kind = FieldSchema {
+            rules: vec![ExpressionRule {
+                name: "kind_num".to_string(),
+                assert: "kind <= price".to_string(),
+                message: None,
+                warning_only: false,
+            }],
+            ..plain_field("kind", FieldType::String)
+        };
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                kind,
+                plain_field("price", FieldType::UInt32),
+            ],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    ("kind", Value::String("weapon".into())),
+                    ("price", Value::UInt(10)),
+                ],
+            )],
+        );
+        let diags = validate(&vs, &doc, ValidationLevel::Semantic, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, semantic::E1501);
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("not evaluable") && h.contains("string and uint")));
+    }
+
+    #[test]
+    fn l6_malformed_assert_and_unknown_ref_are_schema_defects() {
+        let mut schema = Schema::new();
+        let broken = FieldSchema {
+            rules: vec![ExpressionRule {
+                name: "broken".to_string(),
+                assert: "price <=".to_string(),
+                message: None,
+                warning_only: false,
+            }],
+            ..plain_field("price", FieldType::UInt32)
+        };
+        let dangling = FieldSchema {
+            rules: vec![ExpressionRule {
+                name: "dangling".to_string(),
+                assert: "ghost >= 1".to_string(),
+                message: None,
+                warning_only: false,
+            }],
+            ..plain_field("desc", FieldType::String)
+        };
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), broken, dangling],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![row(
+                0,
+                &[
+                    ("id", Value::UInt(1)),
+                    ("price", Value::UInt(50)),
+                    ("desc", Value::String("x".into())),
+                ],
+            )],
+        );
+
+        // Defects are reported once per rule as E1004 regardless of row
+        // count, and the violating rows emit nothing (the rules never run).
+        let diags = validate(&vs, &doc, ValidationLevel::Semantic, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|d| d.code == schema::E1004));
+        assert!(errors
+            .iter()
+            .any(|d| d.message.contains("malformed assert")));
+        assert!(errors
+            .iter()
+            .any(|d| d.message.contains("undeclared field 'ghost'")));
+    }
+
+    #[test]
+    fn l6_schema_defects_report_even_when_the_table_has_no_rows() {
+        let mut schema = Schema::new();
+        let broken = FieldSchema {
+            rules: vec![ExpressionRule {
+                name: "broken".to_string(),
+                assert: "price ==".to_string(),
+                message: None,
+                warning_only: false,
+            }],
+            ..plain_field("price", FieldType::UInt32)
+        };
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), broken],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with("Item", vec![]);
+
+        let diags = validate(&vs, &doc, ValidationLevel::Semantic, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, schema::E1004);
     }
 
     #[test]
