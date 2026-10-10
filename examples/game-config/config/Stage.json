@@ -7,6 +7,7 @@
       "min_level": 1,
       "max_level": 10,
       "boss_item_id": 1001,
+      "loot_item_ids": [1001, 2001],
       "tags": ["story", "open"],
       "drop_table": {},
       "boss": { "name": "木桩假人", "hp": 100 }
@@ -18,6 +19,7 @@
       "min_level": 8,
       "max_level": 25,
       "boss_item_id": 2001,
+      "loot_item_ids": [1002, 2001],
       "tags": ["forest", "night"],
       "drop_table": {
         "common": [1001, 2001],
@@ -32,6 +34,7 @@
       "min_level": 30,
       "max_level": 60,
       "boss_item_id": 2002,
+      "loot_item_ids": [2002, 3001],
       "tags": ["dungeon", "fire", "raid"],
       "drop_table": {
         "common": [3001, 2001],

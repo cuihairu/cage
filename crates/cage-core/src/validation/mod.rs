@@ -2676,7 +2676,8 @@ mod tests {
             &["id"],
             vec![plain_field("id", FieldType::UInt32)],
         ));
-        let item_ids = ref_field_card("item_ids", "Item", "id", "many");
+        let mut item_ids = ref_field_card("item_ids", "Item", "id", "many");
+        item_ids.field_type = FieldType::Array(Box::new(FieldType::UInt32));
         schema.add_table(plain_table(
             "Drop",
             &["id"],
@@ -2737,14 +2738,31 @@ mod tests {
             &["id"],
             vec![
                 plain_field("id", FieldType::UInt32),
-                // Scalar field declared `many` → the value's shape violates.
-                ref_field_card("tag_ids", "Item", "id", "many"),
-                // Array field under the default `one` → same in reverse.
-                ref_field("item_id", "Item", "id"),
+                // Fields here are `Any`-typed so L2 lets every shape
+                // through and the test isolates the L5 contract.
+                {
+                    let mut f = ref_field_card("tag_ids", "Item", "id", "many");
+                    f.field_type = FieldType::Any;
+                    f
+                },
+                // Array value under the default `one` → the reverse shape.
+                {
+                    let mut f = ref_field("item_id", "Item", "id");
+                    f.field_type = FieldType::Any;
+                    f
+                },
                 // Nullable single reference under `one` → violated; the
                 // `optional` spelling is the way to express nullability.
-                ref_field("maybe_item", "Item", "id"),
-                ref_field_card("spare_item", "Item", "id", "optional"),
+                {
+                    let mut f = ref_field("maybe_item", "Item", "id");
+                    f.field_type = FieldType::Any;
+                    f
+                },
+                {
+                    let mut f = ref_field_card("spare_item", "Item", "id", "optional");
+                    f.field_type = FieldType::Any;
+                    f
+                },
             ],
         ));
         let vs = validated(schema);
@@ -2824,7 +2842,7 @@ mod tests {
         assert!(errors[0]
             .hint
             .as_deref()
-            .is_some_and(|h| h.contains("one | many | optional")));
+            .is_some_and(|h| h.contains("source-side")));
     }
 
     #[test]
