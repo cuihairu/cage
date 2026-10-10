@@ -1928,4 +1928,340 @@ steps:
         assert!(out.starts_with("E2003"), "{out}");
         assert!(out.contains("does not fit"), "{out}");
     }
+
+    #[test]
+    fn yaml_to_value_maps_every_scalar_family_and_refuses_tags() {
+        assert_eq!(
+            yaml_to_value(serde_yaml::from_str("null").unwrap()).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            yaml_to_value(serde_yaml::from_str("true").unwrap()).unwrap(),
+            Value::Bool(true)
+        );
+        // a u64 that cannot fit i64 keeps its family; a float reads float
+        assert_eq!(
+            yaml_to_value(serde_yaml::from_str("18446744073709551615").unwrap()).unwrap(),
+            Value::UInt(u64::MAX)
+        );
+        assert_eq!(
+            yaml_to_value(serde_yaml::from_str("1.25").unwrap()).unwrap(),
+            Value::Float(1.25)
+        );
+
+        // number and bool mapping keys are stringified into the object
+        let keyed: serde_yaml::Value = serde_yaml::from_str("1: x\ntrue: y").unwrap();
+        let mut expected = IndexMap::new();
+        expected.insert("1".to_string(), Value::String("x".into()));
+        expected.insert("true".to_string(), Value::String("y".into()));
+        assert_eq!(yaml_to_value(keyed).unwrap(), Value::Object(expected));
+
+        // a composite key cannot name a field
+        let bad: serde_yaml::Value = serde_yaml::from_str("[1]: one").unwrap();
+        let err = yaml_to_value(bad).unwrap_err();
+        assert!(err.contains("unsupported mapping key"), "{err}");
+
+        // explicit YAML tags are refused — plain YAML cannot carry them
+        let tagged = serde_yaml::Value::Tagged(Box::new(serde_yaml::value::TaggedValue {
+            tag: serde_yaml::value::Tag::new("!custom"),
+            value: serde_yaml::Value::Number(5.into()),
+        }));
+        let err = yaml_to_value(tagged).unwrap_err();
+        assert!(err.contains("YAML tags are not supported"), "{err}");
+    }
+
+    #[test]
+    fn a_step_must_carry_exactly_one_transform() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("0001-two.yaml");
+        std::fs::write(
+            &file,
+            r#"
+from: "1.0.0"
+to: "1.1.0"
+steps:
+  - rename_field:
+      table: Item
+      from: name
+      to: title
+    set_default:
+      table: Item
+      field: rarity
+      value: "common"
+"#,
+        )
+        .unwrap();
+        let err = parse_spec(&file).unwrap_err();
+        assert!(
+            err.contains("exactly one transform mapping, got 2 keys"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_structure_refuses_empty_version_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        let from_empty = dir.path().join("0001-from.yaml");
+        std::fs::write(
+            &from_empty,
+            "from: \"\"\nto: \"1.1.0\"\nsteps:\n  - rename_field:\n      table: Item\n      from: name\n      to: title\n",
+        )
+        .unwrap();
+        let err = parse_spec(&from_empty).unwrap_err();
+        assert!(err.contains("empty `from` version"), "{err}");
+
+        let to_empty = dir.path().join("0002-to.yaml");
+        std::fs::write(
+            &to_empty,
+            "from: \"1.0.0\"\nto: \"\"\nsteps:\n  - rename_field:\n      table: Item\n      from: name\n      to: title\n",
+        )
+        .unwrap();
+        let err = parse_spec(&to_empty).unwrap_err();
+        assert!(err.contains("empty `to` version"), "{err}");
+    }
+
+    #[test]
+    fn validate_step_rejects_widen_type_on_an_unknown_field() {
+        let schema = schema_with_table("Item", &["id", "name"]);
+        let step = Step::WidenType {
+            table: "Item".into(),
+            field: "ghost".into(),
+            to: FieldType::Int64,
+        };
+        let err = validate_step(&step, &schema).unwrap_err();
+        assert!(
+            err.contains("E2002") && err.contains("has no field `ghost`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_migration_dir_reports_an_unreadable_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = parse_migration_dir(&dir.path().join("absent")).unwrap_err();
+        assert!(
+            err.contains("E2001") && err.contains("cannot read migrations directory"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn widen_type_without_a_from_schema_type_is_e2003() {
+        let mut doc = make_document();
+        let schema = schema_with_table("Item", &["id", "name"]);
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::WidenType {
+                table: "Item".into(),
+                field: "level".into(),
+                to: FieldType::Int64,
+            }],
+        };
+        let err = apply(&spec, &mut doc, &schema).unwrap_err();
+        assert!(err.contains("has no type for `Item.level`"), "{err}");
+    }
+
+    #[test]
+    fn excel_remove_field_and_widen_type_record_affected_rows() {
+        let mut doc = excel_document();
+        for row in &mut doc.tables["Item"].rows {
+            row.fields
+                .insert("note".to_string(), tv(V::String("x".into())));
+            row.fields.insert("level".to_string(), tv(V::UInt(5)));
+        }
+        // the from-schema says level is UInt8; widening into Int16 converts
+        // every value's representation (UInt → Int), so every row reports
+        let mut from_schema = schema_for_document("1.0.0");
+        from_schema.tables["Item"]
+            .fields
+            .get_mut("level")
+            .unwrap()
+            .field_type = FieldType::UInt8;
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![
+                Step::RemoveField {
+                    table: "Item".into(),
+                    field: "note".into(),
+                },
+                Step::WidenType {
+                    table: "Item".into(),
+                    field: "level".into(),
+                    to: FieldType::Int16,
+                },
+            ],
+        };
+        let report = apply(&spec, &mut doc, &from_schema).unwrap();
+
+        // remove_field: every workbook row that carried the field reports
+        // its sheet-grid location
+        assert_eq!(report.steps[0].rows_changed, 3);
+        assert_eq!(
+            report.steps[0]
+                .affected_locations
+                .iter()
+                .map(SourceLocation::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "config/items.xlsx | Sheet: Items | Row: 2",
+                "config/items.xlsx | Sheet: Items | Row: 3",
+                "config/items.xlsx | Sheet: Items | Row: 4",
+            ]
+        );
+
+        // widen_type: UInt → Int is a real representation change, so all
+        // three rows report too
+        assert_eq!(report.steps[1].rows_changed, 3);
+        for row in &doc.tables["Item"].rows {
+            assert_eq!(row.fields["level"].value, V::Int(5));
+        }
+        assert_eq!(report.steps[1].affected_locations.len(), 3);
+    }
+
+    #[test]
+    fn excel_rename_records_rows_and_null_defaults_fill_in_place() {
+        // rename_field on a workbook table records every renamed row
+        let mut doc = excel_document();
+        let from_schema = schema_for_document("1.0.0");
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::RenameField {
+                table: "Item".into(),
+                from: "grade".into(),
+                to: "tier".into(),
+            }],
+        };
+        let report = apply(&spec, &mut doc, &from_schema).unwrap();
+        assert_eq!(report.steps[0].rows_changed, 3);
+        assert_eq!(report.steps[0].affected_locations.len(), 3);
+        let fields: Vec<&str> = doc.tables["Item"].rows[0]
+            .fields
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(fields, ["id", "tier"]);
+
+        // set_default over an explicit null fills in place — the location
+        // rides on the existing field slot, not the row
+        let mut doc = make_document();
+        doc.tables["Item"].rows[0].fields["grade"].value = V::Null;
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::SetDefault {
+                table: "Item".into(),
+                field: "grade".into(),
+                value: V::String("standard".into()),
+            }],
+        };
+        let report = apply(&spec, &mut doc, &from_schema).unwrap();
+        assert_eq!(report.steps[0].rows_changed, 1);
+        assert_eq!(
+            doc.tables["Item"].rows[0].fields["grade"].value,
+            V::String("standard".into())
+        );
+    }
+
+    #[test]
+    fn remap_values_ignores_non_string_values() {
+        let mut doc = excel_document();
+        // only the first two rows carry the field — the third walks past
+        for row in doc.tables["Item"].rows.iter_mut().take(2) {
+            row.fields.insert("qty".to_string(), tv(V::Int(2)));
+        }
+        let from_schema = schema_for_document("1.0.0");
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::RemapValues {
+                table: "Item".into(),
+                field: "qty".into(),
+                map: IndexMap::from([("2".to_string(), "two".to_string())]),
+            }],
+        };
+        let report = apply(&spec, &mut doc, &from_schema).unwrap();
+        assert_eq!(report.steps[0].rows_changed, 0);
+        assert_eq!(report.steps[0].affected_locations.len(), 0);
+        assert_eq!(doc.tables["Item"].rows[0].fields["qty"].value, V::Int(2));
+    }
+
+    #[test]
+    fn rename_table_without_either_name_is_e2003() {
+        let mut doc = make_document();
+        let from_schema = schema_for_document("1.0.0");
+        let spec = MigrationSpec {
+            from: "1.0.0".into(),
+            to: "1.1.0".into(),
+            steps: vec![Step::RenameTable {
+                from: "Ghost".into(),
+                to: "Phantom".into(),
+            }],
+        };
+        let err = apply(&spec, &mut doc, &from_schema).unwrap_err();
+        assert!(
+            err.contains("E2003") && err.contains("document has no table `Ghost`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn is_widening_and_widen_value_cover_every_rank_and_family() {
+        let u8 = FieldType::UInt8;
+        let u16 = FieldType::UInt16;
+        let u32 = FieldType::UInt32;
+        let u64 = FieldType::UInt64;
+        let i8 = FieldType::Int8;
+        let i16 = FieldType::Int16;
+        let i32 = FieldType::Int32;
+        let i64 = FieldType::Int64;
+        let f32 = FieldType::Float32;
+        let f64 = FieldType::Float64;
+
+        // unsigned rank ladders grow; equal or narrower is refused
+        assert!(is_widening(&u8, &u16));
+        assert!(is_widening(&u16, &u32));
+        assert!(is_widening(&u32, &u64));
+        assert!(!is_widening(&u8, &u8));
+        assert!(!is_widening(&u16, &u8));
+
+        // unsigned → signed: one signed step per rank
+        assert!(is_widening(&u8, &i16));
+        assert!(is_widening(&u16, &i32));
+        assert!(is_widening(&u32, &i64));
+        assert!(!is_widening(&u8, &i8));
+        assert!(!is_widening(&u64, &i64));
+
+        // the ≤32-bit ladder and Float32 step exactly into Float64
+        assert!(is_widening(&i32, &f64));
+        assert!(is_widening(&f32, &f64));
+        assert!(!is_widening(&i64, &f64));
+        assert!(!is_widening(&FieldType::String, &f64));
+
+        // null widens to anything; integers fit each signed width
+        assert_eq!(widen_value(&V::Null, &i8), Some(V::Null));
+        assert_eq!(widen_value(&V::Int(7), &i8), Some(V::Int(7)));
+        assert_eq!(widen_value(&V::Int(7), &i16), Some(V::Int(7)));
+        assert_eq!(widen_value(&V::Int(7), &i32), Some(V::Int(7)));
+        assert_eq!(widen_value(&V::Int(7), &i64), Some(V::Int(7)));
+        assert_eq!(widen_value(&V::Int(7), &f64), Some(V::Int(7)));
+        assert_eq!(widen_value(&V::Int(200), &i8), None);
+
+        // unsigned into signed converts to Int; into its own rank ladder it
+        // keeps the family, and overflow is refused
+        assert_eq!(widen_value(&V::UInt(7), &i16), Some(V::Int(7)));
+        assert_eq!(widen_value(&V::UInt(7), &u8), Some(V::UInt(7)));
+        assert_eq!(widen_value(&V::UInt(7), &u16), Some(V::UInt(7)));
+        assert_eq!(widen_value(&V::UInt(7), &u32), Some(V::UInt(7)));
+        assert_eq!(widen_value(&V::UInt(7), &u64), Some(V::UInt(7)));
+        assert_eq!(widen_value(&V::UInt(300), &u8), None);
+
+        // floats step into Float64; a Float32 target holds no integer
+        // family, and non-numbers never widen
+        assert_eq!(widen_value(&V::Float(1.5), &f64), Some(V::Float(1.5)));
+        assert_eq!(widen_value(&V::UInt(1), &f32), None);
+        assert_eq!(widen_value(&V::String("x".into()), &i8), None);
+    }
 }

@@ -1034,3 +1034,37 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       filter_by_profile 的防御性死分支、schema-draft 的 mysql/pg 内省成功路
       （§45 外部依赖：需真实数据库）、以及 lcov 对 if-let 块尾花括号的
       计数伪影（932/1176/2021/2307 等，逻辑行均已覆盖）。
+
+### cage-core registry.rs 覆盖收口（2026-10-10 续批第五项）
+- [x] registry.rs 覆盖率 96.2% → 99.33%（91 → 18 行未覆盖，工作区 97.28% →
+      97.54%，779 测试全绿）。新增 15 个测试：版本需求解析算子臂
+      （`=`、`^0` 全零尾升位、label 基座、`~beta` 拒绝、render_req 的 > / <=）；
+      read_index 的损坏/不可读索引；write_index 的目录创建失败与 index.json
+      被目录占据；publish 的坏包名/坏版本名/篡改包信任门（E1803）/入口路径
+      被文件占据；packages 跳过无索引目录；resolve_entry 报缺失入口目录；
+      import_bundle 的非常规成员路径（`.`，tar 写侧拒 `..`）、重复 index.json、
+      空摘录、前缀外成员、缺骑载账本、摘录虚报文件数（99999 vs 实际）；
+      push_entry 的非 http 远端拒绝 + 黑洞 PUT 服务器打满 3 次传输重试映射
+      E2101；verify_registry 的干净通过（账本一致 continue）、索引记录与账本
+      不一致（E1803）、具名孤儿目录（无索引记录）；gc_registry 的最旧版本
+      回收 + 索引重写计数 + 无变化包跳过；remove_entry 的 dry-run 跳过删除与
+      目录失踪后的纯记录删除；verifying_key_from_env 的空值/非 base64 拒绝；
+      read_bundle_signature 的畸形 sidecar。
+- [ ] 剩余 18 行均为构造性不可达/测试脚手架臂：caret_range 的 get_mut 守卫
+      （bump_at 恒指向 Number）、presigned put 的 map 未覆盖臂（覆盖检查先于
+      首 PUT）、以及两处测试 HTTP 服务器内部臂（accept 错误、读 EOF、>1MB
+      头截断、body EOF 循环、405 方法臂——公开 API 只发 GET/PUT）。
+
+### cage-core migrate/mod.rs 覆盖收口（2026-10-11 续批第六项）
+- [x] migrate/mod.rs 覆盖率 95.1% → 100%（64 → 0 行未覆盖，工作区 97.54% →
+      97.66%，789 测试全绿）。新增 11 个测试：yaml_to_value 的 Null/Bool/u64
+      溢出/Float 标量、number 与 bool 映射键字符串化、复合键拒绝、显式 YAML
+      tag 拒绝（serde_yaml 会丢未知 `!!` tag，测试直接构造 Tagged 值）；
+      step 必须恰好一个 transform 映射；validate_structure 的空 from/to
+      版本字符串；validate_step 的 widen_type 未知字段（E2002）；
+      parse_migration_dir 的不可读目录（E2001）；WidenType 在 from-schema
+      无类型时 E2003；excel 表的 remove_field 与 widen_type（UInt8→Int16 真
+      表示变更）逐行 sheet-grid 定位记录；RemapValues 对非字符串值与整行缺
+      字段的路径；RenameTable 两名字皆无时 E2003；is_widening 与 widen_value
+      的全秩覆盖（无符号阶梯、无符号→有符号每秩一步、≤32bit 与 Float32 入
+      Float64、溢出拒绝、Null 直通、非数字拒绝）。
