@@ -961,4 +961,260 @@ enums: {}
         let empty = MigrationDraft::default();
         assert!(render_draft(&empty).contains("steps:\n  []\n"));
     }
+
+    #[test]
+    fn typed_json_value_shapes_defaults_into_their_family() {
+        use serde_json::json;
+        // Unsigned family demands a non-negative integer literal.
+        assert_eq!(
+            typed_json_value(&json!(5), &FieldType::UInt32),
+            Some(V::UInt(5))
+        );
+        assert_eq!(typed_json_value(&json!(-1), &FieldType::UInt32), None);
+        assert_eq!(typed_json_value(&json!("x"), &FieldType::UInt8), None);
+        // Signed family demands an integer literal.
+        assert_eq!(
+            typed_json_value(&json!(-3), &FieldType::Int32),
+            Some(V::Int(-3))
+        );
+        assert_eq!(typed_json_value(&json!(1.5), &FieldType::Int64), None);
+        // Float, bool and string families.
+        assert_eq!(
+            typed_json_value(&json!(2.5), &FieldType::Float64),
+            Some(V::Float(2.5))
+        );
+        assert_eq!(typed_json_value(&json!("x"), &FieldType::Float32), None);
+        assert_eq!(
+            typed_json_value(&json!(true), &FieldType::Bool),
+            Some(V::Bool(true))
+        );
+        assert_eq!(typed_json_value(&json!(1), &FieldType::Bool), None);
+        assert_eq!(
+            typed_json_value(&json!("mage"), &FieldType::String),
+            Some(V::String("mage".into()))
+        );
+        assert_eq!(typed_json_value(&json!(1), &FieldType::String), None);
+        // Null accepts only a JSON null.
+        assert_eq!(
+            typed_json_value(&json!(null), &FieldType::Null),
+            Some(V::Null)
+        );
+        assert_eq!(typed_json_value(&json!(1), &FieldType::Null), None);
+        // Arrays recurse per element; one bad element kills the default.
+        assert_eq!(
+            typed_json_value(
+                &json!([1, 2]),
+                &FieldType::Array(Box::new(FieldType::UInt32))
+            ),
+            Some(V::Array(vec![V::UInt(1), V::UInt(2)]))
+        );
+        assert_eq!(
+            typed_json_value(
+                &json!([1, -1]),
+                &FieldType::Array(Box::new(FieldType::UInt32))
+            ),
+            None
+        );
+        assert_eq!(
+            typed_json_value(&json!("x"), &FieldType::Array(Box::new(FieldType::Int32))),
+            None
+        );
+        // Everything else (bytes included) falls back to the generic bridge.
+        assert_eq!(
+            typed_json_value(&json!(5), &FieldType::Bytes),
+            Some(V::Int(5))
+        );
+    }
+
+    #[test]
+    fn json_to_value_maps_every_json_shape() {
+        use serde_json::json;
+        assert_eq!(json_to_value(&json!(null)), Some(V::Null));
+        assert_eq!(json_to_value(&json!(true)), Some(V::Bool(true)));
+        assert_eq!(json_to_value(&json!(5)), Some(V::Int(5)));
+        assert_eq!(json_to_value(&json!(u64::MAX)), Some(V::UInt(u64::MAX)));
+        assert_eq!(json_to_value(&json!(1.5)), Some(V::Float(1.5)));
+        assert_eq!(json_to_value(&json!("s")), Some(V::String("s".to_string())));
+        assert_eq!(
+            json_to_value(&json!([1, "a"])),
+            Some(V::Array(vec![V::Int(1), V::String("a".into())]))
+        );
+        let obj = json_to_value(&json!({"k": [1]}));
+        let V::Object(map) = obj.unwrap() else {
+            panic!("expected an object value");
+        };
+        assert_eq!(map.get("k"), Some(&V::Array(vec![V::Int(1)])));
+    }
+
+    #[test]
+    fn quote_string_always_reparses_as_a_string_or_refuses() {
+        assert_eq!(quote_string("yes"), Some("'yes'".to_string()));
+        assert_eq!(quote_string("5"), Some("'5'".to_string()));
+        assert_eq!(quote_string("it's"), Some("'it''s'".to_string()));
+        assert_eq!(quote_string("a\tb"), Some("'a\tb'".to_string()));
+        // No inline form exists for multi-line or control-character text.
+        assert_eq!(quote_string("a\nb"), None);
+        assert_eq!(quote_string("a\rb"), None);
+        assert_eq!(quote_string("a\u{1}b"), None);
+    }
+
+    #[test]
+    fn has_unsigned_spots_the_family_through_containers() {
+        assert!(has_unsigned(&V::UInt(1)));
+        assert!(!has_unsigned(&V::Int(-1)));
+        assert!(has_unsigned(&V::Array(vec![V::Int(1), V::UInt(2)])));
+        assert!(!has_unsigned(&V::Array(vec![V::Int(1)])));
+        let mut map = IndexMap::new();
+        map.insert("k".to_string(), V::UInt(2));
+        assert!(has_unsigned(&V::Object(map)));
+    }
+
+    #[test]
+    fn render_step_forms_cover_every_variant_and_todo_fallback() {
+        let mut remap = IndexMap::new();
+        remap.insert("yes".to_string(), "true".to_string());
+        let draft = MigrationDraft {
+            todos: vec!["# TODO fix by hand".to_string()],
+            steps: vec![
+                Step::RenameField {
+                    table: "Item".into(),
+                    from: "desc".into(),
+                    to: "description".into(),
+                },
+                Step::SetDefault {
+                    table: "Item".into(),
+                    field: "rarity".into(),
+                    value: V::String("common".into()),
+                },
+                // Unsigned rides the canonical tagged form.
+                Step::SetDefault {
+                    table: "Item".into(),
+                    field: "stack".into(),
+                    value: V::UInt(99),
+                },
+                // Sequences need the block form.
+                Step::SetDefault {
+                    table: "Item".into(),
+                    field: "ids".into(),
+                    value: V::Array(vec![V::Int(1), V::Int(2)]),
+                },
+                Step::RemoveField {
+                    table: "Item".into(),
+                    field: "ghost".into(),
+                },
+                Step::WidenType {
+                    table: "Item".into(),
+                    field: "level".into(),
+                    to: FieldType::Int64,
+                },
+                Step::RemapValues {
+                    table: "Item".into(),
+                    field: "rarity".into(),
+                    map: remap,
+                },
+                Step::RenameTable {
+                    from: "Mob".into(),
+                    to: "Enemy".into(),
+                },
+                // Bytes have no rule-file form → rendered as a TODO line.
+                Step::SetDefault {
+                    table: "Item".into(),
+                    field: "blob".into(),
+                    value: V::Bytes(vec![1]),
+                },
+            ],
+        };
+        let text = render_draft(&draft);
+        assert!(text.starts_with("# --- review before use ---\n# TODO fix by hand\n\nsteps:\n"));
+        assert!(text.contains(
+            "rename_field:\n      table: Item\n      from: desc\n      to: description\n"
+        ));
+        assert!(text.contains("value: 'common'\n"), "inline scalar form");
+        assert!(
+            text.contains("value:\n") && text.contains("99"),
+            "unsigned default rides the tagged block form: {text}"
+        );
+        assert!(text.contains("- 1\n"), "sequence default in block form");
+        assert!(text.contains("remove_field:\n      table: Item\n      field: ghost\n"));
+        assert!(text.contains("widen_type:\n      table: Item\n      field: level\n"));
+        assert!(text.contains("remap_values:\n      table: Item\n      field: rarity\n"));
+        assert!(text.contains("'yes': 'true'\n"), "map keys stay quoted");
+        assert!(text.contains("rename_table:\n      from: Mob\n      to: Enemy\n"));
+        assert!(
+            text.contains("# TODO step set_default(Item.blob) carries a value"),
+            "bytes default degrades to a TODO: {text}"
+        );
+    }
+
+    #[test]
+    fn added_and_required_flip_todo_arms() {
+        let from = schema(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id:
+        name: id
+        type: { kind: Int32 }
+      old_req:
+        name: old_req
+        type: { kind: String }
+        required: true
+      bad_default:
+        name: bad_default
+        type: { kind: Int32 }
+        default: true
+enums: {}
+",
+        );
+        let to = schema(
+            r"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id:
+        name: id
+        type: { kind: Int32 }
+      old_req:
+        name: old_req
+        type: { kind: String }
+      new_req:
+        name: new_req
+        type: { kind: String }
+        required: true
+      new_opt:
+        name: new_opt
+        type: { kind: String }
+      bad_default:
+        name: bad_default
+        type: { kind: Int32 }
+        required: true
+        default: true
+enums: {}
+",
+        );
+        let draft = draft_migration(&diff_schemas(&from, &to));
+        // New + required + no default → TODO telling the author to backfill.
+        assert!(draft
+            .todos
+            .iter()
+            .any(|t| t.contains("`Item.new_req` is new and required with no default")));
+        // New + optional + no default → nothing to say.
+        assert!(!draft.todos.iter().any(|t| t.contains("`Item.new_opt`")));
+        // Became required with a default no rule can express → TODO.
+        assert!(draft
+            .todos
+            .iter()
+            .any(|t| t.contains("`Item.bad_default` became required and its default `true`")));
+        // required → optional needs no data change: no step, no TODO.
+        assert!(!draft.steps.iter().any(|s| matches!(
+            s,
+            Step::SetDefault { field, .. } if field == "old_req"
+        )));
+        assert!(!draft.todos.iter().any(|t| t.contains("`Item.old_req`")));
+    }
 }

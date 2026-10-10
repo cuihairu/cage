@@ -993,3 +993,16 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       API 三端点（schema 文档 / validate / save 落盘）、编辑器页与
       app.js/app.css 资产（Content-Type 断言）、favicon 与未知路由 404。
       run_web 无限循环仍归 web-smoke.sh。workspace 731 → 732。
+
+### migrate/diff.rs 覆盖收口（2026-10-10 续批第二项，承接中断批次）
+
+- [x] diff.rs 未覆盖行 84.01% → 96.58%：typed_json_value 全类型族
+      （UInt/Int/Float/Bool/String/Null/Array 逐元素 + 负数/错族拒绝 +
+      Bytes 回落 json_to_value）、json_to_value 全 JSON 形状（含
+      u64::MAX 走 UInt）、quote_string（yes/5/撇号转义/制表符放行，
+      换行与控制字符拒绝）、has_unsigned 容器递归、render_draft 全
+      Step 变体线型（rename/set_default 内联/UInt 标签块/数组块/
+      remove/widen/remap 带引号/rename_table + Bytes 无线型降级 TODO）。
+      草稿级补臂：新增必填无默认 TODO、新增可选无默认沉默、
+      RequiredChanged 带不可表示默认 TODO（bad_default 两侧同置才走
+      该臂）、required→optional 无操作。workspace 735 → 741。
