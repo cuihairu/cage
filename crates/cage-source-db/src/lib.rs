@@ -15,6 +15,7 @@
 //! Rows without ORDER BY are sorted by their serialized form, so the
 //! build never depends on the server's return order.
 
+pub mod draft;
 mod mysql;
 mod pg;
 
@@ -175,6 +176,33 @@ pub fn resolve_dsn(scheme: &str, config: Option<&RemoteSourceConfig>) -> Result<
 /// shared mapping sorts by serialized form.
 fn has_order_by(sql: &str) -> bool {
     sql.to_ascii_uppercase().contains("ORDER BY")
+}
+
+/// Split a possibly schema-qualified table name into (schema, bare
+/// name): `db.items` → `(Some("db"), "items")`, `items` → `(None,
+/// "items")`. MySQL resolves the bare form against the DSN's database
+/// (`DATABASE()`), PostgreSQL against the session's current schema
+/// (`current_schema()`).
+pub(crate) fn split_qualified(table: &str) -> (Option<String>, &str) {
+    match table.split_once('.') {
+        Some((schema, bare)) => (Some(schema.to_string()), bare),
+        None => (None, table),
+    }
+}
+
+/// Introspect one table (design §45 schema-draft helper): dispatch to
+/// the backend by scheme — the same `mysql:` / `pg:` grammar as source
+/// specs — and hand back the structural skeleton the draft renderer
+/// consumes. Read-only by construction: bound parameters, pinned
+/// session, `information_schema` only.
+pub fn introspect(scheme: &str, dsn: &str, table: &str) -> Result<draft::TableInfo, String> {
+    match scheme {
+        "mysql" => mysql::introspect(dsn, table),
+        "pg" => pg::introspect(dsn, table),
+        other => Err(format!(
+            "{E1905} not a mysql:/pg: scheme for introspection: {other}"
+        )),
+    }
 }
 
 /// Serialize the row set canonically: an object per row with keys in

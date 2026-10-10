@@ -189,11 +189,11 @@
       「R 系列：Configuration Registry」：本地多版本仓库 / `[dependencies]`
       版本 pin / 远程 http(s) 只读解析 / verify 全册审计 + gc 滚动窗口 +
       remove 显式移除）；遗留的注册表鉴权与远程发布协议不在本项
-- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——S1–S8
+- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——S1–S9
       收官（2026-10，见下方「S 系列：Remote Source」：S1 HTTP API 源 /
       S2 MySQL / PostgreSQL 源 / S3 Google Sheets 源 / S4 确定性与
       离线语义收口 / S5 错误码接线收口 / S6 文档收口 / S7 分页与限流 /
-      S8 条件 GET 增量拉取）
+      S8 条件 GET 增量拉取 / S9 库表内省 Schema 草稿）
 - [x] 分环境验证 `--env`（2026-10 拍板，design §48，约束覆盖）——已交付，见下方「分环境验证」节
 - [x] Artifact 分发与迁移——全数交付（2026-10 拍板：A 系列注册表分发
       A1–A4 收官 + M 系列声明式数据迁移 M0–M3 收官，见下方两节；设计
@@ -275,7 +275,7 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1–S8 全数交付）
+### S 系列：Remote Source（2026-10 立项，design §45；S1–S9 全数交付）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
 纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
@@ -409,6 +409,31 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       manifest 逐字节一致）+ design §45 S7 决策记录（分页协议选型 /
       限流协商 / 回退边界）+ source.md / validation.md E1901 行同步
       ——本轮交付，勾选
+- [x] S9 库表内省 Schema 草稿（2026-10 交付，§45 留待实现期最后一项
+      可实现项）：`cage schema-draft <工程> <spec>... [-o <文件>]`——
+      `mysql:<表>` / `pg:<表>` spec（与 source_roots 同句法，
+      `schema.表` 解析到具名 schema）经只读会话内省
+      `information_schema`（表名绑定为参数、内省 SQL 为 const 且过
+      自家 validate_select 白名单自检），渲染确定性 YAML 草稿：表序 =
+      spec 序、列序 = 声明序、主键来自约束、`NOT NULL → required`；
+      DECIMAL / temporal / JSON / 未知类型行内注释点出拍板项，无主键
+      表落空 `primary_key: []` 加注释（primary_key 是 DSL 必填字段，
+      空列表是合法「无主键」形状且校验跳过 PK 检查）。类型映射最小
+      忠实口径：宽度整型 Int8–Int64 / UInt8–UInt64（unsigned 提升
+      家族）、`tinyint(1)` → Bool（MySQL 惯例）、DECIMAL / temporal /
+      JSON / 文本 → String——与适配器缓存 JSON 的实际形态一致，草稿
+      能在自家管线校验。凭据纪律同 S2（E1904 dsn_env）；表找不到
+      E1901；非 db spec E1905——不新增 E 码。渲染无时间戳（确定性），
+      `-o` 父目录自动创建（同 migrate-draft）。验收达成：
+      cage-source-db 单测 ×15（draft 7：kind 覆盖全家族 / 注释仅在
+      拍板档位 / 异形名引号 / 逐字节形状 / **渲染 YAML 解析回
+      Schema 断言表·主键·required** / 无 PK 空列表 / not_found 码；
+      mysql 4：COLUMN_TYPE 分类 30 档 / 大小写空格钝感 / 白名单自检 /
+      参数绑定；pg 4：data_type 分类 / varchar·numeric 尺寸重组 /
+      白名单自检 / 参数绑定）+ CLI 集成 ×2（五档错误码 E1904/E1905/
+      E1901 mysql+pg 不可达 + 缺 cage.toml / 缺 spec 用法错误）+
+      design §45 S9 决策记录 + source.md / cli.md 同步——本轮交付，
+      勾选
 
 ### 分环境验证（2026-10 拍板，design §48）
 

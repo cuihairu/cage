@@ -154,6 +154,20 @@ revalidation——缺一半即按无缓存走普通 GET 重建。只有首页 GE
 否则按行序列化形式排序（构建不依赖服务端返回顺序）。连接 /
 语句失败报 `E1901`。
 
+### 库表内省 Schema 草稿（S9，design §45）
+
+`cage schema-draft <工程> <spec>... [-o <文件>]` 把库表的**形状**
+落成一份可审阅的 schema 草稿（见 [cli](/cli#schema-draft)）：每个
+`mysql:<表>` / `pg:<表>` spec 经只读会话内省
+`information_schema`（表名绑定为参数、永不拼接进 SQL），渲染出表、
+主键与 `NOT NULL → required: true`；DECIMAL / 日期时间 / JSON /
+未知类型在行内注释里标出「需要作者拍板」，无主键表以空
+`primary_key: []` 加注释提醒。类型口径与适配器一致——DECIMAL /
+temporal / JSON 草稿为 `String`，正是它们在缓存 JSON 里的实际形态。
+渲染确定性：同一次内省永远同一段字节（头部无时间戳）。凭据与只读
+纪律同 S2：DSN 从 `[remote.<scheme>].dsn_env` 读（`E1904`），表找
+不到报 `E1901`。
+
 ### Google Sheets（远程源，S3）
 
 `[source_roots]` 写 `gsheet:<spreadsheet_id>/<tab>`，凭据是 API key，

@@ -21,3 +21,4 @@ postgres = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+serde_yaml = { workspace = true }

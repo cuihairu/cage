@@ -42,6 +42,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use cage_core::error::codes::registry::E1802;
+use cage_core::error::codes::remote::E1905;
 use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig, TargetConfig};
 use cage_core::normalize::normalize_document;
 use cage_core::reference::{DependencyGraph, IncrementalPlanner};
@@ -206,6 +207,24 @@ enum Commands {
         /// Version label for the rule's `to:` header
         #[arg(long)]
         to: String,
+        /// Write the draft to this file instead of stdout
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Draft a schema file from live database tables (design §45): each
+    /// `mysql:<table>` / `pg:<table>` spec is introspected read-only
+    /// (bound-parameter `information_schema` queries) and rendered as a
+    /// reviewable YAML draft — tables, primary keys and NOT NULL →
+    /// `required` are mechanical; ranges, patterns, enum domains and
+    /// references stay for the author, flagged inline where the server's
+    /// type carries a decision
+    SchemaDraft {
+        /// Configuration project root directory (supplies `[remote.<scheme>]`)
+        path: PathBuf,
+        /// `mysql:<table>` / `pg:<table>` specs to introspect (a qualified
+        /// `schema.table` resolves against that schema)
+        #[arg(required = true)]
+        specs: Vec<String>,
         /// Write the draft to this file instead of stdout
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -564,6 +583,9 @@ fn main() {
             to,
             out,
         } => run_migrate_draft(&from_schema, &to_schema, &from, &to, out.as_deref()),
+        Commands::SchemaDraft { path, specs, out } => {
+            run_schema_draft(&path, &specs, out.as_deref())
+        }
     };
     std::process::exit(code);
 }
@@ -1297,6 +1319,71 @@ fn run_migrate_draft(
                 } else {
                     ""
                 }
+            );
+        }
+        None => {
+            print!("{text}");
+        }
+    }
+    0
+}
+
+/// `cage schema-draft <project> <spec>... [-o <file>]` — draft a schema
+/// file from live database tables (design §45 deferred item). Each
+/// `mysql:<table>` / `pg:<table>` spec is introspected read-only over
+/// the project's `[remote.<scheme>]` settings and rendered into one
+/// deterministic YAML draft; the author reviews the comments and owns
+/// the semantic constraints. No project schema or data loads — cage.toml
+/// alone settles the DSN discipline.
+fn run_schema_draft(path: &Path, specs: &[String], out: Option<&Path>) -> i32 {
+    let config = match load_project_config(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let mut tables = Vec::new();
+    for spec in specs {
+        let Some((scheme, name)) = cage_source_db::parse_spec(spec) else {
+            eprintln!("error: {E1905} not a mysql:/pg: source spec: {spec}");
+            return 2;
+        };
+        let dsn = match cage_source_db::resolve_dsn(scheme, config.remote.get(scheme)) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 2;
+            }
+        };
+        match cage_source_db::introspect(scheme, &dsn, name) {
+            Ok(info) => tables.push(info),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 2;
+            }
+        }
+    }
+    let text = cage_source_db::draft::render_draft(specs, &tables);
+    match out {
+        Some(path) => {
+            // `-o schemas/draft.yaml` with no `schemas/` yet is the
+            // documented first-run shape — create the parent, not an
+            // error (same as migrate-draft).
+            if let Some(parent) = path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!("error: cannot create {}: {e}", parent.display());
+                    return 2;
+                }
+            }
+            if let Err(e) = std::fs::write(path, &text) {
+                eprintln!("error: cannot write {}: {e}", path.display());
+                return 2;
+            }
+            println!(
+                "cage schema-draft: {} table(s) → {} — review the comments before adopting",
+                tables.len(),
+                path.display()
             );
         }
         None => {
@@ -3337,6 +3424,13 @@ mod tests {
                 "migrate-draft {} {} {from} {to} {}",
                 from_schema.display(),
                 to_schema.display(),
+                out.as_ref()
+                    .map_or_else(|| "<stdout>".to_string(), |p| p.display().to_string(),)
+            ),
+            Commands::SchemaDraft { path, specs, out } => format!(
+                "schema-draft {} {} {}",
+                path.display(),
+                specs.join(","),
                 out.as_ref()
                     .map_or_else(|| "<stdout>".to_string(), |p| p.display().to_string(),)
             ),

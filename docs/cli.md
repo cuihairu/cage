@@ -103,6 +103,24 @@ cage build config/ --no-cache    # check / build / gen / inspect 通用
 [source](/source#http-api远程源s1)），`--no-cache` 下依然发条件
 请求——304 是服务器确认缓存，不算缓存自答。
 
+## schema-draft
+
+```bash
+cage schema-draft . mysql:Items pg:public.Monsters   # 内省库表 → stdout
+cage schema-draft . mysql:Items -o schemas/draft.yaml
+```
+
+从活库的表形状生成 schema 草稿（design §45）：每个
+`mysql:<表>` / `pg:<表>` spec 经只读会话内省 `information_schema`
+（表名绑定为参数），渲染出表、主键与 `NOT NULL → required`；
+DECIMAL / 日期时间 / JSON / 未知类型以行内注释标出需要拍板的语义
+（min / max / pattern / enum_values / references 仍归作者）。类型
+口径与源适配器一致（DECIMAL / temporal / JSON → `String`，即缓存
+JSON 的实际形态）。凭据纪律同远程源：DSN 只从
+`[remote.<scheme>].dsn_env` 指名的环境变量读（`E1904`），表找不到
+`E1901`，非 db spec `E1905`。渲染确定性（无时间戳）；`-o` 父目录
+自动创建。草稿需人工审阅后才可作 `schema_path` 使用。
+
 ## diff
 
 ```bash

@@ -2297,7 +2297,7 @@ majorDimension 非 ROWS）。
   API key——service account 需 OAuth JWT 交换）
 - 连接池、并发多源、大表游标分页
 - Sheets 富文本与公式重算（首期只缓存值）
-- 从库表内省自动生成 Schema 草稿
+- ~~从库表内省自动生成 Schema 草稿~~（已实装，S9，见下方决策记录）
 
 **实装状态**（2026-10）：S1 已交付——HTTP API 源实装
 （`cage-source-http`，`[source_roots]` 直写 http(s) URL），共享取数 /
@@ -2330,7 +2330,9 @@ Source 章节、需求整理.md Remote Source 行勾选、architecture.md 结构
 对账），S 系列 S1–S6 全数交付。S7 已交付——HTTP 分页协议与限流协商
 （原留待实现期项，见下方决策记录）。S8 已交付——HTTP 条件 GET
 增量拉取（文档级：ETag/Last-Modified revalidation，304 复用缓存
-字节；行级增量仍在留待实现期清单，见下方决策记录）。
+字节；行级增量仍在留待实现期清单，见下方决策记录）。S9 已交付——
+库表内省 Schema 草稿（原留待实现期项，`cage schema-draft`，见下方
+决策记录）。
 
 ### S7 决策记录（HTTP 分页与限流协商）
 
@@ -2812,3 +2814,39 @@ build；挂到 E20xx 新码弃——这是 pin 违规，不是规则引用/变�
 + pin `>=1.0.0, <1.1.0` → `migrate --to 1.1.0` exit 2 且报文带
 E1802/版本/pin/包名 → 放宽 pin 后同链 dry-run 通过）——本轮交付，
 勾选。
+
+### S9 决策记录（库表内省 Schema 草稿）
+
+**草稿 = 结构机械、语义留人。** 定了什么：`cage schema-draft
+<project> <spec>... [-o <file>]`——每个 `mysql:<表>` / `pg:<表>`
+spec（与 source_roots 同句法，`schema.表` 解析到具名 schema）经只读
+会话内省（绑定参数的 `information_schema` SELECT，表名永不拼接进
+SQL），渲染成一份确定性 YAML 草稿：表序 = spec 序、列序 = 声明序、
+主键来自约束、`NOT NULL → required: true`；DECIMAL / 日期时间 /
+JSON / 未知类型在行内注释里点出「这列要作者拍板」；无主键表以空
+`primary_key: []` 落盘并注释提醒。**为什么结构机械**：内省能回答的
+只有形状（列名 / 类型 / 可空 / 主键）——min/max/pattern/enum_values/
+references 是业务语义，DB 不知道 cage 的校验域；替作者拍板正是草稿
+的反面。类型映射取「最小忠实口径」：整型按宽度落 Int8–Int64 /
+UInt8–UInt64（unsigned 后缀提升家族）、`tinyint(1)` 按 MySQL 惯例落
+Bool、浮点按精度落 Float32/64；DECIMAL / temporal / JSON / 文本一律
+String——**与适配器落进缓存 JSON 的实际形态一致**，草稿必须能在自
+家管线上校验通过，而不是描述服务器的世界观。
+
+**凭据与只读纪律全数沿用 S2**：DSN 从 `[remote.<scheme>].dsn_env`
+指名的环境变量（E1904，永不进 cage.toml）、会话先钉只读、自产的
+内省 SQL 必须过自家 `validate_select` 白名单（单测自检）——网线上
+跑的东西只有一套纪律。表找不到（零列返回）是 E1901 查找失败。不新
+增 E 码：spec/DSN/连接三档全部落在 E1905 / E1904 / E1901 既有语义。
+
+**确定性**：渲染字节只依赖内省形状——头部注释不带时间戳（与全仓
+「同输入同字节」纪律一致），同一次内省永远渲染同一段 YAML。`-o`
+父目录自动创建（与 migrate-draft 同口径）；默认 stdout。
+
+**验收**：cage-source-db 单测 ×15（draft 7 + mysql 4 + pg 4：MySQL COLUMN_TYPE 分类表 30 档、
+PG data_type 分类 + varchar/numeric 尺寸重组、内省 SQL 过白名单 +
+const 不可拼接自检、渲染逐字节形状、**渲染 YAML 解析回 Schema 并断
+言表/主键/required 形状**、异形名引号往返、无 PK 空列表、注释仅在
+需要拍板的档位出现）+ CLI 集成 ×2（无 [remote] / env 未设 / 非 db
+spec / mysql+pg 不可达五档错误码 + exit 2；缺 cage.toml 与缺 spec
+两档用法错误）——本轮交付，勾选。
