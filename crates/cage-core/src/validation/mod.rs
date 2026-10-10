@@ -838,6 +838,50 @@ fn validate_table(ctx: &mut ValidationContext) {
     }
 }
 
+/// Source-side reference cardinality (the `cardinality:` key of a
+/// `reference:` block, E1404): `one` (default) and `optional` take a single
+/// value, `many` takes an array checked element by element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cardinality {
+    /// Exactly one referenced target (a present null violates).
+    One,
+    /// An array of references, each checked against the target.
+    Many,
+    /// A single reference that may be absent or null.
+    Optional,
+}
+
+fn parse_cardinality(raw: &str) -> Option<Cardinality> {
+    match raw {
+        "one" => Some(Cardinality::One),
+        "many" => Some(Cardinality::Many),
+        "optional" => Some(Cardinality::Optional),
+        _ => None,
+    }
+}
+
+/// E1404: the value's shape does not match the declared source-side
+/// cardinality of the reference.
+fn report_cardinality_violation(
+    ctx: &mut ValidationContext,
+    table_name: &str,
+    row: &Row,
+    field_name: &str,
+    typed_value: &TypedValue,
+    hint: String,
+) {
+    ctx.diagnostics.add(
+        DiagnosticBuilder::error(reference::E1404, "Reference cardinality violation")
+            .location(typed_value.location.clone())
+            .table(table_name)
+            .row(format!("{}", row.index))
+            .field(field_name)
+            .value(serde_json::to_value(&typed_value.value).unwrap_or_default())
+            .hint(hint)
+            .build(),
+    );
+}
+
 /// L5: Reference validation - existence, type compatibility, predicates
 fn validate_reference(ctx: &mut ValidationContext) {
     let schema = &ctx.schema.schema;
@@ -847,12 +891,40 @@ fn validate_reference(ctx: &mut ValidationContext) {
     // reference to a field the target table does not declare is a schema
     // defect (E1004) reported once, independent of how many rows consult
     // it. `None` marks a defective predicate so the row loop skips it.
+    // The cardinality spelling is validated in the same pass: an unknown
+    // value is a schema defect (E1004) and the row loop skips the field.
     let mut predicates: HashMap<(&str, &str), Option<expr::Comparison>> = HashMap::new();
+    let mut cardinalities: HashMap<(&str, &str), Cardinality> = HashMap::new();
     for (table_name, table_schema) in &schema.tables {
         for (field_name, field_schema) in &table_schema.fields {
             let Some(ref_schema) = &field_schema.reference else {
                 continue;
             };
+            match parse_cardinality(&ref_schema.cardinality) {
+                Some(cardinality) => {
+                    cardinalities.insert((table_name.as_str(), field_name.as_str()), cardinality);
+                }
+                None => {
+                    ctx.diagnostics.add(
+                        DiagnosticBuilder::error(
+                            schema::E1004,
+                            format!(
+                                "reference on {}.{} has unknown cardinality '{}' \
+                                 (expected one | many | optional)",
+                                table_name, field_name, ref_schema.cardinality
+                            ),
+                        )
+                        .source("schema")
+                        .table(table_name)
+                        .field(field_name)
+                        .hint(
+                            "Cardinality is source-side: 'one' (default) and 'optional' \
+                             take a single value, 'many' takes an array of references",
+                        )
+                        .build(),
+                    );
+                }
+            }
             let Some(predicate) = &ref_schema.predicate else {
                 continue;
             };
@@ -929,15 +1001,101 @@ fn validate_reference(ctx: &mut ValidationContext) {
                     let parsed = predicates
                         .get(&(table_name.as_str(), field_name.as_str()))
                         .and_then(|p| p.as_ref());
-                    validate_single_reference(
-                        ctx,
-                        table_name,
-                        row,
-                        field_name,
-                        typed_value,
-                        ref_schema,
-                        parsed,
-                    );
+                    // An unknown cardinality spelling was already reported
+                    // as E1004 in the pre-pass; the row loop skips the field.
+                    let Some(cardinality) =
+                        cardinalities.get(&(table_name.as_str(), field_name.as_str()))
+                    else {
+                        continue;
+                    };
+                    let value = &typed_value.value;
+                    match cardinality {
+                        Cardinality::One | Cardinality::Optional => match value {
+                            // `optional` tolerates a present null; `one`
+                            // demands exactly one referenced target.
+                            Value::Null if *cardinality == Cardinality::Optional => {}
+                            Value::Null => report_cardinality_violation(
+                                ctx,
+                                table_name,
+                                row,
+                                field_name,
+                                typed_value,
+                                format!(
+                                    "cardinality 'one' on {table_name}.{field_name} expects a \
+                                     single {} reference; the value is null — use \
+                                     cardinality: optional if the reference may be absent",
+                                    ref_schema.table
+                                ),
+                            ),
+                            Value::Array(_) => report_cardinality_violation(
+                                ctx,
+                                table_name,
+                                row,
+                                field_name,
+                                typed_value,
+                                format!(
+                                    "cardinality '{}' on {table_name}.{field_name} expects a \
+                                     single {} reference; the value is an array — use \
+                                     cardinality: many to reference a list",
+                                    ref_schema.cardinality, ref_schema.table
+                                ),
+                            ),
+                            _ => validate_single_reference(
+                                ctx,
+                                table_name,
+                                row,
+                                field_name,
+                                typed_value,
+                                ref_schema,
+                                parsed,
+                            ),
+                        },
+                        Cardinality::Many => match value {
+                            Value::Array(items) => {
+                                for item in items {
+                                    let element = TypedValue {
+                                        value: item.clone(),
+                                        location: typed_value.location.clone(),
+                                        schema_type: typed_value.schema_type.clone(),
+                                    };
+                                    validate_single_reference(
+                                        ctx,
+                                        table_name,
+                                        row,
+                                        field_name,
+                                        &element,
+                                        ref_schema,
+                                        parsed,
+                                    );
+                                }
+                            }
+                            Value::Null => report_cardinality_violation(
+                                ctx,
+                                table_name,
+                                row,
+                                field_name,
+                                typed_value,
+                                format!(
+                                    "cardinality 'many' on {table_name}.{field_name} expects \
+                                     an array of {} references; the value is null",
+                                    ref_schema.table
+                                ),
+                            ),
+                            _ => report_cardinality_violation(
+                                ctx,
+                                table_name,
+                                row,
+                                field_name,
+                                typed_value,
+                                format!(
+                                    "cardinality 'many' on {table_name}.{field_name} expects \
+                                     an array of {} references; the value is a single {}",
+                                    ref_schema.table,
+                                    value.type_name()
+                                ),
+                            ),
+                        },
+                    }
                 }
             }
         }
@@ -2499,6 +2657,174 @@ mod tests {
             .hint
             .as_deref()
             .is_some_and(|h| h.contains("not satisfied")));
+    }
+
+    /// `UInt32` field with a cross-table reference of the given cardinality.
+    fn ref_field_card(name: &str, table: &str, field: &str, cardinality: &str) -> FieldSchema {
+        let mut f = ref_field(name, table, field);
+        if let Some(r) = f.reference.as_mut() {
+            r.cardinality = cardinality.to_string();
+        }
+        f
+    }
+
+    #[test]
+    fn l5_many_cardinality_checks_each_array_element() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let item_ids = ref_field_card("item_ids", "Item", "id", "many");
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_ids],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with_tables(&[
+            (
+                "Item",
+                vec![row(0, &[("id", Value::UInt(1))]), row(1, &[("id", Value::UInt(2))])],
+            ),
+            (
+                "Drop",
+                vec![
+                    row(
+                        0,
+                        &[
+                            ("id", Value::UInt(1)),
+                            ("item_ids", Value::Array(vec![Value::UInt(1), Value::UInt(99)])),
+                        ],
+                    ),
+                    // Empty list is vacuously fine; every element resolving
+                    // reports nothing.
+                    row(
+                        1,
+                        &[("id", Value::UInt(2)), ("item_ids", Value::Array(vec![]))],
+                    ),
+                    row(
+                        2,
+                        &[("id", Value::UInt(3)), ("item_ids", Value::Array(vec![Value::UInt(2)]))],
+                    ),
+                ],
+            ),
+        ]);
+
+        let diags = validate(&vs, &doc, ValidationLevel::Reference, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, reference::E1401);
+        assert_eq!(errors[0].row.as_deref(), Some("0"));
+        assert_eq!(errors[0].field.as_deref(), Some("item_ids"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("No Item with id=99 found")));
+    }
+
+    #[test]
+    fn l5_cardinality_shape_mismatches_report_e1404() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                // Scalar field declared `many` → the value's shape violates.
+                ref_field_card("tag_ids", "Item", "id", "many"),
+                // Array field under the default `one` → same in reverse.
+                ref_field("item_id", "Item", "id"),
+                // Nullable single reference under `one` → violated; the
+                // `optional` spelling is the way to express nullability.
+                ref_field("maybe_item", "Item", "id"),
+                ref_field_card("spare_item", "Item", "id", "optional"),
+            ],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with_tables(&[
+            ("Item", vec![row(0, &[("id", Value::UInt(1))])]),
+            (
+                "Drop",
+                vec![
+                    row(
+                        0,
+                        &[
+                            ("id", Value::UInt(1)),
+                            ("tag_ids", Value::UInt(1)),
+                            (
+                                "item_id",
+                                Value::Array(vec![Value::UInt(1), Value::UInt(1)]),
+                            ),
+                            ("maybe_item", Value::Null),
+                            ("spare_item", Value::Null),
+                        ],
+                    ),
+                ],
+            ),
+        ]);
+
+        let diags = validate(&vs, &doc, ValidationLevel::Reference, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 3, "optional null passes, the rest violate");
+        assert!(errors.iter().all(|d| d.code == reference::E1404));
+        let many_scalar = errors.iter().find(|d| d.field.as_deref() == Some("tag_ids"));
+        assert!(many_scalar.is_some_and(|d| d
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("array of Item references")
+                && h.contains("a single uint"))));
+        let one_array = errors.iter().find(|d| d.field.as_deref() == Some("item_id"));
+        assert!(one_array.is_some_and(|d| d
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("expects a single Item reference")
+                && h.contains("use cardinality: many"))));
+        let one_null = errors.iter().find(|d| d.field.as_deref() == Some("maybe_item"));
+        assert!(one_null.is_some_and(|d| d
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("the value is null")
+                && h.contains("use cardinality: optional"))));
+    }
+
+    #[test]
+    fn l5_unknown_cardinality_spelling_is_a_schema_defect() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                ref_field_card("item_id", "Item", "id", "banana"),
+            ],
+        ));
+        // Empty tables: the defect is a schema problem, not a row problem.
+        let doc = doc_with_tables(&[("Item", vec![]), ("Drop", vec![])]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, schema::E1004);
+        assert_eq!(errors[0].field.as_deref(), Some("item_id"));
+        assert!(errors[0]
+            .message
+            .contains("unknown cardinality 'banana'"));
+        assert!(errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("one | many | optional")));
     }
 
     #[test]
