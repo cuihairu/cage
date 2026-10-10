@@ -1056,8 +1056,8 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       头截断、body EOF 循环、405 方法臂——公开 API 只发 GET/PUT）。
 
 ### cage-core migrate/mod.rs 覆盖收口（2026-10-11 续批第六项）
-- [x] migrate/mod.rs 覆盖率 95.1% → 100%（64 → 0 行未覆盖，工作区 97.54% →
-      97.66%，789 测试全绿）。新增 11 个测试：yaml_to_value 的 Null/Bool/u64
+- [x] migrate/mod.rs 覆盖率 95.1% → 100%（64 → 0 行未覆盖，790 测试全绿）。
+      新增 11 个测试：yaml_to_value 的 Null/Bool/u64
       溢出/Float 标量、number 与 bool 映射键字符串化、复合键拒绝、显式 YAML
       tag 拒绝（serde_yaml 会丢未知 `!!` tag，测试直接构造 Tagged 值）；
       step 必须恰好一个 transform 映射；validate_structure 的空 from/to
@@ -1068,3 +1068,31 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       字段的路径；RenameTable 两名字皆无时 E2003；is_widening 与 widen_value
       的全秩覆盖（无符号阶梯、无符号→有符号每秩一步、≤32bit 与 Float32 入
       Float64、溢出拒绝、Null 直通、非数字拒绝）。
+
+### 路线图收尾巡检（2026-10-11）
+- [x] 环境化出包闭环核对：分环境节记的「snapshot / registry publish 暂以基线
+      出包（环境化出包留待）」已被后续批次交付——`cage snapshot --env prod`
+      目录名带 env 段（client-prod-4e1d4fe73f89）、包内 manifest 记
+      environment、schema.json 即该环境规则；`cage registry publish --env prod`
+      入册条目记 environment、同版本换环境走 E1801 冲突。已实机验证
+      （examples/game-config 拷贝 → prod 出包 + 发布，均 exit 0）。该行是
+      当时批次口径，非当前状态。
+- [x] 待办清零：todo 全册无开放功能项（两条 `[ ]` 均为不可达覆盖行登记）。
+      路线图余下「留待后续」均为拍板/外部依赖项，不在本册推进范围：IDE 支持
+      （docs/index.md，独立立项需拍板口径）、FlatBuffers 等格式（留待后续）、
+      注册表鉴权与远程发布协议（明记独立立项）、§45 外部依赖三项
+      （行级增量 / OAuth 凭据托管 / 连接池并发——需真实数据库与托管凭据）。
+      故转入覆盖率收尾：cage-target-java（62 行）→ cage-target-cpp（56）→
+      cage-source-http（37）→ validation/mod.rs（36）→ web.rs（32）。
+
+### cage-target-java 覆盖收口（2026-10-11 续批第七项）
+- [x] cage-target-java 覆盖率 95.65% → 99.36%（62 → 9 行未覆盖，22 测试
+      全绿）。删除遗留死代码簇：legacy `render_enums` 渲染器（cfg(test)、与
+      `java_enums_context` 全量重复、生产走官方模板）连同其唯一调用者
+      `header` 与 `push_javadoc` 及两个同名遗留测试（约 105 行）；新增
+      `test_enums_context_skips_unallocated_idents`（直接测真实边界：空
+      ident 表下 `emitted_enums` 为空 + 满 ident 表的 ident/payload/banner/
+      members 断言）与 `test_enums_context_string_payload_bucket`（无整数值
+      成员 → String 桶 + em-dash banner）；`java_default_filter_yields_null_
+      for_a_field_without_default` 直测无默认字段过滤器返回 Null。余下 9 行
+      为 `#[ignore]` 的 javac 样例写出器（设计上要求 JDK，不入常测）。
