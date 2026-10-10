@@ -981,3 +981,8 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       不可自洽 → E1803 "remote entry verification failed (1 problem)"）。
       剩余未覆盖行 81/124-128/151/155/153 全为 fs 错误闭包（需文件系统
       破坏才能触发），可达分支已全清。workspace 730 → 731。
+- [x] web.rs handle 接线覆盖（行覆盖 69.79% → 90.57%）：进程内
+      tiny_http 绑定临时端口 + TcpStream 真实请求驱动 handle 循环——
+      API 三端点（schema 文档 / validate / save 落盘）、编辑器页与
+      app.js/app.css 资产（Content-Type 断言）、favicon 与未知路由 404。
+      run_web 无限循环仍归 web-smoke.sh。workspace 731 → 732。

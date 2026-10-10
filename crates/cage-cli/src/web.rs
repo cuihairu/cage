@@ -273,7 +273,7 @@ mod tests {
 
     /// Editor document for a schema with one table whose primary key points
     /// at a declared field — the smallest document the API accepts.
-    fn good_doc() -> String {
+    pub(crate) fn good_doc() -> String {
         let schema = Schema::new();
         to_editor_json(&schema).to_string()
     }
@@ -297,7 +297,7 @@ mod tests {
         to_editor_json(&schema).to_string()
     }
 
-    fn ctx_in(dir: &TempDir, schema_path: Option<&str>) -> Ctx {
+    pub(crate) fn ctx_in(dir: &TempDir, schema_path: Option<&str>) -> Ctx {
         let mut config = ProjectConfig::default();
         config.project.name = "demo".to_string();
         config.schema_path = schema_path.map(str::to_string);
@@ -426,5 +426,98 @@ mod tests {
             !fs::exists(dir.path().join("schema.yaml")).expect("stat"),
             "nothing written for a broken document"
         );
+    }
+}
+
+#[cfg(test)]
+impl Ctx {
+    /// Drive [`handle`] over a real bound socket: the test acts as the HTTP
+    /// client, so the routing, response helpers, and asset endpoints get the
+    /// same coverage the smoke script gives `run_web` — inside `cargo test`.
+    fn served(self, count: usize) -> (std::thread::JoinHandle<()>, u16) {
+        let server = tiny_http::Server::http(("127.0.0.1", 0)).expect("bind ephemeral port");
+        let port = server.server_addr().to_ip().expect("bound").port();
+        let driver = std::thread::spawn(move || {
+            for request in server.incoming_requests().take(count) {
+                handle(request, &self);
+            }
+        });
+        (driver, port)
+    }
+}
+
+#[cfg(test)]
+mod handle_tests {
+    use super::tests::{ctx_in, good_doc};
+    use std::fs;
+    use std::io::{Read, Write};
+    use tempfile::TempDir;
+
+    fn send(port: u16, request: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream.write_all(request.as_bytes()).expect("write request");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).expect("read response");
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    fn get(port: u16, path: &str) -> String {
+        send(
+            port,
+            &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+        )
+    }
+
+    fn post(port: u16, path: &str, body: &str) -> String {
+        send(
+            port,
+            &format!(
+                "POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        )
+    }
+
+    #[test]
+    fn handle_routes_the_api_pages_and_assets() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::write(dir.path().join("schema.yaml"), "tables: {}\nenums: {}\n").expect("write schema");
+        let (driver, port) = ctx_in(&dir, Some("schema.yaml")).served(8);
+
+        // API: schema document, validate, and save over the wire.
+        let raw = get(port, "/api/schema");
+        assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+        assert!(raw.contains("\"project\":\"demo\""), "{raw}");
+        assert!(raw.contains("application/json"), "{raw}");
+
+        let raw = post(port, "/api/validate", &good_doc());
+        assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+        assert!(raw.contains("\"ok\":true"), "{raw}");
+        assert!(raw.contains("\"diagnostics\":[]"), "{raw}");
+
+        let raw = post(port, "/api/schema", &good_doc());
+        assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+        assert!(raw.contains("\"ok\":true"), "{raw}");
+        assert!(
+            fs::read_to_string(dir.path().join("schema.yaml"))
+                .expect("saved file")
+                .contains("tables:"),
+            "save endpoint wrote the canonical YAML"
+        );
+
+        // Editor page and assets, then the two refusal routes.
+        assert!(get(port, "/").contains("text/html"), "index page");
+        assert!(
+            get(port, "/app.js").contains("text/javascript"),
+            "app.js asset"
+        );
+        assert!(get(port, "/app.css").contains("text/css"), "app.css asset");
+        assert!(get(port, "/favicon.ico").starts_with("HTTP/1.1 404"));
+        let raw = get(port, "/nope");
+        assert!(raw.starts_with("HTTP/1.1 404"), "{raw}");
+        assert!(raw.contains("not found"), "{raw}");
+
+        driver.join().expect("driver thread");
     }
 }
