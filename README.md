@@ -48,7 +48,7 @@ Authoring Sources → Source Adapters → Canonical Model
 ## Quick Start
 
 ```bash
-bash examples/run.sh   # one command through the full example project: validate → build 12 targets → generate code in 9 languages → E1601 bad-data diagnosis demo
+bash examples/run.sh   # one command through the full example project: validate → build 12 targets → generate code in 9 languages → E1501/E1601 bad-data diagnosis demo
 ```
 
 See [`examples/game-config/`](examples/game-config/README.md) and the full-example page of the documentation site for a walkthrough. Other common commands:

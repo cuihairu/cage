@@ -18,6 +18,7 @@ game-config/
 ├── cage.toml          # 工程配置：client（13 target）/ server（3 target）双 profile
 ├── schemas/           # 五个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
 │   ├── character.yaml # 角色成长：枚举/唯一约束/正则/范围/默认值/保留字字段 class
+│   │                  #   + hp：L6 语义规则 hp <= attack（E1501）
 │   │                  #   + nickname：env_overrides（dev 放宽、prod 必填）
 │   │                  #   + internal_note：targets ["server"]（字段级可见性）
 │   ├── item.yaml      # 道具：整型枚举 + 字符串枚举 + 可选字段
@@ -33,7 +34,7 @@ game-config/
 ├── migrations/        # 声明式数据迁移规则（cage migrate dry-run）
 │   └── 0001_rename_desc.yaml   # Item.desc → description（from 0.1.0 → 0.2.0）
 ├── ci/                # CI 参考片段（Jenkinsfile / github-actions.yml / gitlab-ci.yml）
-└── bad/               # 坏数据：完整复制品，attack=500 + 全行无 nickname
+└── bad/               # 坏数据：完整复制品，attack=500 + hp 超过 attack（E1501）+ 全行无 nickname
     ├── cage.toml      # schema_path = "../schemas"（共用同一份 schema）
     └── config/
 ```
@@ -58,6 +59,7 @@ game-config/
 | MessagePack 二进制（rmp 最小形，确定性字节） | `build/client/msgpack/` |
 | Protobuf .proto3 定义（protoc 可编译） | `build/client/proto/` |
 | 标准 JSON Schema 文档（draft-07，每表自包含） | `build/client/jsonschema/` |
+| L6 语义规则（E1501，hp <= attack）：好数据通过 / 坏数据违例 | `run.sh` 第 1、13 步 |
 | L7 Game Rule：好数据通过 / 坏数据 E1601 | `run.sh` 第 2、13 步 |
 | CI 集成（Jenkins / GitHub Actions / GitLab CI） | `ci/` |
 | Web 编辑器拒写目录 schema（409） | `examples/web-smoke.sh` 第 6 步 |
@@ -79,6 +81,7 @@ cage migrate examples/game-config --to 0.2.0       # 迁移 dry-run（不写盘�
 cage registry publish examples/game-config --registry /tmp/reg   # 发布到本地仓库
 cage registry publish examples/game-config         # 发布进工程自带 [registry].path（reg/，push 源）
 cage registry push examples/game-config --registry http://127.0.0.1:8080   # 直推远端（静态托管 / CI job 皆可）
+cage check examples/game-config/bad                   # E1501（hp > attack），退出码 1
 cage check examples/game-config/bad --level gamerule  # E1601，退出码 1
 cage check examples/game-config/bad --env prod        # E1001（prod 必填 nickname），退出码 1
 cage inspect examples/game-config                   # 表结构清单

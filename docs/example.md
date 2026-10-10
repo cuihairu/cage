@@ -10,7 +10,7 @@
 bash examples/run.sh
 ```
 
-脚本从 `cage check` 到 `cage build` 到 `cage gen` 到 `cage migrate` 到 `cage registry`（含远程分发全链路：push 直推 / presigned 直推 / 消费方远端 resolve 构建，以及坏数据 E1601 / E1001 断言与 `cage inspect`）14 步一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
+脚本从 `cage check` 到 `cage build` 到 `cage gen` 到 `cage migrate` 到 `cage registry`（含远程分发全链路：push 直推 / presigned 直推 / 消费方远端 resolve 构建，以及坏数据 E1501 / E1601 / E1001 断言与 `cage inspect`）14 步一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
 
 <details>
 <summary>examples/run.sh 完整输出（点击展开）</summary>
@@ -128,9 +128,26 @@ cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.tA9tbMhVld/cons
 消费方产物与发布方逐字节一致（5 张表 × 2 条分发路）
 
 ============================================================
-==> [13/14] 坏数据诊断   —— E1601 越过 power curve + --env prod E1001 缺昵称
+==> [13/14] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称
 ============================================================
+$ cage check examples/game-config/bad   # 期望 E1501（hp > attack，L6 语义规则）+ 退出码 1
+ERROR E1501 — Assertion Failed
+  Source: examples/game-config/bad/config/Character.csv | Row: 1
+  Table: Character
+  Row: 0
+  Message: Semantic rule violation
+  Hint: hp must not exceed attack
+
+
+cage check: FAILED (1 errors, 0 warnings)
 $ cage check examples/game-config/bad --level gamerule   # 期望 E1601 + 退出码 1
+ERROR E1501 — Assertion Failed
+  Source: examples/game-config/bad/config/Character.csv | Row: 1
+  Table: Character
+  Row: 0
+  Message: Semantic rule violation
+  Hint: hp must not exceed attack
+
 ERROR E1601 — Game Rule Validation Failed
   Source: examples/game-config/bad/config/Character.csv | Row: 1
   Table: Character
@@ -139,7 +156,7 @@ ERROR E1601 — Game Rule Validation Failed
   Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 
 
-cage check: FAILED (1 errors, 0 warnings)
+cage check: FAILED (2 errors, 0 warnings)
 $ cage check examples/game-config/bad --env prod   # prod 收紧 nickname 必填 → E1001
 ERROR E1001 — Missing Required Field
   Source: examples/game-config/bad/config/Character.csv | Row: 1 | Field: nickname
@@ -173,8 +190,15 @@ ERROR E1001 — Missing Required Field
   Message: Missing required field
   Hint: Add required field 'nickname' to this row
 
+ERROR E1501 — Assertion Failed
+  Source: examples/game-config/bad/config/Character.csv | Row: 1
+  Table: Character
+  Row: 0
+  Message: Semantic rule violation
+  Hint: hp must not exceed attack
 
-cage check: FAILED (4 errors, 0 warnings)
+
+cage check: FAILED (5 errors, 0 warnings)
 
 ============================================================
 ==> [14/14] cage inspect examples/game-config   —— 查看表结构

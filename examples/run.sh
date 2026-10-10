@@ -231,7 +231,15 @@ echo "消费方产物与发布方逐字节一致（5 张表 × 2 条分发路）
 kill $SRV_PID_A $SRV_PID_B 2>/dev/null
 rm -rf "$SRV_DIR" "$CONS_DIR" "$EX/reg"
 
-step "[13/14] 坏数据诊断   —— E1601 越过 power curve + --env prod E1001 缺昵称"
+step "[13/14] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称"
+echo "\$ cage check examples/game-config/bad   # 期望 E1501（hp > attack，L6 语义规则）+ 退出码 1"
+set +e
+L6_OUT="$("$CAGE_BIN" check "$EX/bad" 2>&1)"
+L6_CODE=$?
+set -e
+echo "$L6_OUT"
+[ "$L6_CODE" -eq 1 ] || { echo "FAIL: L6 坏数据期望退出码 1，实际 ${L6_CODE}" >&2; exit 1; }
+case "$L6_OUT" in *E1501*) ;; *) echo "FAIL: 输出未包含 E1501" >&2; exit 1 ;; esac
 echo "\$ cage check examples/game-config/bad --level gamerule   # 期望 E1601 + 退出码 1"
 set +e
 BAD_OUT="$("$CAGE_BIN" check "$EX/bad" --level gamerule 2>&1)"

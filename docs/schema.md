@@ -111,7 +111,7 @@ enums:
 | `properties` / `additional_properties` | 对象属性 schema 与未知键开关 |
 | `reference` | 跨表引用（`table` + `field`，`E1401`；见上文子键说明） |
 | `targets` | 字段对哪些 profile 可见（空 = 全部；`"*"` 等价空；被隐藏的结构必需字段报 `E9006`） |
-| `rules` | 字段级语义规则（`name`/`assert`/`message`/`warning_only`；表达式求值器当前为占位、恒通过） |
+| `rules` | 字段级语义规则（`name`/`assert`/`message`/`warning_only`；L6 按单比较断言求值，断言为假或类型不可比报 E1501，畸形断言/未声明字段 E1004，见 [Semantic](/validation#l6-semantic语义)） |
 
 ## 表级约束
 
