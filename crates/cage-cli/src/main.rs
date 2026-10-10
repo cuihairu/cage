@@ -4394,4 +4394,679 @@ file_template = "{table}.json"
             "{lines:?}"
         );
     }
+
+    // ------------------------------------------------------------------
+    // Registry command runners (R3/R4): local roots only
+    // ------------------------------------------------------------------
+
+    /// `std::env::set_var` must not race a concurrent `env::var` from
+    /// another test thread — every env-touching test holds this lock.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn write_text(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("parents");
+        }
+        std::fs::write(path, content).expect("write");
+    }
+
+    /// One self-verifying snapshot directory: manifest + schema + a data
+    /// artifact + the blake3 ledger the registry trust gate re-checks on
+    /// every path. The artifact body is what distinguishes two versions
+    /// (the ledger hashes it, so different bytes rotate the content hash).
+    fn snapshot_into(dir: &Path, build_id: &str, content_hash: &str, body: &[u8]) -> PathBuf {
+        let manifest = serde_json::json!({
+            "build_id": build_id,
+            "content_hash": content_hash,
+        });
+        let schema = serde_json::json!({"tables": {}});
+        let artifacts = vec![(
+            "build/client/json/Item.json".to_string(),
+            body.to_vec(),
+            "json".to_string(),
+            Some("Item".to_string()),
+        )];
+        let files = cage_core::snapshot::snapshot_files(
+            &serde_json::to_vec_pretty(&manifest).expect("manifest"),
+            &serde_json::to_vec_pretty(&schema).expect("schema"),
+            &artifacts,
+            "build",
+            build_id,
+            content_hash,
+        );
+        write_snapshot_files(dir, &files).expect("write snapshot");
+        dir.to_path_buf()
+    }
+
+    /// Publish one version into a registry from a staging snapshot. Each
+    /// version carries a distinct build id / content hash so gc/remove have
+    /// real entries to prune.
+    fn publish_version(reg: &Path, staging: &Path, version: &str, body: &[u8]) {
+        let build_id = format!("b{version}").repeat(8);
+        let content_hash = format!("c{version}").repeat(8);
+        let snap = snapshot_into(
+            &staging.join(version),
+            &build_id.chars().take(64).collect::<String>(),
+            &content_hash.chars().take(64).collect::<String>(),
+            body,
+        );
+        cage_core::registry::publish(reg, "common", version, &snap).expect("publish");
+    }
+
+    /// The publisher fixture: a minimal one-table project with a json + csv
+    /// profile; the optional registry block seeds `[registry].path`.
+    fn publisher_fixture(
+        root: &Path,
+        dir_name: &str,
+        version: Option<&str>,
+        registry: Option<&str>,
+    ) -> PathBuf {
+        let proj = root.join(dir_name);
+        write_text(
+            &proj.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        );
+        write_text(&proj.join("schema.yaml"), PUBLISHER_SCHEMA);
+        let version_block = version.map_or(String::new(), |v| format!("version = \"{v}\"\n"));
+        let registry_block =
+            registry.map_or(String::new(), |p| format!("\n[registry]\npath = \"{p}\"\n"));
+        write_text(
+            &proj.join("cage.toml"),
+            &format!(
+                r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+{version_block}
+[source_roots]
+main = "config"
+{registry_block}
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{{table}}.json"
+
+[[profiles.client.targets]]
+format = "csv"
+output_dir = "build/client/csv"
+file_template = "{{table}}.csv"
+"#,
+            ),
+        );
+        proj
+    }
+
+    #[test]
+    fn registry_list_verify_gc_remove_walk_a_local_registry() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let reg = root.join("reg");
+        std::fs::create_dir_all(&reg).expect("reg");
+        let staging = root.join("snap");
+
+        // No --registry flag: every read-only runner is a usage error.
+        assert_eq!(run_registry_list(None), 2);
+        assert_eq!(run_registry_verify(None), 2);
+        assert_eq!(run_registry_gc(1, false, None), 2);
+        assert_eq!(run_registry_remove("common", "1.0.0", false, None), 2);
+        // Remote roots are refused: the read-only protocol has no writes.
+        assert_eq!(
+            run_registry_list(Some(Path::new("http://127.0.0.1:80/reg"))),
+            2
+        );
+        assert_eq!(run_registry_verify(Some(Path::new("https://host/reg"))), 2);
+        assert_eq!(
+            run_registry_gc(1, false, Some(Path::new("http://x/reg"))),
+            2
+        );
+        assert_eq!(
+            run_registry_remove("common", "1.0.0", false, Some(Path::new("http://x/reg"))),
+            2
+        );
+
+        // An empty registry is a clean registry; a missing root is E1802.
+        assert_eq!(run_registry_list(Some(&reg)), 0);
+        assert_eq!(run_registry_verify(Some(&reg)), 0);
+        assert_eq!(run_registry_verify(Some(&root.join("ghost"))), 2);
+
+        for (v, body) in [
+            ("1.0.0", b"[1]" as &[u8]),
+            ("1.1.0", b"[2]" as &[u8]),
+            ("2.0.0", b"[3]" as &[u8]),
+        ] {
+            publish_version(&reg, &staging, v, body);
+        }
+        assert_eq!(run_registry_list(Some(&reg)), 0);
+        assert_eq!(run_registry_verify(Some(&reg)), 0);
+
+        // gc keeps the newest `keep`; a dry run reports the identical
+        // removal list without touching anything.
+        assert_eq!(run_registry_gc(2, true, Some(&reg)), 0);
+        assert!(reg.join("common/1.0.0").exists(), "dry run deletes nothing");
+        assert_eq!(run_registry_gc(2, false, Some(&reg)), 0);
+        assert!(!reg.join("common/1.0.0").exists(), "gc removed the oldest");
+        assert!(reg.join("common/1.1.0").exists());
+        assert!(reg.join("common/2.0.0").exists());
+        assert_eq!(run_registry_verify(Some(&reg)), 0);
+        // Nothing left to collect.
+        assert_eq!(run_registry_gc(2, false, Some(&reg)), 0);
+
+        // Removing an unrecorded version is E1802; a recorded one validates
+        // in a dry run first, then removes for real.
+        assert_eq!(run_registry_remove("common", "9.9.9", false, Some(&reg)), 2);
+        assert_eq!(run_registry_remove("common", "1.1.0", true, Some(&reg)), 0);
+        assert!(reg.join("common/1.1.0").exists(), "dry run keeps the entry");
+        assert_eq!(run_registry_remove("common", "1.1.0", false, Some(&reg)), 0);
+        assert!(!reg.join("common/1.1.0").exists());
+        assert_eq!(run_registry_verify(Some(&reg)), 0);
+
+        // Tampered entry bytes: the ledger no longer re-hashes clean.
+        let artifact = reg.join("common/2.0.0/data/client/json/Item.json");
+        std::fs::write(&artifact, b"[999]").expect("tamper");
+        assert_eq!(run_registry_verify(Some(&reg)), 2);
+        // An entry directory no index record names is an audit finding.
+        std::fs::create_dir_all(reg.join("common/9.9.9")).expect("orphan");
+        assert_eq!(run_registry_verify(Some(&reg)), 2);
+    }
+
+    #[test]
+    fn registry_export_import_round_trip_and_signing_gate() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let reg = root.join("reg");
+        let reg2 = root.join("reg2");
+        std::fs::create_dir_all(&reg).expect("reg");
+        std::fs::create_dir_all(&reg2).expect("reg2");
+        let staging = root.join("snap");
+        publish_version(&reg, &staging, "1.0.0", b"[1]");
+
+        // No flag / remote root / unknown compression: usage errors.
+        assert_eq!(
+            run_registry_export("common", &root.join("b.tar"), None, false, None, None),
+            2
+        );
+        assert_eq!(
+            run_registry_export(
+                "common",
+                &root.join("b.tar"),
+                None,
+                false,
+                None,
+                Some(Path::new("http://x/reg"))
+            ),
+            2
+        );
+        assert_eq!(
+            run_registry_export(
+                "common",
+                &root.join("b.tar"),
+                Some("lz4"),
+                false,
+                None,
+                Some(&reg)
+            ),
+            2
+        );
+        assert_eq!(
+            run_registry_import(&root.join("b.tar"), false, None, false, None),
+            2
+        );
+        assert_eq!(
+            run_registry_import(
+                &root.join("b.tar"),
+                false,
+                None,
+                false,
+                Some(Path::new("http://x/reg"))
+            ),
+            2
+        );
+
+        // Export plain + zstd; both are deterministic.
+        let plain = root.join("bundle.tar");
+        assert_eq!(
+            run_registry_export("common@1.0.0", &plain, None, false, None, Some(&reg)),
+            0
+        );
+        assert!(plain.is_file());
+        let copy = root.join("bundle-copy.tar");
+        assert_eq!(
+            run_registry_export("common", &copy, None, false, None, Some(&reg)),
+            0
+        );
+        assert_eq!(
+            fs::read(&plain).expect("bundle"),
+            fs::read(&copy).expect("copy"),
+            "bundle bytes are deterministic"
+        );
+        let zstd = root.join("bundle.zstd");
+        assert_eq!(
+            run_registry_export("common@1.0.0", &zstd, Some("zstd"), false, None, Some(&reg)),
+            0
+        );
+
+        // A dry run runs the full trust gate without writing to reg2.
+        assert_eq!(
+            run_registry_import(&plain, false, None, true, Some(&reg2)),
+            0
+        );
+        assert!(!reg2.join("common").exists(), "dry run writes nothing");
+        assert_eq!(
+            run_registry_import(&plain, false, None, false, Some(&reg2)),
+            0
+        );
+        assert_eq!(run_registry_verify(Some(&reg2)), 0);
+        // The identical re-import is a no-op; the zstd container loads too.
+        assert_eq!(
+            run_registry_import(&zstd, false, None, false, Some(&reg2)),
+            0
+        );
+        assert_eq!(
+            run_registry_import(&plain, false, None, false, Some(&reg2)),
+            0
+        );
+        assert_eq!(run_registry_verify(Some(&reg2)), 0);
+
+        // keygen: the seed goes to the user-named file (owner-only on
+        // unix); only the public key is printed.
+        let seed_path = root.join("seed.txt");
+        assert_eq!(run_registry_keygen(&seed_path), 0);
+        let seed = fs::read_to_string(&seed_path).expect("read seed");
+        assert_eq!(seed.trim().len(), 44, "base64 of 32 bytes: {seed:?}");
+
+        // Sign a bundle through an env-named key, then verify the
+        // signature at import time before the ledger trust gate.
+        let (seed_b64, public_b64) = {
+            let key = cage_core::registry::generate_signing_key().expect("key");
+            cage_core::registry::key_material(&key)
+        };
+        std::env::set_var("CAGE_TEST_SIGNING_KEY", &seed_b64);
+        std::env::set_var("CAGE_TEST_VERIFYING_KEY", &public_b64);
+        let signed = root.join("signed.tar");
+        assert_eq!(
+            run_registry_export(
+                "common@1.0.0",
+                &signed,
+                None,
+                true,
+                Some("CAGE_TEST_SIGNING_KEY"),
+                Some(&reg)
+            ),
+            0
+        );
+        assert!(root.join("signed.tar.sig").is_file(), "detached signature");
+        assert_eq!(
+            run_registry_import(
+                &signed,
+                true,
+                Some("CAGE_TEST_VERIFYING_KEY"),
+                false,
+                Some(&root.join("reg3"))
+            ),
+            0
+        );
+        // A different trusted key refuses the bundle before any bytes enter.
+        let other = cage_core::registry::generate_signing_key().expect("other key");
+        let (_, other_public) = cage_core::registry::key_material(&other);
+        std::env::set_var("CAGE_TEST_VERIFYING_KEY", &other_public);
+        assert_eq!(
+            run_registry_import(
+                &signed,
+                true,
+                Some("CAGE_TEST_VERIFYING_KEY"),
+                false,
+                Some(&root.join("reg4"))
+            ),
+            1
+        );
+        std::env::remove_var("CAGE_TEST_SIGNING_KEY");
+        std::env::remove_var("CAGE_TEST_VERIFYING_KEY");
+    }
+
+    /// A tiny-http stand-in for a remote registry root (A3): PUTs are
+    /// accepted with 200, everything else 404 (no remote index yet). The
+    /// driver thread serves until the process tears it down.
+    fn start_push_server() -> u16 {
+        let server = tiny_http::Server::http(("127.0.0.1", 0)).expect("bind ephemeral port");
+        let port = server.server_addr().to_ip().expect("bound").port();
+        std::thread::spawn(move || {
+            for mut request in server.incoming_requests() {
+                let put = *request.method() == tiny_http::Method::Put;
+                let mut body = Vec::new();
+                let _ = request.as_reader().read_to_end(&mut body);
+                let response = tiny_http::Response::from_string("").with_status_code(if put {
+                    200
+                } else {
+                    404
+                });
+                let _ = request.respond(response);
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn registry_push_uploads_and_presigned_route_refusals() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let reg = root.join("reg");
+        std::fs::create_dir_all(&reg).expect("reg");
+        let staging = root.join("snap");
+        publish_version(&reg, &staging, "1.0.0", b"[1]");
+
+        // A project without a local registry has nothing to push from.
+        let no_reg = publisher_fixture(root, "push_noreg", Some("0.1.0"), None);
+        assert_eq!(
+            run_registry_push(
+                &no_reg,
+                None,
+                Some("http://127.0.0.1:1/reg"),
+                None,
+                None,
+                false
+            ),
+            2
+        );
+        // A non-remote destination belongs to `registry publish`, not push.
+        let proj = publisher_fixture(root, "push", Some("0.1.0"), Some("reg2"));
+        // point [registry].path at the populated registry
+        std::fs::remove_dir_all(proj.join("reg2")).ok();
+        std::fs::rename(&reg, proj.join("reg2")).expect("move registry");
+        assert_eq!(
+            run_registry_push(&proj, None, Some("local/reg"), None, None, false),
+            2
+        );
+        // No destination at all is a usage error.
+        assert_eq!(run_registry_push(&proj, None, None, None, None, false), 2);
+        // A missing presign map file is E2101.
+        assert_eq!(
+            run_registry_push(
+                &proj,
+                None,
+                None,
+                Some(&root.join("ghost-map.json")),
+                None,
+                false
+            ),
+            2
+        );
+        // A malformed presign map is refused before any upload.
+        let bad_map = root.join("bad-map.json");
+        write_text(&bad_map, "{not json");
+        assert_eq!(
+            run_registry_push(&proj, None, None, Some(&bad_map), None, false),
+            2
+        );
+
+        // Direct happy path: every entry file is PUT, the merged index last.
+        let port = start_push_server();
+        let url = format!("http://127.0.0.1:{port}/reg");
+        assert_eq!(
+            run_registry_push(&proj, None, Some(&url), None, None, false),
+            0
+        );
+        // A second push is an identical no-op (the remote now holds it).
+        let port2 = start_push_server();
+        let url2 = format!("http://127.0.0.1:{port2}/reg");
+        assert_eq!(
+            run_registry_push(&proj, None, Some(&url2), None, None, false),
+            0
+        );
+        // A dry run probes the remote state but uploads nothing.
+        let port3 = start_push_server();
+        let url3 = format!("http://127.0.0.1:{port3}/reg");
+        assert_eq!(
+            run_registry_push(&proj, None, Some(&url3), None, None, true),
+            0
+        );
+
+        // Presigned route: a map covering every entry file + the index.
+        let port4 = start_push_server();
+        let base = format!("http://127.0.0.1:{port4}/reg");
+        let mut uploads = serde_json::Map::new();
+        for file in [
+            "manifest.json",
+            "schema.json",
+            "data/client/json/Item.json",
+            "HASHES.json",
+        ] {
+            uploads.insert(
+                format!("/common/1.0.0/{file}"),
+                serde_json::Value::String(format!("{base}/common/1.0.0/{file}")),
+            );
+        }
+        let map = serde_json::json!({
+            "uploads": uploads,
+            "index": {
+                "get": format!("{base}/common/index.json"),
+                "put": format!("{base}/common/index.json"),
+            }
+        });
+        let map_path = root.join("presign.json");
+        write_text(&map_path, &map.to_string());
+        assert_eq!(
+            run_registry_push(&proj, None, None, Some(&map_path), None, false),
+            0
+        );
+        // A presign map that does not cover every entry file is refused.
+        let partial = serde_json::json!({
+            "uploads": {
+                "/common/1.0.0/manifest.json": format!("{base}/common/1.0.0/manifest.json"),
+            },
+            "index": {
+                "put": format!("{base}/common/index.json"),
+            }
+        });
+        let partial_path = root.join("partial-presign.json");
+        write_text(&partial_path, &partial.to_string());
+        assert_eq!(
+            run_registry_push(&proj, None, None, Some(&partial_path), None, false),
+            1
+        );
+    }
+
+    #[test]
+    fn registry_publish_snapshots_and_idempotent_republish() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let reg = root.join("reg");
+        let proj = publisher_fixture(root, "pub", Some("0.1.0"), None);
+
+        // A remote registry root is read-only for publish too.
+        assert_eq!(
+            run_registry_publish(
+                &proj,
+                "client",
+                None,
+                None,
+                None,
+                Some(Path::new("http://127.0.0.1:80/reg"))
+            ),
+            2
+        );
+        // No version to publish (project has none).
+        let no_ver = publisher_fixture(root, "nover", None, None);
+        assert_eq!(
+            run_registry_publish(&no_ver, "client", None, None, None, Some(&reg)),
+            2
+        );
+
+        // Publish: builds, packs, enters the snapshot, verifies clean.
+        assert_eq!(
+            run_registry_publish(&proj, "client", None, None, None, Some(&reg)),
+            0
+        );
+        assert_eq!(run_registry_verify(Some(&reg)), 0);
+        // A byte-identical re-publish is a no-op.
+        assert_eq!(
+            run_registry_publish(&proj, "client", None, None, None, Some(&reg)),
+            0
+        );
+        // A different version enters as a new entry.
+        assert_eq!(
+            run_registry_publish(
+                &proj,
+                "client",
+                None,
+                Some("acme"),
+                Some("2.0.0"),
+                Some(&reg)
+            ),
+            0
+        );
+        assert_eq!(run_registry_verify(Some(&reg)), 0);
+        // An unknown profile is a build failure (usage error).
+        assert_eq!(
+            run_registry_publish(&proj, "ghost", None, None, Some("3.0.0"), Some(&reg)),
+            2
+        );
+    }
+
+    #[test]
+    fn snapshot_packages_and_verifies_a_fresh_build() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let proj = publisher_fixture(root, "snap", Some("0.1.0"), None);
+
+        assert_eq!(run_snapshot(&proj, "client", None), 0);
+        let snap_root = proj.join("build/snapshot");
+        let mut dirs: Vec<PathBuf> = fs::read_dir(&snap_root)
+            .expect("snapshot dir")
+            .map(|e| e.expect("entry").path())
+            .collect();
+        assert_eq!(dirs.len(), 1, "one snapshot dir");
+        let snap = dirs.pop().expect("snap");
+        assert!(snap.join("HASHES.json").is_file());
+        // Self-verification passes on the just-written snapshot.
+        assert_eq!(run_snapshot_verify(&snap), 0);
+        // Tamper: the ledger no longer re-hashes clean.
+        let artifact = snap.join("data/client/json/Item.json");
+        std::fs::write(&artifact, b"[]").expect("tamper");
+        assert_eq!(run_snapshot_verify(&snap), 1);
+        // A missing snapshot dir is a usage error.
+        assert_eq!(run_snapshot_verify(&root.join("ghost")), 2);
+    }
+
+    #[test]
+    fn gen_emits_code_targets_and_refuses_data_only_profiles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let proj = root.join("gen");
+        write_text(
+            &proj.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        );
+        write_text(&proj.join("schema.yaml"), PUBLISHER_SCHEMA);
+        write_text(
+            &proj.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "cs"
+output_dir = "build/client/cs"
+file_template = "{table}.cs"
+"#,
+        );
+
+        // Unknown profile is a usage error.
+        assert_eq!(run_gen(&proj, "ghost", None, false), 2);
+        // A data-only profile has no code targets.
+        let data_only = publisher_fixture(root, "data", Some("0.1.0"), None);
+        assert_eq!(run_gen(&data_only, "client", None, false), 2);
+        // A code-target profile emits the artifact.
+        assert_eq!(run_gen(&proj, "client", None, false), 0);
+        let cs_dir = proj.join("build/client/cs");
+        let any_cs = fs::read_dir(&cs_dir)
+            .map(|mut it| it.next().map(|e| e.expect("entry").path()))
+            .ok()
+            .flatten();
+        let cs_path = any_cs.expect("a cs artifact was written");
+        let content = fs::read_to_string(&cs_path).expect("read cs");
+        assert!(content.contains("Item"), "{content}");
+    }
+
+    #[test]
+    fn parse_registry_subcommands_describe_every_variant() {
+        let cases: Vec<(&[&str], String)> = vec![
+            (
+                &[
+                    "cage",
+                    "registry",
+                    "publish",
+                    "proj",
+                    "--profile",
+                    "server",
+                    "--env",
+                    "prod",
+                    "--package",
+                    "acme",
+                    "--version",
+                    "2.0.0",
+                    "--registry",
+                    "reg",
+                ],
+                "registry publish proj server prod acme 2.0.0 reg".to_string(),
+            ),
+            (
+                &["cage", "registry", "list", "--registry", "reg"],
+                "registry list reg".to_string(),
+            ),
+            (
+                &["cage", "registry", "verify", "--registry", "reg"],
+                "registry verify reg".to_string(),
+            ),
+            (
+                &["cage", "registry", "gc", "--keep", "3", "--dry-run", "--registry", "reg"],
+                "registry gc 3 true reg".to_string(),
+            ),
+            (
+                &[
+                    "cage",
+                    "registry",
+                    "remove",
+                    "acme",
+                    "1.0.0",
+                    "--dry-run",
+                    "--registry",
+                    "reg",
+                ],
+                "registry remove acme 1.0.0 true reg".to_string(),
+            ),
+            (
+                &["cage", "registry", "export", "acme", "-o", "b.tar", "--registry", "reg"],
+                "registry export acme b.tar - false <no key-env> reg".to_string(),
+            ),
+            (
+                &["cage", "registry", "import", "b.tar", "--registry", "reg"],
+                "registry import b.tar false <no key-env> false reg".to_string(),
+            ),
+            (
+                &["cage", "registry", "push", "proj", "--registry", "http://host/reg"],
+                "registry push proj <project.name> http://host/reg false <no presign-map> <no auth_env>"
+                    .to_string(),
+            ),
+        ];
+        for (args, want) in cases {
+            let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert_eq!(describe(&cli.command), want, "{args:?}");
+        }
+    }
 }
