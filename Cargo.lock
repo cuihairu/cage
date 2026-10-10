@@ -318,7 +318,9 @@ version = "0.1.0"
 dependencies = [
  "cage-core",
  "cage-source-json",
+ "serde_json",
  "tempfile",
+ "url",
 ]
 
 [[package]]

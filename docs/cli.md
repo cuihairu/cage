@@ -140,7 +140,7 @@ Cage 支持四种远程输入源，全部在 `cage.toml` 的 `[source_roots]` �
 
 | 语法 | crate | 关键特性 |
 | --- | --- | --- |
-| `https://...` / `http://...` | `cage-source-http` | GET 响应字节缓存后走标准 JSON 解析；`E1901` 取数失败、`E1902` 401/403、`E0001` 坏 JSON |
+| `https://...` / `http://...` | `cage-source-http` | GET 响应字节缓存后走标准 JSON 解析；`Link: rel="next"` 分页沿链合并（页=行数组）；429 带 `Retry-After` ≤30s 退避重试；`E1901` 取数失败 / 分页违规、`E1902` 401/403、`E0001` 坏 JSON |
 | `mysql:<表|具名查询>` | `cage-source-db` | SELECT 白名单（单条、SELECT 开头，拒分号/注释/行锁/CTE/`INTO`）→ `dsn_env` 解析 → 会话钉只读（`SESSION TRANSACTION READ ONLY`）；DECIMAL 文本保真、`E1905` 白名单、`E1904` 凭据、`E1901` 连接/语句 |
 | `pg:<表|具名查询>` | `cage-source-db` | 同上；PG 侧只读用 `default_transaction_read_only` |
 | `gsheet:<spreadsheet_id>/<tab>` | `cage-source-sheets` | Sheets API v4 `values` + `UNFORMATTED_VALUE`；首行表头、空行跳过、短行补 null；形状门 `E1903`（非行集/空表头/majorDimension 非 ROWS） |

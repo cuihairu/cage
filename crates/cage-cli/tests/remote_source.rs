@@ -360,3 +360,161 @@ fn offline_build_falls_back_to_the_cache_and_no_cache_refuses() {
     assert_code(&out, 2, "no-cache check refuses the fallback");
     assert!(stderr(&out).contains("E1901"), "{}", stderr(&out));
 }
+
+/// RFC 8288 pagination, end to end: a source whose first response
+/// carries `Link: rel="next"` walks both pages, merges the row arrays,
+/// builds through the standard pipeline (bare array → `Data` table),
+/// and caches the merged document — identical server state rebuilds to
+/// identical manifest bytes.
+#[test]
+fn paginated_remote_source_builds_end_to_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let handle = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        while !stop2.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut head = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                head.extend_from_slice(&buf[..n]);
+                                if head.windows(4).any(|w| w == b"\r\n\r\n")
+                                    || head.len() > 64 * 1024
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let req = String::from_utf8_lossy(&head).into_owned();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/");
+                    let (link, body): (&str, &[u8]) = if path == "/items.json" {
+                        (
+                            "</items.json?page=2>; rel=\"next\"",
+                            br#"[{ "id": 1, "name": "Sword" }]"#,
+                        )
+                    } else if path == "/items.json?page=2" {
+                        ("", br#"[{ "id": 2, "name": "Shield" }]"#)
+                    } else {
+                        ("", b"not found")
+                    };
+                    let mut head_out =
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n".to_string();
+                    if !link.is_empty() {
+                        head_out.push_str(&format!("Link: {link}\r\n"));
+                    }
+                    head_out.push_str(&format!(
+                        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    ));
+                    let _ = stream.write_all(head_out.as_bytes());
+                    let _ = stream.write_all(body);
+                    let _ = stream.flush();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    struct Stop {
+        stop: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+    let _guard = Stop {
+        stop,
+        handle: Some(handle),
+    };
+    let url = format!("http://127.0.0.1:{port}/items.json");
+
+    let schema = r#"tables:
+  Data:
+    name: Data
+    description: Rows served across pages
+    primary_key: [id]
+    fields:
+      id:
+        name: id
+        type: { kind: Int32 }
+        required: true
+      name:
+        name: name
+        type: { kind: String }
+        required: true
+enums: {}
+"#;
+    let body = r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "paged"
+version = "0.1.0"
+
+[source_roots]
+main = "URL_PLACEHOLDER"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{table}.json"
+"#
+    .replace("URL_PLACEHOLDER", &url);
+    write(&root.join("paged/cage.toml"), &body);
+    write(&root.join("paged/schema.yaml"), schema);
+
+    let proj = root.join("paged").to_str().unwrap().to_string();
+    let out = run_cage(&["build", &proj, "--profile", "client"]);
+    assert_code(&out, 0, "paginated build");
+    let artifact = fs::read_to_string(root.join("paged/build/client/json/Data.json")).unwrap();
+    assert!(
+        artifact.contains("Sword") && artifact.contains("Shield"),
+        "rows from both pages must land: {artifact}"
+    );
+
+    // The cache holds the merged array, not page 1 alone.
+    let key = cage_core::remote::cache_key(&url);
+    let cached = fs::read_to_string(
+        root.join("paged/.cage-cache/source")
+            .join(&key)
+            .join(format!("{key}.json")),
+    )
+    .unwrap();
+    let merged: serde_json::Value = serde_json::from_str(&cached).unwrap();
+    assert_eq!(
+        merged.as_array().unwrap().len(),
+        2,
+        "merged cache: {cached}"
+    );
+
+    // Determinism: same server state → same manifest bytes.
+    let m1 = fs::read(root.join("paged/build/manifest.json")).unwrap();
+    let out = run_cage(&["build", &proj, "--profile", "client"]);
+    assert_code(&out, 0, "identical rebuild");
+    assert_eq!(
+        m1,
+        fs::read(root.join("paged/build/manifest.json")).unwrap(),
+        "same pages → same merged bytes → same manifest"
+    );
+}

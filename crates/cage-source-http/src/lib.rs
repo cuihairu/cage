@@ -1,5 +1,6 @@
 //! HTTP API source adapter (S1, design §45): an `http(s)` URL in
-//! `[source_roots]` is fetched once (bounded retries on transport flake),
+//! `[source_roots]` is fetched once (bounded retries on transport flake,
+//! rate-limit negotiation on a 429 with an honorable `Retry-After`),
 //! the response bytes are materialized in the project-local cache
 //! (`.cage-cache/source/<cache_key>/<cache_key>.json`), and the cached
 //! file is parsed by the standard JSON adapter. The remote body follows
@@ -7,12 +8,20 @@
 //! `{表名: 行数组}` / single object → `Root` / bare array → `Data` —
 //! and enters the same L0-L7 pipeline. The remote is a data source, not
 //! a trusted one: nothing skips validation.
+//!
+//! Pagination (design §45): when the response carries an RFC 8288
+//! `Link: <...>; rel="next"` header the walk follows it — every page
+//! must be a JSON array of rows, and pages concatenate in link order
+//! into one merged document (cached bytes = merged array; a bare array
+//! parses as the `Data` table). A source without a next link keeps the
+//! single-GET contract byte-for-byte.
 
 use cage_core::error::codes::internal::E9902;
 use cage_core::error::codes::remote::{E1901, E1902};
 use cage_core::remote::{self, FetchFailure};
 use cage_core::value::Document;
 use cage_source_json::JsonSourceAdapter;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Whether a `[source_roots]` value names a remote source: an http(s)
@@ -27,15 +36,17 @@ fn is_http_url(url: &str) -> bool {
 pub struct HttpSourceAdapter;
 
 impl HttpSourceAdapter {
-    /// GET `url` and land the response bytes at
+    /// GET `url` (following `Link: rel="next"` pagination when the
+    /// server advertises it) and land the merged document bytes at
     /// `.cage-cache/source/<cache_key(url)>/<cache_key(url)>.json`,
     /// returning the cached file path. Errors: E1901 when the fetch
-    /// fails (transport after bounded retries, 404, or any other
-    /// non-auth status), E1902 on 401/403, E9902 when the cache cannot
-    /// be written. A transport failure with a previous copy on disk
-    /// falls back to it instead (E1906 WARNING) unless `strict`
-    /// (`--no-cache`) is set; 404 and 401/403 never fall back — stale
-    /// bytes must not mask a deleted source or revoked access.
+    /// fails (transport after bounded retries, a rate limit past its
+    /// budget, 404, any other non-auth status, or a pagination-contract
+    /// violation), E1902 on 401/403, E9902 when the cache cannot be
+    /// written. A transport failure with a previous copy on disk falls
+    /// back to it instead (E1906 WARNING) unless `strict` (`--no-cache`)
+    /// is set; everything else never falls back — a server that answered
+    /// has spoken, and stale bytes must not mask that.
     pub fn fetch(project_root: &Path, url: &str, strict: bool) -> Result<PathBuf, String> {
         if !is_http_url(url) {
             return Err(format!("{E1901} not an http(s) remote source URL: {url}"));
@@ -44,9 +55,9 @@ impl HttpSourceAdapter {
         // before any bytes move — the offline fallback needs it too.
         let cache_dir = remote::source_cache_dir(project_root, url);
         let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(url)));
-        let bytes = match remote::http_get(url) {
+        let bytes = match fetch_pages(url) {
             Ok(bytes) => bytes,
-            Err(FetchFailure::Transport(e)) => {
+            Err(PageFailure::Http(FetchFailure::Transport(e))) => {
                 if let Some(path) = remote::source_cache_fallback(&cache_file, url, strict) {
                     return Ok(path);
                 }
@@ -54,24 +65,28 @@ impl HttpSourceAdapter {
                     "{E1901} remote source fetch failed: transport failure: {e} ({url})"
                 ));
             }
-            Err(FetchFailure::Status(code @ (401 | 403))) => {
+            Err(PageFailure::Http(FetchFailure::Status(code @ (401 | 403)))) => {
                 return Err(format!(
                     "{E1902} remote source rejected access (HTTP {code}): {url}"
                 ));
             }
-            Err(FetchFailure::NotFound(_)) => {
-                return Err(format!("{E1901} remote source not found (HTTP 404): {url}"));
-            }
-            Err(FetchFailure::Status(code)) => {
+            Err(PageFailure::Http(FetchFailure::NotFound(inner))) => {
                 return Err(format!(
-                    "{E1901} remote source fetch failed: http status {code} ({url})"
+                    "{E1901} remote source not found (HTTP 404): {inner}"
                 ));
+            }
+            Err(PageFailure::Http(e)) => {
+                return Err(format!("{E1901} remote source fetch failed: {e} ({url})"));
+            }
+            Err(e) => {
+                return Err(format!("{E1901} remote source pagination failed: {e}"));
             }
         };
 
         // The byte anchor: whatever the server said is written verbatim
         // before anything parses it — later stages always see the same
-        // file a re-run would.
+        // file a re-run would. (Paginated sources materialize the merged
+        // document, itself deterministic for a given server state.)
         std::fs::create_dir_all(&cache_dir).map_err(|e| {
             format!(
                 "{E9902} cannot create source cache {}: {e}",
@@ -100,12 +115,155 @@ impl HttpSourceAdapter {
     }
 }
 
+/// Hard bound on the pagination walk: a server must not turn one source
+/// into an unbounded request loop. 1000 pages is far past any real
+/// config row set and still bounded work for a build.
+const MAX_PAGES: usize = 1000;
+
+/// One failure of the paginated fetch. `Http` wraps the shared failure
+/// kinds verbatim; the rest are pagination-contract violations — the
+/// server spoke, so they are definitive and never offline-fallback
+/// material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PageFailure {
+    Http(FetchFailure),
+    /// A page body is not valid JSON or not a JSON array
+    NotArray(String),
+    /// A next link that cannot resolve against its page URL
+    BadLink(String),
+    /// A resolved page URL the walk already fetched
+    Cycle(String),
+    /// More than the walked bound: the bound, then the page URL
+    TooManyPages(usize, String),
+}
+
+impl std::fmt::Display for PageFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PageFailure::Http(e) => write!(f, "{e}"),
+            PageFailure::NotArray(url) => {
+                write!(f, "pagination page is not a JSON array: {url}")
+            }
+            PageFailure::BadLink(url) => {
+                write!(f, "pagination next link is not a usable URL: {url}")
+            }
+            PageFailure::Cycle(url) => write!(f, "pagination cycle at: {url}"),
+            PageFailure::TooManyPages(bound, url) => {
+                write!(f, "pagination exceeded {bound} pages at: {url}")
+            }
+        }
+    }
+}
+
+/// Fetch `first` and, when the server advertises an RFC 8288
+/// `Link: rel="next"`, walk the pages: every page is a JSON array of
+/// rows, relative next targets resolve against their page URL (RFC
+/// 3986), pages concatenate in link order, and the merged array is the
+/// returned document. No next link on the first response returns the
+/// body bytes verbatim — the single-GET contract is untouched.
+fn fetch_pages(first: &str) -> Result<Vec<u8>, PageFailure> {
+    fetch_pages_bound(first, MAX_PAGES)
+}
+
+fn fetch_pages_bound(first: &str, max_pages: usize) -> Result<Vec<u8>, PageFailure> {
+    let first_url = url::Url::parse(first).map_err(|_| PageFailure::BadLink(first.to_string()))?;
+    let response = remote::http_get_full(first).map_err(PageFailure::Http)?;
+    let Some(next_raw) = response.link.as_deref().and_then(next_page_link) else {
+        return Ok(response.body);
+    };
+
+    let mut merged = page_array(&response.body, first)?;
+    let mut visited: HashSet<String> = HashSet::from([first_url.to_string()]);
+    let mut current = first_url;
+    let mut next = Some(next_raw);
+    while let Some(raw) = next {
+        current = current
+            .join(&raw)
+            .map_err(|_| PageFailure::BadLink(raw.clone()))?;
+        let key = current.to_string();
+        if !visited.insert(key.clone()) {
+            return Err(PageFailure::Cycle(key));
+        }
+        if visited.len() > max_pages {
+            return Err(PageFailure::TooManyPages(max_pages, key));
+        }
+        let response = remote::http_get_full(current.as_str()).map_err(PageFailure::Http)?;
+        merged.extend(page_array(&response.body, current.as_str())?);
+        next = response.link.as_deref().and_then(next_page_link);
+    }
+    Ok(serde_json::to_vec(&merged).expect("serializing merged row arrays cannot fail"))
+}
+
+/// A page body must be a JSON array of rows — the only shape that
+/// merges across pages. Anything else (object, scalar, garbage) is a
+/// contract violation naming the page.
+fn page_array(body: &[u8], page_url: &str) -> Result<Vec<serde_json::Value>, PageFailure> {
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(serde_json::Value::Array(rows)) => Ok(rows),
+        _ => Err(PageFailure::NotArray(page_url.to_string())),
+    }
+}
+
+/// The `rel="next"` target of one `Link` header value (RFC 8288):
+/// members are `<uri-reference>; key=value` separated by top-level
+/// commas (commas inside the angle brackets never split), and `rel` is
+/// a case-insensitive space-separated token list. Only the target of
+/// the first `next` member wins.
+fn next_page_link(header: &str) -> Option<String> {
+    for member in split_link_members(header) {
+        let open = member.find('<')?;
+        let close = open + member[open..].find('>')?;
+        let target = member[open + 1..close].trim();
+        if member[close + 1..].split(';').any(param_is_rel_next) {
+            return Some(target.to_string());
+        }
+    }
+    None
+}
+
+/// `true` when one `;`-parameter is a `rel` whose token list contains
+/// `next` (case-insensitive, quotes stripped).
+fn param_is_rel_next(param: &str) -> bool {
+    let Some(rest) = param.trim().strip_prefix("rel") else {
+        return false;
+    };
+    let Some(value) = rest.trim().strip_prefix('=') else {
+        return false;
+    };
+    value
+        .trim()
+        .trim_matches('"')
+        .split_whitespace()
+        .any(|token| token.eq_ignore_ascii_case("next"))
+}
+
+/// Split a `Link` header into members at top-level commas — commas
+/// inside `<...>` targets never split.
+fn split_link_members(header: &str) -> Vec<&str> {
+    let mut members = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, c) in header.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                members.push(&header[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    members.push(&header[start..]);
+    members
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
@@ -181,6 +339,174 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         drop(l);
         port
+    }
+
+    /// Serve per-path canned responses (the pagination stand-in): each
+    /// route is (path with query, status, `Link` header, body); a miss
+    /// answers 404.
+    struct RouteServer {
+        port: u16,
+        stop: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    fn start_route_server(
+        routes: Vec<(&'static str, u16, Option<&'static str>, &'static str)>,
+    ) -> RouteServer {
+        let table: std::collections::HashMap<String, (u16, Option<&'static str>, &'static str)> =
+            routes
+                .into_iter()
+                .map(|(path, status, link, body)| (path.to_string(), (status, link, body)))
+                .collect();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let handle = thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while !stop2.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        let mut head = Vec::new();
+                        let mut buf = [0u8; 1024];
+                        loop {
+                            match stream.read(&mut buf) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    head.extend_from_slice(&buf[..n]);
+                                    if head.windows(4).any(|w| w == b"\r\n\r\n")
+                                        || head.len() > 64 * 1024
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        let request = String::from_utf8_lossy(&head);
+                        let path = request.split_whitespace().nth(1).unwrap_or("/");
+                        let (status, link, body) =
+                            table.get(path).copied().unwrap_or((404, None, "no route"));
+                        let mut head_out =
+                            format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n");
+                        if let Some(link) = link {
+                            head_out.push_str(&format!("Link: {link}\r\n"));
+                        }
+                        head_out.push_str(&format!(
+                            "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        ));
+                        let _ = stream.write_all(head_out.as_bytes());
+                        let _ = stream.write_all(body.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        RouteServer {
+            port,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    impl Drop for RouteServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    /// The first `throttled` requests answer 429 with the given
+    /// `Retry-After`, everything after answers 200 with `body`. The
+    /// request counter is exposed for asserting the retries happened.
+    struct ThrottleServer {
+        port: u16,
+        hits: Arc<AtomicU32>,
+        stop: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    fn start_throttle_server(
+        throttled: u32,
+        retry_after: Option<&'static str>,
+        body: &'static str,
+    ) -> ThrottleServer {
+        let hits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let hits2 = hits.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let handle = thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while !stop2.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        let mut head = Vec::new();
+                        let mut buf = [0u8; 1024];
+                        loop {
+                            match stream.read(&mut buf) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    head.extend_from_slice(&buf[..n]);
+                                    if head.windows(4).any(|w| w == b"\r\n\r\n")
+                                        || head.len() > 64 * 1024
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        let n = hits2.fetch_add(1, Ordering::SeqCst) + 1;
+                        let (status, extra) = if n <= throttled {
+                            (
+                                429,
+                                retry_after
+                                    .map(|v| format!("Retry-After: {v}\r\n"))
+                                    .unwrap_or_default(),
+                            )
+                        } else {
+                            (200, String::new())
+                        };
+                        let head_out = format!(
+                            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
+                             {extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(head_out.as_bytes());
+                        let _ = stream.write_all(body.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        ThrottleServer {
+            port,
+            hits,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    impl Drop for ThrottleServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
     }
 
     const BODY: &str = r#"{
@@ -339,5 +665,220 @@ mod tests {
 
         let err = HttpSourceAdapter::load(tmp.path(), &forbidden_url, false).unwrap_err();
         assert!(err.contains("E1902"), "{err}");
+    }
+
+    /// RFC 8288 pagination: a `Link: rel="next"` header walks the pages,
+    /// relative targets resolve against their page URL, and pages
+    /// concatenate in link order — the cache holds the merged array.
+    #[test]
+    fn paginated_pages_merge_in_link_order() {
+        let server = start_route_server(vec![
+            (
+                "/items.json",
+                200,
+                Some("</items.json?page=2>; rel=\"next\""),
+                r#"[{ "id": 1, "name": "Sword" }]"#,
+            ),
+            (
+                "/items.json?page=2",
+                200,
+                None,
+                r#"[{ "id": 2, "name": "Shield" }]"#,
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let url = format!("http://127.0.0.1:{}/items.json", server.port);
+
+        let doc = HttpSourceAdapter::load(tmp.path(), &url, false).unwrap();
+        let data = doc.tables.get("Data").expect("bare array parses as Data");
+        assert_eq!(data.rows.len(), 2, "both pages merged: {doc:?}");
+
+        let cached = std::fs::read_to_string(
+            remote::source_cache_dir(tmp.path(), &url)
+                .join(format!("{}.json", remote::cache_key(&url))),
+        )
+        .unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&cached).unwrap();
+        assert_eq!(
+            merged,
+            serde_json::json!([
+                { "id": 1, "name": "Sword" },
+                { "id": 2, "name": "Shield" }
+            ]),
+            "cache holds the pages merged in link order"
+        );
+    }
+
+    /// The pagination contract is arrays only — an object (or any
+    /// non-array) page anywhere in the walk is a definitive E1901.
+    #[test]
+    fn paginated_page_must_be_an_array() {
+        let server = start_route_server(vec![
+            (
+                "/p.json",
+                200,
+                Some("</p.json?page=2>; rel=\"next\""),
+                r#"[{ "id": 1 }]"#,
+            ),
+            ("/p.json?page=2", 200, None, r#"{ "rows": [] }"#),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let err = HttpSourceAdapter::load(
+            tmp.path(),
+            &format!("http://127.0.0.1:{}/p.json", server.port),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("E1901"), "{err}");
+        assert!(err.contains("not a JSON array"), "{err}");
+        assert!(err.contains("page=2"), "the offending page is named: {err}");
+    }
+
+    /// A next link pointing back at a fetched page is a broken server,
+    /// not a request loop: one warning-free definitive error.
+    #[test]
+    fn pagination_cycle_is_definitive() {
+        let server = start_route_server(vec![(
+            "/c.json",
+            200,
+            Some("</c.json>; rel=\"next\""),
+            "[1]",
+        )]);
+        let tmp = tempfile::tempdir().unwrap();
+        let err = HttpSourceAdapter::load(
+            tmp.path(),
+            &format!("http://127.0.0.1:{}/c.json", server.port),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("E1901"), "{err}");
+        assert!(err.contains("cycle"), "{err}");
+    }
+
+    /// The page bound is a hard loop guard: a longer chain stops with a
+    /// definitive error instead of walking forever.
+    #[test]
+    fn pagination_page_bound_is_enforced() {
+        let server = start_route_server(vec![
+            (
+                "/b.json",
+                200,
+                Some("</b.json?page=2>; rel=\"next\""),
+                "[1]",
+            ),
+            (
+                "/b.json?page=2",
+                200,
+                Some("</b.json?page=3>; rel=\"next\""),
+                "[2]",
+            ),
+            ("/b.json?page=3", 200, None, "[3]"),
+        ]);
+        let first = format!("http://127.0.0.1:{}/b.json", server.port);
+        let err = fetch_pages_bound(&first, 2).unwrap_err();
+        assert!(
+            matches!(err, PageFailure::TooManyPages(2, _)),
+            "bound names itself: {err}"
+        );
+
+        // The same chain inside the bound merges fine.
+        let bytes = fetch_pages_bound(&first, 3).unwrap();
+        assert_eq!(bytes, b"[1,2,3]");
+    }
+
+    /// A 429 with an honorable `Retry-After` is retried and the build
+    /// succeeds once the server unthrottles.
+    #[test]
+    fn rate_limit_with_retry_after_is_retried() {
+        let server = start_throttle_server(2, Some("0"), "[{ \"id\": 1 }]");
+        let tmp = tempfile::tempdir().unwrap();
+        let doc = HttpSourceAdapter::load(
+            tmp.path(),
+            &format!("http://127.0.0.1:{}/i.json", server.port),
+            false,
+        )
+        .expect("the rate limit clears within the retry budget");
+        assert_eq!(doc.tables.get("Data").unwrap().rows.len(), 1);
+        assert!(
+            server.hits.load(Ordering::SeqCst) >= 3,
+            "two throttled answers then the success"
+        );
+    }
+
+    /// `Retry-After` past the honored cap is a definitive 429: no retry,
+    /// no stall — a build must not wait out an hour-long throttle.
+    #[test]
+    fn rate_limit_beyond_cap_is_definitive_and_fast() {
+        let started = std::time::Instant::now();
+        let server = start_throttle_server(10, Some("3600"), "[]");
+        let tmp = tempfile::tempdir().unwrap();
+        let err = HttpSourceAdapter::load(
+            tmp.path(),
+            &format!("http://127.0.0.1:{}/i.json", server.port),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("E1901"), "{err}");
+        assert!(err.contains("429"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the long wait is refused, not slept out"
+        );
+        assert_eq!(
+            server.hits.load(Ordering::SeqCst),
+            1,
+            "a refused wait is definitive — no retry"
+        );
+    }
+
+    /// A 429 without `Retry-After` is never guessed at: definitive.
+    #[test]
+    fn rate_limit_without_header_is_definitive() {
+        let started = std::time::Instant::now();
+        let server = start_throttle_server(10, None, "[]");
+        let tmp = tempfile::tempdir().unwrap();
+        let err = HttpSourceAdapter::load(
+            tmp.path(),
+            &format!("http://127.0.0.1:{}/i.json", server.port),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("E1901"), "{err}");
+        assert!(err.contains("429"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(server.hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn next_page_link_parses_rfc8288_forms() {
+        let next = next_page_link("<https://a/2>; rel=\"next\"").unwrap();
+        assert_eq!(next, "https://a/2");
+        assert_eq!(
+            next_page_link("</2>; rel=next").unwrap(),
+            "/2",
+            "unquoted rel"
+        );
+        assert_eq!(
+            next_page_link("<https://a/2>; rel=\"prev\", </3>; rel=\"next\"").unwrap(),
+            "/3",
+            "the next member among several"
+        );
+        assert_eq!(
+            next_page_link("</2>; rel=\"prev next\"").unwrap(),
+            "/2",
+            "rel is a token list"
+        );
+        assert_eq!(
+            next_page_link("</2>; rel=\"NEXT\"").unwrap(),
+            "/2",
+            "rel tokens are case-insensitive"
+        );
+        assert_eq!(
+            next_page_link("<https://a/2,3>; rel=\"next\"").unwrap(),
+            "https://a/2,3",
+            "commas inside the target never split members"
+        );
+        assert_eq!(next_page_link("</2>; rel=\"prev\""), None);
+        assert_eq!(next_page_link("no links here"), None);
     }
 }

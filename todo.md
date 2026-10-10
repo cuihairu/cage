@@ -162,7 +162,7 @@
       「R 系列：Configuration Registry」：本地多版本仓库 / `[dependencies]`
       版本 pin / 远程 http(s) 只读解析 / verify 全册审计 + gc 滚动窗口 +
       remove 显式移除）；遗留的注册表鉴权与远程发布协议不在本项
-- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——S1–S6
+- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——S1–S7
       收官（2026-10，见下方「S 系列：Remote Source」：S1 HTTP API 源 /
       S2 MySQL / PostgreSQL 源 / S3 Google Sheets 源 / S4 确定性与
       离线语义收口 / S5 错误码接线收口 / S6 文档收口）
@@ -246,7 +246,7 @@
       拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
       validation.md/architecture.md/index.md）+ 本勾选
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1–S6 全数交付）
+### S 系列：Remote Source（2026-10 立项，design §45；S1–S7 全数交付）
 
 形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
 纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
@@ -356,6 +356,30 @@ S1、E1904/E1905 随 S2、E1903 随 S3）。
       ——零代码行为变化，纯措辞与文档签。design §45 实装状态补 S5
       对账详述、todo 勾选、需求整理.md 行同步
 - [x] S6 文档收口：source.md 后续扩展清单转正（注明首期四大远程源已交付）、cli.md 新增 Remote Source 章节（四源语法/特性/错误码对照表 + 离线回退引用）、需求整理.md Remote Source 行同步 S6 已交付、architecture.md 工程结构树三 crate（cage-source-http/db/sheets）早已在列
+- [x] S7 增量交付（§45 留待实现期两项：HTTP 分页协议与限流协商，
+      2026-10 交付）：HTTP 源 GET 后响应带 RFC 8288 `Link:
+      <...>; rel="next"` 头则沿链取页——每页必须 JSON 行数组、页序
+      拼接成合并文档（裸数组 → `Data` 表）落缓存，相对 next 对页 URL
+      按 RFC 3986 解析（`url` 进 workspace 依赖，随 ureq 已在树）、
+      已访问集去重（回环定错）、硬上限 1000 页；首响应无 next 时字节
+      原样返回——单 GET 契约逐字节不变。限流协商：429 带可解析
+      `Retry-After`（delta-seconds 或 RFC 7231 IMF-fixdate，civil →
+      纪元秒走 `days_from_civil` 不引日期库）且 ≤ 30s（`MAX_RATE_LIMIT_WAIT`）
+      时按服务器要求时长退避重试（`FetchFailure::RateLimited` +
+      `RetryClassify::cooldown`，与传输类共用 attempts 预算；`is_transport`
+      更名 `is_retryable`），缺失 / 不可解析 / 超上限即时 `Status(429)`
+      定错不睡长等。`http_get_full` 增 `Link` 头透出（`http_get` 签名
+      不变，registry / sheets 零改动）；分页违规与限流定错不参与离线
+      回退（服务器已应答，与 404/401/403 同列）。验收达成：cage-core
+      单测 ×5（Retry-After 双形态与垃圾值表、HTTP-date 已知纪元锚
+      1970/2015/2020 闰日/2030、冷却映射与可重试分类、限流同一预算）
+      + cage-source-http 单测 ×7 新增（双页合并与缓存合并字节、非数组
+      页定错点名页 URL、回环、页界 enforce 小界注入、限流退避成功、
+      超上限即时定错、无头定错）+ RFC 8288 解析单测 + CLI 集成 ×1
+      （分页源端到端构建 → 两页行全落 → 缓存 = 合并数组 → 同态重建
+      manifest 逐字节一致）+ design §45 S7 决策记录（分页协议选型 /
+      限流协商 / 回退边界）+ source.md / validation.md E1901 行同步
+      ——本轮交付，勾选
 
 ### A 系列：Artifact Distribution（2026-10 立项，design §47）
 

@@ -589,7 +589,7 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 
 | 代码 | 含义 |
 | --- | --- |
-| `E1901` | 远端取数失败：网络 / DNS / 超时（有界重试用尽）、404 或其他非认证错误状态、非规范 gsheet spec / 非法 spreadsheet id（HTTP / Sheets 源已接线）；DB 连接 / DSN 非法 / 会话只读 pin 失败 / 语句执行失败（DB 源已接线） |
+| `E1901` | 远端取数失败：网络 / DNS / 超时（有界重试用尽）、404 或其他非认证错误状态、429 无 `Retry-After` / 不可解析 / 超过 30s 上限或限流重试用尽、分页契约违规（非数组页 / 回环 / 超 1000 页 / 坏 next 链接）、非规范 gsheet spec / 非法 spreadsheet id（HTTP / Sheets 源已接线）；DB 连接 / DSN 非法 / 会话只读 pin 失败 / 语句执行失败（DB 源已接线） |
 | `E1902` | 远端认证 / 授权被拒（HTTP 401 / 403）（HTTP / Sheets 源已接线） |
 | `E1903` | 远端响应形状不合法：Sheets 响应非行集 / 空表头 / majorDimension 非 ROWS（Sheets 源形状门已接线） |
 | `E1904` | 凭据缺失：`[remote.<scheme>].dsn_env` / `[remote.gsheets].credential_env` 未声明，或声明的 env 未设置 / 为空（DB / Sheets 源已接线） |

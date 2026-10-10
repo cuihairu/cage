@@ -12,6 +12,10 @@ description = "HTTP API source adapter for Cage"
 [dependencies]
 cage-core = { path = "../cage-core" }
 cage-source-json = { path = "../cage-source-json" }
+# §45 pagination: page bodies are JSON arrays merged in link order
+serde_json = { workspace = true }
+# RFC 3986 resolution of `Link: rel="next"` targets against the page URL
+url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

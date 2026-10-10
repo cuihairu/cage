@@ -14,6 +14,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Cap on honoring a server-sent `Retry-After` (HTTP 429): waits up to
+/// this long are honored verbatim (rate-limit negotiation — the server
+/// said when to come back), longer asks are refused immediately as a
+/// definitive failure — a build must not stall for an hour on one
+/// source. Absent or unparseable headers are never guessed at.
+pub const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(30);
+
 /// Deterministic local cache key for a remote root or source URL: the
 /// first 12 hex chars of the URL's blake3. Pure — every consumer derives
 /// the same key for the same URL, so one root maps to one cache slot and
@@ -57,12 +64,17 @@ pub fn source_cache_fallback(cache_file: &Path, context: &str, strict: bool) -> 
 
 /// One failed HTTP GET, kind-tagged so callers attach the right error
 /// code: transport failures are retried and map to "fetch failed"
-/// (E1901 for sources, E1802 for the registry), 401/403 map to "auth
-/// rejected" (E1902), any other status is a definitive failure.
+/// (E1901 for sources, E1802 for the registry), a 429 with an
+/// honorable `Retry-After` is retried after that wait, 401/403 map to
+/// "auth rejected" (E1902), any other status is a definitive failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchFailure {
     /// Connection / DNS / timeout / broken response body — retryable
     Transport(String),
+    /// HTTP 429 whose `Retry-After` the policy honors (present,
+    /// parseable, within [`MAX_RATE_LIMIT_WAIT`]) — retryable after
+    /// exactly that wait. A 429 without one stays `Status(429)`.
+    RateLimited(Duration),
     /// HTTP 404 — the resource does not exist on the server
     NotFound(String),
     /// Any other HTTP status (401/403 among them)
@@ -73,6 +85,13 @@ impl std::fmt::Display for FetchFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FetchFailure::Transport(e) => write!(f, "transport failure: {e}"),
+            FetchFailure::RateLimited(wait) => {
+                write!(
+                    f,
+                    "rate limited, server asked to retry after {}s",
+                    wait.as_secs()
+                )
+            }
             FetchFailure::NotFound(url) => write!(f, "not found: {url}"),
             FetchFailure::Status(code) => write!(f, "http status {code}"),
         }
@@ -99,31 +118,50 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Which failures of a network call are transport-class (retryable under
-/// [`RetryPolicy`]) versus definitive server answers. `FetchFailure` (GET)
-/// and `PutFailure` (PUT) both classify their `Transport` variant.
+/// Which failures of a network call are retryable under [`RetryPolicy`]
+/// versus definitive server answers, and what to wait between tries.
+/// `FetchFailure` (GET) and `PutFailure` (PUT) both classify their
+/// `Transport` variant; only GET also carries a rate-limit cooldown.
 pub trait RetryClassify {
-    /// `true` for connection / DNS / timeout-class failures
-    fn is_transport(&self) -> bool;
+    /// `true` for failures a later try may still satisfy — connection /
+    /// DNS / timeout-class, or a rate limit whose asked wait is honored
+    fn is_retryable(&self) -> bool;
+    /// Sleep before the next try; `None` falls back to the policy's
+    /// fixed backoff (transport flake), `Some(d)` honors a server
+    /// negotiation (`Retry-After`) instead
+    fn cooldown(&self) -> Option<Duration>;
 }
 
 impl RetryClassify for FetchFailure {
-    fn is_transport(&self) -> bool {
-        matches!(self, FetchFailure::Transport(_))
+    fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            FetchFailure::Transport(_) | FetchFailure::RateLimited(_)
+        )
+    }
+    fn cooldown(&self) -> Option<Duration> {
+        match self {
+            FetchFailure::RateLimited(wait) => Some(*wait),
+            _ => None,
+        }
     }
 }
 
 impl RetryClassify for PutFailure {
-    fn is_transport(&self) -> bool {
+    fn is_retryable(&self) -> bool {
         matches!(self, PutFailure::Transport(_))
+    }
+    fn cooldown(&self) -> Option<Duration> {
+        None
     }
 }
 
-/// Run `fetch` under `policy`: transport failures are retried with the
-/// backoff, success and every other failure return immediately. When the
-/// budget runs out the last transport error wins. Generic over the failure
-/// type — GET and PUT share the one policy while keeping their own
-/// failure kinds.
+/// Run `fetch` under `policy`: retryable failures are retried — with the
+/// failure's negotiated cooldown when it has one, the fixed backoff
+/// otherwise — success and every other failure return immediately. When
+/// the budget runs out the last retryable error wins. Generic over the
+/// failure type — GET and PUT share the one policy while keeping their
+/// own failure kinds.
 pub fn with_retries<T, E: RetryClassify>(
     policy: &RetryPolicy,
     mut fetch: impl FnMut() -> Result<T, E>,
@@ -132,10 +170,11 @@ pub fn with_retries<T, E: RetryClassify>(
     for attempt in 0..policy.attempts {
         match fetch() {
             Ok(value) => return Ok(value),
-            Err(e) if e.is_transport() => {
+            Err(e) if e.is_retryable() => {
+                let wait = e.cooldown().unwrap_or(policy.backoff);
                 last = Some(e);
                 if attempt + 1 < policy.attempts {
-                    std::thread::sleep(policy.backoff);
+                    std::thread::sleep(wait);
                 }
             }
             Err(other) => return Err(other),
@@ -148,28 +187,148 @@ pub fn with_retries<T, E: RetryClassify>(
 
 /// GET one URL, returning the response body bytes. Bounded retries on
 /// transport-level flake (a busy server must not fail a build over a
-/// refused/reset connection); 404s and other statuses are definitive —
-/// no retry. The network layer lives here so every consumer shares one
-/// policy; callers only map the failure to their own error code.
+/// refused/reset connection) and on a 429 whose `Retry-After` the policy
+/// honors; 404s, 401/403 and other statuses are definitive — no retry.
+/// The network layer lives here so every consumer shares one policy;
+/// callers only map the failure to their own error code.
 pub fn http_get(url: &str) -> Result<Vec<u8>, FetchFailure> {
-    with_retries(&RetryPolicy::default(), || http_get_once(url))
+    http_get_full(url).map(|response| response.body)
 }
 
-fn http_get_once(url: &str) -> Result<Vec<u8>, FetchFailure> {
+/// One successful GET: the body bytes plus the response headers the
+/// pagination consumer needs (design §45 — `Link` per RFC 8288; the
+/// source adapter resolves `rel="next"` from it, other consumers ignore
+/// it). Everything else about the response stays inside this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpGet {
+    /// The response body bytes
+    pub body: Vec<u8>,
+    /// Raw `Link` response header value when the server sent one
+    pub link: Option<String>,
+}
+
+/// [`http_get`] with the `Link` response header surfaced.
+pub fn http_get_full(url: &str) -> Result<HttpGet, FetchFailure> {
+    with_retries(&RetryPolicy::default(), || http_get_once_full(url))
+}
+
+fn http_get_once_full(url: &str) -> Result<HttpGet, FetchFailure> {
     let response = ureq::get(url)
         .timeout(Duration::from_secs(30))
         .call()
         .map_err(|e| match e {
             ureq::Error::Status(404, _) => FetchFailure::NotFound(url.to_string()),
+            ureq::Error::Status(429, response) => rate_limited(&response),
             ureq::Error::Status(code, _) => FetchFailure::Status(code),
             ureq::Error::Transport(t) => FetchFailure::Transport(t.to_string()),
         })?;
+    let link = response.header("Link").map(str::to_string);
     let mut bytes = Vec::new();
     response
         .into_reader()
         .read_to_end(&mut bytes)
         .map_err(|e| FetchFailure::Transport(format!("reading {url}: {e}")))?;
-    Ok(bytes)
+    Ok(HttpGet { body: bytes, link })
+}
+
+/// 429 → retryable only when the asked wait is one the policy honors:
+/// `Retry-After` present, parseable (delta-seconds or HTTP-date) and
+/// within [`MAX_RATE_LIMIT_WAIT`]. Anything else — header absent,
+/// garbage, or asking more than the cap — is a definitive `Status(429)`
+/// answer: no guessing, and a build must not stall for an hour.
+fn rate_limited(response: &ureq::Response) -> FetchFailure {
+    let asked = response
+        .header("Retry-After")
+        .and_then(|value| parse_retry_after(value, now_unix()));
+    match asked {
+        Some(wait) if wait <= MAX_RATE_LIMIT_WAIT => FetchFailure::RateLimited(wait),
+        _ => FetchFailure::Status(429),
+    }
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Parse a `Retry-After` header value (RFC 7231): delta-seconds
+/// (`120`) or an IMF-fixdate HTTP-date (`Wed, 21 Oct 2015 07:28:00
+/// GMT`). Returns the wait counted from `now`; dates in the past yield
+/// `ZERO` (retry immediately), unparseable values yield `None` — the
+/// wait is never guessed at.
+pub fn parse_retry_after(value: &str, now: u64) -> Option<Duration> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    let at = parse_http_date(value)?;
+    Some(Duration::from_secs(at.saturating_sub(now)))
+}
+
+/// Parse one IMF-fixdate (`Wed, 21 Oct 2015 07:28:00 GMT`) to Unix
+/// seconds — the only date form servers send for `Retry-After` in
+/// practice. RFC 7231's two obsolete formats are out of scope.
+fn parse_http_date(value: &str) -> Option<u64> {
+    let mut parts = value.split_whitespace();
+    let _weekday = parts.next()?;
+    let day: u32 = parts.next()?.parse().ok()?;
+    let month = month_from_name(parts.next()?)?;
+    let year: i64 = parts.next()?.parse().ok()?;
+    let mut clock = parts.next()?.split(':');
+    let hour: i64 = clock.next()?.parse().ok()?;
+    let minute: i64 = clock.next()?.parse().ok()?;
+    let second: i64 = clock.next()?.parse().ok()?;
+    if parts.next() != Some("GMT") {
+        return None;
+    }
+    if !(1..=31).contains(&day)
+        || !(1..=12).contains(&month)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some((days * 86_400 + hour * 3_600 + minute * 60 + second) as u64)
+}
+
+/// Month name → month number (1..=12), English abbreviations and full
+/// names alike — HTTP only ever uses the three-letter form, but the
+/// check costs nothing extra.
+fn month_from_name(name: &str) -> Option<u32> {
+    let month = match name {
+        "Jan" | "January" => 1,
+        "Feb" | "February" => 2,
+        "Mar" | "March" => 3,
+        "Apr" | "April" => 4,
+        "May" => 5,
+        "Jun" | "June" => 6,
+        "Jul" | "July" => 7,
+        "Aug" | "August" => 8,
+        "Sep" | "September" => 9,
+        "Oct" | "October" => 10,
+        "Nov" | "November" => 11,
+        "Dec" | "December" => 12,
+        _ => return None,
+    };
+    Some(month)
+}
+
+/// Days since 1970-01-01 for a proleptic-Gregorian civil date
+/// (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (i64::from(month) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// One failed HTTP PUT, kind-tagged for the distribution write path (§47
@@ -325,5 +484,112 @@ mod tests {
         );
         assert!(out.is_err());
         assert_eq!(calls, 1, "404 is definitive — no retry");
+    }
+
+    /// A rate limit with an honorable wait is retried — after the
+    /// server's asked cooldown, not the fixed backoff — within the same
+    /// attempts budget.
+    #[test]
+    fn with_retries_honors_rate_limit_cooldown() {
+        let mut calls = 0u32;
+        let out: Result<(), _> = with_retries(
+            &RetryPolicy {
+                attempts: 3,
+                backoff: Duration::ZERO,
+            },
+            || {
+                calls += 1;
+                Err(FetchFailure::RateLimited(Duration::ZERO))
+            },
+        );
+        assert_eq!(
+            out,
+            Err(FetchFailure::RateLimited(Duration::ZERO)),
+            "budget exhausted → the last rate-limit answer wins"
+        );
+        assert_eq!(calls, 3, "the rate limit consumes the same budget");
+    }
+
+    #[test]
+    fn cooldown_is_negotiated_for_rate_limits_backoff_for_transport() {
+        let wait = Duration::from_secs(7);
+        assert_eq!(
+            FetchFailure::RateLimited(wait).cooldown(),
+            Some(wait),
+            "the server's wait is the cooldown"
+        );
+        assert_eq!(
+            FetchFailure::Transport("reset".to_string()).cooldown(),
+            None,
+            "transport falls back to the policy backoff"
+        );
+        assert_eq!(FetchFailure::NotFound("u".to_string()).cooldown(), None);
+        assert!(FetchFailure::RateLimited(wait).is_retryable());
+        assert!(!FetchFailure::Status(429).is_retryable());
+        assert!(!PutFailure::WriteRefused(405).is_retryable());
+    }
+
+    #[test]
+    fn parse_retry_after_reads_delta_seconds_and_dates() {
+        let instant = 1_445_412_480u64; // 2015-10-21 07:28:00 GMT
+        assert_eq!(
+            parse_retry_after("120", instant),
+            Some(Duration::from_secs(120)),
+            "delta-seconds form"
+        );
+        assert_eq!(
+            parse_retry_after(" 0 ", instant),
+            Some(Duration::ZERO),
+            "zero asks to retry immediately"
+        );
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT", instant),
+            Some(Duration::ZERO),
+            "a date at `now` yields no wait"
+        );
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2015 07:28:10 GMT", instant),
+            Some(Duration::from_secs(10)),
+            "a future date yields the difference"
+        );
+        assert_eq!(
+            parse_retry_after("Tue, 20 Oct 2015 07:28:00 GMT", instant),
+            Some(Duration::ZERO),
+            "a past date never goes negative"
+        );
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2015 07:28:00 PST", instant),
+            None,
+            "only GMT is accepted"
+        );
+        for garbage in [
+            "",
+            "soon",
+            "-5",
+            "Wed, 21 Oct 2015",
+            "32 Oc 2015 07:28:00 GMT",
+        ] {
+            assert_eq!(parse_retry_after(garbage, instant), None, "{garbage}");
+        }
+    }
+
+    #[test]
+    fn parse_http_date_matches_known_epochs() {
+        assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(
+            parse_http_date("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(1_445_412_480)
+        );
+        assert_eq!(
+            parse_http_date("Tue, 01 Jan 2030 00:00:00 GMT"),
+            Some(1_893_456_000),
+            "leap years between epochs are counted correctly"
+        );
+        assert_eq!(
+            parse_http_date("Sat, 29 Feb 2020 12:00:00 GMT"),
+            Some(1_582_977_600)
+        );
+        assert_eq!(parse_http_date("nope"), None);
+        assert_eq!(parse_http_date("Wed, 32 Oct 2015 07:28:00 GMT"), None);
     }
 }

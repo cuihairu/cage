@@ -48,6 +48,9 @@ regex = "1.10"
 clap = { version = "4.5", features = ["derive"] }
 tiny_http = "0.12"
 ureq = "2"
+# §45 HTTP source pagination: RFC 3986 relative-reference resolution for
+# `Link: rel="next"` targets (already in the tree via ureq)
+url = "2"
 console = "0.15"
 
 # Source adapters
