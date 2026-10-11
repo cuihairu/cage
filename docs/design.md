@@ -3025,3 +3025,94 @@ R3 已验证的同一约定）。
 **红线对齐**：三项都触碰「不做服务端产品 / 不持有云密钥 / 测试不可验证
 不进主干」中的一条，卡点判定与既有决策记录一致，不需要新的口径拍板——
 本批只做登记，把「解除卡点条件」写明，便于后续有输入时直接立项。
+
+---
+
+# 50. 资产体系（Asset Governance，2026-10-11 用户拍板）
+
+用户定调：Schema、校验规则、枚举定义、跨表约束都是**正式资产**——
+纳入版本管理、异地保存、历史复现与灾难恢复四层防线，但不为备份建
+大型资产管理平台。cage 原生要补三项能力：**资产清单**（项目由哪些
+资产构成，逐一可哈希）、**版本化构建**（构建引用明确的资产版本）、
+**完整性验证与恢复**（缺失 / 篡改可检，历史可找回）。
+
+## 资产四分类 × cage 现状的逐项对账
+
+| 资产类 | 用户口径 | cage 落点 | 现状 |
+| --- | --- | --- | --- |
+| 源数据资产 | 策划维护的数据本体 | `[source_roots]` 指向的目录（config/ 下的 xlsx/csv/json/yaml/msgpack） | 已版本化（随 Git 走）；哈希锚进 `source_hash`（build_id 可见旋转） |
+| 规则资产 | Schema / 枚举 / 校验规则 / 跨表约束 | `schema_path` 指向的 schema 文件集 | 已版本化；**枚举 / 约束 / 引用 / 业务规则内嵌 schema 文件**，无独立 rules/ 目录 |
+| 构建规则资产 | 目标平台 / 输出格式 / 字段映射 | `cage.toml`（profiles / targets / registry / remote）+ `migrations/` 声明式迁移链 | 已版本化 |
+| 产物与追溯记录 | 可交付、可复现、可核对 | `build/`（可重建）+ snapshot/（自校验冻结：manifest + schema 投影 + 产物 + HASHES.json）+ registry 条目（字节不可变，E1801）+ 离线 bundle（`.tar[.zst]` + `.sig` ed25519 签名，A6） | 全部已交付 |
+
+两个目录学裁定（对应「目录名可以按 cage 实现调整，不为套结构重构」）：
+
+- **rules/ 不设独立目录**：cage 的规则事实源就是 schema 文件——枚举
+  在 `enums:`、约束在字段上、引用在 `references`、业务规则在
+  `rules` / gamerule 插件注册。拆一份 `rules/` 出来等于两份账（哪份
+  是事实源？），违背「Schema 是唯一事实源」的既定原则。用户口径里的
+  「规则资产」= `schema_path` 全集 + `migrations/`。
+- **cage.yaml/cage.lock 不改名**：项目入口是 `cage.toml`（含全部构建
+  规则）；「锁定依赖与规则版本」由注册表的**版本 pin + 条目字节不可
+  变**承担（`[dependencies]` 区间 pin、E1801 拒覆盖、条目永不改写
+  ——这比 lock 文件更强：锁的不是版本号字符串，是内容哈希）。
+
+## 备份策略口径（四层防线，cage 只做前两层的工具面）
+
+1. **Git 管版本**：规则资产 + 源数据资产 + 构建规则资产全部随仓走
+   （评审 / diff / 回滚按普通代码对待）。Excel 是二进制——Git 存历史
+   没问题，单元格级 diff 不是 Git 的活（LFS 等留待真实痛点，不预建）。
+2. **远程仓库管异地**：GitHub / 自建 Git 保存远程副本。
+3. **发布快照管历史复现**：`cage snapshot`（自校验冻结视图）+
+   `cage registry publish`（不可变条目）回答「当时用了哪版规则、
+   编出了什么」——manifest 里 build_id / cage_version / schema_hash /
+   source_hash / 逐产物哈希已全数在册。
+4. **独立备份管灾难恢复**：`cage registry export` 的 bundle + `.sig`
+   是自校验离线件（导入时重过账本信任门），拷到另一台机器 / 独立存储
+   即灾备件。**GitHub 不是灾难恢复**（误删 / 账号被盗 / 服务不可用），
+   第 4 层不可省。
+
+**恢复演练 = 备份闭环的验收**：定期从 bundle 恢复到干净目录
+（`registry import` → `verify`）+ 从快照重建 diff 字节（确定性契约
+保证同输入同字节，diff 为空即复现成立）。完整示例见
+`examples/asset-workspace/`（一键 `examples/asset-workspace.sh`）。
+
+## cage 原生能力落点
+
+- **资产清单 → 新命令 `cage assets`**（B1）：盘点项目的规则 / 源数据 /
+  构建规则三类资产——schema 全集 + migrations/ + `[source_roots]`
+  文件集 + cage.toml，逐项 blake3（全仓哈希口径一致）+ 大小 + 类别；
+  确定性排序与渲染；`--json` 机读；`--write <file>` 落清单文件
+  （随 Git 提交 = 备份的基线）；`--check <file>` 对现树复核——缺失 /
+  篡改 / 多余（未登记新文件）逐项点名，任何一项不符退出码 1。
+- **版本化构建 → 已有**：manifest 记 build_id / cage_version /
+  schema_hash / source_hash / content_hash / 逐产物哈希 + 快照冻结。
+- **完整性验证与恢复 → 已有 + 补**：`cage build --verify` /
+  snapshot HASHES.json 回验 / `registry verify` 全册审计为存量；
+  `cage assets --check` 补「源侧资产」一环（存量验证都锚在构建产物
+  与注册表上，源侧资产此前没有原生核对命令）。
+
+## git commit 不进 manifest（确定性契约裁定）
+
+manifest / snapshot 的确定性契约是「同输入 → 同字节」（快照目录名
+= profile + build_id，重跑逐字节覆盖同一目录）。git commit 是**历史
+坐标不是内容**：同一份内容在不同 commit 上重跑（cherry-pick、rebase、
+双仓镜像）会产生不同 manifest 字节，打破逐字节复现断言。因此：
+
+- 编译器不读 git、manifest 不记 commit；
+- commit 追溯由**流程**承担：发布工作流把 `git rev-parse HEAD` 记在
+  bundle 旁（`<bundle>.commit` 纯文本，与 `.sig` 同为 sidecar 家族），
+  快照目录名里的 build_id 本身就是内容指纹——「commit + build_id」
+  双钥即可找回任何历史；
+- 谁需要机器可读的 provenance，谁在工作流里生成（CI job 天然知道
+  commit），cage 不越俎代庖。
+
+## 边界（不做清单）
+
+- 不做资产管理平台 / 备份调度器 / 备份轮转策略引擎（cron 与对象存储
+  生命周期是运维的事）；
+- 不做 Git LFS 集成 / 二进制 diff（真实大表痛点出现前不预建）；
+- 不做服务端（红线复述：快照 / bundle / registry 协议全部静态托管
+  友好）；
+- `.cage-cache/` 与 `build/` 不入常规备份（可重建；快照与 bundle 才
+  是备份件）。

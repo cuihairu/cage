@@ -1211,3 +1211,31 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       托管凭据与 scope 授权；连接池并发需真实 MySQL/PG 压测。三者均
       触碰「不做服务端产品 / 不持有云密钥 / 测试不可验证不进主干」
       红线之一，解除卡点条件已写明（design §49 末段）。
+
+### B 系列：资产体系（2026-10-11 用户拍板，design §50）
+形态定稿：四类资产（源数据 / 规则 / 构建规则 / 产物与追溯）全部入
+版本管理 + 异地副本 + 历史快照 + 独立备份四层防线；cage 原生补
+「资产清单」命令（版本化构建与完整性验证存量已覆盖：manifest / 快照
+账本 / registry verify / bundle 签名）。目录学两裁定：rules/ 不设独立
+目录（规则事实源 = schema 文件集 + migrations/，拆目录即两份账）；
+cage.yaml/cage.lock 不改名（cage.toml 已是入口，版本锁定由注册表
+版本 pin + 条目字节不可变承担——锁内容哈希强于锁版本号）。git commit
+不进 manifest（同输入同字节的确定性契约；commit 是历史不是内容），
+由发布工作流记 `<bundle>.commit` sidecar。不做：资产管理平台 / 备份
+调度器 / LFS / 服务端。
+- [x] B0 决策记录（design §50：四分类对账 / 备份四层防线 / 三能力
+      落点 / git commit 裁定 / 不做清单）——本轮交付，勾选
+- [ ] B1 `cage assets` 资产清单命令：core 盘点函数（schema 全集 +
+      migrations/ + source_roots 文件集 + cage.toml，逐项 blake3 +
+      大小 + 类别，确定性排序）+ CLI 子命令（文本 / `--json` /
+      `--write <file>` 落基线 / `--check <file>` 复核缺失篡改多余，
+      退出码 1）+ 单测与 CLI 集成测试
+- [ ] B2 完整示例 `examples/asset-workspace/`：四类资产俱全的最小
+      工程（sources/ / schemas/ / migrations/ / cage.toml）+
+      `examples/asset-workspace.sh` 资产生命周期一键跑通（盘点 →
+      基线 → check → build 双 profile → snapshot → registry publish →
+      export 签名 bundle + commit sidecar → 恢复演练：干净目录
+      import + verify + 快照重建 diff 字节）+ README（分类 ↔ 目录
+      映射 + 备份四层防线 + 演练步骤）+ CI 防烂腿 job
+- [ ] B3 文档收口：docs/assets.md 补「资产分类与备份策略」节（链接
+      示例）、docs/cli.md 命令表加 assets、docs/index.md 特性行
