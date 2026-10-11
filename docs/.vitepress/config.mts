@@ -2,6 +2,29 @@ import { defineConfig } from 'vitepress'
 
 // Cage 文档站：设计稿（docs/design.md）+ 需求整理（docs/需求整理.md）拆分为七个栏目页。
 // 原始底稿保留在 docs/ 下不入站（srcExclude），站内为拆分后的栏目内容。
+
+// ```mermaid 围栏 → <MermaidDiagram> 组件（theme/Mermaid.vue 客户端渲染）。
+// 实体转义走 HTML 属性语义：静态属性、无插值，源码原样进组件。
+function escapeAttr(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function renderMermaidFences(md) {
+  const original = md.renderer.rules.fence
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    if (token.info.trim() !== 'mermaid') {
+      return original(tokens, idx, options, env, self)
+    }
+    const code = escapeAttr(token.content.trim())
+    return `<ClientOnly><MermaidDiagram code="${code}" /></ClientOnly>\n`
+  }
+}
+
 export default defineConfig({
   lang: 'zh-CN',
   title: 'Cage',
@@ -9,6 +32,12 @@ export default defineConfig({
   base: '/cage/',
   cleanUrls: true,
   lastUpdated: true,
+
+  markdown: {
+    config(md) {
+      renderMermaidFences(md)
+    },
+  },
 
   // favicon 不走自动 base，写全路径；导航 logo 见 themeConfig.logo（自动加 base）
   head: [

@@ -110,3 +110,19 @@ code {
   --vp-home-hero-name-background: transparent;
 }
 
+
+/* Mermaid 图表：居中、按宽度缩放；渲染失败回退块沿用普通代码块观感 */
+.mermaid-diagram {
+  display: flex;
+  justify-content: center;
+  padding: 1rem 0;
+}
+
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-fallback {
+  border-left: 3px solid var(--vp-c-danger-1);
+}

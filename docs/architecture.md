@@ -4,47 +4,28 @@ Cage 解决的问题不是「Excel 转 JSON」，而是：**如何将游戏开�
 
 核心流程：
 
-```text
-Authoring Sources
-       |
-       v
-+------------------+
-|  Source Adapters |
-+--------+---------+
-         |
-         v
-+------------------+
-| Canonical Model  |
-+--------+---------+
-         |
-         v
-+--------------------------+
-| Validation Pipeline      |
-|                          |
-| Syntax / Schema / Type   |
-| Value / Table / Reference|
-| Semantic / Game Rules    |
-+------------+-------------+
-             |
-             v
-+------------------+
-| Normalize / IR   |
-+--------+---------+
-         |
-         v
-+------------------+
-| Target Generators|
-+--------+---------+
-         |
-    +----+----+--------+
-    |    |    |        |
-   JSON CSV  C#       Lua
-             Python   Protobuf
-             ...
+```mermaid
+flowchart TD
+    A["Authoring Sources<br/>Excel · CSV · JSON · YAML · MySQL / PostgreSQL · HTTP · Google Sheets"]
+    B[Source Adapters]
+    C[Canonical Model]
+    D["Validation Pipeline<br/>L0 Syntax · L1 Schema · L2 Type · L3 Value<br/>L4 Table · L5 Reference · L6 Semantic · L7 Game Rules"]
+    E[Normalize / IR]
+    F[Target Generators]
+    G1["数据产物<br/>JSON · CSV · MsgPack"]
+    G2["代码绑定<br/>C# · Python · Lua · TS · JS"]
+    G3["代码绑定<br/>C++ · Go · Java"]
+    G4["契约与模板<br/>Protobuf Schema · JSON Schema · Template"]
+    A --> B --> C --> D --> E --> F
+    F --> G1
+    F --> G2
+    F --> G3
+    F --> G4
 ```
 
-图中 Protobuf 为规划项；当前已实装 JSON / CSV 数据产物、C# / Python /
-Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template
+全部 13 类 target 已实装：JSON / CSV / MsgPack 数据产物、C# / Python /
+Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定、Protobuf
+Schema 定义生成（`.proto`，不做 wire 编码）与 JSON Schema、Template
 Target（Tera 用户自定义模板）。
 
 ## 为什么需要 Cage
@@ -62,28 +43,22 @@ Target（Tera 用户自定义模板）。
 
 不同角色需要不同的表达形式。例如同一份 Item 配置：
 
-```text
-策划：
-    Excel
-
-客户端：
-    JSON / CSV / C#
-
-服务端：
-    JSON / CSV / Lua / Python
-
-工具：
-    JSON / SQLite / Binary
-```
+| 角色 | 需要的表达形式 |
+| ---- | -------------- |
+| 策划 | Excel |
+| 客户端 | JSON / CSV / C# |
+| 服务端 | JSON / CSV / Lua / Python |
+| 工具 | JSON / SQLite / Binary |
 
 如果没有统一的配置构建系统，项目很容易演变成：
 
-```text
-Excel -> Python Script
-Excel -> C# Script
-Excel -> Lua Script
-Excel -> JSON Script
-Excel -> CSV Script
+```mermaid
+flowchart LR
+    E[Excel] --> S1[Python Script]
+    E --> S2[C# Script]
+    E --> S3[Lua Script]
+    E --> S4[JSON Script]
+    E --> S5[CSV Script]
 ```
 
 然后每个脚本：
@@ -111,13 +86,9 @@ Cage 的目标就是把这条链统一起来。
 
 Cage 将配置系统划分为六个核心概念：
 
-```text
-Source
-Schema
-Model
-Validation
-Transform
-Artifact
+```mermaid
+flowchart LR
+    S[Source] --> SC[Schema] --> M[Model] --> V[Validation] --> T[Transform] --> A[Artifact]
 ```
 
 ### Source
@@ -160,39 +131,21 @@ Schema 定义：字段、类型、必填、默认值、范围、枚举、数组�
 
 所有 Source 都应该进入统一的中间模型：
 
-```text
-Excel
-JSON
-YAML
-CSV
-SQLite
-       |
-       v
-Canonical Model
+```mermaid
+flowchart TD
+    X1[Excel] --> M[Canonical Model]
+    X2[JSON] --> M
+    X3[YAML] --> M
+    X4[CSV] --> M
+    X5[SQLite] --> M
 ```
 
 Canonical Model 不应该直接等同于 JSON。推荐基本类型：
+`Null` / `Bool` / `Int` / `UInt` / `Float` / `String` / `Bytes` /
+`Array` / `Object`。
 
-```text
-Null
-Bool
-Int
-UInt
-Float
-String
-Bytes
-Array
-Object
-```
-
-并携带：
-
-```text
-Source Location
-Schema Information
-Type Information
-Metadata
-```
+并携带四类标注信息：Source Location（源定位）、Schema Information
+（结构信息）、Type Information（类型信息）、Metadata（元数据）。
 
 这样可以做到：
 
@@ -274,18 +227,33 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 
 Cage 的核心应该尽量稳定：
 
-```text
-                    Cage Core
-                       |
-       +---------------+----------------+
-       |               |                |
- Source Plugins   Validator Plugins   Target Plugins
-       |               |                |
-     Excel          SkillValidator      JSON
-     CSV            QuestValidator      CSV
-     YAML           MonsterValidator    C#
-     JSON                                Python
-                                         Lua
+```mermaid
+flowchart TB
+    CORE[Cage Core]
+    CORE --> SP
+    CORE --> VP
+    CORE --> TP
+    subgraph SP[Source Plugins]
+        direction TB
+        SP1[Excel]
+        SP2[CSV]
+        SP3[YAML]
+        SP4[JSON]
+    end
+    subgraph VP[Validator Plugins]
+        direction TB
+        VP1[SkillValidator]
+        VP2[QuestValidator]
+        VP3[MonsterValidator]
+    end
+    subgraph TP[Target Plugins]
+        direction TB
+        TP1[JSON]
+        TP2[CSV]
+        TP3[C#]
+        TP4[Python]
+        TP5[Lua]
+    end
 ```
 
 这样第三方可以扩展 Cage，而无需修改 Core。
@@ -335,24 +303,16 @@ cage/
 │   ├── cage-target-java/    # Java 代码绑定
 │   ├── cage-target-template/  # Tera 模板引擎：官方随包模板 + 用户自定义模板
 │                            #   （format = "template"，G 系列，design §22）
-│   └── cage-cli/            # cage 命令行（check / build / gen / inspect / diff /
-│                            #   snapshot / web / registry / migrate，含远程注册表解析）
+│   └── cage-cli/            # cage 命令行（check / build / gen / inspect / assets /
+│                            #   diff / snapshot / web / registry / migrate，含远程注册表解析）
 ├── docs/                    # 本文档站（VitePress）
 └── .github/workflows/       # CI / 每日构建 / 文档部署
 ```
 
 ## 安全与隔离
 
-如果允许项目编写业务 Validator，需要注意：
-
-```text
-Validator
-    |
-    v
-可能执行任意代码
-```
-
-因此：
+如果允许项目编写业务 Validator，需要注意：Validator 是插件代码，
+意味着**可能执行任意代码**。因此：
 
 - 本地开发可以使用 Native Plugin
 - CI 可以考虑 Sandbox
@@ -389,43 +349,22 @@ Cage 可以验证业务规则，但不应该成为游戏服务器逻辑框架。
 
 普通 Converter：
 
-```text
-A -> B
+```mermaid
+flowchart LR
+    A[Source A] --> B[Output B]
 ```
 
 Cage：
 
-```text
-Source
-  |
-  v
-Parse
-  |
-  v
-Canonical Model
-  |
-  +--> Schema
-  |
-  +--> Type
-  |
-  +--> Constraint
-  |
-  +--> Reference
-  |
-  +--> Semantic
-  |
-  +--> Game Rules
-  |
-  v
-Validated Model
-  |
-  +--> JSON
-  +--> CSV
-  +--> C#
-  +--> Python
-  +--> Lua
-  +--> Protobuf
-  +--> ...
+```mermaid
+flowchart TD
+    S[Source] --> P[Parse] --> M[Canonical Model]
+    M --> V["校验层<br/>Schema · Type · Constraint · Reference<br/>Semantic · Game Rules"]
+    V --> VM[Validated Model]
+    VM --> O1[JSON]
+    VM --> O2[CSV]
+    VM --> O3["C# / Python / Lua"]
+    VM --> O4["Protobuf Schema / ..."]
 ```
 
 转换之外，Cage 建立的是一条配置编译链：校验、跨配置引用、规范化与确定性构建都在这条链上完成。
@@ -436,36 +375,25 @@ Cage 的命名来自赌场中的 **Cage / Cashier's Cage**。
 
 赌场中的 Cage 是：
 
-```text
-Cash
-  |
-  v
-Cage
-  |
-  +--> Verify
-  +--> Exchange
-  +--> Record
-  |
-  v
-Chips
+```mermaid
+flowchart TD
+    C[Cash] --> G[Cage]
+    G --> V[Verify]
+    G --> E[Exchange]
+    G --> R[Record]
+    G --> H[Chips]
 ```
 
 Cage：
 
-```text
-Authoring Data
-  |
-  v
-Cage
-  |
-  +--> Parse
-  +--> Validate
-  +--> Normalize
-  +--> Transform
-  +--> Audit
-  |
-  v
-Runtime Assets
+```mermaid
+flowchart TD
+    D[Authoring Data] --> C
+    subgraph C[Cage]
+        direction LR
+        P[Parse] --> V[Validate] --> N[Normalize] --> T[Transform] --> AU[Audit]
+    end
+    C --> R[Runtime Assets]
 ```
 
 所以它更像配置进入运行时世界之前的兑换与清算边界：
@@ -486,116 +414,56 @@ Runtime Assets
 
 ## 核心设计原则
 
-```text
- 1. 不绑定 Excel
- 2. Source 与 Target 解耦
- 3. 所有输入进入统一 Canonical Model
- 4. Validation 与 Transformation 分离
- 5. Schema 负责结构
- 6. Reference 负责跨配置关系
- 7. Semantic Rule 负责组合逻辑
- 8. Plugin Validator 负责复杂游戏业务
- 9. Target Generator 负责输出
+1. 不绑定 Excel
+2. Source 与 Target 解耦
+3. 所有输入进入统一 Canonical Model
+4. Validation 与 Transformation 分离
+5. Schema 负责结构
+6. Reference 负责跨配置关系
+7. Semantic Rule 负责组合逻辑
+8. Plugin Validator 负责复杂游戏业务
+9. Target Generator 负责输出
 10. Build 必须可重复
 11. Artifact 必须可追踪
 12. Diagnostics 必须精确到 Source Location
 13. Client / Server 使用 Profile，而不是硬编码
 14. Core 不绑定具体游戏引擎
 15. Excel 只是第一种 Source
-```
 
 ## 最终架构
 
-```text
-                             CAGE
-              Game Configuration Compiler
-                                  |
-       +--------------------------+--------------------------+
-       |                          |                          |
-       v                          v                          v
-  Authoring Sources           Schema / Rules             Profiles
-       |                          |                          |
-  +----+----+----+                |                    +-----+-----+
-  |    |    |    |                |                    |           |
-Excel CSV JSON YAML               |                 Client       Server
-  |    |    |    |                |                    |           |
-  +----+----+----+----------------+--------------------+-----------+
-                                  |
-                                  v
-                         +----------------+
-                         | Canonical IR   |
-                         +-------+--------+
-                                 |
-                                 v
-                      +-----------------------+
-                      | Validation Pipeline   |
-                      |                       |
-                      | Parse                 |
-                      | Schema                |
-                      | Type                  |
-                      | Value                 |
-                      | Table                 |
-                      | Reference             |
-                      | Semantic              |
-                      | Game Rules            |
-                      +-----------+-----------+
-                                  |
-                                  v
-                         Validated Model
-                                  |
-                    +-------------+-------------+
-                    |             |             |
-                    v             v             v
-                  JSON          CSV           Code
-                                              |
-                                      +-------+-------+
-                                      |       |       |
-                                     C#     Python   Lua
-                    |
-                    +-----------> Protobuf
-                    |
-                    +-----------> MsgPack
-                    |
-                    +-----------> Binary
-                                  |
-                                  v
-                           Runtime Artifacts
-                                  |
-                                  v
-                         Manifest / Hash / CI
+```mermaid
+flowchart TD
+    CAGE["CAGE — Game Configuration Compiler"]
+    CAGE --> AS[Authoring Sources]
+    CAGE --> SR[Schema / Rules]
+    CAGE --> PF[Profiles]
+    AS --> S1[Excel] & S2[CSV] & S3[JSON] & S4[YAML]
+    PF --> P1[Client] & P2[Server]
+    S1 & S2 & S3 & S4 & SR & P1 & P2 --> IR
+    IR[Canonical IR] --> VP["Validation Pipeline<br/>Parse · Schema · Type · Value · Table<br/>Reference · Semantic · Game Rules"]
+    VP --> VM[Validated Model]
+    VM --> O1[JSON] & O2[CSV] & O3["代码绑定<br/>C# / Python / Lua / ..."] & O4[MsgPack] & O5["Protobuf Schema"]
+    O1 & O2 & O3 & O4 & O5 --> RA[Runtime Artifacts]
+    RA --> MH["Manifest / Hash / CI"]
 ```
 
-图中 Protobuf / MsgPack / Binary 分支为规划项，不在当前 `format =` 支持
-范围内（构建会以 `unsupported target format` 退出码 2 拒绝）。
+二进制通用格式（`Binary`）仍为规划项，不在当前 `format =` 支持范围内
+（构建会以 `unsupported target format` 退出码 2 拒绝）；MsgPack 与
+Protobuf Schema 已实装。
 
 ## Source 与 Target 之外的 Core
 
-Cage 的核心抽象不是某一对格式之间的转换：
+Cage 的核心抽象不是某一对格式之间的转换（`Excel → JSON`），而是中间这条链：
 
-```text
-Excel -> JSON
+```mermaid
+flowchart TD
+    A[Any Source] --> M[Canonical Model] --> V[Validate Everything] --> VM[Validated Model] --> T[Any Target]
 ```
 
-而是中间这条链：
-
-```text
-                 Any Source
-                     |
-                     v
-               Canonical Model
-                     |
-                     v
-           Validate Everything
-                     |
-                     v
-              Validated Model
-                     |
-                     v
-               Any Target
-```
-
-Excel、CSV、YAML、JSON 只是 Source；JSON、CSV、C#、Python、Lua 只是
-已实装的 Target，Protobuf 等为规划项。
+Excel、CSV、YAML、JSON、MySQL / PostgreSQL、HTTP API、Google Sheets
+只是 Source；JSON、CSV、MsgPack、C#、Python、Lua、C++、Go、Java、
+Protobuf Schema、JSON Schema、Template 只是已实装的 Target。
 
 真正属于 Cage Core 的，是中间这部分：
 

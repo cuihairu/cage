@@ -1241,3 +1241,18 @@ cage.yaml/cage.lock 不改名（cage.toml 已是入口，版本锁定由注册�
       映射 + 备份四层防线 + 演练步骤）+ CI 防烂腿 job
 - [ ] B3 文档收口：docs/assets.md 补「资产分类与备份策略」节（链接
       示例）、docs/cli.md 命令表加 assets、docs/index.md 特性行
+
+### D 系列：文档站图表 Mermaid 化（2026-10-11 用户令，紧随 B2）
+用户令：cuihairu.github.io/cage/architecture 的 ASCII 图示应替换为
+专业图表。落法：vitepress-plugin-mermaid 与 VitePress 2 alpha 有
+peer 冲突，改只装 `mermaid` 依赖 + 自渲染（config.mts fence 钩子把
+```mermaid 围栏替换为 `<ClientOnly><MermaidDiagram>`，theme/Mermaid.vue
+客户端动态 import 渲染，MutationObserver 监听暗色切换重渲染，
+渲染失败回退源码块）。纯枚举块改表格 / 列表，目录树与错误定位示例
+保留代码块形态。
+- [x] D0 architecture.md 图示 Mermaid 化——本轮交付，勾选（11 张
+      flowchart：核心流程 / 反模式扇出 / 六概念 / Canonical Model /
+      插件模型 / Converter 对比 ×2 / Casino 隐喻 ×2 / 最终架构 /
+      Any Source-Any Target；顺带修正三处过期表述：13 类 target 已
+      实装、最终架构 MsgPack/Protobuf 已实装、目录树 cage-cli 注释
+      补 assets）
