@@ -1232,15 +1232,18 @@ cage.yaml/cage.lock 不改名（cage.toml 已是入口，版本锁定由注册�
       退出码 1）+ 单测与 CLI 集成测试——本轮交付，勾选（core
       `assets` 模块 6 单测 + `tests/assets.rs` 8 集成测试；远程 spec
       不盘点、`build/` `.cage-cache/` 永不入账已测）
-- [ ] B2 完整示例 `examples/asset-workspace/`：四类资产俱全的最小
+- [x] B2 完整示例 `examples/asset-workspace/`：四类资产俱全的最小
       工程（sources/ / schemas/ / migrations/ / cage.toml）+
       `examples/asset-workspace.sh` 资产生命周期一键跑通（盘点 →
       基线 → check → build 双 profile → snapshot → registry publish →
       export 签名 bundle + commit sidecar → 恢复演练：干净目录
       import + verify + 快照重建 diff 字节）+ README（分类 ↔ 目录
-      映射 + 备份四层防线 + 演练步骤）+ CI 防烂腿 job
-- [ ] B3 文档收口：docs/assets.md 补「资产分类与备份策略」节（链接
-      示例）、docs/cli.md 命令表加 assets、docs/index.md 特性行
+      映射 + 备份四层防线 + 演练步骤）+ CI 防烂腿 job——本轮交付，
+      勾选（8 步全绿：篡改 changed 点名 / server 视图 targets 剔除 /
+      恢复演练字节 diff 一致）
+- [x] B3 文档收口：docs/assets.md 补「资产分类与备份策略」节（链接
+      示例）、docs/cli.md 命令表加 assets、docs/index.md 特性行——
+      本轮交付，勾选
 
 ### D 系列：文档站图表 Mermaid 化（2026-10-11 用户令，紧随 B2）
 用户令：cuihairu.github.io/cage/architecture 的 ASCII 图示应替换为

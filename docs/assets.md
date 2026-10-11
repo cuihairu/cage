@@ -57,6 +57,54 @@ game = "0.1.0"                            # 版本 pin：构建期解析并校�
 是另一条「在线取数」路径（design §45），适合把尚未入库的系统数据接
 进编译链；两者的校验口径完全一致。
 
+## 资产分类与备份策略（design §50）
+
+按内容划分，cage 工程的资产分三类「输入资产」加一类「产物资产」：
+
+| 类 | 是什么 | 落点 | `cage assets` 类别 |
+| --- | --- | --- | --- |
+| 规则资产 | 数据应该长什么样：校验规则、枚举、跨表约束、迁移链 | `schemas/` + `migrations/` | `rule` |
+| 源数据资产 | 数据本身：策划填的表 | `[source_roots]` 指向的文件集 | `source` |
+| 构建规则 | 怎么构建：profiles / targets / registry | `cage.toml` | `build` |
+| 产物与追溯 | 当时编译出了什么、能不能复现 | `build/`、快照、registry 条目、bundle | （产物不入清单——可由前三类确定性重建） |
+
+两个裁定（design §50）：**rules/ 不设独立目录**——规则事实源就是
+schema 文件集 + 迁移链，拆目录等于维护两份账；**产物不入版本控制**——
+同输入必出同字节，入库只会制造伪差异（`.gitignore` 掉 `build/`）。
+
+### `cage assets`：资产清单
+
+```bash
+cage assets <project>                    # 文本清单：路径 / 类别 / blake3 / 大小
+cage assets <project> --json             # 同形 JSON
+cage assets <project> --write assets.json  # 基线随仓入库（提交进 Git）
+cage assets <project> --check assets.json  # 复核：缺失 / 篡改 / 多余逐条点名，退出码 1
+```
+
+三类输入资产逐文件 blake3、按路径确定性排序；远程 spec
+（`registry:` / `gsheet:` / `mysql:` / `pg:` / `http(s)://`）不盘点
+——它们是版本 pin 或带自有契约的远端，由 manifest 的 `dependencies` +
+`source_hash` 覆盖。`--check` 是发布前 / 恢复后的完整性门。
+
+### 备份四层防线
+
+| 层 | 手段 | 防什么 |
+| --- | --- | --- |
+| 1. Git 版本管理 | 源资产 + `assets.json` 基线逐提交入库 | 改坏可回退、改了什么可追溯 |
+| 2. 远程仓库异地 | push 到远端托管 | 本机磁盘故障 |
+| 3. 发布快照复现 | `cage snapshot` + `registry publish` + `registry export`（签名 bundle + `.commit` sidecar） | 需要精确找回「当时用了哪版规则、编译出了什么」 |
+| 4. 独立备份灾难恢复 | bundle 三件套送冷备 + 定期恢复演练 | 仓库托管整体不可用——**GitHub 不是灾难恢复** |
+
+**备份 ≠ 版本管理 ≠ 可复现构建**：备份救丢失，版本救回退，可复现救
+「为何与历史不一致」。commit 不进 manifest（确定性契约：同内容可在
+不同 commit 重现，commit 是历史不是内容），由发布工作流记
+`<bundle>.commit` sidecar。
+
+完整可跑的示范工程（盘点 → 基线 → 篡改复核 → 双 profile 构建 → 快照
+→ 发布 → 签名导出 → 干净目录恢复演练）见
+[`examples/asset-workspace/`](https://github.com/cuihairu/cage/tree/main/examples/asset-workspace)
+，一键跑通：`bash examples/asset-workspace.sh`。
+
 ## JSON Schema（标准）形态
 
 cage 的 schema 是自有 DSL（YAML，见 [Schema 文档](/schema)）——它是

@@ -7,6 +7,7 @@ cage check
 cage build
 cage gen
 cage inspect
+cage assets
 cage diff
 cage snapshot
 cage web
@@ -89,6 +90,27 @@ cage inspect config/ Item     # 项目路径必填；表名可选，省略时列
 ```
 
 查看 Schema 和配置结构。
+
+## assets
+
+```bash
+cage assets <project>                       # 文本清单：路径 / 类别 / blake3 / 大小
+cage assets <project> --json                # 同形 JSON（基线即此形态）
+cage assets <project> --write assets.json   # 基线落盘（随仓入库）
+cage assets <project> --check assets.json   # 对基线复核工作树
+```
+
+资产清单（design §50，详见 [资产 · 分类与备份策略](/assets#资产分类与备份策略-design-50)）：
+把工程的构建规则（`cage.toml`）、规则资产（`schema_path` 文件集 +
+`migrations/`）、源数据资产（`[source_roots]` 文件集）逐文件 blake3 +
+大小盘点，按路径确定性排序——同一棵树必出同一份清单。远程 spec
+（`registry:` / `gsheet:` / `mysql:` / `pg:` / `http(s)://`）不盘点，
+`build/`、`.cage-cache/` 等可重建目录永不入账。
+
+`--check` 复核三类问题并以退出码 1 失败：`missing`（基线有、树上无）、
+`changed`（路径同、哈希或大小不同）、`unlisted`（树上有、基线无）；
+基线工程名不符或文件不可解析则退出码 2。三种模式互斥（clap 冲突
+规则）。
 
 ## `--no-cache`：远程源离线回退开关
 

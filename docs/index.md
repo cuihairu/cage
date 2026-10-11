@@ -55,6 +55,7 @@ cage build config/ --profile client  # 验证并生成目标产物
 cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
 cage diff build/a build/b            # 比较两个配置版本
 cage inspect config/ Item            # 查看 Schema 与配置结构（项目路径必填，表名可选）
+cage assets config/ --write assets.json   # 资产清单基线（--check 复核缺失/篡改/多余）
 ```
 
 ## 文档栏目
@@ -64,3 +65,4 @@ cage inspect config/ Item            # 查看 Schema 与配置结构（项目路
 - [CLI](/cli) / [Build](/build)：命令行与确定性构建
 - [Web UI](/web)：第三阶段 Schema 编辑器（交换模型 W1、本地服务 W2、编辑器界面 W3、示例与冒烟 W4 已实装）
 - [Registry](/cli#registry)：第三阶段 R 系列配置仓库（本地发布/列表 + `registry:` 源与 Schema 解析 + `[dependencies]` 版本 pin + 远程解析 + verify 全册审计 / gc 滚动窗口 / remove 显式移除，R1–R4 已实装；A 系列 bundle 导出/导入 + `registry push` 直推远端 + `--presign-map` presigned URL 直推已实装）
+- [资产](/assets)：Schema/源数据/构建规则三类输入资产 + 产物追溯的资产管理（design §50：`cage assets` 资产清单与基线复核、备份四层防线、快照与注册表的版本化能力；[`examples/asset-workspace`](https://github.com/cuihairu/cage/tree/main/examples/asset-workspace) 全生命周期示范）
