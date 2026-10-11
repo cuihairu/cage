@@ -1,0 +1,9 @@
+# 迁移链第 1 步：0.1.0 时代的 Item.csv 用列名 cost，现版改为 price。
+# 迁移与 schema 同属规则资产：改列名必须走迁移，否则历史数据变孤儿。
+from: "0.1.0"
+to: "0.2.0"
+steps:
+  - rename_field:
+      table: Item
+      from: cost
+      to: price

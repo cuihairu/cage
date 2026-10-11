@@ -1,0 +1,40 @@
+# Cage 资产体系完整示例 —— 一键演练见 examples/asset-workspace.sh
+#
+# 四类资产俱全（design §50）：
+#   规则资产   schemas/ + migrations/      数据应该长什么样
+#   源数据资产 sources/                    数据本身
+#   构建规则   cage.toml（本文件）          怎么构建
+#   产物追溯   build/ + 快照 + reg/ bundle  当时编译出了什么
+# 基线文件 assets.json 是盘点快照，与四类资产同仓入库（第一层备份防线）。
+output_dir = "build"
+schema_path = "schemas"
+
+[project]
+name = "asset-demo"
+version = "0.1.0"
+description = "资产清单 / 基线 / 快照 / 分发 / 恢复 全链路示例"
+
+[source_roots]
+main = "sources"
+
+[profiles.client]
+name = "client"
+description = "客户端视图：json + csv + msgpack 数据 target + python 绑定"
+targets = [
+  { format = "json",    output_dir = "build/client/json" },
+  { format = "csv",     output_dir = "build/client/csv" },
+  { format = "msgpack", output_dir = "build/client/msgpack" },
+  { format = "python",  output_dir = "build/client/py" },
+]
+
+[profiles.server]
+name = "server"
+description = "服务端视图：json 数据 target + C# 绑定（internal_note 仅服务端可见）"
+targets = [
+  { format = "json",   output_dir = "build/server/json" },
+  { format = "csharp", output_dir = "build/server/cs", options = { namespace = "AssetDemo.Server" } },
+]
+
+# 本地注册表：发布快照的落点（产物目录，不入版本控制；见 .gitignore）
+[registry]
+path = "reg"

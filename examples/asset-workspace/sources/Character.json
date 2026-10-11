@@ -1,0 +1,7 @@
+{
+  "Character": [
+    { "id": 1, "name": "Arthur", "class": "warrior", "level": 1, "internal_note": "新手引导角色" },
+    { "id": 2, "name": "Merlin", "class": "mage", "level": 30, "internal_note": "法师塔常驻" },
+    { "id": 3, "name": "Wren", "class": "rogue", "level": 10, "internal_note": "森林游侠" }
+  ]
+}

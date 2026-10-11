@@ -1,0 +1,5 @@
+id,name,type,rarity,price
+1,sword,Weapon,common,100
+2,arcane_robe,Armor,rare,900
+3,healing_potion,Consumable,common,50
+4,dragon_slaying_blade,Weapon,legendary,99999

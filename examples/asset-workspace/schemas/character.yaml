@@ -1,0 +1,41 @@
+# 角色表（源：sources/Character.json）
+# 本文件是两个 schema 文件中按名序最先加载的一个 —— metadata 由它提供。
+metadata:
+  version: "0.1.0"
+  description: Cage 资产体系示例：道具 + 角色
+tables:
+  Character:
+    name: Character
+    description: 角色表（JSON 源；name 唯一约束；class 为保留字字段，生成时自动转义）
+    primary_key: [id]
+    unique_constraints:
+      - name: name_unique
+        fields: [name]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true, min: 1 }
+      name:
+        name: name
+        type: { kind: String }
+        required: true
+        min_length: 3
+        max_length: 24
+        pattern: "^[A-Za-z][A-Za-z0-9_]*$"
+      class:
+        name: class
+        type: { kind: Enum, value: CharacterClass }
+        required: true
+        description: 职业
+      level: { name: level, type: { kind: Int8 }, required: true, min: 1, max: 100 }
+      internal_note:
+        name: internal_note
+        type: { kind: String }
+        targets: ["server"]
+        description: 运营备注 —— 仅服务端视图可见（client 视图按 targets 剔除）
+enums:
+  CharacterClass:
+    name: CharacterClass
+    description: 职业（字符串枚举：成员无整数值）
+    values:
+      - { name: warrior }
+      - { name: mage }
+      - { name: rogue }

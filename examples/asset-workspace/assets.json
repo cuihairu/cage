@@ -1,0 +1,42 @@
+{
+  "project": "asset-demo",
+  "cage_version": "0.1.0",
+  "assets": [
+    {
+      "path": "cage.toml",
+      "class": "build",
+      "hash": "e8db567143ad0e8e80c67a1d0db0391a65e0b45cd8b83f24d2a9741fd7a07473",
+      "size": 1522
+    },
+    {
+      "path": "migrations/0001_rename_cost.yaml",
+      "class": "rule",
+      "hash": "297810201f6853ac5538dcf5b917e4f3ca18e2e8c09f017fcee0b6fe0ccd02bb",
+      "size": 287
+    },
+    {
+      "path": "schemas/character.yaml",
+      "class": "rule",
+      "hash": "b33a60f6d5015dfe933a54baef90d5ef8c7aaed06a4c78a491e8532f9671b641",
+      "size": 1368
+    },
+    {
+      "path": "schemas/item.yaml",
+      "class": "rule",
+      "hash": "548dc1e1ae581e3e1a2b60b71d653c1ddef7f8dd82d8c9345a0931e6c851ba48",
+      "size": 1108
+    },
+    {
+      "path": "sources/Character.json",
+      "class": "source",
+      "hash": "d5ee0c820a7012959485e1bd4495a25908225f859d632a47f8823e02b60cbb3b",
+      "size": 328
+    },
+    {
+      "path": "sources/Item.csv",
+      "class": "source",
+      "hash": "3efd90518513abac070d907051d60fd4b1fc831be3caf070f500ea10cd5b322d",
+      "size": 165
+    }
+  ]
+}

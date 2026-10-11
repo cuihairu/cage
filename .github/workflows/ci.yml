@@ -94,6 +94,20 @@ jobs:
             --descriptor_set_out=/dev/null \
             examples/game-config/build/client/proto/*.proto
 
+  # 资产体系防烂腿：盘点/基线/篡改复核/快照/发布/签名 bundle/恢复演练
+  # 全生命周期跑一遍（design §50），示例或资产命令烂了这里就红。
+  asset-workspace:
+    name: Asset workspace example
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run asset lifecycle drill
+        run: bash examples/asset-workspace.sh
+
   web-smoke:
     name: Web editor smoke
     needs: detect
