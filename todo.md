@@ -1197,20 +1197,24 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
 - [ ] I 系列：IDE 支持（`cage lsp`，design §49 拍板）
       待定。I0 设计定稿 / I1 stdio 帧协议与传输层（零新依赖、双向
       可测）/ I2 诊断映射（校验管线 → publishDiagnostics）/ I3 文档。
-- [ ] F 系列：FlatBuffers Target（design §49 拍板：定义生成，不做
+- [x] F 系列：FlatBuffers Target（design §49 拍板：定义生成，不做
       wire 编码）
-      F0 [x] 类型映射表定稿（design §49：cage 类型 → `.fbs` 全量对照、
+      —— F0 类型映射表定稿（design §49：cage 类型 → `.fbs` 全量对照、
       枚举底型阶梯 byte→ubyte→short→ushort→int→uint→long→ulong、
       重值枚举整体降级为 string（flatc 无 allow_alias）、`(key)` /
-      `(required)` 归属与 `root_type` 收尾）；F1 [x]
+      `(required)` 归属与 `root_type` 收尾）；F1
       `cage-target-flatbuffers` 实装（每表一个 `.fbs` + 共享
       `cage_enums.fbs`，确定性注释、关键字转义（含大小写不敏感）、
       wrapper 表命名 `{Field}Value` / `{Field}Entry`，6 项单测 +
-      示例工程 `flatbuffers` target 与 run.sh 产物/确定性断言）。
+      示例工程 `flatbuffers` target 与 run.sh 产物/确定性断言）；
+      F2 文档与 target 口径校正（target.md：FlatBuffers 移出 Data
+      Targets 规划、与 Protobuf 同列定义生成组 + 新增 Target 小节与
+      类型映射表，Data Targets 规划只留 YAML / Binary；cli.md /
+      index.md / architecture.md（14 类 + 目录树 + Mermaid 节点）/
+      example.md（86 产物 / 71 gen / 快照与 registry 真实输出）/
+      双语 README）。
       wire 编码不做：本环境无 flatc 可作字节级 oracle（`which flatc`
       → 不存在），确定性二进制由 MessagePack 覆盖。
-      余 F2：文档与 target 口径校正（target.md 归类、cli.md /
-      index.md / architecture.md 计数与目录树、审计 T 项）。
 - [ ] L 系列：注册表远程包枚举（design §49 拍板，发布闭环最后一环）
       待定。L0 现状对账（读 / 写 / presign / 签名均已交付，只缺枚举）
       / L1 `cage registry list --registry`（远端 index 读取 + 缓存 +

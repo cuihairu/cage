@@ -23,10 +23,11 @@ flowchart TD
     F --> G4
 ```
 
-全部 13 类 target 已实装：JSON / CSV / MsgPack 数据产物、C# / Python /
+全部 14 类 target 已实装：JSON / CSV / MsgPack 数据产物、C# / Python /
 Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定、Protobuf
-Schema 定义生成（`.proto`，不做 wire 编码）与 JSON Schema、Template
-Target（Tera 用户自定义模板）。
+Schema 定义生成（`.proto`，不做 wire 编码）、FlatBuffers 定义生成
+（`.fbs`，不做 wire 编码）与 JSON Schema、Template Target（Tera 用户
+自定义模板）。
 
 ## 为什么需要 Cage
 
@@ -293,6 +294,7 @@ cage/
 │   ├── cage-target-csv/     # CSV 产出
 │   ├── cage-target-msgpack/ # MessagePack 产出（rmp 最小形，确定性二进制）
 │   ├── cage-target-proto/   # Protobuf .proto3 定义文件（schema 驱动，代码绑定族）
+│   ├── cage-target-flatbuffers/ # FlatBuffers .fbs 定义文件（schema 驱动，代码绑定族）
 │   ├── cage-target-jsonschema/ # 标准 JSON Schema 文档（draft-07/2020-12，每表自包含，非 cage 工具链消费）
 │   ├── cage-target-cs/      # C# 代码绑定
 │   ├── cage-target-py/      # Python 代码绑定
@@ -443,14 +445,14 @@ flowchart TD
     S1 & S2 & S3 & S4 & SR & P1 & P2 --> IR
     IR[Canonical IR] --> VP["Validation Pipeline<br/>Parse · Schema · Type · Value · Table<br/>Reference · Semantic · Game Rules"]
     VP --> VM[Validated Model]
-    VM --> O1[JSON] & O2[CSV] & O3["代码绑定<br/>C# / Python / Lua / ..."] & O4[MsgPack] & O5["Protobuf Schema"]
+    VM --> O1[JSON] & O2[CSV] & O3["代码绑定<br/>C# / Python / Lua / ..."] & O4[MsgPack] & O5["Proto / FlatBuffers 定义"]
     O1 & O2 & O3 & O4 & O5 --> RA[Runtime Artifacts]
     RA --> MH["Manifest / Hash / CI"]
 ```
 
 二进制通用格式（`Binary`）仍为规划项，不在当前 `format =` 支持范围内
-（构建会以 `unsupported target format` 退出码 2 拒绝）；MsgPack 与
-Protobuf Schema 已实装。
+（构建会以 `unsupported target format` 退出码 2 拒绝）；MsgPack 数据
+产物与 Protobuf（`.proto`）/ FlatBuffers（`.fbs`）定义生成已实装。
 
 ## Source 与 Target 之外的 Core
 

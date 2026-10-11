@@ -71,10 +71,17 @@ Go
 Java
 ```
 
+定义文件生成（已实装，schema 驱动，数据不参与生成）：
+
+```text
+Protobuf      (.proto)
+FlatBuffers   (.fbs)
+JSON Schema   (.schema.json)
+```
+
 以后：
 
 ```text
-FlatBuffers
 Binary
 SQLite
 ```
@@ -90,12 +97,12 @@ JSON            ← 已实装
 CSV             ← 已实装
 MessagePack     ← 已实装
 YAML            ← 规划
-FlatBuffers     ← 规划
 Binary          ← 规划
 ```
 
-（Protobuf 落地为 schema 驱动的 .proto 定义文件生成（见下文
-「Protobuf Target」），不在此列——它不做数据 wire 编码。）
+（Protobuf / FlatBuffers 落地为 schema 驱动的定义文件生成（见下文
+「Protobuf Target」「FlatBuffers Target」），不在此列——它们不做数据
+wire 编码。）
 
 Code Targets（代码生成）：
 
@@ -108,6 +115,8 @@ JavaScript      ← 已实装
 C++             ← 已实装
 Go              ← 已实装
 Java            ← 已实装
+Protobuf        ← 已实装（.proto 定义文件）
+FlatBuffers     ← 已实装（.fbs 定义文件）
 JSON Schema     ← 已实装（标准 JSON Schema 文档）
 Template        ← 已实装（用户自定义模板）
 ```
@@ -210,6 +219,55 @@ enums_file = "cage_enums.proto" # 默认 cage_enums.proto（import 路径随之�
   前缀 `_`；同名成员确定性去重
 - `repeated` 元素与 map 值类型为 object/null/any 时用 well-known type
   消息，合法无需包装
+
+### FlatBuffers Target（已实装）
+
+与 Protobuf 同族：**输出 `.fbs` 定义文件**——schema 驱动、与 C#/Go 等
+代码绑定同族（数据不参与生成；消费方拿 `flatc` 与自有 runtime 编译）。
+每表一个 `{table}.fbs`（表 → `table`，字段按名序），共享整数枚举集中
+`cage_enums.fbs`，表文件按需 `include`。
+
+```toml
+[[profiles.client.targets]]
+format = "flatbuffers"         # 别名 fbs
+output_dir = "build/fbs"
+
+[profiles.client.targets.options]
+namespace = "cage.generated"    # 默认 cage.generated（写入 namespace 子句）
+enums_file = "cage_enums.fbs"   # 默认 cage_enums.fbs（include 路径随之）
+```
+
+类型映射表（`.fbs`）：
+
+| Cage 类型 | `.fbs` 类型 | 说明 |
+|-----------|-------------|------|
+| bool | `bool` | |
+| int8 / int16 / int32 / int64 | `byte` / `short` / `int` / `long` | fbs 短名拼法 |
+| uint8 / uint16 / uint32 / uint64 | `ubyte` / `ushort` / `uint` / `ulong` | |
+| float32 / float64 | `float` / `double` | |
+| string | `string` | |
+| bytes | `[ubyte]` | |
+| array\<T\> | `[T']` | T' 为 T 的映射；T 是 array/map 时落包装 table `{Field}Value` |
+| map\<string, V\> | `[{Field}Value]` | fbs 无原生 map；惯用法 entry table：`table {Field}Value { key: string; value: V'; }` |
+| map\<int, V\> | `[{Field}Value]` | 整数键拓宽 `long`（数据模型存数字串，proto int64 同族规则） |
+| object / null / any | `string` | 自由形态载荷，fbs 无 free-form 类型 → 按 JSON 文本承载 |
+| enum（成员全整数、非空、无重复、域内） | 共享 `enum Ident : <最小基型>` | 基型阶梯 byte→ubyte→short→ushort→int→uint→long→ulong 取最小可容纳 |
+| enum（含字符串成员 / 缺字面量 / 越域 / **重复值**） | `string` | flatc 无 `allow_alias`，重复值整族不合法 → 整枚举退化为 string 字段（proto 的对应裁定） |
+
+生成规则要点：
+
+- 确定性：表按名序、字段按名序；标识符共享同一去重集合（表名先、
+  枚举名后，冲突追加 `_`）；同 Schema 恒产出字节一致的文件，文件头
+  锤 manifest 记录的 schema 哈希
+- 属性：单字段主键且映射为 `string` 或整型标量 → `(key)`；`required`
+  且字段类型为 `string` / vector / table → `(required)`（fbs 语法只许
+  非标量 required）；每文件以 `root_type <Table>;` 收尾
+- 嵌套数组 / map 值位置落包装 table（`{Field}Value`，深度叠后缀
+  `{Field}ValueValue`；map 复合值再包 `{Field}Entry` 承载）
+- 保留字与标量类型名作标识符 → 尾部 `_`（大小写不敏感比对）；非法
+  字符归一 `_`；数字开头前缀 `_`；同名成员确定性去重
+- wire 编码不做：本仓无 flatc 可作字节级 oracle，确定性二进制由
+  MessagePack 覆盖
 
 ### JSON Schema Target（已实装）
 
