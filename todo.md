@@ -1146,3 +1146,17 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       臂（436/512/583/1058，需 fd 耗尽，登记不可达）、892 测试助手 panic
       （命中即测试失败，防御性）、345 let-else 闭合 `}`（lcov 尾花括号
       伪未覆盖，两处 return false 均已覆盖）。
+
+### validation/mod.rs 覆盖收口（2026-10-11 续批第十项）
+- [x] validation/mod.rs 37 行未覆盖 → 3 行（269 lib 测试全绿，workspace 812）。
+      新增 7 个测试：validate_with_profile(Some/None) 驱动 ctx 携带 profile 的
+      E9006 门（gen 侧同路径）；check_profile_visibility 对悬空引用目标表
+      跳过（引用检查器 owns 该报告）；reference predicate 畸形 assert 与
+      引用目标表未声明字段的 E1004 两臂；unknown cardinality 拼写 E1004 +
+      行循环跳过该字段不二次报（title 之外断言 message 文本）；cardinality
+      many + null → E1404（one + null 已有既有测试覆盖，收口的是 many 臂）；
+      Bool 字段 vs 数字字面量断言 → E1410 "not evaluable"（Incomparable
+      提示臂）。余下 3 行登记：429 与 1232 为 lcov 尾花括号伪未覆盖（两者
+      所在 if 块体均由既有 E9006/E1410 测试覆盖，仅闭合 } 记 0）；
+      1121 report_reference_cycles 的空环 continue（find_cycles 的
+      path[idx..] 切片恒含起点节点，结构性不可达，防御性保留）。

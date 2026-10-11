@@ -3652,4 +3652,286 @@ mod tests {
             "no profile means everything is visible"
         );
     }
+
+    #[test]
+    fn validate_with_profile_runs_the_visibility_gate() {
+        // The ctx-carried profile path: validate_with_profile(Some) runs
+        // the E9006 gate inside the full pipeline; None leaves it off.
+        let build_schema = || {
+            let mut schema = Schema::new();
+            let mut id = plain_field("id", FieldType::Int32);
+            id.required = true;
+            let mut secret = plain_field("secret", FieldType::String);
+            secret.required = true;
+            let (_name, table) =
+                profiled_table("Account", &[], vec![(id, vec![]), (secret, vec!["server"])]);
+            schema.add_table(table);
+            validated(schema)
+        };
+        let vs = build_schema();
+        let doc = doc_with_tables(&[("Account", vec![row(0, &[("id", Value::Int(1))])])]);
+
+        let diags =
+            validate_with_profile(&vs, &doc, ValidationLevel::Schema, false, Some("client"));
+        assert!(diags.errors().iter().any(|e| e.code == build::E9006));
+
+        let diags = validate_with_profile(&vs, &doc, ValidationLevel::Schema, false, None);
+        assert!(
+            !diags.errors().iter().any(|e| e.code == build::E9006),
+            "no profile — no gate"
+        );
+    }
+
+    #[test]
+    fn e9006_reference_to_missing_table_is_left_to_the_reference_check() {
+        // Profile visibility skips references whose target table does not
+        // exist — the dangling-reference check owns that report.
+        let mut schema = Schema::new();
+        let mut link = plain_field("item", FieldType::Int32);
+        link.reference = Some(ReferenceSchema {
+            table: "Ghost".to_string(),
+            field: "id".to_string(),
+            predicate: None,
+            cardinality: "one".to_string(),
+            compatible_with: None,
+        });
+        let (_name, table) = profiled_table("Drop", &[], vec![(link, vec![])]);
+        schema.add_table(table);
+
+        let diags = check_profile_visibility(&schema, "client");
+        assert!(!diags.has_errors());
+    }
+
+    #[test]
+    fn l5_malformed_reference_assert_reports_e1004() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let mut item_id = plain_field("item_id", FieldType::UInt32);
+        item_id.reference = Some(ReferenceSchema {
+            table: "Item".to_string(),
+            field: "id".to_string(),
+            predicate: Some(ExpressionRule {
+                name: "p".to_string(),
+                assert: "not an assert".to_string(),
+                message: None,
+                warning_only: false,
+            }),
+            cardinality: "one".to_string(),
+            compatible_with: None,
+        });
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_id],
+        ));
+        let doc = doc_with_tables(&[("Item", vec![]), ("Drop", vec![])]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        let err = diags
+            .errors()
+            .into_iter()
+            .find(|e| e.code == schema::E1004)
+            .expect("malformed assert is reported");
+        assert!(
+            err.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("operand OP operand")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn l5_assert_on_undeclared_target_field_reports_e1004() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let mut item_id = plain_field("item_id", FieldType::UInt32);
+        item_id.reference = Some(ReferenceSchema {
+            table: "Item".to_string(),
+            field: "id".to_string(),
+            predicate: Some(ExpressionRule {
+                name: "p".to_string(),
+                assert: "ghost == 1".to_string(),
+                message: None,
+                warning_only: false,
+            }),
+            cardinality: "one".to_string(),
+            compatible_with: None,
+        });
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_id],
+        ));
+        let doc = doc_with_tables(&[("Item", vec![]), ("Drop", vec![])]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        let err = diags
+            .errors()
+            .into_iter()
+            .find(|e| e.code == schema::E1004)
+            .expect("undeclared field ref is reported");
+        assert!(
+            err.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("declared in the referenced table")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_cardinality_rows_skip_the_reference_check() {
+        // The pre-pass reports the bad spelling once; the row loop skips
+        // the field instead of double-reporting a missing reference.
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let mut item_id = plain_field("item_id", FieldType::UInt32);
+        item_id.reference = Some(ReferenceSchema {
+            table: "Item".to_string(),
+            field: "id".to_string(),
+            predicate: None,
+            cardinality: "bogus".to_string(),
+            compatible_with: None,
+        });
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_id],
+        ));
+        let doc = doc_with_tables(&[
+            ("Item", vec![row(0, &[("id", Value::UInt(1))])]),
+            (
+                "Drop",
+                vec![row(
+                    0,
+                    &[("id", Value::UInt(1)), ("item_id", Value::UInt(99))],
+                )],
+            ),
+        ]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1, "only the cardinality spelling: {errors:?}");
+        assert!(errors[0].message.contains("unknown cardinality"));
+    }
+
+    #[test]
+    fn cardinality_many_null_reference_is_a_violation() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32)],
+        ));
+        let mut item_id = plain_field("item_id", FieldType::UInt32);
+        item_id.reference = Some(ReferenceSchema {
+            table: "Item".to_string(),
+            field: "id".to_string(),
+            predicate: None,
+            cardinality: "many".to_string(),
+            compatible_with: None,
+        });
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_id],
+        ));
+        let doc = doc_with_tables(&[
+            ("Item", vec![row(0, &[("id", Value::UInt(1))])]),
+            (
+                "Drop",
+                vec![row(0, &[("id", Value::UInt(1)), ("item_id", Value::Null)])],
+            ),
+        ]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        let err = diags
+            .errors()
+            .into_iter()
+            .find(|e| {
+                e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("the value is null"))
+            })
+            .expect("null under cardinality one is a violation");
+        assert!(
+            err.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("the value is null")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn l5_incomparable_predicate_reports_not_evaluable() {
+        // Bool target field vs a number literal — no ordering exists, the
+        // predicate is reported as not evaluable instead of failing.
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("tradable", FieldType::Bool),
+            ],
+        ));
+        let mut item_id = plain_field("item_id", FieldType::UInt32);
+        item_id.reference = Some(ReferenceSchema {
+            table: "Item".to_string(),
+            field: "id".to_string(),
+            predicate: Some(ExpressionRule {
+                name: "p".to_string(),
+                assert: "tradable == 1".to_string(),
+                message: None,
+                warning_only: false,
+            }),
+            cardinality: "one".to_string(),
+            compatible_with: None,
+        });
+        schema.add_table(plain_table(
+            "Drop",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), item_id],
+        ));
+        let doc = doc_with_tables(&[
+            (
+                "Item",
+                vec![row(
+                    0,
+                    &[("id", Value::UInt(1)), ("tradable", Value::Bool(true))],
+                )],
+            ),
+            (
+                "Drop",
+                vec![row(
+                    0,
+                    &[("id", Value::UInt(1)), ("item_id", Value::UInt(1))],
+                )],
+            ),
+        ]);
+
+        let diags = validate(&validated(schema), &doc, ValidationLevel::Reference, false);
+        let err = diags
+            .errors()
+            .into_iter()
+            .find(|e| e.code == reference::E1410)
+            .expect("incomparable predicate is reported");
+        assert!(
+            err.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("not evaluable")),
+            "{err:?}"
+        );
+    }
 }
