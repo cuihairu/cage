@@ -16,7 +16,9 @@
 name: Nightly Build
 
 on:
-# 2026-10-11 版本发布红线（用户令）：版本只能用户手动触发，schedule 自动发版已移除。
+  schedule:
+    # UTC 02:51 = 北京时间 10:51，排在 daily.yml 验证面（02:37）之后
+    - cron: '51 2 * * *'
   workflow_dispatch:
 
 permissions:
