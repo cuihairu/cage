@@ -1,6 +1,6 @@
 # 完整示例
 
-仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 任务 + 商店 + 关卡」五张表、五种源格式（CSV / YAML / JSON / Excel / MsgPack）、一份覆盖常用字段类型与约束用法的 schema、双 profile（client 13 个 target / server 3 个 target）、分环境约束覆盖（`--env`）、快照 / diff / 迁移 / 注册表，外加一套触发 L7 Game Rule 与分环境必填的坏数据。
+仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 任务 + 商店 + 关卡」五张表、五种源格式（CSV / YAML / JSON / Excel / MsgPack）、一份覆盖常用字段类型与约束用法的 schema、双 profile（client 14 个 target / server 3 个 target）、分环境约束覆盖（`--env`）、快照 / diff / 迁移 / 注册表 / stdio LSP 诊断（`cage lsp`），外加一套触发 L7 Game Rule 与分环境必填的坏数据。
 
 本页所有命令与输出都是**真实执行结果**（在仓库根目录运行），不是伪代码。
 
@@ -10,7 +10,7 @@
 bash examples/run.sh
 ```
 
-脚本从 `cage check` 到 `cage build` 到 `cage gen` 到 `cage migrate` 到 `cage registry`（含远程分发全链路：push 直推 / presigned 直推 / 消费方远端 resolve 构建，以及坏数据 E1501 / E1601 / E1001 断言与 `cage inspect`）14 步一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
+脚本从 `cage check` 到 `cage build` 到 `cage gen` 到 `cage migrate` 到 `cage registry`（含远程分发全链路：push 直推 / presigned 直推 / 消费方远端 resolve 构建，以及坏数据 E1501 / E1601 / E1001 断言、`cage inspect` 与 `cage lsp` stdio 诊断会话）15 步一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
 
 <details>
 <summary>examples/run.sh 完整输出（点击展开）</summary>
@@ -19,19 +19,19 @@ bash examples/run.sh
 ==> 构建 cage 可执行文件
 
 ============================================================
-==> [1/14] cage check examples/game-config   —— L0-L6 全量校验（好数据应通过）
+==> [1/15] cage check examples/game-config   —— L0-L6 全量校验（好数据应通过）
 ============================================================
 $ cage check examples/game-config
 cage check: OK (5 tables, 0 warnings, level <= semantic)
 
 ============================================================
-==> [2/14] cage check --level gamerule examples/game-config   —— L7 业务规则（好数据应通过）
+==> [2/15] cage check --level gamerule examples/game-config   —— L7 业务规则（好数据应通过）
 ============================================================
 $ cage check examples/game-config --level gamerule
 cage check: OK (5 tables, 0 warnings, level <= gamerule)
 
 ============================================================
-==> [3/14] 分环境验证 —— --env dev/prod 放行、未知环境 exit 2
+==> [3/15] 分环境验证 —— --env dev/prod 放行、未知环境 exit 2
 ============================================================
 $ cage check examples/game-config --env dev
 cage check: OK (5 tables, 0 warnings, level <= semantic)
@@ -41,98 +41,98 @@ $ cage check examples/game-config --env staging   # 期望退出码 2
 error: unknown environment 'staging' (declared: dev, prod)
 
 ============================================================
-==> [4/14] cage build --profile client   —— 验证 + 生成全部 13 个 target（5 张表）
+==> [4/15] cage build --profile client   —— 验证 + 生成全部 14 个 target（5 张表）
 ============================================================
 $ cage build examples/game-config --profile client
-cage build: OK (profile 'client', 86 artifacts, manifest examples/game-config/build/manifest.json)
+cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 
 ============================================================
-==> [5/14] cage build --profile client --incremental   —— 指纹一致 → 跳过重建
+==> [5/15] cage build --profile client --incremental   —— 指纹一致 → 跳过重建
 ============================================================
 $ cage build examples/game-config --profile client --incremental
-cage build: up to date (profile 'client', 86 artifacts, manifest examples/game-config/build/manifest.json)
+cage build: up to date (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 
 ============================================================
-==> [6/14] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验
+==> [6/15] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验
 ============================================================
 $ cage snapshot examples/game-config --profile client
-cage snapshot: OK (profile 'client', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-df808dfaa1cd)
+cage snapshot: OK (profile 'client', 89 files, 86 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-df808dfaa1cd)
 $ cage snapshot <dir> --verify
-cage snapshot: verified (examples/game-config/build/snapshot/client-df808dfaa1cd/ — 88 files checked)
+cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-df808dfaa1cd/ — 88 files checked)
 $ cage snapshot examples/game-config --profile client --env prod   —— 环境化出包（目录名带 env 段）
-cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-prod-b926aded2ac8)
+cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-b926aded2ac8)
 $ cage snapshot <prod-dir> --verify
-cage snapshot: verified (examples/game-config/build/snapshot/client-prod-b926aded2ac8/ — 88 files checked)
+cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-b926aded2ac8/ — 88 files checked)
 
 ============================================================
-==> [7/14] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto/fbs 定义）
+==> [7/15] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto/fbs 定义）
 ============================================================
 $ cage gen examples/game-config --profile client
-cage gen: OK (profile 'client', 71 artifacts, manifest examples/game-config/build/manifest.json)
+cage gen: OK (profile 'client', 71 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 
 ============================================================
-==> [8/14] cage diff build build   —— 同一构建前后比对（确定性：全不变）
+==> [8/15] cage diff build build   —— 同一构建前后比对（确定性：全不变）
 ============================================================
 $ cage diff examples/game-config/build examples/game-config/build
-cage diff: 0 added, 0 removed, 0 changed, 65 unchanged
+cage diff: 0 added, 0 removed, 0 changed, 71 unchanged
 
 ============================================================
-==> [9/14] cage build --profile server   —— 服务端视图（server-only 字段 internal_note 可见，client 视图剔除）
+==> [9/15] cage build --profile server   —— 服务端视图（server-only 字段 internal_note 可见，client 视图剔除）
 ============================================================
 $ cage build examples/game-config --profile server
-cage build: OK (profile 'server', 16 artifacts, manifest examples/game-config/build/manifest.json)
+cage build: OK (profile 'server', 16 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 
 ============================================================
-==> [10/14] cage migrate --to 0.2.0   —— 声明式迁移 dry-run（不写盘）
+==> [10/15] cage migrate --to 0.2.0   —— 声明式迁移 dry-run（不写盘）
 ============================================================
 $ cage migrate examples/game-config --to 0.2.0
 cage migrate: segment 0001_rename_desc.yaml (0.1.0 → 0.2.0)
   rename_field(Item.desc → description): 3 row(s)
-  unchanged examples/game-config/config/Character.csv
-  would write examples/game-config/config/Item.yaml (1 table(s))
-  skip examples/game-config/config/Quest.xlsx (Excel source: report only — 1 table(s), 3 row(s))
-  skip examples/game-config/config/Shop.msgpack (not a text source)
-  would write examples/game-config/config/Stage.json (1 table(s))
+  unchanged /home/cui/workspaces/cage/examples/game-config/config/Character.csv
+  would write /home/cui/workspaces/cage/examples/game-config/config/Item.yaml (1 table(s))
+  skip /home/cui/workspaces/cage/examples/game-config/config/Quest.xlsx (Excel source: report only — 1 table(s), 3 row(s))
+  skip /home/cui/workspaces/cage/examples/game-config/config/Shop.msgpack (not a text source)
+  would write /home/cui/workspaces/cage/examples/game-config/config/Stage.json (1 table(s))
 cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, nothing written
 
 ============================================================
-==> [11/14] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）
+==> [11/15] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）
 ============================================================
-$ cage registry publish examples/game-config --registry /tmp/tmp.Sl0Fdl2VoX
+$ cage registry publish examples/game-config --registry /tmp/tmp.xHLIqr10tN
 cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id df808dfaa1cd, content_hash 750ae6439736)
-$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.Sl0Fdl2VoX   # 同版本换环境 → E1801（一版本一包）
+$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.xHLIqr10tN   # 同版本换环境 → E1801（一版本一包）
 error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id df808dfaa1cd8be80fa34f4d / content_hash 750ae64397367fe194b00f2c1f9d1576fee3477231d79ed740d9766edb97d9fe — republish under a new version
-$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.Sl0Fdl2VoX --version 0.1.0-prod
+$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.xHLIqr10tN --version 0.1.0-prod
 cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 89 files, build_id b926aded2ac8, content_hash 997bd5362ebe)
-$ cage registry list --registry /tmp/tmp.Sl0Fdl2VoX
-cage registry: 1 package(s) in /tmp/tmp.Sl0Fdl2VoX
+$ cage registry list --registry /tmp/tmp.xHLIqr10tN
+cage registry: 1 package(s) in /tmp/tmp.xHLIqr10tN
 rpg-demo
   0.1.0        build df808dfaa1cd  content 750ae6439736  89 files
   0.1.0-prod   build b926aded2ac8  content 997bd5362ebe  89 files
 
 ============================================================
-==> [12/14] 远程分发全链路   —— push 直推 + presigned 直推 + 消费方远端 resolve 构建
+==> [12/15] 远程分发全链路   —— push 直推 + presigned 直推 + 消费方远端 resolve 构建
 ============================================================
 $ cage registry publish examples/game-config   # 发布进示例本地注册表（push 源）
 cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id df808dfaa1cd, content_hash 750ae6439736)
-(本地对象库 A=http://127.0.0.1:44315 直推 / B=http://127.0.0.1:33369 presigned)
-$ cage registry push examples/game-config --registry http://127.0.0.1:44315
-cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:44315 (89 file(s))
-cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:44315 (89 file(s)) — identical, no-op
-$ cage registry push examples/game-config --presign-map /tmp/tmp.LNsSEQyZpp/presign.json
-cage registry: pushed rpg-demo/0.1.0 → presigned targets (/tmp/tmp.LNsSEQyZpp/presign.json) (89 file(s))
-$ cage build /tmp/tmp.tA9tbMhVld/consA --profile client   # 消费方直连远端根构建（consA ← 44315）
-cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.tA9tbMhVld/consA/build/manifest.json)
-$ cage build /tmp/tmp.tA9tbMhVld/consB --profile client   # 消费方直连远端根构建（consB ← 33369）
-cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.tA9tbMhVld/consB/build/manifest.json)
+(本地对象库 A=http://127.0.0.1:33733 直推 / B=http://127.0.0.1:40903 presigned)
+$ cage registry push examples/game-config --registry http://127.0.0.1:33733
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:33733 (89 file(s))
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:33733 (89 file(s)) — identical, no-op
+$ cage registry push examples/game-config --presign-map /tmp/tmp.oXE86r18ud/presign.json
+cage registry: pushed rpg-demo/0.1.0 → presigned targets (/tmp/tmp.oXE86r18ud/presign.json) (89 file(s))
+$ cage build /tmp/tmp.ld70x9tyfq/consA --profile client   # 消费方直连远端根构建（consA ← 33733）
+cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.ld70x9tyfq/consA/build/manifest.json)
+$ cage build /tmp/tmp.ld70x9tyfq/consB --profile client   # 消费方直连远端根构建（consB ← 40903）
+cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.ld70x9tyfq/consB/build/manifest.json)
 消费方产物与发布方逐字节一致（5 张表 × 2 条分发路）
 
 ============================================================
-==> [13/14] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称
+==> [13/15] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称
 ============================================================
 $ cage check examples/game-config/bad   # 期望 E1501（hp > attack，L6 语义规则）+ 退出码 1
 ERROR E1501 — Assertion Failed
-  Source: examples/game-config/bad/config/Character.csv | Row: 1
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1
   Table: Character
   Row: 0
   Message: Semantic rule violation
@@ -142,14 +142,14 @@ ERROR E1501 — Assertion Failed
 cage check: FAILED (1 errors, 0 warnings)
 $ cage check examples/game-config/bad --level gamerule   # 期望 E1601 + 退出码 1
 ERROR E1501 — Assertion Failed
-  Source: examples/game-config/bad/config/Character.csv | Row: 1
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1
   Table: Character
   Row: 0
   Message: Semantic rule violation
   Hint: hp must not exceed attack
 
 ERROR E1601 — Game Rule Validation Failed
-  Source: examples/game-config/bad/config/Character.csv | Row: 1
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1
   Table: Character
   Row: 0
   Message: Game rule violation: power curve
@@ -159,7 +159,7 @@ ERROR E1601 — Game Rule Validation Failed
 cage check: FAILED (2 errors, 0 warnings)
 $ cage check examples/game-config/bad --env prod   # prod 收紧 nickname 必填 → E1001
 ERROR E1001 — Missing Required Field
-  Source: examples/game-config/bad/config/Character.csv | Row: 1 | Field: nickname
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1 | Field: nickname
   Table: Character
   Row: 0
   Field: nickname
@@ -167,7 +167,7 @@ ERROR E1001 — Missing Required Field
   Hint: Add required field 'nickname' to this row
 
 ERROR E1001 — Missing Required Field
-  Source: examples/game-config/bad/config/Character.csv | Row: 2 | Field: nickname
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 2 | Field: nickname
   Table: Character
   Row: 1
   Field: nickname
@@ -175,7 +175,7 @@ ERROR E1001 — Missing Required Field
   Hint: Add required field 'nickname' to this row
 
 ERROR E1001 — Missing Required Field
-  Source: examples/game-config/bad/config/Character.csv | Row: 3 | Field: nickname
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 3 | Field: nickname
   Table: Character
   Row: 2
   Field: nickname
@@ -183,7 +183,7 @@ ERROR E1001 — Missing Required Field
   Hint: Add required field 'nickname' to this row
 
 ERROR E1001 — Missing Required Field
-  Source: examples/game-config/bad/config/Character.csv | Row: 4 | Field: nickname
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 4 | Field: nickname
   Table: Character
   Row: 3
   Field: nickname
@@ -191,7 +191,7 @@ ERROR E1001 — Missing Required Field
   Hint: Add required field 'nickname' to this row
 
 ERROR E1501 — Assertion Failed
-  Source: examples/game-config/bad/config/Character.csv | Row: 1
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1
   Table: Character
   Row: 0
   Message: Semantic rule violation
@@ -201,7 +201,7 @@ ERROR E1501 — Assertion Failed
 cage check: FAILED (5 errors, 0 warnings)
 
 ============================================================
-==> [14/14] cage inspect examples/game-config   —— 查看表结构
+==> [14/15] cage inspect examples/game-config   —— 查看表结构
 ============================================================
 $ cage inspect examples/game-config
 project: rpg-demo
@@ -217,7 +217,88 @@ schemas:
   Item (7 fields, primary key: id)
   Quest (4 fields, primary key: id)
   Shop (3 fields, primary key: id)
-  Stage (9 fields, primary key: id)
+  Stage (10 fields, primary key: id)
+
+============================================================
+==> [15/15] cage lsp   —— stdio 诊断 Language Server（编辑器传输层，手写 JSON-RPC 帧协议）
+============================================================
+$ cage lsp examples/game-config   # stdin: initialize → didOpen → shutdown → exit
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "capabilities": {
+      "textDocumentSync": {
+        "openClose": true,
+        "change": 1
+      }
+    },
+    "serverInfo": {
+      "name": "cage-lsp",
+      "version": "0.1.0"
+    }
+  }
+}
+{
+  "jsonrpc": "2.0",
+  "method": "textDocument/publishDiagnostics",
+  "params": {
+    "uri": "file:///editor/schemas/item.yaml",
+    "diagnostics": []
+  }
+}
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": null
+}
+$ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501（与 cage check 同一管线）
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "capabilities": {
+      "textDocumentSync": {
+        "openClose": true,
+        "change": 1
+      }
+    },
+    "serverInfo": {
+      "name": "cage-lsp",
+      "version": "0.1.0"
+    }
+  }
+}
+{
+  "jsonrpc": "2.0",
+  "method": "textDocument/publishDiagnostics",
+  "params": {
+    "uri": "file:///editor/bad.schema.yaml",
+    "diagnostics": [
+      {
+        "range": {
+          "start": {
+            "line": 0,
+            "character": 0
+          },
+          "end": {
+            "line": 0,
+            "character": 0
+          }
+        },
+        "severity": 1,
+        "code": "E1501",
+        "source": "cage",
+        "message": "E1501: Semantic rule violation (/home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1) [hint: hp must not exceed attack]"
+      }
+    ]
+  }
+}
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": null
+}
 
 全部通过。
 产物目录：examples/game-config/build/{client,server}/{json,csv,msgpack,proto,fbs,cs,py,lua,ts,js,cpp,go,java,jsonschema}

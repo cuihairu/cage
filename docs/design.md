@@ -2911,14 +2911,36 @@ spec / mysql+pg 不可达五档错误码 + exit 2；缺 cage.toml 与缺 spec
 可测尽（子进程 stdio 往返，双向断言）。
 
 **备选**：VS Code 扩展（需 TS 构建链，违背无 node 先例，且只覆盖一款
-IDE）；只交付机器可读诊断契约文档（太薄——`check --json` 早已存在，
-不解决 IDE 集成）；等 flatc / lsp 生态成熟（无期，收益不抵等待）。
+IDE）；只交付机器可读诊断契约文档（太薄——机器可读诊断早已是库契约
+（`Diagnostics` 的 serde 形状）与 Web UI 契约（POST `/api/validate`），
+CLI `check` 本身并无 `--json`，缺的从来不是数据形状而是编辑器传输层
+与进程模型）；等 flatc / lsp 生态成熟（无期，收益不抵等待）。
 
 **边界**：诊断先行——**不做**补全 / 悬停 / 跳转定义 / 格式化 / 重命名
 （这些需要 LSP 侧持有 schema 语义模型，是新的能力面，单独立项）；
 不做多文件增量校验（每次 didChange 全量校验——配置规模是百表量级，
 全量毫秒级）；不做编辑器内置编辑器（W3 的 Web UI 已是交互式编辑面，
 LSP 只喂诊断）。
+
+**落地（2026-10-11，I 系列完结，含一处口径精化）**：已实装为
+`cage lsp <root>`（`crates/cage-cli/src/lsp.rs`，同步单线程，零新依赖，
+手写 JSON-RPC 2.0 帧协议约百行、单测覆盖帧往返）。协议子集 = 上文拍板
+清单，推送式 `publishDiagnostics`；未知请求 -32601、坏 JSON -32700、
+未知通知静默；`exit` 无前置 `shutdown` 退出码 1（LSP 规范误用信号）。
+诊断管线抽为单一入口 `validate_project`（`run_check` 与 lsp 共用——
+编辑器诊断与 CI 诊断永不分歧），按拍板映射为文件级零宽 range、消息体
+带 E 码 + 定位 + hint。**精化——面板归属**：上文「诊断映射进编辑器
+打开的 schema YAML 文档」按字面是按文件锚定过滤，落地拍板为**全量
+诊断推给每一个打开的文档**（每个打开文档 = 项目诊断面板）：校验诊断
+大多锚定数据文件而非 schema 文件，按文件过滤会让打开的 schema 面板
+长期空白，藏起引用 / 依赖类跨文件错误——恰是面板存在的意义；零宽
+range 本就不声称「这一行坏」，误导风险由消息体定位承担。didOpen /
+didChange 全量重校验落盘状态（编辑器缓冲不虚拟化，textDocumentSync
+如实声明 Full），didClose 清该文档面板；`env` / `level` 走
+initializationOptions（坏 level 成为一条 error 诊断而非静默），项目
+载入失败（坏 cage.toml / registry 引用不可解析）同样是一条 error
+诊断。验收：lsp.rs 5 项单测 + tests/lsp.rs 7 项子进程 stdio 往返
+端到端（真二进制，跑在示例工程与 bad 工程上）。
 
 ## FlatBuffers → 立项实装：`cage-target-flatbuffers`（定义生成，不做 wire 编码）
 

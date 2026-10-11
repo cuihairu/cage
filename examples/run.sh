@@ -3,7 +3,7 @@
 #   check → L7 gamerule → 分环境 --env → build(client/server) → 增量 →
 #   snapshot → gen → diff → migrate dry-run → registry publish →
 #   远程分发全链路（push 直推 + presigned 直推 + 消费方远端 resolve 构建）→
-#   坏数据诊断 → inspect
+#   坏数据诊断 → inspect → lsp（stdio 诊断 Language Server）
 # 每步打印真实执行的命令；任一步失败立即退出（set -e），断言写在脚本里。
 # 用法：bash examples/run.sh          （默认 cargo build 后用 target/debug/cage）
 #       CAGE_BIN=/path/to/cage bash examples/run.sh   （指定现成可执行文件）
@@ -21,15 +21,15 @@ fi
 
 step() { printf '\n============================================================\n==> %s\n============================================================\n' "$*"; }
 
-step "[1/14] cage check examples/game-config   —— L0-L6 全量校验（好数据应通过）"
+step "[1/15] cage check examples/game-config   —— L0-L6 全量校验（好数据应通过）"
 echo "\$ cage check examples/game-config"
 "$CAGE_BIN" check "$EX"
 
-step "[2/14] cage check --level gamerule examples/game-config   —— L7 业务规则（好数据应通过）"
+step "[2/15] cage check --level gamerule examples/game-config   —— L7 业务规则（好数据应通过）"
 echo "\$ cage check examples/game-config --level gamerule"
 "$CAGE_BIN" check "$EX" --level gamerule
 
-step "[3/14] 分环境验证 —— --env dev/prod 放行、未知环境 exit 2"
+step "[3/15] 分环境验证 —— --env dev/prod 放行、未知环境 exit 2"
 echo "\$ cage check examples/game-config --env dev"
 "$CAGE_BIN" check "$EX" --env dev
 echo "\$ cage check examples/game-config --env prod"
@@ -43,7 +43,7 @@ echo "$ENV_OUT"
 [ "$ENV_CODE" -eq 2 ] || { echo "FAIL: 未知环境期望退出码 2，实际 ${ENV_CODE}" >&2; exit 1; }
 case "$ENV_OUT" in *"unknown environment 'staging'"*) ;; *) echo "FAIL: 输出未点名 unknown environment" >&2; exit 1 ;; esac
 
-step "[4/14] cage build --profile client   —— 验证 + 生成全部 14 个 target（5 张表）"
+step "[4/15] cage build --profile client   —— 验证 + 生成全部 14 个 target（5 张表）"
 echo "\$ cage build examples/game-config --profile client"
 "$CAGE_BIN" build "$EX" --profile client
 # 新源产物抽查：Excel 源 Quest.json / MsgPack 源 Shop.json + 新 target 的 proto/msgpack
@@ -64,13 +64,13 @@ if [ "$B1" != "$A1" ] || [ "$B2" != "$A2" ] || [ "$B3" != "$A3" ]; then
   echo "FAIL: 重建后产物字节变化（期望确定性）" >&2; exit 1
 fi
 
-step "[5/14] cage build --profile client --incremental   —— 指纹一致 → 跳过重建"
+step "[5/15] cage build --profile client --incremental   —— 指纹一致 → 跳过重建"
 echo "\$ cage build examples/game-config --profile client --incremental"
 INC_OUT="$("$CAGE_BIN" build "$EX" --profile client --incremental)"
 echo "$INC_OUT"
 case "$INC_OUT" in *"up to date"*) ;; *) echo "FAIL: 增量期望 up to date" >&2; exit 1 ;; esac
 
-step "[6/14] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验"
+step "[6/15] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验"
 echo "\$ cage snapshot examples/game-config --profile client"
 "$CAGE_BIN" snapshot "$EX" --profile client
 SNAP_DIR="$(ls -d "$EX"/build/snapshot/client-*/ | head -1)"
@@ -84,17 +84,17 @@ PROD_SNAP_DIR="$(ls -d "$EX"/build/snapshot/client-prod-*/ | head -1)"
 echo "\$ cage snapshot <prod-dir> --verify"
 "$CAGE_BIN" snapshot "$PROD_SNAP_DIR" --verify
 
-step "[7/14] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto/fbs 定义）"
+step "[7/15] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto/fbs 定义）"
 echo "\$ cage gen examples/game-config --profile client"
 "$CAGE_BIN" gen "$EX" --profile client
 
-step "[8/14] cage diff build build   —— 同一构建前后比对（确定性：全不变）"
+step "[8/15] cage diff build build   —— 同一构建前后比对（确定性：全不变）"
 echo "\$ cage diff examples/game-config/build examples/game-config/build"
 DIFF_OUT="$("$CAGE_BIN" diff "$EX/build" "$EX/build")"
 echo "$DIFF_OUT"
 case "$DIFF_OUT" in *"0 changed"*) ;; *) echo "FAIL: diff 期望 0 changed" >&2; exit 1 ;; esac
 
-step "[9/14] cage build --profile server   —— 服务端视图（server-only 字段 internal_note 可见，client 视图剔除）"
+step "[9/15] cage build --profile server   —— 服务端视图（server-only 字段 internal_note 可见，client 视图剔除）"
 echo "\$ cage build examples/game-config --profile server"
 "$CAGE_BIN" build "$EX" --profile server
 # 字段级 targets 演示：internal_note 仅在 server 视图出现
@@ -104,14 +104,14 @@ if grep -q "internal_note" "$EX/build/client/json/Character.json"; then
   echo "FAIL: client 视图不应含 internal_note" >&2; exit 1
 fi
 
-step "[10/14] cage migrate --to 0.2.0   —— 声明式迁移 dry-run（不写盘）"
+step "[10/15] cage migrate --to 0.2.0   —— 声明式迁移 dry-run（不写盘）"
 echo "\$ cage migrate examples/game-config --to 0.2.0"
 MIG_OUT="$("$CAGE_BIN" migrate "$EX" --to 0.2.0 2>&1)"
 echo "$MIG_OUT"
 case "$MIG_OUT" in *"dry run, nothing written"*) ;; *) echo "FAIL: migrate 期望 dry run" >&2; exit 1 ;; esac
 case "$MIG_OUT" in *"rename_field"*) ;; *) echo "FAIL: migrate 期望 rename_field 步骤" >&2; exit 1 ;; esac
 
-step "[11/14] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）"
+step "[11/15] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）"
 REG_DIR="$(mktemp -d)"
 echo "\$ cage registry publish examples/game-config --registry $REG_DIR"
 "$CAGE_BIN" registry publish "$EX" --registry "$REG_DIR"
@@ -129,7 +129,7 @@ echo "\$ cage registry list --registry $REG_DIR"
 "$CAGE_BIN" registry list --registry "$REG_DIR"
 rm -rf "$REG_DIR"
 
-step "[12/14] 远程分发全链路   —— push 直推 + presigned 直推 + 消费方远端 resolve 构建"
+step "[12/15] 远程分发全链路   —— push 直推 + presigned 直推 + 消费方远端 resolve 构建"
 # 本地源：示例工程自己的 [registry].path（cage.toml 已声明 reg/）
 echo "\$ cage registry publish examples/game-config   # 发布进示例本地注册表（push 源）"
 "$CAGE_BIN" registry publish "$EX"
@@ -234,7 +234,7 @@ echo "消费方产物与发布方逐字节一致（5 张表 × 2 条分发路）
 kill $SRV_PID_A $SRV_PID_B 2>/dev/null
 rm -rf "$SRV_DIR" "$CONS_DIR" "$EX/reg"
 
-step "[13/14] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称"
+step "[13/15] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称"
 echo "\$ cage check examples/game-config/bad   # 期望 E1501（hp > attack，L6 语义规则）+ 退出码 1"
 set +e
 L6_OUT="$("$CAGE_BIN" check "$EX/bad" 2>&1)"
@@ -260,8 +260,51 @@ echo "$PROD_OUT"
 [ "$PROD_CODE" -eq 1 ] || { echo "FAIL: prod 坏数据期望退出码 1，实际 ${PROD_CODE}" >&2; exit 1; }
 case "$PROD_OUT" in *E1001*) ;; *) echo "FAIL: 输出未包含 E1001" >&2; exit 1 ;; esac
 
-step "[14/14] cage inspect examples/game-config   —— 查看表结构"
+step "[14/15] cage inspect examples/game-config   —— 查看表结构"
 echo "\$ cage inspect examples/game-config"
 "$CAGE_BIN" inspect "$EX"
+
+step "[15/15] cage lsp   —— stdio 诊断 Language Server（编辑器传输层，手写 JSON-RPC 帧协议）"
+# 把一段固定的编辑器会话喂进 stdin：initialize → initialized → didOpen →
+# shutdown → exit；stdout 出帧，逐帧断言（干净工程空面板、坏工程 E1501）。
+LSP_FRAME() {
+  printf 'Content-Length: %d\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$1"
+}
+LSP_DEMO() {  # LSP_DEMO <工程根> <输出文件> <帧>…—— 跑一节会话并逐帧 pretty-print
+  local root="$1" out="$2"; shift 2
+  {
+    for body in "$@"; do LSP_FRAME "$body"; done
+  } | "$CAGE_BIN" lsp "$root" > "$out"
+  python3 - "$out" << 'PYEOF'
+import json, sys
+raw = open(sys.argv[1], 'rb').read()
+while raw:
+    head, raw = raw.split(b'\r\n\r\n', 1)
+    n = int([l for l in head.split(b'\r\n') if l.startswith(b'Content-Length')][0].split(b':')[1])
+    body, raw = raw[:n], raw[n:]
+    print(json.dumps(json.loads(body), ensure_ascii=False, indent=2))
+PYEOF
+}
+echo "\$ cage lsp examples/game-config   # stdin: initialize → didOpen → shutdown → exit"
+LSP_SESSION="$(mktemp)"
+LSP_DEMO "$EX" "$LSP_SESSION" \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"initializationOptions":{}}}' \
+  '{"jsonrpc":"2.0","method":"initialized"}' \
+  '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///editor/schemas/item.yaml"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"shutdown"}' \
+  '{"jsonrpc":"2.0","method":"exit"}'
+grep -q '"cage-lsp"' "$LSP_SESSION" || { echo "FAIL: initialize 应答缺 serverInfo cage-lsp" >&2; exit 1; }
+grep -q 'textDocument/publishDiagnostics' "$LSP_SESSION" || { echo "FAIL: didOpen 应推 publishDiagnostics" >&2; exit 1; }
+grep -q '"diagnostics":\[\]' "$LSP_SESSION" || { echo "FAIL: 干净工程应为空面板" >&2; exit 1; }
+rm -f "$LSP_SESSION"
+echo "\$ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501（与 cage check 同一管线）"
+LSP_BAD="$(mktemp)"
+LSP_DEMO "$EX/bad" "$LSP_BAD" \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///editor/bad.schema.yaml"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"shutdown"}' \
+  '{"jsonrpc":"2.0","method":"exit"}'
+grep -q 'E1501' "$LSP_BAD" || { echo "FAIL: 坏工程面板应含 E1501" >&2; exit 1; }
+rm -f "$LSP_BAD"
 
 printf '\n全部通过。\n产物目录：examples/game-config/build/{client,server}/{json,csv,msgpack,proto,fbs,cs,py,lua,ts,js,cpp,go,java,jsonschema}\n快照目录：examples/game-config/build/snapshot/\n'

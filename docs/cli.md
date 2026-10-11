@@ -227,6 +227,38 @@ POST /api/schema      → 保存回环 canonical YAML（单文件 schema_path �
 
 Ctrl+C 停止服务。`--port` 默认 8765。
 
+## lsp
+
+```bash
+cage lsp <project>
+```
+
+在 stdio 上启动一个**只做诊断**的 Language Server（design §49 I 系列
+IDE 立项）：手写 JSON-RPC 2.0 帧协议（`Content-Length` 头 + 定长体），
+同步单线程、零新依赖、无异步运行时。协议子集：`initialize` /
+`initialized` / `textDocument/didOpen` / `didChange` / `didClose` /
+`shutdown` / `exit`，诊断用推送式 `textDocument/publishDiagnostics`；
+未知请求回 `-32601`、坏 JSON 回 `-32700`、未知通知静默；`exit` 之前
+没有 `shutdown` 属误用，进程以退出码 1 结束（LSP 规范信号）。
+
+诊断就是 check 管线的输出（与 `cage check` 共用单一校验入口——编辑器
+诊断与 CI 诊断永不分歧），映射为**文件级零宽 range**（(0,0)-(0,0)，
+不锚定具体行列），消息体携带 E 码 + 真实定位 + 修复提示；全量诊断推
+给**每一个**打开的文档——每个打开文档即项目诊断面板（校验诊断大多
+锚定数据文件，按打开文件过滤会藏起引用 / 依赖类跨文件错误）。项目
+载入失败（坏 cage.toml、registry 引用不可解析）同样成为一条 error
+诊断而非静默。
+
+`didOpen` / `didChange` 触发全量重校验（百表量级毫秒级；编辑器缓冲
+不虚拟化，诊断的是落盘状态——保存后刷新）；`didClose` 清除该文档的
+面板。`env` / `level` 由 initialize 请求的 `initializationOptions`
+携带（`{"env": "prod", "level": "semantic"}`），缺省与 `check` 一致
+（基础环境 / semantic 级 / client profile），坏 level 以 error 诊断
+可见。
+
+**不做**补全 / 悬停 / 跳转定义 / 格式化 / 重命名（需要 schema 语义
+模型，单独立项）。stderr 是自由格式日志通道。
+
 ## registry
 
 ```bash

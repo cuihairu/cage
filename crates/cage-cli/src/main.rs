@@ -55,6 +55,7 @@ use cage_core::value::Document;
 use cage_core::Diagnostics;
 use cage_core::DocumentMetadata;
 
+mod lsp;
 mod remote;
 mod web;
 
@@ -185,6 +186,17 @@ enum Commands {
         /// TCP port to listen on (binds 127.0.0.1 only)
         #[arg(long, default_value_t = 8765)]
         port: u16,
+    },
+    /// Serve a diagnostics-only Language Server over stdio (IDE support,
+    /// design §49 I): project-wide validation pushed onto every open
+    /// document as file-level diagnostics — zero-width range, the E code +
+    /// location + hint in the message. Hand-rolled JSON-RPC 2.0 framing,
+    /// synchronous, zero new dependencies. `env` / `level` ride the
+    /// initialize request's initializationOptions; defaults match `check`
+    /// (base environment, semantic level, client profile)
+    Lsp {
+        /// Configuration project root directory
+        path: PathBuf,
     },
     /// Publish or list configuration packages in a local Configuration Registry
     Registry {
@@ -550,6 +562,9 @@ fn main() {
                 2
             }
         },
+        Commands::Lsp { path } => {
+            lsp::run_lsp(&path, std::io::stdin().lock(), std::io::stdout().lock())
+        }
         Commands::Registry { cmd } => match cmd {
             RegistryCmd::Publish {
                 path,
@@ -1057,35 +1072,38 @@ fn filter_by_profile<'a>(
     (filtered_schema, filtered_doc)
 }
 
-fn run_check(path: &Path, level: &str, profile: &str, env: Option<&str>, no_cache: bool) -> i32 {
-    let level = match level.parse::<ValidationLevel>() {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 2;
-        }
-    };
-    let project = match load_project(path, no_cache) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 2;
-        }
-    };
-    let project = match project_with_env(project, env) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 2;
-        }
-    };
+/// What one validation pass produces for both `check` (renders + exit
+/// code) and `lsp` (publishes): the diagnostics plus the profile-gated
+/// table count the summary line reports.
+pub(crate) struct ValidationOutcome {
+    pub diagnostics: Diagnostics,
+    pub visible_tables: usize,
+}
+
+/// The check pipeline's single validation entry — load the project, apply
+/// the environment, validate under the level against the profile. Shared
+/// by `cage check` and `cage lsp` so editor diagnostics and CI diagnostics
+/// can never diverge: one pipeline, two transports. `no_cache` refuses the
+/// remote-source offline fallback (check exposes it as --no-cache; the LSP
+/// editor lane keeps the offline-friendly default).
+///
+/// Profile-aware validation runs on the FULL schema/document with the
+/// active profile in the validation context: E9006 fires when the
+/// projection would silently drop a structurally required field (Profile
+/// 语义化——报冲突码而非静默过滤), and every table's data stays checked —
+/// profiles gate runtime views, not data quality. `visible_tables` (from
+/// the filtered document) only feeds the summary count.
+pub(crate) fn validate_project(
+    root: &Path,
+    level: &str,
+    env: Option<&str>,
+    profile: &str,
+    no_cache: bool,
+) -> Result<ValidationOutcome, String> {
+    let level = level.parse::<ValidationLevel>()?;
+    let project = load_project(root, no_cache)?;
+    let project = project_with_env(project, env)?;
     let (_, document) = filter_by_profile(&project.schema, &project.document, profile);
-    // Profile-aware validation runs on the FULL schema/document with the
-    // active profile in the validation context: E9006 fires when the
-    // projection would silently drop a structurally required field (Profile
-    // 语义化——报冲突码而非静默过滤), and every table's data stays checked —
-    // profiles gate runtime views, not data quality. `document` (filtered)
-    // below only feeds the summary count.
     let validated = ValidatedSchema {
         schema: project.schema.clone(),
         dependency_graph: DependencyGraph::from_schema(&project.schema),
@@ -1097,22 +1115,38 @@ fn run_check(path: &Path, level: &str, profile: &str, env: Option<&str>, no_cach
         project.config.warnings_as_errors,
         Some(profile),
     );
-    if !diagnostics.is_empty() {
-        println!("{}", diagnostics.render(false));
+    Ok(ValidationOutcome {
+        diagnostics,
+        visible_tables: document.tables.len(),
+    })
+}
+
+fn run_check(path: &Path, level: &str, profile: &str, env: Option<&str>, no_cache: bool) -> i32 {
+    let outcome = match validate_project(path, level, env, profile, no_cache) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    if !outcome.diagnostics.is_empty() {
+        println!("{}", outcome.diagnostics.render(false));
     }
-    if diagnostics.has_errors() {
+    if outcome.diagnostics.has_errors() {
         println!(
             "cage check: FAILED ({} errors, {} warnings)",
-            diagnostics.errors().len(),
-            diagnostics.warnings().len()
+            outcome.diagnostics.errors().len(),
+            outcome.diagnostics.warnings().len()
         );
         1
     } else {
         println!(
             "cage check: OK ({} tables, {} warnings, level <= {})",
-            document.tables.len(),
-            diagnostics.warnings().len(),
-            level.as_str()
+            outcome.visible_tables,
+            outcome.diagnostics.warnings().len(),
+            level
+                .parse::<ValidationLevel>()
+                .map_or(level, |l| l.as_str())
         );
         0
     }
@@ -3654,6 +3688,7 @@ mod tests {
                 env.as_deref().unwrap_or("<base>")
             ),
             Commands::Web { path, port } => format!("web {} {port}", path.display()),
+            Commands::Lsp { path } => format!("lsp {}", path.display()),
             Commands::Registry { cmd } => match cmd {
                 RegistryCmd::Publish {
                     path,
@@ -6296,6 +6331,7 @@ main = "config"
                 &["cage", "web", "proj", "--port", "9000"],
                 "web proj 9000".to_string(),
             ),
+            (&["cage", "lsp", "proj"], "lsp proj".to_string()),
             (
                 &[
                     "cage",

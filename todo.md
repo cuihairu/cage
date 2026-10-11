@@ -1194,9 +1194,32 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       条件）。裁定与理由见 design §49。
 
 #### 四项拍板状态表
-- [ ] I 系列：IDE 支持（`cage lsp`，design §49 拍板）
-      待定。I0 设计定稿 / I1 stdio 帧协议与传输层（零新依赖、双向
-      可测）/ I2 诊断映射（校验管线 → publishDiagnostics）/ I3 文档。
+- [x] I 系列：IDE 支持（`cage lsp`，design §49 拍板）
+      已实装为 `cage lsp <root>`（I1 stdio 帧协议 + I2 诊断映射 + I3
+      文档一并落地）：手写 JSON-RPC 2.0 帧协议（Content-Length 头 +
+      定长体，读写两侧同构，lsp.rs ~300 行含单测），同步单线程、零新
+      依赖、无异步运行时（lsp-types + tokio 会引入两者，帧协议本身只有
+      两行头 + 定长体）。协议子集 = 拍板清单：initialize / initialized
+      / didOpen / didChange / didClose / shutdown / exit + 推送式
+      publishDiagnostics（非拉取式 textDocument/diagnostic）；未知请求
+      → -32601，坏 JSON → -32700，未知通知静默；exit 无前置 shutdown →
+      退出码 1（LSP 规范误用信号）。诊断源 = `validate_project`——
+      check 管线抽出的单一校验入口（run_check 与 lsp 共用，编辑器诊断
+      与 CI 诊断永不分歧），映射为文件级零宽 range（(0,0)-(0,0)，消息体
+      带 E 码 + 真实定位 + hint）推给**每一个**打开的文档（每个打开文档
+      即项目诊断面板；按文件锚定会藏起引用/依赖类跨文件错误，恰是面板
+      存在的意义——口径记录于 design I 段落地记录）。didOpen/didChange
+      全量重校验（拍板边界：不做增量，百表量级毫秒级；编辑器缓冲不虚拟
+      化，诊断的是落盘状态，textDocumentSync 声明 Full 如实反映）；
+      didClose 清该文档面板。env / level 走 initialize 的
+      initializationOptions，缺省 = check 默认（基础环境 / semantic /
+      client profile），坏 level 成为一条 error 诊断而非静默或崩溃。
+      项目载入失败（坏 cage.toml / registry 引用不可解析）同样成为一条
+      error 诊断。验收：lsp.rs 5 项单测（帧往返 / 退出码 / 面板发布 /
+      多文档 / 32601·32700）+ tests/lsp.rs 7 项子进程端到端（真二进制
+      stdio 往返双向断言，跑在真实示例工程与 bad 工程上）；顺带修正
+      design I 段备选里的失实句（「check --json 早已存在」——机器可读
+      诊断实际是库契约与 Web /api/validate，CLI check 从无 --json）。
 - [x] F 系列：FlatBuffers Target（design §49 拍板：定义生成，不做
       wire 编码）
       —— F0 类型映射表定稿（design §49：cage 类型 → `.fbs` 全量对照、
