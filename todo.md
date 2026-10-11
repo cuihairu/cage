@@ -1094,10 +1094,10 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       （examples/game-config 拷贝 → prod 出包 + 发布，均 exit 0）。该行是
       当时批次口径，非当前状态。
 - [x] 待办清零：todo 全册无开放功能项（两条 `[ ]` 均为不可达覆盖行登记）。
-      路线图余下「留待后续」均为拍板/外部依赖项，不在本册推进范围：IDE 支持
-      （docs/index.md，独立立项需拍板口径）、FlatBuffers 等格式（留待后续）、
-      注册表鉴权与远程发布协议（明记独立立项）、§45 外部依赖三项
-      （行级增量 / OAuth 凭据托管 / 连接池并发——需真实数据库与托管凭据）。
+      路线图余下「留待后续」四项已于 2026-10-11 续批逐项拍板
+      （design §49）：IDE 支持 / FlatBuffers / 注册表远程发布协议三项立项
+      实装，§45 外部依赖三项登记为卡点并写明解除条件——见本册「路线图
+      四项拍板」节。
       故转入覆盖率收尾：cage-target-java（62 行）→ cage-target-cpp（56）→
       cage-source-http（37）→ validation/mod.rs（36）→ web.rs（32）。
       五项已全部收口（见续批第七至十一项），登记册清零。
@@ -1182,3 +1182,32 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       短体/断流均不可达。
 - [x] 覆盖率收尾登记册全清：java（62→9）→ cpp（56→2）→ http（37→6）→
       validation（37→3）→ web.rs（32→14）。
+
+### 路线图四项拍板（2026-10-11 续批第十二项，design §49）
+- [x] 四项逐条裁定完毕（裁定记录见 design §49，每项记「定了什么 /
+      为什么 / 备选 / 边界 / 卡点条件」）：三项立项实装（IDE 支持 →
+      `cage lsp` stdio LSP 零新依赖；FlatBuffers → 定义文件生成，不做
+      wire 编码，与 Protobuf 先例同口径；注册表远程发布协议 → 远程包
+      枚举 `cage registry list --registry`，读协议只读 GET 服务端不
+      实现）、一项卡点（§45 外部依赖三项，理由统一为「依赖外部系统
+      真实状态 + 本仓无真实网络，门禁内不可验证」，并写明解除卡点
+      条件）。裁定与理由见 design §49。
+
+#### 四项拍板状态表
+- [ ] I 系列：IDE 支持（`cage lsp`，design §49 拍板）
+      待定。I0 设计定稿 / I1 stdio 帧协议与传输层（零新依赖、双向
+      可测）/ I2 诊断映射（校验管线 → publishDiagnostics）/ I3 文档。
+- [ ] F 系列：FlatBuffers Target（design §49 拍板：定义生成，不做
+      wire 编码）
+      待定。F0 设计定稿（类型映射表）/ F1 `cage-target-flatbuffers`
+      （.fbs 生成 + 确定性注释）/ F2 文档与 target 口径校正。
+- [ ] L 系列：注册表远程包枚举（design §49 拍板，发布闭环最后一环）
+      待定。L0 现状对账（读 / 写 / presign / 签名均已交付，只缺枚举）
+      / L1 `cage registry list --registry`（远端 index 读取 + 缓存 +
+      与本地 list 同形状 + --json + auth_env 鉴权同 push 口径）/
+      L2 文档与协议约定。
+- [x] §45 外部依赖三项 → 卡点登记（需外部输入，不立项）：行级增量
+      需各源数据契约 + 真实 DB；OAuth / mTLS / service account 需 Google
+      托管凭据与 scope 授权；连接池并发需真实 MySQL/PG 压测。三者均
+      触碰「不做服务端产品 / 不持有云密钥 / 测试不可验证不进主干」
+      红线之一，解除卡点条件已写明（design §49 末段）。

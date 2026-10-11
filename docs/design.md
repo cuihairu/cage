@@ -2878,3 +2878,150 @@ const 不可拼接自检、渲染逐字节形状、**渲染 YAML 解析回 Schem
 需要拍板的档位出现）+ CLI 集成 ×2（无 [remote] / env 未设 / 非 db
 spec / mysql+pg 不可达五档错误码 + exit 2；缺 cage.toml 与缺 spec
 两档用法错误）——本轮交付，勾选。
+
+---
+
+# 49. 路线图收尾四项拍板（2026-10-11 续批，四项逐条裁定）
+
+原「留待后续」四项（IDE 支持 / FlatBuffers / 注册表鉴权与远程发布协议 /
+§45 外部依赖三项）由本批按本仓决策记录口径裁定——能自主落地的立项实装，
+确需外部输入的登记为卡点并记理由。裁定结果：三项立项实装、一项卡点。
+
+## IDE 支持 → 立项实装：`cage lsp`（stdio LSP，零新依赖）
+
+**定了什么**：新增 `cage lsp` 子命令——stdio 上跑 LSP 的一个可测子集
+（`initialize` / `initialized` / `textDocument/didOpen` / `didChange` /
+`didClose` / `textDocument/diagnostic` 或 `publishDiagnostics` /
+`shutdown` / `exit`）。JSON-RPC 2.0 帧协议手写（`Content-Length` 头 +
+换行分隔，读写两侧同构），同步单线程，`serde_json` 已是 workspace
+依赖——**零新依赖、无异步运行时**。诊断源 = 项目全量校验（复用 check
+管线的单一入口），诊断映射进编辑器打开的 schema YAML 文档
+（文件级零宽 range，正文带 E 码 + 定位 + hint，编辑器侧栏即诊断面板）。
+`--env` / `--level` 口径与 `check` 一致（LSP 初始化参数带
+`env` / `level`，缺省 = 默认环境 + 全级）。
+
+**为什么**：诊断早已是一等公民（E 码 + 文件 / Sheet / 单元格 / 字段 /
+值定位 + 修复提示），IDE 侧缺的只是**传输层**——CLI / CI / Web UI 三个
+消费者已各自消费同一份诊断，编辑器没有理由再等。三条红线都不触碰：
+不绑定 Unity / Unreal / Godot / Cocos（不做客户端插件）、不做服务端
+产品（LSP 跑在编辑器进程本地）、不引 node 构建链（W3 编辑器前端刻意
+无 node 依赖，VS Code 扩展会引入 TS 编译链，与全仓纪律冲突）。
+手写帧协议而非引 `lsp-types` + `tokio`：后者会引入新依赖与异步运行时
+（全仓零 async），而 LSP 帧协议只有「两行头 + 定长体」，手写 100 行内
+可测尽（子进程 stdio 往返，双向断言）。
+
+**备选**：VS Code 扩展（需 TS 构建链，违背无 node 先例，且只覆盖一款
+IDE）；只交付机器可读诊断契约文档（太薄——`check --json` 早已存在，
+不解决 IDE 集成）；等 flatc / lsp 生态成熟（无期，收益不抵等待）。
+
+**边界**：诊断先行——**不做**补全 / 悬停 / 跳转定义 / 格式化 / 重命名
+（这些需要 LSP 侧持有 schema 语义模型，是新的能力面，单独立项）；
+不做多文件增量校验（每次 didChange 全量校验——配置规模是百表量级，
+全量毫秒级）；不做编辑器内置编辑器（W3 的 Web UI 已是交互式编辑面，
+LSP 只喂诊断）。
+
+## FlatBuffers → 立项实装：`cage-target-flatbuffers`（定义生成，不做 wire 编码）
+
+**定了什么**：新增 target crate `cage-target-flatbuffers`（format
+`flatbuffers`），按 cage Schema 生成 FlatBuffers `.fbs` **定义文件**——
+每配置表一个 `table`、枚举落 `enum`、字段类型按映射表翻译、默认值 /
+描述 / 约束以注释与 `default` 保留；文件名走 target 通用
+`file_template`（`{table}.fbs` 按表拆分），头部带确定性生成注释
+（与 proto target 同口径：同 schema 同字节，注释不含时间戳）。
+**数据 wire 编码显式不做**——与 Protobuf 的既有先例完全一致
+（Protobuf 落地为 schema 驱动的 `.proto` 定义文件生成，明确不做数据
+wire 编码，见 docs/target.md「Data Targets 与 Code Targets 分离」）。
+
+**为什么**：FlatBuffers 的消费方**必须**先有编译后的 schema 才能读
+数据——`.fbs` 定义文件是任何 FlatBuffers 管线的第一件必需产物，而
+cage Schema 的表 / 枚举 / 类型 / 默认值 / 描述全部能机械翻译过去
+（类型映射取最小忠实口径，未知类型退 String，与 schema-draft 草稿
+的类型口径一致）。wire 编码的收益不抵复杂度：一是消费方仍需 .fbs
+（没有定义文件，.bin 是黑盒）；二是自研 flatbuffers builder 约 400 行
+（vtable / table / vector 布局 + 长度前缀），而**本仓没有 flatc 可作
+对拍基准**，无基准的序列化只能自证；三是配置体量是百表量级的小文本，
+确定性二进制需求已由 MessagePack target 覆盖（确定性字节 + 全仓哈希
+锚点）。定义文件生成 = 完整交付，wire 编码 = 有基准再做。
+
+**备选**：自研 flatbuffers builder 出 `.bin`（无 flatc 对拍、且
+仍需 .fbs，收益半段）；只写文档不动代码（太薄——定义文件生成与 proto
+同构，边际成本低）；等社区 crate（`flatbuffers` rust crate 依赖 flatc
+生成代码，等于先要一个生成器，绕不开定义文件）。
+
+**文档口径变更**：docs/target.md 原把 FlatBuffers 列在 Data Targets
+「规划」——本批校正为与 Protobuf 同组（schema 驱动定义生成），Data
+Targets 规划项只留 Binary / SQLite，并注明 FlatBuffers 的 wire 编码
+留待（有 flatc 基准时再立项）。
+
+## 注册表鉴权与远程发布协议 → 立项实装：远程包枚举（发布闭环缺的最后一环）
+
+**现状盘点**（本批裁定前先对账，避免重复交付）：读——R3 远程 http(s)
+只读解析（index → 选版本 → 逐文件 blake3 校验 → 落项目缓存 → 信任门，
+离线回退语义 S4 同款）；写——A3 直推（逐文件 PUT、index 最后、同 hash
+幂等、异 hash E1801、Bearer 凭据经 `[registry].auth_env`，E2102 /
+E2104 / E2105 已接线）；委托写——A7 `--presign-map` provider 无关
+presigned 直推；完整性——A6 签名账本 + `verify_registry` 全册审计；
+delta 拒绝 / pull-through 代理拒绝 亦已闭账（A7 决策记录）。
+**真实缺口只剩一个**：R3 时 `registry publish/list` 对远程根报 usage
+错误（协议无包枚举）——远端已发布什么，发布方看不见到，覆盖 / 冲突
+只能靠本地记录推断。
+
+**定了什么**：`cage registry list --registry <远程根>`——匿名 GET 远端
+index（URL 约定与 R3 读取同源，字节进 `.cage-cache/registry/` 同源
+缓存目录，缓存复用不重取）→ 渲染与本地 `list` 完全同一形状
+（项目 / 包 / 版本 / 环境 / build_id / content_hash），支持
+`--json`。鉴权口径沿用 push：`--auth-env` 指名环境变量时 Bearer 随
+GET，401/403 → E2102，凭据缺失 → E2105（与 push 完全同码同语义）。
+**服务端仍不实现**（红线：不做服务端产品）——只读 GET 天然 CDN /
+反向代理友好（对象字节不可变、index 唯一可变文件、A7 决策记录已论证），
+任何静态托管原样工作。
+
+**为什么**：远程发布闭环缺的是发布前的**可见性**——没有远端枚举，CI
+无法审计「这个版本远端是否已存在」「哪个环境已发布」，E1801 冲突只能
+在 PUT 阶段才被发现（远端历史永不改写的纪律下，冲突发现越晚越痛）。
+这一环是 cage 侧代码，不需要外部系统（协议就是 GET 一个 index.json，
+R3 已验证的同一约定）。
+
+**鉴权边界（明确不做，登记为卡点）**：token 签发 / 刷新 / 轮换、OAuth
+用户授权流、mTLS、service account 凭据托管——这些需要外部 IdP 与托管
+凭据，属于「凭据保管是 CI / 云角色的事，cage 不持有云密钥」的既定口径
+（A7 presign 决策同款）。cage 的鉴权面**止于 Bearer 令牌**（env 指名，
+不进 cage.toml、不落日志、网络触达前验缺失，E1904 / E2105 口径），
+令牌本身由谁签发与 cage 无关。
+
+**备选**：不做（本地 `list` 已够用）——但远程发布闭环缺枚举，CI 无法
+审计远端状态，与 R3「远程解析」的只读面不匹配（能读内容不能读清单）；
+实现服务端——红线，不做服务端产品。
+
+## §45 外部依赖三项 → 卡点（需外部输入，本批不立项）
+
+三项一并登记为卡点，理由是同一性质：**依赖外部系统的真实状态，而本仓
+测试纪律是 mock 服务器 / 临时目录，无真实网络触达**——门禁内无法验证
+的变更不进主干（全仓零「测试不可验证」的代码债）。
+
+- **行级增量**（按 `revision` / `updated_at` 只取变更行）：需要各源
+  的**数据契约**——哪些列算 revision、变更语义如何定义（DB 源需要
+  各引擎的时间戳 / 序列列约定，Sheets 源根本无 revision 概念，HTTP 源
+  只有文档级条件 GET）。这份契约是业务语义拍板 + 真实数据库验证两件事，
+  不是纯实现。**文档级增量已实装**（S8 条件 GET，304 复用缓存字节），
+  配置体量下文档级已够用，行级收益需真实大表压测数据支撑。
+  **解除卡点条件**：给出至少两个真实源的数据契约样例（列名 / 语义 /
+  时区口径）+ 一个可连的真实数据库实例（或可复现的 fixture 数据）。
+- **OAuth 用户授权流 / mTLS / service account 凭据**：需要 Google
+  托管的 service account 凭据与 OAuth consent 配置（Sheets API 的
+  JWT 交换需要 `subject_token` + 已授权的 scope）。这是凭据托管问题，
+  属于「凭据保管是 CI / 云角色的事，cage 不持有云密钥」的既定口径
+  （§47 A3 / A7 决策记录）；cage 侧的凭据面已止于「env 指名
+  （credential_env / dsn_env / auth_env）+ 网络触达前验缺失（E1904）
+  + 诊断不落凭据」。Sheets 首期只 API key 已足够覆盖公开数据与内网
+  托管场景。**解除卡点条件**：一份可试用的 service account JSON
+  （或 OAuth client 配置）+ scope 授权。
+- **连接池 / 并发多源 / 大表游标分页**：需要真实 MySQL / PostgreSQL
+  实例做并发压测——连接池的收益只在真实 I/O 竞争下可测，mock 测不出
+  池化收益。当前 S2 双后端是「一次查询一条连接」，配置体量下这是
+  正确的最小实现（每条查询毫秒级，池化是把 CI 时间换成复杂度）。
+  **解除卡点条件**：一个可连的真实 DB 实例 + 大表（十万行级）压测数据。
+
+**红线对齐**：三项都触碰「不做服务端产品 / 不持有云密钥 / 测试不可验证
+不进主干」中的一条，卡点判定与既有决策记录一致，不需要新的口径拍板——
+本批只做登记，把「解除卡点条件」写明，便于后续有输入时直接立项。
