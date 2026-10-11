@@ -1112,3 +1112,19 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       成员 → String 桶 + em-dash banner）；`java_default_filter_yields_null_
       for_a_field_without_default` 直测无默认字段过滤器返回 Null。余下 9 行
       为 `#[ignore]` 的 javac 样例写出器（设计上要求 JDK，不入常测）。
+
+### cage-target-cpp 覆盖收口（2026-10-11 续批第八项）
+- [x] cage-target-cpp 覆盖率 52 行未覆盖 → 2 行（99.82%，1136/1138，22 测试
+      全绿）。删除遗留死代码簇：cfg(test) 的 `render_enums` 渲染器（生产走
+      `cpp_enums_context` + 官方模板、generate 从不调用该形态、原测试仅传空
+      切片故主体 33 行从未执行）连同唯一调用者 cfg(test) `header`（官方模板
+      自带 banner）及 `test_render_enums_with_empty_slice`（约 97 行）。新增
+      三项针对真实生产路径的测试：`test_enums_context_empty_slice`（空枚举
+      集 → 无 include、无 `emitted_enums`，承接被删边界测试的语义）、
+      `test_enum_backing_buckets`（直接钉住 enum_backing 三档 backing
+      int32/int64/uint64 + float 与无值成员被 continue 跳过不扩容）、
+      `test_default_filter_null_without_default`（无默认字段 `note` →
+      CppDefaultFilter 返回 Null）。余下 2 行登记为环境/panic 路：1775
+      `test_generated_headers_compile` 的 g++ 缺失早退（有 g++ 的机器本行
+      必覆盖、本机 g++ 在位故未覆盖，环境条件不可控）与 2039 该测试 g++
+      编译失败时的 panic 消息行（命中即测试本身失败，防御性不可达）。
