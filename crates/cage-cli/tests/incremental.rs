@@ -460,6 +460,60 @@ file_template = "{table}.msgpack"
     );
 }
 
+/// Layer 3 stale cleanup: a stale artifact path occupied by a directory
+/// cannot be removed — the build warns on stderr but still succeeds, and
+/// the manifest drops the removed target regardless.
+#[test]
+fn stale_artifact_directory_warns_but_build_succeeds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project_two_targets(root);
+
+    let out = build(root, false);
+    assert!(
+        out.status.success(),
+        "seed build failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(root.join("build/client2/Item.msgpack").is_file());
+
+    // Occupy the future-stale artifact path with a directory.
+    let stale = root.join("build/client2/Item.msgpack");
+    fs::remove_file(&stale).unwrap();
+    fs::create_dir(&stale).unwrap();
+
+    // Drop the msgpack target from the profile.
+    let toml = fs::read_to_string(root.join("cage.toml")).unwrap();
+    let toml = toml.replace(
+        r#"
+[[profiles.client.targets]]
+format = "msgpack"
+output_dir = "build/client2"
+file_template = "{table}.msgpack"
+"#,
+        "",
+    );
+    fs::write(root.join("cage.toml"), toml).unwrap();
+
+    let out = build(root, true);
+    assert!(
+        out.status.success(),
+        "undremovable stale artifact must not fail the build: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("could not remove stale artifact 'build/client2/Item.msgpack'"),
+        "must warn about the directory in the way: {stderr}"
+    );
+    assert!(stale.is_dir(), "the occupying directory must survive");
+    let manifest = fs::read_to_string(root.join("build/manifest.json")).unwrap();
+    assert!(
+        !manifest.contains("client2"),
+        "manifest must not record the removed target: {manifest}"
+    );
+}
+
 /// Layer 3: adding a target generates its artifacts while the existing
 /// target's artifacts carry untouched.
 #[test]

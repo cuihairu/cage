@@ -992,13 +992,14 @@ fn filter_by_profile<'a>(
     filtered_doc
         .tables
         .retain(|name, _| filtered_schema.tables.contains_key(name));
+    // Every doc table key survived the schema retain above, so the schema
+    // table always exists for each row loop.
     for (table_name, table) in &mut filtered_doc.tables {
-        if let Some(schema_table) = filtered_schema.tables.get(table_name) {
-            table.rows.iter_mut().for_each(|row| {
-                row.fields
-                    .retain(|name, _| schema_table.fields.contains_key(name));
-            });
-        }
+        let schema_table = &filtered_schema.tables[table_name];
+        table.rows.iter_mut().for_each(|row| {
+            row.fields
+                .retain(|name, _| schema_table.fields.contains_key(name));
+        });
     }
     (filtered_schema, filtered_doc)
 }
@@ -2469,10 +2470,10 @@ fn run_registry_export(
             // from the env var named by --key-env only — never from
             // config, never echoed.
             if sign {
-                let key_env = key_env.unwrap_or_else(|| {
+                let Some(key_env) = key_env else {
                     eprintln!("error: --sign requires --key-env");
-                    std::process::exit(2);
-                });
+                    return 2;
+                };
                 let signed = || -> Result<(), String> {
                     let key = cage_core::registry::signing_key_from_env(key_env)?;
                     let bytes = std::fs::read(output)
@@ -2536,10 +2537,10 @@ fn run_registry_import(
     // catch byte-level tampering. The trusted key comes from --key-env;
     // the riding public key is never the anchor.
     if verify_sig {
-        let key_env = key_env.unwrap_or_else(|| {
+        let Some(key_env) = key_env else {
             eprintln!("error: --verify-sig requires --key-env");
-            std::process::exit(2);
-        });
+            return 2;
+        };
         let gate = || -> Result<(), String> {
             let trusted = cage_core::registry::verifying_key_from_env(key_env)?;
             let bytes =
@@ -5988,5 +5989,61 @@ main = "config"
             let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert_eq!(describe(&cli.command), want, "{args:?}");
         }
+    }
+
+    #[test]
+    fn registry_list_empty_root_reports_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let code = run_registry_list(Some(&tmp.path().join("registry")));
+        assert_eq!(code, 2);
+    }
+
+    /// Minimal registry entry the export path can pack: one artifact plus
+    /// the ledger `entry_record` reads its build fingerprints from.
+    fn publish_stub(reg: &Path, package: &str, version: &str) {
+        let entry_dir = reg.join(package).join(version);
+        fs::create_dir_all(&entry_dir).unwrap();
+        fs::write(entry_dir.join("schema.json"), b"{}").unwrap();
+        fs::write(
+            entry_dir.join("HASHES.json"),
+            r#"{"build_id": "abc123", "content_hash": "def456"}"#,
+        )
+        .unwrap();
+        let index = serde_json::json!({
+            "package": package,
+            "entries": [{ "version": version, "build_id": "abc123", "content_hash": "def456", "files": 2 }],
+        });
+        fs::write(reg.join(package).join("index.json"), index.to_string()).unwrap();
+    }
+
+    #[test]
+    fn export_sign_requires_key_env() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let reg = tmp.path().join("registry");
+        publish_stub(&reg, "common", "0.1.0");
+        // The export packs the stub entry, then the signature guard fires:
+        // --sign names no env var carrying the seed.
+        let code = run_registry_export(
+            "common@0.1.0",
+            &tmp.path().join("bundle.tar"),
+            None,
+            true,
+            None,
+            Some(&reg),
+        );
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn import_verify_sig_requires_key_env() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let code = run_registry_import(
+            &tmp.path().join("bundle.tar"),
+            true,
+            None,
+            false,
+            Some(&tmp.path().join("registry")),
+        );
+        assert_eq!(code, 2);
     }
 }

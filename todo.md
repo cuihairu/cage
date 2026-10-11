@@ -1027,13 +1027,22 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
 - [x] 顺带修复：pack_snapshot 自校验由 debug_assert! 改为硬错误——包目录混入
       账本外文件时 release 构建此前会静默发放未验证快照，现报
       "snapshot self-verification failed" 退出 2（测试以散文件触发该臂）。
-- [ ] 剩余 57 行均为不可达/受阻项：main() 内 Web 分发臂（仅真实二进制可达，
-      归 web-smoke.sh）、export/import 的 --sign/--verify-sig 缺 --key-env
-      （std::process::exit 直接杀测试进程，不可测）、snapshot/publish 的
-      UpToDate 不可达臂（incremental 恒 false）、keygen 熵源失败臂、
-      filter_by_profile 的防御性死分支、schema-draft 的 mysql/pg 内省成功路
-      （§45 外部依赖：需真实数据库）、以及 lcov 对 if-let 块尾花括号的
-      计数伪影（932/1176/2021/2307 等，逻辑行均已覆盖）。
+- [x] 登记 57 行 → 收口至 49 行（98.5% → 98.7%，全目标口径）。本轮修掉三
+      类：filter_by_profile 的防御性死分支直接删除（retain 后查找恒命中，
+      if-let 改直取）；registry list 的 packages Err 臂（空根单测）；export
+      --sign / import --verify-sig 缺 --key-env 守卫由 std::process::exit(2)
+      改 return 2（clap `requires` 已在解析层拦截，运行时守卫不可经 CLI 触
+      达；等价退出码，单测直调覆盖——export 侧搭最小可导出条目夹具：人工
+      index.json + HASHES.json）；stale 工件删除警告（目录占据 → Is a
+      directory，构建成功仅告警）集成测试补上。余 49 行均登记：15 行 lcov
+      if-let/loop 尾花括号计数伪影（932/933/1177/1321/1582/1870/2022/2228/
+      2308/2377/2439/2533/2785/2834/2885，逻辑行均已覆盖）；21 行 schema-draft
+      的 mysql/pg 内省成功路（§45 外部依赖：需真实数据库，含 -o 写出与
+      stdout 两形态）；5 行 main() Web 分发臂（仅真实二进制可达，归
+      web-smoke.sh）；4 行 snapshot/publish 的 UpToDate 臂（incremental 恒
+      false 的结构死臂，保留 internal 报错兜底）；3 行 keygen 熵源失败臂；
+      1 行 lang_filters match 的 `_ => {}`（字符串 match 必配兜底，未知值
+      已被上游 lang_filters() 拒绝）。
 
 ### cage-core registry.rs 覆盖收口（2026-10-10 续批第五项）
 - [x] registry.rs 覆盖率 96.2% → 99.33%（91 → 18 行未覆盖，工作区 97.28% →
