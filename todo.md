@@ -1225,11 +1225,13 @@ cage.yaml/cage.lock 不改名（cage.toml 已是入口，版本锁定由注册�
 调度器 / LFS / 服务端。
 - [x] B0 决策记录（design §50：四分类对账 / 备份四层防线 / 三能力
       落点 / git commit 裁定 / 不做清单）——本轮交付，勾选
-- [ ] B1 `cage assets` 资产清单命令：core 盘点函数（schema 全集 +
+- [x] B1 `cage assets` 资产清单命令：core 盘点函数（schema 全集 +
       migrations/ + source_roots 文件集 + cage.toml，逐项 blake3 +
       大小 + 类别，确定性排序）+ CLI 子命令（文本 / `--json` /
       `--write <file>` 落基线 / `--check <file>` 复核缺失篡改多余，
-      退出码 1）+ 单测与 CLI 集成测试
+      退出码 1）+ 单测与 CLI 集成测试——本轮交付，勾选（core
+      `assets` 模块 6 单测 + `tests/assets.rs` 8 集成测试；远程 spec
+      不盘点、`build/` `.cage-cache/` 永不入账已测）
 - [ ] B2 完整示例 `examples/asset-workspace/`：四类资产俱全的最小
       工程（sources/ / schemas/ / migrations/ / cage.toml）+
       `examples/asset-workspace.sh` 资产生命周期一键跑通（盘点 →

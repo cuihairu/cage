@@ -42,6 +42,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use cage_core::assets::AssetInventory;
 use cage_core::error::codes::distribution::E2101;
 use cage_core::error::codes::registry::E1802;
 use cage_core::error::codes::remote::E1905;
@@ -123,6 +124,21 @@ enum Commands {
         /// remote source is a hard error even with a cached copy
         #[arg(long)]
         no_cache: bool,
+    },
+    /// Inventory the project's assets (rule / source / build) with hashes,
+    /// write a baseline, or verify the working tree against a saved baseline
+    Assets {
+        /// Configuration project root directory
+        path: PathBuf,
+        /// Emit machine-readable JSON instead of the text report
+        #[arg(long, conflicts_with_all = ["write", "check"])]
+        json: bool,
+        /// Write the inventory to `<file>` — the baseline to commit
+        #[arg(long, conflicts_with_all = ["check"])]
+        write: Option<PathBuf>,
+        /// Verify the working tree against a saved baseline file
+        #[arg(long, conflicts_with_all = ["write"])]
+        check: Option<PathBuf>,
     },
     /// Generate code-target artifacts only (cs/python/lua/ts/js/cpp/go/java), no data validation
     Gen {
@@ -483,6 +499,12 @@ fn main() {
             table,
             no_cache,
         } => run_inspect(&path, table.as_deref(), no_cache),
+        Commands::Assets {
+            path,
+            json,
+            write,
+            check,
+        } => run_assets(&path, json, write.as_deref(), check.as_deref()),
         Commands::Gen {
             path,
             profile,
@@ -3308,6 +3330,128 @@ fn run_diff(baseline: &Path, target: &Path) -> i32 {
     0
 }
 
+/// `cage assets` — inventory (default), `--json`, `--write <baseline>`,
+/// or `--check <baseline>` (design §50 B1: the source-side asset ledger).
+fn run_assets(path: &Path, json: bool, write: Option<&Path>, check: Option<&Path>) -> i32 {
+    if let Some(baseline) = check {
+        return run_assets_check(path, baseline);
+    }
+    let config = match load_project_config(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let inventory = match cage_core::assets::inventory(path, &config) {
+        Ok(inv) => inv,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    if let Some(file) = write {
+        let bytes = assets_json(&inventory);
+        return match fs::write(file, bytes) {
+            Ok(()) => {
+                println!(
+                    "assets: wrote {} asset(s) to {}",
+                    inventory.assets.len(),
+                    file.display()
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("error: cannot write {}: {e}", file.display());
+                2
+            }
+        };
+    }
+    if json {
+        println!("{}", assets_json(&inventory));
+    } else {
+        print_assets(&inventory);
+    }
+    0
+}
+
+/// `cage assets --check <baseline>`: verify the working tree against the
+/// saved ledger — clean match exits 0, any missing / changed / unlisted
+/// asset is named and exits 1.
+fn run_assets_check(path: &Path, baseline_path: &Path) -> i32 {
+    let baseline = match fs::read_to_string(baseline_path) {
+        Ok(text) => match serde_json::from_str::<AssetInventory>(&text) {
+            Ok(inv) => inv,
+            Err(e) => {
+                eprintln!(
+                    "error: invalid asset inventory {}: {e}",
+                    baseline_path.display()
+                );
+                return 2;
+            }
+        },
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", baseline_path.display());
+            return 2;
+        }
+    };
+    let config = match load_project_config(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    match cage_core::assets::verify(path, &config, &baseline) {
+        Ok(report) => {
+            if report.ok {
+                println!("assets: {} asset(s) verified", report.matched);
+                0
+            } else {
+                println!(
+                    "assets: {} asset(s) verified, {} problem(s):",
+                    report.matched,
+                    report.problems.len()
+                );
+                for problem in &report.problems {
+                    println!("  {problem}");
+                }
+                1
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
+/// Pretty JSON form of the inventory (the baseline file content and the
+/// `--json` report — same bytes, same determinism contract).
+fn assets_json(inventory: &AssetInventory) -> String {
+    serde_json::to_string_pretty(inventory).expect("inventory serializes")
+}
+
+/// Human-readable inventory report: path-aligned, class-tagged, full hash.
+fn print_assets(inventory: &AssetInventory) {
+    println!("project: {}", inventory.project);
+    println!("cage: {}", inventory.cage_version);
+    println!("assets: {}", inventory.assets.len());
+    println!();
+    let width = inventory
+        .assets
+        .iter()
+        .map(|a| a.path.len())
+        .max()
+        .unwrap_or(0);
+    for asset in &inventory.assets {
+        println!(
+            "{:<6}  {:<width$}  {:>7} B  blake3:{}",
+            asset.class, asset.path, asset.size, asset.hash
+        );
+    }
+}
+
 fn load_manifest(path: &Path) -> Result<BuildManifest, String> {
     let manifest_path = if path.is_dir() {
         path.join("manifest.json")
@@ -3363,6 +3507,21 @@ mod tests {
                 "inspect {} {} {no_cache}",
                 path.display(),
                 table.as_deref().unwrap_or("<all>")
+            ),
+            Commands::Assets {
+                path,
+                json,
+                write,
+                check,
+            } => format!(
+                "assets {} {json} {} {}",
+                path.display(),
+                write
+                    .as_deref()
+                    .map_or("<none>".to_string(), |p| p.display().to_string()),
+                check
+                    .as_deref()
+                    .map_or("<none>".to_string(), |p| p.display().to_string())
             ),
             Commands::Gen {
                 path,
@@ -3561,6 +3720,33 @@ mod tests {
         // The optional table argument round-trips too.
         let cli = Cli::try_parse_from(["cage", "inspect", "proj", "Item"]).expect("parse table");
         assert_eq!(describe(&cli.command), "inspect proj Item false");
+    }
+
+    #[test]
+    fn parse_assets_subcommand() {
+        // Plain text report is the default mode.
+        let cli = Cli::try_parse_from(["cage", "assets", "proj"]).expect("parse assets");
+        assert_eq!(describe(&cli.command), "assets proj false <none> <none>");
+        // The three modes are mutually exclusive (clap conflict rules).
+        let cli = Cli::try_parse_from(["cage", "assets", "proj", "--write", "base.json"])
+            .expect("parse write");
+        assert_eq!(describe(&cli.command), "assets proj false base.json <none>");
+        let cli = Cli::try_parse_from(["cage", "assets", "proj", "--check", "base.json"])
+            .expect("parse check");
+        assert_eq!(describe(&cli.command), "assets proj false <none> base.json");
+        let cli = Cli::try_parse_from(["cage", "assets", "proj", "--json"]).expect("parse json");
+        assert_eq!(describe(&cli.command), "assets proj true <none> <none>");
+        assert!(
+            Cli::try_parse_from(["cage", "assets", "proj", "--json", "--write", "b.json"]).is_err(),
+            "json conflicts with write"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "cage", "assets", "proj", "--write", "b.json", "--check", "b.json"
+            ])
+            .is_err(),
+            "write conflicts with check"
+        );
     }
 
     #[test]

@@ -38,6 +38,7 @@
     clippy::similar_names
 )]
 
+pub mod assets;
 pub mod diagnostics;
 pub mod edit;
 pub mod error;
