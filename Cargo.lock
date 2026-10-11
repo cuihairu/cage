@@ -239,6 +239,7 @@ dependencies = [
  "cage-target-cpp",
  "cage-target-cs",
  "cage-target-csv",
+ "cage-target-flatbuffers",
  "cage-target-go",
  "cage-target-java",
  "cage-target-json",
@@ -401,6 +402,15 @@ dependencies = [
  "indexmap",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "cage-target-flatbuffers"
+version = "0.1.0"
+dependencies = [
+ "cage-core",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

@@ -43,21 +43,24 @@ echo "$ENV_OUT"
 [ "$ENV_CODE" -eq 2 ] || { echo "FAIL: 未知环境期望退出码 2，实际 ${ENV_CODE}" >&2; exit 1; }
 case "$ENV_OUT" in *"unknown environment 'staging'"*) ;; *) echo "FAIL: 输出未点名 unknown environment" >&2; exit 1 ;; esac
 
-step "[4/14] cage build --profile client   —— 验证 + 生成全部 13 个 target（5 张表）"
+step "[4/14] cage build --profile client   —— 验证 + 生成全部 14 个 target（5 张表）"
 echo "\$ cage build examples/game-config --profile client"
 "$CAGE_BIN" build "$EX" --profile client
 # 新源产物抽查：Excel 源 Quest.json / MsgPack 源 Shop.json + 新 target 的 proto/msgpack
 for f in json/Quest.json json/Shop.json msgpack/Shop.msgpack msgpack/Quest.msgpack \
-         proto/Quest.proto proto/Shop.proto proto/cage_enums.proto; do
+         proto/Quest.proto proto/Shop.proto proto/cage_enums.proto \
+         fbs/Item.fbs fbs/Quest.fbs fbs/cage_enums.fbs; do
   test -s "$EX/build/client/$f" || { echo "FAIL: 缺产物 $f" >&2; exit 1; }
 done
 # 确定性抽查：全量重建后两格式逐字节一致
 B1="$(sha256sum "$EX/build/client/msgpack/Item.msgpack" | cut -d' ' -f1)"
 B2="$(sha256sum "$EX/build/client/proto/Item.proto" | cut -d' ' -f1)"
+B3="$(sha256sum "$EX/build/client/fbs/Item.fbs" | cut -d' ' -f1)"
 "$CAGE_BIN" build "$EX" --profile client > /dev/null
 A1="$(sha256sum "$EX/build/client/msgpack/Item.msgpack" | cut -d' ' -f1)"
 A2="$(sha256sum "$EX/build/client/proto/Item.proto" | cut -d' ' -f1)"
-if [ "$B1" != "$A1" ] || [ "$B2" != "$A2" ]; then
+A3="$(sha256sum "$EX/build/client/fbs/Item.fbs" | cut -d' ' -f1)"
+if [ "$B1" != "$A1" ] || [ "$B2" != "$A2" ] || [ "$B3" != "$A3" ]; then
   echo "FAIL: 重建后产物字节变化（期望确定性）" >&2; exit 1
 fi
 
@@ -81,7 +84,7 @@ PROD_SNAP_DIR="$(ls -d "$EX"/build/snapshot/client-prod-*/ | head -1)"
 echo "\$ cage snapshot <prod-dir> --verify"
 "$CAGE_BIN" snapshot "$PROD_SNAP_DIR" --verify
 
-step "[7/14] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto 定义）"
+step "[7/14] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto/fbs 定义）"
 echo "\$ cage gen examples/game-config --profile client"
 "$CAGE_BIN" gen "$EX" --profile client
 
@@ -261,4 +264,4 @@ step "[14/14] cage inspect examples/game-config   —— 查看表结构"
 echo "\$ cage inspect examples/game-config"
 "$CAGE_BIN" inspect "$EX"
 
-printf '\n全部通过。\n产物目录：examples/game-config/build/{client,server}/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java,jsonschema}\n快照目录：examples/game-config/build/snapshot/\n'
+printf '\n全部通过。\n产物目录：examples/game-config/build/{client,server}/{json,csv,msgpack,proto,fbs,cs,py,lua,ts,js,cpp,go,java,jsonschema}\n快照目录：examples/game-config/build/snapshot/\n'

@@ -2953,6 +2953,29 @@ cage Schema 的表 / 枚举 / 类型 / 默认值 / 描述全部能机械翻译�
 Targets 规划项只留 Binary / SQLite，并注明 FlatBuffers 的 wire 编码
 留待（有 flatc 基准时再立项）。
 
+**F0 类型映射表（定稿）**——cage 类型 → `.fbs` 形态：
+
+| cage 类型 | `.fbs` 形态 | 说明 |
+| --- | --- | --- |
+| Bool | `bool` | |
+| Int8 / Int16 / Int32 / Int64 | `byte` / `short` / `int` / `long` | fbs 短名拼法（flatc 同收 int8 等别名，取短名） |
+| UInt8 / UInt16 / UInt32 / UInt64 | `ubyte` / `ushort` / `uint` / `ulong` | |
+| Float32 / Float64 | `float` / `double` | |
+| String | `string` | |
+| Bytes | `[ubyte]` | |
+| Enum（整数值成员全合法：非空、无重复、域内） | 共享 `enum Ident : <最小基型>`，文件头 `include "cage_enums.fbs"` | 基型阶梯 byte→ubyte→short→ushort→int→uint→long→ulong 取最小可容纳；flatc 枚举无 allow_alias，**重复值整族不合法 → 整枚举退化为 string 字段**（proto allow_alias 的对应裁定） |
+| Enum（字符串成员 / 缺字面量 / 越域） | `string` + 退化注释 | fbs 枚举只承载整型 |
+| `Array<T>` | `[T']` | 嵌套数组 / Map 作元素时落包装 table `{Field}Value`（proto 同名同序规则） |
+| `Map<K,V>` | `[{Field}Value]` | fbs 无原生 map；惯用法 entry table：`table {Field}Value { key: K; value: V; }`；整数键拓宽 `long`（数据模型存数字串，proto int64 同族规则） |
+| Object / Any / Null | `string` + 注释 | cage 三者为自由形态载荷，fbs 无 free-form 类型 → 按 JSON 文本承载（proto 走 WKT Struct 的对应简化） |
+
+**属性映射**：单字段主键且该字段映射为 `string` 或整型标量 → 附加
+`(key)`（flatc 限定 key 只许 string/integer）；`required` 且字段类型
+为 `string` / vector / table → 附加 `(required)`（fbs 语法只许非标量
+required，标量用默认值语义承载可缺省）。每文件以 `root_type <Table>;`
+收尾指向主表。包装与字段标识全部走 proto 同款 name-order 分配器与
+关键字逃逸（fbs 关键字 + 标量名清单）。
+
 ## 注册表鉴权与远程发布协议 → 立项实装：远程包枚举（发布闭环缺的最后一环）
 
 **现状盘点**（本批裁定前先对账，避免重复交付）：读——R3 远程 http(s)

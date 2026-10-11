@@ -3010,7 +3010,7 @@ fn run_gen(path: &Path, profile: &str, env: Option<&str>, no_cache: bool) -> i32
     }
     if artifacts.is_empty() {
         eprintln!(
-            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java/proto/jsonschema/template)"
+            "error: profile '{profile}' has no code targets (cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template)"
         );
         return 2;
     }
@@ -3081,6 +3081,10 @@ fn code_target_items(
             target,
         )
         .generate(schema, Some(schema_hash)))),
+        "flatbuffers" | "fbs" => Some(Ok(
+            cage_target_flatbuffers::FlatbuffersTargetGenerator::from_config(target)
+                .generate(schema, Some(schema_hash)),
+        )),
         // Standard JSON Schema documents (draft-07 default, 2020-12 via
         // options.draft) — the one bundled target that can fail on config
         // alone (an unknown draft value), like the template target.

@@ -1,6 +1,7 @@
 # Cage 完整示例工程 —— 一键跑通见 examples/run.sh
 # 三张表、三种源格式（CSV / YAML / JSON）、三个 schema 文件（合并加载），
-# 一个 profile 构建全部 12 个 target（json/csv/msgpack 数据 + 9 种代码绑定）。
+# 一个 profile 构建全部 14 个 target（json/csv/msgpack 数据 + proto/fbs 定义
+# + 8 种语言代码绑定 + JSON Schema）。
 output_dir = "build"
 schema_path = "schemas"
 
@@ -21,6 +22,7 @@ targets = [
   { format = "csv",          output_dir = "build/client/csv" },
   { format = "msgpack",      output_dir = "build/client/msgpack" },
   { format = "proto",        output_dir = "build/client/proto", options = { package = "game.config" } },
+  { format = "flatbuffers",  output_dir = "build/client/fbs",   options = { namespace = "game.config" } },
   { format = "csharp",       output_dir = "build/client/cs",  options = { namespace = "Game.Config" } },
   { format = "python",       output_dir = "build/client/py" },
   { format = "lua",          output_dir = "build/client/lua" },
