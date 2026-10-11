@@ -276,11 +276,30 @@ enum RegistryCmd {
         #[arg(long)]
         registry: Option<PathBuf>,
     },
-    /// List packages and versions recorded in the registry
+    /// List packages and versions recorded in the registry. Local roots
+    /// enumerate every package directory; remote http(s) roots list the
+    /// packages named on the command line (the read-only protocol has no
+    /// package-name enumeration — one GET per named package).
     List {
+        /// Package names to list on a remote registry root (required there;
+        /// ignored for local roots)
+        #[arg(long = "package", value_name = "NAME")]
+        packages: Vec<String>,
+        /// Environment variable carrying the bearer token for a remote
+        /// root (overrides `[registry].auth_env`; 401/403 → E2102, missing
+        /// env → E2105 — the push semantics)
+        #[arg(long)]
+        auth_env: Option<String>,
+        /// Emit machine-readable JSON (same shape for local and remote)
+        #[arg(long)]
+        json: bool,
         /// Registry root directory (overrides cage.toml `[registry].path`)
         #[arg(long)]
         registry: Option<PathBuf>,
+        /// Configuration project root — anchors the remote-index cache
+        /// (`.cage-cache/registry/`, shared with `registry:` resolution and
+        /// reused offline); omit to fetch fresh without caching
+        path: Option<PathBuf>,
     },
     /// Verify a full registry: every recorded entry must exist and
     /// self-verify (bytes re-hashed against its ledger, index record
@@ -547,7 +566,19 @@ fn main() {
                 version.as_deref(),
                 registry.as_deref(),
             ),
-            RegistryCmd::List { registry } => run_registry_list(registry.as_deref()),
+            RegistryCmd::List {
+                packages,
+                auth_env,
+                json,
+                registry,
+                path,
+            } => run_registry_list(
+                registry.as_deref(),
+                &packages,
+                auth_env.as_deref(),
+                json,
+                path.as_deref(),
+            ),
             RegistryCmd::Verify { registry } => run_registry_verify(registry.as_deref()),
             RegistryCmd::Gc {
                 keep,
@@ -2380,25 +2411,34 @@ fn run_registry_publish(
 }
 
 /// `cage registry list` — every package with its recorded versions, in
-/// deterministic (name, dotted-numeric version) order.
-fn run_registry_list(registry_flag: Option<&Path>) -> i32 {
+/// deterministic (name, dotted-numeric version) order. Local roots walk
+/// package directories; remote http(s) roots list the `--package` names
+/// given on the command line (§49 L1).
+fn run_registry_list(
+    registry_flag: Option<&Path>,
+    packages: &[String],
+    auth_env: Option<&str>,
+    json: bool,
+    path: Option<&Path>,
+) -> i32 {
     let Some(reg_root) = registry_flag else {
         eprintln!("error: no registry root (pass --registry)");
         return 2;
     };
-    // R3: remote roots cannot be listed — the read-only protocol has no
-    // package enumeration.
     if let Some(spec) = reg_root.to_str() {
         if remote::is_remote_root(spec) {
-            eprintln!(
-                "error: registry root '{spec}' is remote — the read-only protocol has no \
-                 package enumeration; reference packages directly via registry:<package>"
-            );
-            return 2;
+            return run_registry_list_remote(spec, packages, auth_env, json, path);
         }
     }
     match cage_core::registry::packages(reg_root) {
         Ok(indexes) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&indexes).expect("indexes serialize")
+                );
+                return 0;
+            }
             if indexes.is_empty() {
                 println!("cage registry: empty ({})", reg_root.display());
                 return 0;
@@ -2408,18 +2448,7 @@ fn run_registry_list(registry_flag: Option<&Path>) -> i32 {
                 indexes.len(),
                 reg_root.display()
             );
-            for index in indexes {
-                println!("{}", index.package);
-                for entry in &index.entries {
-                    println!(
-                        "  {:<12} build {}  content {}  {} files",
-                        entry.version,
-                        &entry.build_id[..entry.build_id.len().min(12)],
-                        &entry.content_hash[..entry.content_hash.len().min(12)],
-                        entry.files
-                    );
-                }
-            }
+            print_index_listing(&indexes);
             0
         }
         Err(e) => {
@@ -2427,6 +2456,80 @@ fn run_registry_list(registry_flag: Option<&Path>) -> i32 {
             2
         }
     }
+}
+
+/// The text shape local and remote listings share: one line per package,
+/// then its versions with the 12-char build/content fingerprints.
+fn print_index_listing(indexes: &[cage_core::registry::RegistryIndex]) {
+    for index in indexes {
+        println!("{}", index.package);
+        if index.entries.is_empty() {
+            println!("  (no versions)");
+            continue;
+        }
+        for entry in &index.entries {
+            println!(
+                "  {:<12} build {}  content {}  {} files",
+                entry.version,
+                &entry.build_id[..entry.build_id.len().min(12)],
+                &entry.content_hash[..entry.content_hash.len().min(12)],
+                entry.files
+            );
+        }
+    }
+}
+
+/// `cage registry list --registry <http(s)>` (§49 L1): one GET per named
+/// package (the read-only protocol has no package-name enumeration — that
+/// much stays true from R3; naming packages is the CI's job, it knows what
+/// it published). `path` anchors the shared `.cage-cache` index cache and
+/// enables the S4 offline fallback; without it every listing fetches fresh.
+fn run_registry_list_remote(
+    spec: &str,
+    packages: &[String],
+    auth_env: Option<&str>,
+    json: bool,
+    path: Option<&Path>,
+) -> i32 {
+    if packages.is_empty() {
+        eprintln!(
+            "error: listing a remote root needs at least one --package NAME — the read-only \
+             protocol has no package-name enumeration (local roots list every package)"
+        );
+        return 2;
+    }
+    let mut indexes = Vec::new();
+    let mut any_cached = false;
+    for package in packages {
+        match remote::fetch_remote_index(path, spec, package, auth_env) {
+            Ok((index, from_cache)) => {
+                any_cached |= from_cache;
+                indexes.push(index);
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 2;
+            }
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&indexes).expect("indexes serialize")
+        );
+        return 0;
+    }
+    println!(
+        "cage registry: {} package(s) in {spec}{}",
+        indexes.len(),
+        if any_cached {
+            " (offline, cached index)"
+        } else {
+            ""
+        }
+    );
+    print_index_listing(&indexes);
+    0
 }
 
 /// `cage registry export` — pack a published entry into a deterministic tar
@@ -3569,11 +3672,21 @@ mod tests {
                         .as_deref()
                         .map_or_else(|| Path::new("<cage.toml>").display(), Path::display)
                 ),
-                RegistryCmd::List { registry } => format!(
-                    "registry list {}",
+                RegistryCmd::List {
+                    packages,
+                    auth_env,
+                    json,
+                    registry,
+                    path,
+                } => format!(
+                    "registry list {:?} {} {json} {} {}",
+                    packages,
+                    auth_env.as_deref().unwrap_or("<none>"),
                     registry
                         .as_deref()
-                        .map_or_else(|| Path::new("<flag required>").display(), Path::display)
+                        .map_or_else(|| Path::new("<flag required>").display(), Path::display),
+                    path.as_deref()
+                        .map_or("<none>".to_string(), |p| p.display().to_string())
                 ),
                 RegistryCmd::Verify { registry } => format!(
                     "registry verify {}",
@@ -4703,13 +4816,19 @@ file_template = "{{table}}.csv"
         let staging = root.join("snap");
 
         // No --registry flag: every read-only runner is a usage error.
-        assert_eq!(run_registry_list(None), 2);
+        assert_eq!(run_registry_list(None, &[], None, false, None), 2);
         assert_eq!(run_registry_verify(None), 2);
         assert_eq!(run_registry_gc(1, false, None), 2);
         assert_eq!(run_registry_remove("common", "1.0.0", false, None), 2);
         // Remote roots are refused: the read-only protocol has no writes.
         assert_eq!(
-            run_registry_list(Some(Path::new("http://127.0.0.1:80/reg"))),
+            run_registry_list(
+                Some(Path::new("http://127.0.0.1:80/reg")),
+                &[],
+                None,
+                false,
+                None
+            ),
             2
         );
         assert_eq!(run_registry_verify(Some(Path::new("https://host/reg"))), 2);
@@ -4723,7 +4842,7 @@ file_template = "{{table}}.csv"
         );
 
         // An empty registry is a clean registry; a missing root is E1802.
-        assert_eq!(run_registry_list(Some(&reg)), 0);
+        assert_eq!(run_registry_list(Some(&reg), &[], None, false, None), 0);
         assert_eq!(run_registry_verify(Some(&reg)), 0);
         assert_eq!(run_registry_verify(Some(&root.join("ghost"))), 2);
 
@@ -4734,7 +4853,7 @@ file_template = "{{table}}.csv"
         ] {
             publish_version(&reg, &staging, v, body);
         }
-        assert_eq!(run_registry_list(Some(&reg)), 0);
+        assert_eq!(run_registry_list(Some(&reg), &[], None, false, None), 0);
         assert_eq!(run_registry_verify(Some(&reg)), 0);
 
         // gc keeps the newest `keep`; a dry run reports the identical
@@ -5221,7 +5340,26 @@ file_template = "{table}.cs"
             ),
             (
                 &["cage", "registry", "list", "--registry", "reg"],
-                "registry list reg".to_string(),
+                "registry list [] <none> false reg <none>".to_string(),
+            ),
+            (
+                &[
+                    "cage",
+                    "registry",
+                    "list",
+                    "proj",
+                    "--registry",
+                    "https://cdn.example.com/reg",
+                    "--package",
+                    "acme",
+                    "--package",
+                    "demo",
+                    "--auth-env",
+                    "CAGE_TOKEN",
+                    "--json",
+                ],
+                "registry list [\"acme\", \"demo\"] CAGE_TOKEN true https://cdn.example.com/reg proj"
+                    .to_string(),
             ),
             (
                 &["cage", "registry", "verify", "--registry", "reg"],
@@ -6184,7 +6322,7 @@ main = "config"
     #[test]
     fn registry_list_empty_root_reports_error() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let code = run_registry_list(Some(&tmp.path().join("registry")));
+        let code = run_registry_list(Some(&tmp.path().join("registry")), &[], None, false, None);
         assert_eq!(code, 2);
     }
 

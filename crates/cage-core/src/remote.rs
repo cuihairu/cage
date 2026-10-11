@@ -195,6 +195,26 @@ pub fn http_get(url: &str) -> Result<Vec<u8>, FetchFailure> {
     http_get_full(url).map(|response| response.body)
 }
 
+/// [`http_get`] with an optional bearer token (§49 L1: `registry list`
+/// against a remote root sends the push-protocol credential when `--auth-env`
+/// names a variable). Same retry policy and failure classification as the
+/// plain path — only the header differs; `None` behaves exactly like
+/// [`http_get`]. The token resolves from an env var name in the caller, so
+/// it never enters a config file or a log line.
+pub fn http_get_bearer(url: &str, token: Option<&str>) -> Result<Vec<u8>, FetchFailure> {
+    with_retries(&RetryPolicy::default(), || http_get_bearer_once(url, token))
+        .map(|response| response.body)
+}
+
+fn http_get_bearer_once(url: &str, token: Option<&str>) -> Result<HttpGet, FetchFailure> {
+    let mut request = ureq::get(url).timeout(Duration::from_secs(30));
+    if let Some(value) = token {
+        request = request.set("Authorization", &format!("Bearer {value}"));
+    }
+    let response = request.call().map_err(|e| map_fetch_error(e, url))?;
+    read_response(response, url)
+}
+
 /// One successful GET: the body bytes plus the response headers the
 /// consumers need (`Link` per RFC 8288 for the pagination walk; `ETag` /
 /// `Last-Modified` per RFC 7232 for the conditional revalidation round

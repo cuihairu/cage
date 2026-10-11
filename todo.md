@@ -1215,11 +1215,24 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       双语 README）。
       wire 编码不做：本环境无 flatc 可作字节级 oracle（`which flatc`
       → 不存在），确定性二进制由 MessagePack 覆盖。
-- [ ] L 系列：注册表远程包枚举（design §49 拍板，发布闭环最后一环）
-      待定。L0 现状对账（读 / 写 / presign / 签名均已交付，只缺枚举）
-      / L1 `cage registry list --registry`（远端 index 读取 + 缓存 +
-      与本地 list 同形状 + --json + auth_env 鉴权同 push 口径）/
-      L2 文档与协议约定。
+- [x] L 系列：注册表远程包枚举（design §49 拍板，发布闭环最后一环）
+      已实装为 `cage registry list --registry <root> --package NAME…
+      [--auth-env VAR] [--json] [path]`（L1）+ 文档与协议约定（L2）。
+      两处口径精化（design L 段落地记录）：枚举来源——只读协议只有逐包
+      index 资源、没有包名总目录（总目录要么服务端要么 push 额外维护
+      根 index，都越线），故远端按 `--package` 点名列（点名即 CI 审计
+      自己发布了什么），不点名报 usage 退出 2；404 渲染 `(no versions)`
+      退出 0（发布前常态）。缓存语义——字面「缓存复用不重取」会让
+      list 汇报陈旧远端状态、制造裁定要避免的「冲突发现越晚越痛」，
+      故取在线取新为真并写 `.cage-cache/registry/<url 指纹>/<pkg>/
+      index.json`（与 R3 resolve 同源同键），传输失败才回退缓存并标注
+      offline（S4 语义）；省略 path 则每次取新不落盘。其余按原裁定：
+      渲染与本地 list 同形状、`--json` 本地/远端同构、Bearer 仅
+      `--auth-env` 指名时随 GET（缺失/为空 → E2105 预网校验、401/403
+      → E2102，只报变量名不报值）、服务端零实现。本地根 list 同步
+      获得 `--json`。验收：tests/registry_remote.rs 远端点名列举 +
+      404 空清单 + 无 --package usage 拒绝 + 离线缓存回退 + E2105 ×1
+      项，5 项全过；cli.md registry 小节与 protocol 段已更新。
 - [x] §45 外部依赖三项 → 卡点登记（需外部输入，不立项）：行级增量
       需各源数据契约 + 真实 DB；OAuth / mTLS / service account 需 Google
       托管凭据与 scope 授权；连接池并发需真实 MySQL/PG 压测。三者均

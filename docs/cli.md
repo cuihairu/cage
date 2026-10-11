@@ -232,7 +232,7 @@ Ctrl+C 停止服务。`--port` 默认 8765。
 ```bash
 cage registry publish <project> [--registry <dir>] [--package name] [--version 1.0.0] [--profile client] [--env prod]
 #                                     └ 可省：缺省回落 cage.toml [registry].path
-cage registry list    --registry <dir>
+cage registry list    --registry <root> [--package NAME]… [--auth-env VAR] [--json] [path]
 cage registry verify  --registry <dir>
 cage registry gc      --registry <dir> [--keep 3] [--dry-run]
 cage registry remove  <package> <version> --registry <dir> [--dry-run]
@@ -250,7 +250,8 @@ cage registry push    <project> [package[@version]] (--registry <remote-url> | -
 `--env` 环境）报 `E1801` 版本冲突：注册表不改写历史。`--env` 出环境化包
 （入册条目的 `manifest.json` 记 `environment`），同版本换环境即冲突，
 换版本号（如 `0.1.0-prod`）入册。`list` 按确定性序列出包/版本/
-build_id/content_hash/文件数。
+build_id/content_hash/文件数；本地根列出全部包，`--json` 输出与
+远端同构的 index 数组。
 
 消费方在 cage.toml 里声明注册表根并引用包作为源根（R1 源解析）：
 
@@ -289,9 +290,20 @@ path = "https://registry.example.com/config"   # http(s):// 前缀 = 远程根
 缓存再校验干净则直接复用，首次在线拉取后**离线构建可用**（index 也有
 本地副本兜底）；不可达且无缓存 → `E1802`。
 
-远程根只读：`cage registry publish` 与 `cage registry list` 对远程根报错
-退出（协议无包枚举资源）；发布方在本地注册表发布后用任意静态服务器
-托管，或用 `cage registry push` 直推远端（见下文 bundle 分发与直推）。
+远程根只读：`cage registry publish` 对远程根报错退出；发布方在本地注册表
+发布后用任意静态服务器托管，或用 `cage registry push` 直推远端（见下文
+bundle 分发与直推）。
+
+`registry list` 也在远程根上可用（§49 L1）：按 `--package NAME`（可重复）
+点名列包——只读协议只有逐包 index 资源、没有包名总目录（总目录要么要
+服务端、要么要 push 协议额外维护根 index，都越线），点名即 CI 审计自己
+发布过什么；不点名报 usage 退出码 2。缺包名不是错误：远端 404 渲染为
+`(no versions)` 的空清单退出 0（发布前常态）。每包一次 GET，缺省匿名；
+`--auth-env VAR` 指名时随 GET 携带 push 协议同款 Bearer（`VAR` 未设/为空
+→ `E2105`，401/403 → `E2102`，仅报变量名不报值）。`path` 位置参数锚定
+与解析共用的 `.cage-cache/registry/<url 指纹>/<包>/index.json`：在线取新
+为真并写入缓存，传输失败回退缓存副本并在输出标注 offline；省略 `path`
+则每次取新不落盘。401/403、`E2102`/`E2105` 之外的网络故障报 `E2101`。
 
 ### 依赖声明与版本区间（R2）
 

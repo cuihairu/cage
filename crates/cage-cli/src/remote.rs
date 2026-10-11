@@ -18,20 +18,114 @@
 //! the cache directory passes the same `verify_snapshot` trust gate as a
 //! local entry («未经校验不载入»). A cached entry that re-verifies clean
 //! is served without a single request — builds work offline after the first
-//! fetch. Publish and list stay local-only: the registry never rewrites
-//! history, and the protocol has no package enumeration.
+//! fetch. Publish stays local-only (the registry never rewrites history);
+//! `registry list` joins the read side (§49 L1) — one GET per named
+//! package, since the protocol still has no package-name enumeration.
 //!
 //! The HTTP GET itself comes from `cage_core::remote` (§45): one fetch,
 //! one retry policy for every remote consumer.
 
+use cage_core::error::codes::distribution::{E2101, E2102, E2105};
 use cage_core::error::codes::registry::{E1802, E1803};
 use cage_core::registry::{RegistryIndex, VersionReq};
-use cage_core::remote::{http_get, FetchFailure};
+use cage_core::remote::{http_get, http_get_bearer, FetchFailure};
 use std::path::{Path, PathBuf};
 
 /// Whether a `[registry].path` is a remote root (R3): an http(s) URL.
 pub(crate) fn is_remote_root(spec: &str) -> bool {
     spec.starts_with("http://") || spec.starts_with("https://")
+}
+
+/// `cage registry list --registry <remote>` (§49 L1): fetch one package's
+/// index from a remote root. Anonymous by default; when `auth_env` names a
+/// variable, the push-protocol bearer rides the GET — E2102 on 401/403,
+/// E2105 resolved before any network contact, the exact push semantics.
+/// `project_root` anchors the same `.cage-cache/registry/<url-key>/` tree
+/// the R3 resolver uses: fresh bytes overwrite the cache, a transport
+/// failure falls back to the cached copy (S4 offline semantics, reported
+/// as `Ok((index, true))`). A 404 is the definitive "package absent" the
+/// push probe also treats as normal pre-first-publish state — an empty
+/// index under the package's own name, not an error.
+pub(crate) fn fetch_remote_index(
+    project_root: Option<&Path>,
+    root_url: &str,
+    package: &str,
+    auth_env: Option<&str>,
+) -> Result<(RegistryIndex, bool), String> {
+    // Credential resolution precedes any network contact (E2105); only the
+    // env var NAME may appear in errors — never the token itself.
+    let token = match auth_env {
+        Some(name) => {
+            let value = std::env::var(name)
+                .map_err(|_| format!("{E2105} list credential missing: env '{name}' is not set"))?;
+            if value.is_empty() {
+                return Err(format!(
+                    "{E2105} list credential missing: env '{name}' is empty"
+                ));
+            }
+            Some(value)
+        }
+        None => None,
+    };
+    let base = root_url.trim_end_matches('/');
+    let index_url = format!("{base}/{package}/index.json");
+    let cache_index = project_root.map(|root| {
+        root.join(".cage-cache")
+            .join("registry")
+            .join(cage_core::registry::cache_key(root_url))
+            .join(package)
+            .join("index.json")
+    });
+    let mut from_cache = false;
+    let bytes = match http_get_bearer(&index_url, token.as_deref()) {
+        Ok(bytes) => {
+            if let Some(path) = &cache_index {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, &bytes);
+            }
+            bytes
+        }
+        Err(FetchFailure::Transport(e)) => {
+            let cached = cache_index
+                .as_deref()
+                .and_then(|path| std::fs::read(path).ok())
+                .ok_or_else(|| {
+                    format!(
+                        "{E2101} cannot read remote index {index_url}: transport failure: {e}; \
+                         no cached copy — pass the project root as the path argument to cache \
+                         listings, or retry online"
+                    )
+                })?;
+            from_cache = true;
+            cached
+        }
+        Err(FetchFailure::NotFound(_)) => serde_json::to_vec(&RegistryIndex {
+            package: package.to_string(),
+            entries: Vec::new(),
+        })
+        .expect("empty index serializes"),
+        Err(FetchFailure::Status(code)) if code == 401 || code == 403 => {
+            return Err(format!(
+                "{E2102} list rejected at {index_url}: http status {code}"
+            ));
+        }
+        Err(FetchFailure::RateLimited(wait)) => {
+            return Err(format!(
+                "{E2101} cannot read remote index {index_url}: rate limited, retry after {}s",
+                wait.as_secs()
+            ));
+        }
+        Err(FetchFailure::Status(code)) => {
+            return Err(format!(
+                "{E2101} cannot read remote index {index_url}: http status {code}"
+            ));
+        }
+    };
+    let index: RegistryIndex = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{E1802} corrupt remote registry index {index_url}: {e}"))?;
+    Ok((index, from_cache))
 }
 
 /// Reject a ledger-relative path that could escape the cache directory.

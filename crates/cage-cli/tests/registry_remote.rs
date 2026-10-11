@@ -687,3 +687,120 @@ fn remote_heals_stale_cache_and_refuses_self_hashing_ledgers() {
     );
     assert!(stderr(&out).contains("1 problem"), "{}", stderr(&out));
 }
+
+/// §49 L1: `registry list` against a remote root — one GET per named
+/// package (text and `--json` forms share the local listing shape), an
+/// absent package renders empty instead of erroring, a project-rooted
+/// `.cage-cache` index survives a dead root (S4 fallback), and a missing
+/// credential env var fails pre-network with E2105 (push semantics).
+#[test]
+fn remote_list_lists_named_packages_and_falls_back_to_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_publisher(root);
+    let reg = root.join("reg");
+    publish_versions(root, &reg);
+
+    let server = start_registry_server(&reg);
+    let url = format!("http://127.0.0.1:{}", server.port);
+    let lister = root.join("lister").to_str().unwrap().to_string();
+
+    // Text form: the named package's versions in the local-list shape.
+    let out = run_cage(&[
+        "registry",
+        "list",
+        &lister,
+        "--registry",
+        &url,
+        "--package",
+        "common",
+    ]);
+    assert_code(&out, 0, "remote list");
+    assert!(stdout(&out).contains("common"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("2.0.0"), "{}", stdout(&out));
+
+    // An absent package is a definitive empty listing, not an error.
+    let out = run_cage(&[
+        "registry",
+        "list",
+        &lister,
+        "--registry",
+        &url,
+        "--package",
+        "ghost",
+    ]);
+    assert_code(&out, 0, "absent package lists empty");
+    assert!(stdout(&out).contains("(no versions)"), "{}", stdout(&out));
+
+    // `--json` is parseable and carries the same shape as local listings.
+    let out = run_cage(&[
+        "registry",
+        "list",
+        &lister,
+        "--registry",
+        &url,
+        "--package",
+        "common",
+        "--json",
+    ]);
+    assert_code(&out, 0, "remote list json");
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout(&out).trim()).expect("json listing parses");
+    assert_eq!(parsed[0]["package"], "common");
+    assert!(
+        parsed[0]["entries"].as_array().expect("entries").len() >= 2,
+        "{}",
+        stdout(&out)
+    );
+
+    // A remote root without package names is a usage refusal (exit 2).
+    let out = run_cage(&["registry", "list", "--registry", &url]);
+    assert_code(&out, 2, "remote list without names");
+    assert!(stderr(&out).contains("--package"), "{}", stderr(&out));
+
+    // Warm the project-anchored cache, kill the server, list again.
+    let out = run_cage(&[
+        "registry",
+        "list",
+        &lister,
+        "--registry",
+        &url,
+        "--package",
+        "common",
+    ]);
+    assert_code(&out, 0, "warm list");
+    let cached = root
+        .join("lister/.cage-cache/registry")
+        .join(cage_core::registry::cache_key(&url))
+        .join("common/index.json");
+    assert!(cached.is_file(), "cached index written");
+    drop(server);
+    let out = run_cage(&[
+        "registry",
+        "list",
+        &lister,
+        "--registry",
+        &url,
+        "--package",
+        "common",
+    ]);
+    assert_code(&out, 0, "offline list from cache");
+    assert!(stdout(&out).contains("cached"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("2.0.0"), "{}", stdout(&out));
+
+    // A credential env var that is not set fails before any network
+    // contact (E2105), even against the now-dead root.
+    let out = run_cage(&[
+        "registry",
+        "list",
+        &lister,
+        "--registry",
+        &url,
+        "--package",
+        "common",
+        "--auth-env",
+        "CAGE_LIST_TOKEN_MISSING",
+    ]);
+    assert_code(&out, 2, "missing credential");
+    assert!(stderr(&out).contains("E2105"), "{}", stderr(&out));
+}
