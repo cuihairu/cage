@@ -1128,3 +1128,21 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       `test_generated_headers_compile` 的 g++ 缺失早退（有 g++ 的机器本行
       必覆盖、本机 g++ 在位故未覆盖，环境条件不可控）与 2039 该测试 g++
       编译失败时的 panic 消息行（命中即测试本身失败，防御性不可达）。
+
+### cage-source-http 覆盖收口（2026-10-11 续批第九项）
+- [x] cage-source-http 覆盖率 99.24%（780/786，37 → 6 行未覆盖，25 测试
+      全绿）。四处测试 HTTP 服务器内逐字节重复的请求头读取循环（412-430 /
+      489-520 / 571-605 / 1048-1094）抽成单一 `read_request_head` 助手
+      （净删约 50 行脚手架），新增 `server_tolerates_misbehaving_clients`
+      用裸 TcpStream 打 start_server：截断头 EOF、>64KiB 无终止符头触发
+      尺寸守卫，两路罐头回复照常落地。新增 6 测试：
+      `page_failure_display_texts`（PageFailure Display 的 Http/BadLink/
+      TooManyPages 三臂原文断言）、`rel_param_only_matches_rel_keys`
+      （非 rel 键参不携带 next）、`read_meta_unreadable_meta_reports_e9902`
+      与 `write_meta_occupied_meta_reports_e9902`（meta 路径被目录占据 →
+      非 NotFound 硬错）、`cache_dir_occupied_by_file_reports_e9902` 与
+      `cache_file_occupied_by_dir_reports_e9902`（缓存槽路径被占 → fetch
+      成功后写缓存 E9902）。余下 6 行登记：4 处 accept 非 WouldBlock 错误
+      臂（436/512/583/1058，需 fd 耗尽，登记不可达）、892 测试助手 panic
+      （命中即测试失败，防御性）、345 let-else 闭合 `}`（lcov 尾花括号
+      伪未覆盖，两处 return false 均已覆盖）。

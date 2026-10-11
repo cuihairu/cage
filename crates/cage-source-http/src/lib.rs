@@ -382,6 +382,26 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    /// Drain one request head: stop at the `\r\n\r\n` terminator, at
+    /// EOF/error, past a 64 KiB head, or on the 2 s read timeout — raw
+    /// misbehaving clients must not wedge the server thread.
+    fn read_request_head(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        let mut head = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    head.extend_from_slice(&buf[..n]);
+                    if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() > 64 * 1024 {
+                        break;
+                    }
+                }
+            }
+        }
+        head
+    }
+
     /// Serve one canned response to every request until dropped.
     struct Server {
         port: u16,
@@ -405,21 +425,7 @@ mod tests {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                        let mut head_bytes = Vec::new();
-                        let mut buf = [0u8; 1024];
-                        loop {
-                            match stream.read(&mut buf) {
-                                Ok(0) | Err(_) => break,
-                                Ok(n) => {
-                                    head_bytes.extend_from_slice(&buf[..n]);
-                                    if head_bytes.windows(4).any(|w| w == b"\r\n\r\n")
-                                        || head_bytes.len() > 64 * 1024
-                                    {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        let _ = read_request_head(&mut stream);
                         let _ = stream.write_all(head.as_bytes());
                         let _ = stream.write_all(body.as_bytes());
                         let _ = stream.flush();
@@ -482,21 +488,7 @@ mod tests {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                        let mut head = Vec::new();
-                        let mut buf = [0u8; 1024];
-                        loop {
-                            match stream.read(&mut buf) {
-                                Ok(0) | Err(_) => break,
-                                Ok(n) => {
-                                    head.extend_from_slice(&buf[..n]);
-                                    if head.windows(4).any(|w| w == b"\r\n\r\n")
-                                        || head.len() > 64 * 1024
-                                    {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        let head = read_request_head(&mut stream);
                         let request = String::from_utf8_lossy(&head);
                         let path = request.split_whitespace().nth(1).unwrap_or("/");
                         let (status, link, body) =
@@ -564,21 +556,7 @@ mod tests {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                        let mut head = Vec::new();
-                        let mut buf = [0u8; 1024];
-                        loop {
-                            match stream.read(&mut buf) {
-                                Ok(0) | Err(_) => break,
-                                Ok(n) => {
-                                    head.extend_from_slice(&buf[..n]);
-                                    if head.windows(4).any(|w| w == b"\r\n\r\n")
-                                        || head.len() > 64 * 1024
-                                    {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        let _ = read_request_head(&mut stream);
                         let n = hits2.fetch_add(1, Ordering::SeqCst) + 1;
                         let (status, extra) = if n <= throttled {
                             (
@@ -1041,21 +1019,7 @@ mod tests {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                        let mut head = Vec::new();
-                        let mut buf = [0u8; 1024];
-                        loop {
-                            match stream.read(&mut buf) {
-                                Ok(0) | Err(_) => break,
-                                Ok(n) => {
-                                    head.extend_from_slice(&buf[..n]);
-                                    if head.windows(4).any(|w| w == b"\r\n\r\n")
-                                        || head.len() > 64 * 1024
-                                    {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        let head = read_request_head(&mut stream);
                         let request = String::from_utf8_lossy(&head);
                         let inm = request
                             .lines()
@@ -1220,5 +1184,119 @@ mod tests {
         );
         assert!(cache_file.is_file(), "the payload is rebuilt");
         assert_eq!(server.hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn page_failure_display_texts() {
+        // The HTTP arm delegates to the inner fetch failure; the
+        // pagination-contract arms carry their URLs (and the bound)
+        // verbatim.
+        let e = PageFailure::Http(FetchFailure::NotFound("http://x/y".to_string()));
+        assert_eq!(e.to_string(), "not found: http://x/y");
+        assert_eq!(
+            PageFailure::BadLink("nope".to_string()).to_string(),
+            "pagination next link is not a usable URL: nope"
+        );
+        assert_eq!(
+            PageFailure::TooManyPages(8, "http://x/p9".to_string()).to_string(),
+            "pagination exceeded 8 pages at: http://x/p9"
+        );
+    }
+
+    #[test]
+    fn rel_param_only_matches_rel_keys() {
+        // A parameter keyed other than `rel` never carries next.
+        assert!(!param_is_rel_next("href=<http://x/2>"));
+    }
+
+    #[test]
+    fn read_meta_unreadable_meta_reports_e9902() {
+        // A meta path occupied by a directory reads as a hard error, not
+        // the benign NotFound miss.
+        let tmp = tempfile::tempdir().unwrap();
+        let meta = meta_path(tmp.path(), "http://x/a.json");
+        std::fs::create_dir_all(&meta).unwrap();
+        let err = read_meta(tmp.path(), "http://x/a.json").unwrap_err();
+        assert!(
+            err.contains("E9902") && err.contains("cannot read source cache meta"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn write_meta_occupied_meta_reports_e9902() {
+        let tmp = tempfile::tempdir().unwrap();
+        let meta = meta_path(tmp.path(), "http://x/a.json");
+        std::fs::create_dir_all(&meta).unwrap();
+        let err = write_meta(
+            tmp.path(),
+            "http://x/a.json",
+            &Validators {
+                etag: None,
+                last_modified: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("E9902") && err.contains("cannot write source cache meta"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cache_dir_occupied_by_file_reports_e9902() {
+        // The fetch answers fine, but the cache slot path is a file —
+        // create_dir_all fails after the server has spoken.
+        let server = start_server(200, "OK", "[]");
+        let tmp = tempfile::tempdir().unwrap();
+        let url = format!("http://127.0.0.1:{}/items.json", server.port);
+        let cache_dir = remote::source_cache_dir(tmp.path(), &url);
+        std::fs::create_dir_all(cache_dir.parent().unwrap()).unwrap();
+        std::fs::write(&cache_dir, b"not a dir").unwrap();
+        let err = HttpSourceAdapter::fetch(tmp.path(), &url, false).unwrap_err();
+        assert!(
+            err.contains("E9902") && err.contains("cannot create source cache"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cache_file_occupied_by_dir_reports_e9902() {
+        let server = start_server(200, "OK", "[]");
+        let tmp = tempfile::tempdir().unwrap();
+        let url = format!("http://127.0.0.1:{}/items.json", server.port);
+        let cache_dir = remote::source_cache_dir(tmp.path(), &url);
+        let cache_file = cache_dir.join(format!("{}.json", remote::cache_key(&url)));
+        std::fs::create_dir_all(&cache_file).unwrap();
+        let err = HttpSourceAdapter::fetch(tmp.path(), &url, false).unwrap_err();
+        assert!(
+            err.contains("E9902") && err.contains("cannot write source cache"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn server_tolerates_misbehaving_clients() {
+        // A truncated head ends the read loop at EOF; a >64 KiB head
+        // without terminator trips the size guard — the canned reply
+        // still lands and the server thread survives both.
+        for junk in [
+            b"GET /half HTTP/1.1\r\n".to_vec(),
+            vec![b'a'; 64 * 1024 + 1],
+        ] {
+            let server = start_server(200, "OK", "[]");
+            let mut c = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+            c.write_all(&junk).unwrap();
+            let _ = c.shutdown(std::net::Shutdown::Write);
+            let mut reply = Vec::new();
+            let _ = c.set_read_timeout(Some(Duration::from_secs(2)));
+            let _ = c.read_to_end(&mut reply);
+            assert!(
+                reply.starts_with(b"HTTP/1.1 200"),
+                "misbehaving client still gets the canned reply: {reply:?}"
+            );
+            drop(c);
+            drop(server);
+        }
     }
 }
