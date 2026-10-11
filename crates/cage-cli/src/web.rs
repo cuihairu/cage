@@ -449,6 +449,7 @@ impl Ctx {
 #[cfg(test)]
 mod handle_tests {
     use super::tests::{ctx_in, good_doc};
+    use super::{api_save, api_schema, handle, run_web};
     use std::fs;
     use std::io::{Read, Write};
     use tempfile::TempDir;
@@ -519,5 +520,101 @@ mod handle_tests {
         assert!(raw.contains("not found"), "{raw}");
 
         driver.join().expect("driver thread");
+    }
+
+    #[test]
+    fn run_web_rejects_without_a_project_config() {
+        let dir = TempDir::new().expect("tempdir");
+        let err = run_web(dir.path(), 1).unwrap_err();
+        assert!(!err.contains("cannot bind"), "{err}");
+    }
+
+    #[test]
+    fn run_web_rejects_when_the_port_is_taken() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::write(
+            dir.path().join("cage.toml"),
+            r#"[project]
+name = "demo"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/json"
+file_template = "{table}.json"
+"#,
+        )
+        .expect("write config");
+        // Hold the port: the bind must fail before the serve loop starts.
+        let held = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = held.local_addr().expect("addr").port();
+        let err = run_web(dir.path(), port).unwrap_err();
+        assert!(
+            err.contains(&format!("cannot bind 127.0.0.1:{port}:")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn api_schema_reports_a_missing_schema_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = ctx_in(&dir, Some("absent.yaml"));
+        let doc = api_schema(&ctx);
+        assert_eq!(doc["ok"], serde_json::json!(false));
+        assert!(doc["schema"].is_null(), "{doc}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn api_save_reports_an_unwritable_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().expect("tempdir");
+        fs::write(dir.path().join("schema.yaml"), "tables: {}\nenums: {}\n").expect("write schema");
+        let file = dir.path().join("schema.yaml");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).expect("chmod");
+        let ctx = ctx_in(&dir, Some("schema.yaml"));
+
+        let (status, payload) = api_save(&ctx, &good_doc());
+        assert_eq!(status, 500, "{payload}");
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        assert!(payload["error"].as_str().unwrap().contains("cannot write"));
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("chmod back");
+    }
+
+    /// POST body that is not valid UTF-8: the body read fails and the
+    /// handler must answer 400 instead of wedging or panicking.
+    #[test]
+    fn handle_reports_an_unreadable_post_body() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = ctx_in(&dir, None);
+        let server = tiny_http::Server::http(("127.0.0.1", 0)).expect("server");
+        let port = server.server_addr().to_ip().expect("addr").port();
+
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("read timeout");
+        // Invalid UTF-8 bytes: read_to_string rejects them mid-body.
+        let body = [0xFFu8, 0xFE, 0x80, 0x81, 0x82];
+        let head = format!(
+            "POST /api/validate HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        client.write_all(head.as_bytes()).expect("send head");
+        client.write_all(&body).expect("send body");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("shutdown");
+
+        let request = server.incoming_requests().next().expect("request");
+        handle(request, &ctx);
+
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).expect("read reply");
+        let out = String::from_utf8(reply).expect("utf8");
+        assert!(out.contains("400"), "{out}");
+        assert!(out.contains("cannot read request body"), "{out}");
     }
 }

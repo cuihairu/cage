@@ -1100,6 +1100,7 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       （行级增量 / OAuth 凭据托管 / 连接池并发——需真实数据库与托管凭据）。
       故转入覆盖率收尾：cage-target-java（62 行）→ cage-target-cpp（56）→
       cage-source-http（37）→ validation/mod.rs（36）→ web.rs（32）。
+      五项已全部收口（见续批第七至十一项），登记册清零。
 
 ### cage-target-java 覆盖收口（2026-10-11 续批第七项）
 - [x] cage-target-java 覆盖率 95.65% → 99.36%（62 → 9 行未覆盖，22 测试
@@ -1160,3 +1161,24 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       所在 if 块体均由既有 E9006/E1410 测试覆盖，仅闭合 } 记 0）；
       1121 report_reference_cycles 的空环 continue（find_cycles 的
       path[idx..] 切片恒含起点节点，结构性不可达，防御性保留）。
+
+### cage-cli web.rs 覆盖收口（2026-10-11 续批第十一项）
+- [x] web.rs 32 行未覆盖 → 14 行（96.53%，390/404，54 bin 测试全绿）。
+      新增 5 个测试：`run_web_rejects_without_a_project_config`（缺
+      cage.toml 早退臂，错误不含 cannot bind）；`run_web_rejects_when_the_
+      port_is_taken`（占位 TcpListener 后 bind 失败，断言错误含
+      `cannot bind 127.0.0.1:{port}:`）；`api_schema_reports_a_missing_schema_
+      file`（schema 路径指向不存在文件 → ok=false + schema 为 null）；
+      `api_save_reports_an_unwritable_target`（chmod 0o444 → 500 + error
+      含 cannot write，unix 限定）；`handle_reports_an_unreadable_post_body`
+      （裸 socket 发 Content-Length: 100 + 5 字节非法 UTF-8 体后 FIN →
+      read_to_string 报 InvalidData → 400 + cannot read request body）。
+      余下 14 行登记：41-55 为 run_web 服务循环（addr 打印 + Ctx 构造 +
+      `for request in server.incoming_requests()`）——进程内单测无法退出
+      该循环（会挂死），属二进制侧路径，由 examples/web-smoke.sh 实机
+      覆盖（编辑 → 校验 → 保存 → build 复现全绿）。另记 tiny_http 0.12
+      行为：EqualReader 对短体静默截断（EOF 返回 Ok(0)）且 Drop 循环
+      等满 Content-Length，故 body 读错误臂只能由非法 UTF-8 驱动，
+      短体/断流均不可达。
+- [x] 覆盖率收尾登记册全清：java（62→9）→ cpp（56→2）→ http（37→6）→
+      validation（37→3）→ web.rs（32→14）。
