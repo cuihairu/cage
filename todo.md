@@ -1059,10 +1059,17 @@ docs/architecture.md「编译器核心：八个概念的边界」、清单落 do
       回收 + 索引重写计数 + 无变化包跳过；remove_entry 的 dry-run 跳过删除与
       目录失踪后的纯记录删除；verifying_key_from_env 的空值/非 base64 拒绝；
       read_bundle_signature 的畸形 sidecar。
-- [ ] 剩余 18 行均为构造性不可达/测试脚手架臂：caret_range 的 get_mut 守卫
-      （bump_at 恒指向 Number）、presigned put 的 map 未覆盖臂（覆盖检查先于
-      首 PUT）、以及两处测试 HTTP 服务器内部臂（accept 错误、读 EOF、>1MB
-      头截断、body EOF 循环、405 方法臂——公开 API 只发 GET/PUT）。
+- [x] 剩余 18 行收口至 9 行（262 lib 测试全绿）。原判「脚手架不可达」不成立：
+      新增 push_server_tolerates_misbehaving_clients，用裸 TcpStream 打
+      start_push_server（截断头 EOF、1MB+ 垃圾头触发 >1MiB 截断、短 body
+      EOF、body 跨写续读、DELETE 答 405），黑洞测试加 connect-then-drop
+      客户端补读 EOF 臂。测试服务器读块 4KiB → 256KiB 堆分配（1MB 头截断
+      从 O(n²) 逐读 rescan 降为几次读，15s → 0.7s）。剩余 9 行全部登记：
+      caret_range get_mut 守卫 320-322（bump_at 恒指向 Number，构造性不可达）、
+      presigned map-miss 1277-1279（代码注释自述覆盖检查先于首 PUT）、
+      两处测试服务器 accept 非 WouldBlock 错误臂 2522/3997（需 fd 耗尽，
+      不安全且竞态，登记不可达）、lcov 尾花括号伪未覆盖 2656（if complete
+      的闭合 }，逻辑行已覆盖）。
 
 ### cage-core migrate/mod.rs 覆盖收口（2026-10-11 续批第六项）
 - [x] migrate/mod.rs 覆盖率 95.1% → 100%（64 → 0 行未覆盖，790 测试全绿）。

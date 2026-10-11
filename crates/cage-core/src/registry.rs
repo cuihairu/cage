@@ -2524,17 +2524,23 @@ mod tests {
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                 // Read the head, then exactly Content-Length body bytes.
                 let mut buf = Vec::new();
-                let mut chunk = [0u8; 4096];
+                // Large heap read chunk: the >1 MiB head guard admits
+                // oversized uploads, and a 4 KiB step would rescan the
+                // buffer per read.
+                let mut chunk = vec![0u8; 256 * 1024];
                 let head_end = loop {
                     match stream.read(&mut chunk) {
                         Ok(0) | Err(_) => break buf.len(),
                         Ok(n) => {
                             buf.extend_from_slice(&chunk[..n]);
-                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                                break pos + 4;
-                            }
+                            // Size check first: a >1 MiB head is junk either
+                            // way, and scanning its windows per read would
+                            // make the truncation quadratic.
                             if buf.len() > 1024 * 1024 {
                                 break buf.len();
+                            }
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break pos + 4;
                             }
                         }
                     }
@@ -2607,6 +2613,106 @@ mod tests {
 
     fn put_count(requests: &[String]) -> usize {
         requests.iter().filter(|r| r.starts_with("PUT ")).count()
+    }
+
+    /// The stand-in tolerates raw misbehaving clients: a truncated head, an
+    /// oversized head without terminator, and a body shorter than its
+    /// Content-Length all end their read loops without panicking the server
+    /// thread; a non-GET/PUT method answers 405.
+    #[test]
+    fn push_server_tolerates_misbehaving_clients() {
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+
+        // Poll the reply until the response head is complete and its
+        // Content-Length bytes arrived — the server may still be finishing
+        // the previous client, and it never closes first.
+        fn read_reply(mut c: &std::net::TcpStream) -> String {
+            let _ = c.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+            let mut reply = Vec::new();
+            let mut buf = [0u8; 4096];
+            for _ in 0..60 {
+                match c.read(&mut buf) {
+                    Ok(0) | Err(_) => {}
+                    Ok(n) => reply.extend_from_slice(&buf[..n]),
+                }
+                if let Some(head_end) = reply
+                    .windows(4)
+                    .position(|w| w == b"\r\n\r\n")
+                    .map(|p| p + 4)
+                {
+                    let complete = reply[head_end..].len()
+                        >= String::from_utf8_lossy(&reply)
+                            .lines()
+                            .find_map(|l| {
+                                l.strip_prefix("Content-Length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                    if complete {
+                        break;
+                    }
+                }
+            }
+            String::from_utf8_lossy(&reply).into_owned()
+        }
+
+        let (server, _store, requests) = start_push_server(None);
+
+        // Truncated head: EOF ends the head loop and the request still lands.
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        c.write_all(b"GET /half HTTP/1.1\r\n").unwrap();
+        c.shutdown(Shutdown::Write).unwrap();
+        let reply = read_reply(&c);
+        assert!(
+            reply.contains("404"),
+            "truncated head still serves: {reply}"
+        );
+        drop(c);
+
+        // Oversized head without terminator: the >1 MiB guard breaks the
+        // loop (and the junk method answers 405).
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        let junk = vec![b'a'; 1024 * 1024 + 16];
+        c.write_all(&junk).unwrap();
+        let reply = read_reply(&c);
+        assert!(reply.contains("405"), "junk method is refused: {reply}");
+        drop(c);
+
+        // Body shorter than Content-Length: EOF ends the body read.
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        c.write_all(b"PUT /f HTTP/1.1\r\nContent-Length: 100\r\n\r\nshort")
+            .unwrap();
+        c.shutdown(Shutdown::Write).unwrap();
+        let reply = read_reply(&c);
+        assert!(reply.contains("200"), "short body still stores: {reply}");
+        drop(c);
+
+        // Body split across writes: the body loop keeps reading until
+        // Content-Length bytes arrived.
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        c.write_all(b"PUT /g HTTP/1.1\r\nContent-Length: 100\r\n\r\nshort")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        c.write_all(&[b'x'; 95]).unwrap();
+        let reply = read_reply(&c);
+        assert!(reply.contains("200"), "split body still stores: {reply}");
+        drop(c);
+
+        // Non-GET/PUT method: 405.
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        c.write_all(b"DELETE /x HTTP/1.1\r\nHost: t\r\n\r\n")
+            .unwrap();
+        let reply = read_reply(&c);
+        assert!(reply.contains("405"), "non-GET/PUT is refused: {reply}");
+        drop(c);
+
+        server.shutdown();
+        let seen = requests.lock().unwrap();
+        assert_eq!(seen.len(), 5, "every client must be tracked: {seen:?}");
+        assert!(seen.iter().any(|r| r.starts_with("GET /half ")), "{seen:?}");
+        assert!(seen.iter().any(|r| r.starts_with("PUT /f ")), "{seen:?}");
+        assert!(seen.iter().any(|r| r.starts_with("DELETE /x ")), "{seen:?}");
     }
 
     #[test]
@@ -3914,6 +4020,9 @@ mod tests {
                 }
             }
         });
+        // A client that drops before sending a full head ends the head read
+        // loop without panicking the server thread.
+        drop(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap());
         let err = push_entry(
             &source,
             &format!("http://127.0.0.1:{port}"),
