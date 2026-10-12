@@ -1596,6 +1596,13 @@ cage graph
 
 输出配置依赖图。
 
+**落地（2026-10-12）**：已实装为 `cage graph <project>
+[--format text|dot|json]`。schema 引用声明经
+`DependencyGraph::from_schema` 成图（与 L5 引用检查、增量第二层同一
+入口），边带引用字段标签；文本视图附拓扑构建序与环清单，dot 供
+Graphviz 渲染，json 机器可读。环只报告不致命——报错归引用检查，
+本命令是视图；schema 驱动，不读数据源。
+
 ---
 
 # 31. CI/CD

@@ -133,7 +133,9 @@ schema 引用声明经 `DependencyGraph::from_schema` 构建（先于且独立�
 校验运行），L5 校验与 cli 增量第二层共同消费它，manifest 落
 `dependencies` 引用账。核心与 cli 的接线覆盖在
 tests/incremental.rs（含第二/三层端到端：变更传播 + 携带 + target 配置
-增删改 + manifest 收敛 + 旧版 manifest 迁移）。
+增删改 + manifest 收敛 + 旧版 manifest 迁移）。`cage graph`（2026-10-12
+实装）把同一张图渲染给人看：边带引用字段标签，文本 / Graphviz dot /
+json 三形态，附拓扑构建序与环清单（见 [CLI](/cli#graph)）。
 
 ## 增量构建
 

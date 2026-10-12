@@ -163,6 +163,16 @@ enum Commands {
         /// Target build directory (or manifest.json)
         target: PathBuf,
     },
+    /// Print the table reference dependency graph built from schema
+    /// declarations (the same `DependencyGraph` the reference check and the
+    /// incremental planner consume); cycles are reported, not fatal
+    Graph {
+        /// Configuration project root directory
+        path: PathBuf,
+        /// Output format: text (default), dot, or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
     /// Build and package a self-verifying Configuration Snapshot, verify an
     /// existing snapshot directory, or list the packed snapshots
     Snapshot {
@@ -547,6 +557,7 @@ fn main() {
             no_cache,
         } => run_gen(&path, &profile, env.as_deref(), no_cache),
         Commands::Diff { baseline, target } => run_diff(&baseline, &target),
+        Commands::Graph { path, format } => run_graph(&path, &format),
         Commands::Snapshot {
             path,
             profile,
@@ -3592,6 +3603,138 @@ fn run_diff(baseline: &Path, target: &Path) -> i32 {
     0
 }
 
+/// The `cage graph` view: reference edges (with the referencing fields as
+/// labels, in schema order), the topological build order, and any cycles.
+struct GraphView {
+    project: String,
+    tables: usize,
+    edges: Vec<(String, String, Vec<String>)>,
+    order: Vec<String>,
+    cycles: Vec<Vec<String>>,
+}
+
+/// Build the graph view from the merged schema: the same `DependencyGraph`
+/// the reference check and the incremental planner consume.
+fn build_graph_view(config: &ProjectConfig, schema: &Schema) -> GraphView {
+    let graph = DependencyGraph::from_schema(schema);
+    let mut edges: IndexMap<(&str, &str), Vec<&str>> = IndexMap::new();
+    for (table, table_schema) in &schema.tables {
+        for (field_name, field_schema) in &table_schema.fields {
+            if let Some(reference) = &field_schema.reference {
+                edges
+                    .entry((table.as_str(), reference.table.as_str()))
+                    .or_default()
+                    .push(field_name.as_str());
+            }
+        }
+    }
+    GraphView {
+        project: config.project.name.clone(),
+        tables: schema.tables.len(),
+        edges: edges
+            .into_iter()
+            .map(|((from, to), fields)| {
+                (
+                    from.to_string(),
+                    to.to_string(),
+                    fields.into_iter().map(String::from).collect(),
+                )
+            })
+            .collect(),
+        order: graph.topological_sort().unwrap_or_default(),
+        cycles: graph.find_cycles(),
+    }
+}
+
+fn render_graph_text(view: &GraphView) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "project: {}", view.project);
+    let _ = writeln!(out, "tables: {}", view.tables);
+    let _ = writeln!(out, "edges: {}", view.edges.len());
+    for (from, to, fields) in &view.edges {
+        let _ = writeln!(out, "  {from} -> {to} ({})", fields.join(", "));
+    }
+    if view.order.is_empty() && !view.cycles.is_empty() {
+        out.push_str("build order: (cycles present)\n");
+    } else {
+        let _ = writeln!(out, "build order: {}", view.order.join(", "));
+    }
+    if view.cycles.is_empty() {
+        out.push_str("cycles: 0\n");
+    } else {
+        let _ = writeln!(out, "cycles: {}", view.cycles.len());
+        for cycle in &view.cycles {
+            let _ = writeln!(out, "  {} -> {}", cycle.join(" -> "), cycle[0]);
+        }
+    }
+    out
+}
+
+fn render_graph_dot(view: &GraphView) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("digraph config {\n  rankdir=LR;\n");
+    for (from, to, fields) in &view.edges {
+        let _ = writeln!(
+            out,
+            "  \"{from}\" -> \"{to}\" [label=\"{}\"];",
+            fields.join(", ")
+        );
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_graph_json(view: &GraphView) -> String {
+    let edges: Vec<serde_json::Value> = view
+        .edges
+        .iter()
+        .map(|(from, to, fields)| serde_json::json!({"from": from, "to": to, "fields": fields}))
+        .collect();
+    let payload = serde_json::json!({
+        "project": view.project,
+        "tables": view.tables,
+        "edges": edges,
+        "build_order": view.order,
+        "cycles": view.cycles,
+    });
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
+}
+
+/// `cage graph` — the table reference dependency graph (design §30). Schema
+/// reference declarations feed the same `DependencyGraph` the reference
+/// check and the incremental planner consume; output is text (default),
+/// Graphviz dot, or json. Cycles are reported in the rendering, never fatal
+/// — the reference check owns the error, this command is the view.
+fn run_graph(path: &Path, format: &str) -> i32 {
+    let config = match load_project_config(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let schema = match load_schema_for_config(path, &config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let view = build_graph_view(&config, &schema);
+    let body = match format {
+        "text" => render_graph_text(&view),
+        "dot" => render_graph_dot(&view),
+        "json" => render_graph_json(&view),
+        other => {
+            eprintln!("error: unknown format '{other}' (text | dot | json)");
+            return 2;
+        }
+    };
+    print!("{body}");
+    0
+}
+
 /// `cage assets` — inventory (default), `--json`, `--write <baseline>`,
 /// or `--check <baseline>` (design §50 B1: the source-side asset ledger).
 fn run_assets(path: &Path, json: bool, write: Option<&Path>, check: Option<&Path>) -> i32 {
@@ -3798,6 +3941,9 @@ mod tests {
             Commands::Diff { baseline, target } => {
                 format!("diff {} {}", baseline.display(), target.display())
             }
+            Commands::Graph { path, format } => {
+                format!("graph {} {format}", path.display())
+            }
             Commands::Snapshot {
                 path,
                 profile,
@@ -3985,6 +4131,15 @@ mod tests {
     fn parse_diff_subcommand() {
         let cli = Cli::try_parse_from(["cage", "diff", "a", "b"]).expect("parse diff");
         assert_eq!(describe(&cli.command), "diff a b");
+    }
+
+    #[test]
+    fn parse_graph_subcommand() {
+        let cli = Cli::try_parse_from(["cage", "graph", "proj"]).expect("parse graph");
+        assert_eq!(describe(&cli.command), "graph proj text");
+        let cli = Cli::try_parse_from(["cage", "graph", "proj", "--format", "dot"])
+            .expect("parse graph dot");
+        assert_eq!(describe(&cli.command), "graph proj dot");
     }
 
     #[test]
@@ -5397,6 +5552,124 @@ file_template = "{{table}}.csv"
             run_registry_publish(&proj, "ghost", None, None, Some("3.0.0"), Some(&reg)),
             2
         );
+    }
+
+    #[test]
+    fn graph_renders_edges_order_and_cycles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let proj = tmp.path().join("g");
+        write_text(
+            &proj.join("schema.yaml"),
+            r"tables:
+  Monster:
+    name: Monster
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      drop_table_id: { name: drop_table_id, type: { kind: Int32 }, reference: { table: DropTable, field: id } }
+  DropTable:
+    name: DropTable
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      item_id: { name: item_id, type: { kind: Int32 }, reference: { table: Item, field: id } }
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+",
+        );
+        write_text(
+            &proj.join("cage.toml"),
+            r#"schema_path = "schema.yaml"
+
+[project]
+name = "graphy"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{table}.json"
+"#,
+        );
+        let config = load_project_config(&proj).expect("config");
+        let schema = load_schema_for_config(&proj, &config).expect("schema");
+        let view = build_graph_view(&config, &schema);
+        assert_eq!(view.project, "graphy");
+        assert_eq!(view.tables, 3);
+        assert_eq!(
+            view.edges,
+            vec![
+                (
+                    "Monster".to_string(),
+                    "DropTable".to_string(),
+                    vec!["drop_table_id".to_string()]
+                ),
+                (
+                    "DropTable".to_string(),
+                    "Item".to_string(),
+                    vec!["item_id".to_string()]
+                ),
+            ]
+        );
+        // Topological order puts the referenced tables first.
+        assert_eq!(view.order, vec!["Item", "DropTable", "Monster"]);
+        assert_eq!(view.cycles.len(), 0);
+        let text = render_graph_text(&view);
+        assert!(
+            text.contains("Monster -> DropTable (drop_table_id)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("build order: Item, DropTable, Monster\n"),
+            "{text}"
+        );
+        assert!(text.contains("cycles: 0\n"), "{text}");
+        let dot = render_graph_dot(&view);
+        assert!(dot.starts_with("digraph config {"), "{dot}");
+        assert!(
+            dot.contains("\"Monster\" -> \"DropTable\" [label=\"drop_table_id\"];"),
+            "{dot}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&render_graph_json(&view)).expect("json");
+        assert_eq!(json["edges"][0]["from"], "Monster");
+        assert_eq!(json["build_order"][0], "Item");
+        assert_eq!(json["cycles"], serde_json::json!([]));
+
+        // A reference cycle is reported, never fatal: order is empty, the
+        // cycle is named, exit stays 0.
+        write_text(
+            &proj.join("schema.yaml"),
+            r"tables:
+  A:
+    name: A
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      b_id: { name: b_id, type: { kind: Int32 }, reference: { table: B, field: id } }
+  B:
+    name: B
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      a_id: { name: a_id, type: { kind: Int32 }, reference: { table: A, field: id } }
+enums: {}
+",
+        );
+        let schema = load_schema_for_config(&proj, &config).expect("schema");
+        let view = build_graph_view(&config, &schema);
+        assert_eq!(view.order, Vec::<String>::new());
+        assert_eq!(view.cycles.len(), 1);
+        assert_eq!(run_graph(&proj, "text"), 0);
+        // Unknown format and unknown root are usage errors.
+        assert_eq!(run_graph(&proj, "mermaid"), 2);
+        assert_eq!(run_graph(&tmp.path().join("ghost"), "text"), 2);
     }
 
     #[test]

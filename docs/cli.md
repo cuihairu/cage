@@ -23,9 +23,8 @@ MVP 落地前四个（`check` / `build` / `inspect` / `diff`），`gen` / `snaps
 R1–R4 均已实装），A 系列分发（bundle 导出/导入、直推远端，design §47）
 已随 A1–A3 实装，M 系列迁移（`cage migrate` 执行 + `cage migrate-draft`
 起草，design §46）已随 M1–M3 实装，`cage schema-draft`（库表内省起草
-schema，design §45 / S9）已实装。`cage verify runtime/`（验证已生成产物）与
-`cage graph`（读依赖图）在 [design §30](https://github.com/cuihairu/cage/blob/main/docs/design.md#30-cli) 是规划命令，
-尚未实装：配置依赖图经 `cage build --incremental` 实时参与构建决策。
+schema，design §45 / S9）已实装，`cage graph`（读依赖图）已实装，
+`cage verify runtime/`（验证已生成产物）见 [verify](#verify)。
 
 ## check
 
@@ -188,15 +187,20 @@ cage verify runtime/
 验证已经生成的 Artifact。尚未实装，已生成产物的校验由
 [`cage snapshot <dir> --verify`](#snapshot) 承担。
 
-## graph（规划中）
+## graph
 
 ```bash
-cage graph
+cage graph <project>               # 文本视图（默认）
+cage graph <project> --format dot  # Graphviz DOT
+cage graph <project> --format json # 机器可读
 ```
 
-输出[配置依赖图](/build#配置依赖图)。尚未实装独立命令，依赖图
-（环检测 / 拓扑序）由 `cage build --incremental` 消费，见
-[增量构建](/build#增量构建)。
+输出[配置依赖图](/build#配置依赖图)：schema 引用声明经
+`DependencyGraph::from_schema` 成图——与引用检查（L5）和增量规划
+（`build --incremental` 第二层）同一入口。边带引用字段标签（schema
+顺序），文本视图附拓扑构建序与环清单；**环只报告不致命**——报错的
+是引用检查，本命令是视图。图是 schema 驱动的：不读数据源，schema
+本身无效才报错。
 
 ## Remote Source（远程源）
 
