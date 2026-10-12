@@ -1588,6 +1588,13 @@ cage verify runtime/
 
 验证已经生成的 Artifact。
 
+**落地（2026-10-12）**：已实装为 `cage verify <path>`。项目根 →
+读配置的 `output_dir` 账本；也接受输出目录或 manifest.json 路径（键
+按项目相对解析，部署树兼容剥首段回退）。逐文件重算 blake3 + 核对
+大小，缺失 / 篡改 / 尺寸不符逐条 FAILED、退出码 1；只读账本键（与
+`/api/artifact` 同一 verify-first 姿态）；快照包仍走 `cage snapshot
+--verify`（自校验账本另一套）。
+
 ## graph
 
 ```bash

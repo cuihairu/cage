@@ -173,6 +173,16 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Verify generated artifacts on disk against the build manifest
+    /// ledger: every recorded file is re-hashed (blake3) and re-measured —
+    /// a missing, resized, or tampered artifact is reported and fails the
+    /// run. Snapshot packs keep their own loader-side check (`cage snapshot
+    /// --verify`); this command audits a build tree.
+    Verify {
+        /// Project root (uses the configured `output_dir`), a build output
+        /// directory containing manifest.json, or a manifest.json path
+        path: PathBuf,
+    },
     /// Build and package a self-verifying Configuration Snapshot, verify an
     /// existing snapshot directory, or list the packed snapshots
     Snapshot {
@@ -558,6 +568,7 @@ fn main() {
         } => run_gen(&path, &profile, env.as_deref(), no_cache),
         Commands::Diff { baseline, target } => run_diff(&baseline, &target),
         Commands::Graph { path, format } => run_graph(&path, &format),
+        Commands::Verify { path } => run_verify(&path),
         Commands::Snapshot {
             path,
             profile,
@@ -3857,6 +3868,146 @@ fn print_assets(inventory: &AssetInventory) {
     }
 }
 
+/// One artifact's on-disk verdict against its manifest ledger entry.
+enum ArtifactVerdict {
+    Ok,
+    Missing,
+    SizeMismatch { recorded: usize, actual: usize },
+    HashMismatch { recorded: String, actual: String },
+}
+
+/// `cage verify` — audit generated artifacts on disk against the build
+/// manifest ledger (design §30). Project-root input anchors at the root
+/// (manifest keys are project-relative); a bare output dir / manifest path
+/// also resolves keys with the output-dir prefix stripped, the layout a
+/// deployed build tree usually has. Snapshot packs keep their own
+/// loader-side check (`cage snapshot --verify`); this audits raw build
+/// trees. Exit 0 clean, 1 findings, 2 usage.
+fn run_verify(path: &Path) -> i32 {
+    // Project root (cage.toml parses) → manifest from the configured
+    // output_dir; otherwise the path is the manifest's own dir/file.
+    let (manifest, manifest_path, base) = match load_project_config(path) {
+        Ok(config) => {
+            let output_dir = config.output_dir.as_deref().unwrap_or("build");
+            let dir = path.join(output_dir);
+            match load_manifest(&dir) {
+                Ok(m) => {
+                    let manifest_path = dir.join("manifest.json");
+                    (m, manifest_path, path.to_path_buf())
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    eprintln!(
+                        "hint: build first (cage build {path})",
+                        path = path.display()
+                    );
+                    return 2;
+                }
+            }
+        }
+        Err(_) => match load_manifest(path) {
+            Ok(m) => {
+                let manifest_path = if path.is_dir() {
+                    path.join("manifest.json")
+                } else {
+                    path.to_path_buf()
+                };
+                let base = manifest_path
+                    .parent()
+                    .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+                (m, manifest_path, base)
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 2;
+            }
+        },
+    };
+
+    // Keys are project-relative ("build/client/json/Item.json"); a bare
+    // output dir carries the files one level down, so also try the key with
+    // the leading component stripped. Both candidates are ledgered keys —
+    // nothing outside the manifest is ever read.
+    let resolve = |key: &str| -> Option<PathBuf> {
+        let plain = base.join(key);
+        if plain.exists() {
+            return Some(plain);
+        }
+        let stripped = key.split_once('/')?.1;
+        let stripped_path = base.join(stripped);
+        stripped_path.exists().then_some(stripped_path)
+    };
+
+    println!("manifest: {}", manifest_path.display());
+    println!("profile: {}", manifest.profile);
+    if let Some(env) = &manifest.environment {
+        println!("environment: {env}");
+    }
+    println!("build_id: {}", manifest.build_id);
+    println!("content_hash: {}", manifest.content_hash);
+    println!("artifacts: {}", manifest.artifacts.len());
+
+    let mut problems = 0usize;
+    for (key, info) in &manifest.artifacts {
+        let verdict = match resolve(key) {
+            None => ArtifactVerdict::Missing,
+            Some(file) => match std::fs::read(&file) {
+                Err(_) => ArtifactVerdict::Missing,
+                Ok(bytes) => {
+                    if bytes.len() == info.size {
+                        let actual = blake3::hash(&bytes).to_hex().to_string();
+                        if actual == info.hash {
+                            ArtifactVerdict::Ok
+                        } else {
+                            ArtifactVerdict::HashMismatch {
+                                recorded: info.hash.clone(),
+                                actual,
+                            }
+                        }
+                    } else {
+                        ArtifactVerdict::SizeMismatch {
+                            recorded: info.size,
+                            actual: bytes.len(),
+                        }
+                    }
+                }
+            },
+        };
+        match verdict {
+            ArtifactVerdict::Ok => println!("ok      {key}"),
+            ArtifactVerdict::Missing => {
+                problems += 1;
+                println!("FAILED  {key} (missing)");
+            }
+            ArtifactVerdict::SizeMismatch { recorded, actual } => {
+                problems += 1;
+                println!("FAILED  {key} (size {actual} != recorded {recorded})");
+            }
+            ArtifactVerdict::HashMismatch { recorded, actual } => {
+                problems += 1;
+                println!(
+                    "FAILED  {key} (hash {actual} != recorded {recorded}) — rebuild \
+                     (the file changed or was tampered with after the build)"
+                );
+            }
+        }
+    }
+    if problems == 0 {
+        println!(
+            "cage verify: {} artifact(s) verified, 0 problems",
+            manifest.artifacts.len()
+        );
+        0
+    } else {
+        println!(
+            "cage verify: {} artifact(s), {} problem(s)",
+            manifest.artifacts.len(),
+            problems
+        );
+        1
+    }
+}
+
 fn load_manifest(path: &Path) -> Result<BuildManifest, String> {
     let manifest_path = if path.is_dir() {
         path.join("manifest.json")
@@ -3943,6 +4094,9 @@ mod tests {
             }
             Commands::Graph { path, format } => {
                 format!("graph {} {format}", path.display())
+            }
+            Commands::Verify { path } => {
+                format!("verify {}", path.display())
             }
             Commands::Snapshot {
                 path,
@@ -4140,6 +4294,12 @@ mod tests {
         let cli = Cli::try_parse_from(["cage", "graph", "proj", "--format", "dot"])
             .expect("parse graph dot");
         assert_eq!(describe(&cli.command), "graph proj dot");
+    }
+
+    #[test]
+    fn parse_verify_subcommand() {
+        let cli = Cli::try_parse_from(["cage", "verify", "proj"]).expect("parse verify");
+        assert_eq!(describe(&cli.command), "verify proj");
     }
 
     #[test]
@@ -5670,6 +5830,58 @@ enums: {}
         // Unknown format and unknown root are usage errors.
         assert_eq!(run_graph(&proj, "mermaid"), 2);
         assert_eq!(run_graph(&tmp.path().join("ghost"), "text"), 2);
+    }
+
+    #[test]
+    fn verify_audits_build_artifacts_against_the_ledger() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let proj = publisher_fixture(tmp.path(), "ver", Some("0.1.0"), None);
+
+        assert_eq!(
+            run_build(&proj, "semantic", "client", None, false, false),
+            0
+        );
+        // Project-root input: manifest from the configured output_dir.
+        assert_eq!(run_verify(&proj), 0);
+        // The bare output dir also verifies (keys with the build/ prefix
+        // stripped resolve inside it).
+        assert_eq!(run_verify(&proj.join("build")), 0);
+
+        // Tampered bytes fail the audit with a hash finding.
+        let artifact = proj.join("build/client/json/Item.json");
+        std::fs::write(&artifact, b"[]").expect("tamper");
+        assert_eq!(run_verify(&proj), 1);
+        // Restore, then a deleted artifact is missing.
+        assert_eq!(
+            run_build(&proj, "semantic", "client", None, false, false),
+            0
+        );
+        std::fs::remove_file(&artifact).expect("remove");
+        assert_eq!(run_verify(&proj), 1);
+
+        // A manifest.json path is accepted directly.
+        let manifest = proj.join("build/manifest.json");
+        assert_eq!(run_verify(&manifest), 1, "still failing: file removed");
+        // No manifest at all is a usage error.
+        assert_eq!(run_verify(&tmp.path().join("ghost")), 2);
+        // Deployed layout: manifest + stripped artifact tree together
+        // (the fixture's csv target deploys alongside the json one).
+        let deployed = tmp.path().join("deployed");
+        std::fs::create_dir_all(deployed.join("client/json")).expect("layout");
+        std::fs::copy(&manifest, deployed.join("manifest.json")).expect("copy manifest");
+        // Rebuild to restore the artifact, then copy both targets across.
+        assert_eq!(
+            run_build(&proj, "semantic", "client", None, false, false),
+            0
+        );
+        std::fs::copy(&artifact, deployed.join("client/json/Item.json")).expect("copy json");
+        std::fs::create_dir_all(deployed.join("client/csv")).expect("csv layout");
+        std::fs::copy(
+            proj.join("build/client/csv/Item.csv"),
+            deployed.join("client/csv/Item.csv"),
+        )
+        .expect("copy csv");
+        assert_eq!(run_verify(&deployed), 0);
     }
 
     #[test]

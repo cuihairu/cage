@@ -56,6 +56,7 @@ cage build config/ --profile client  # 验证并生成目标产物
 cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
 cage diff build/a build/b            # 比较两个配置版本
 cage graph config/                   # 表引用依赖图（text/dot/json，含拓扑序与环清单）
+cage verify build/                   # 审计已生成产物（逐文件重算 blake3 对照账本）
 cage inspect config/ Item            # 查看 Schema 与配置结构（项目路径必填，表名可选）
 cage assets config/ --write assets.json   # 资产清单基线（--check 复核缺失/篡改/多余）
 ```

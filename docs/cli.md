@@ -178,14 +178,20 @@ schema.json / data/ / generated/ / HASHES.json），构建后自校验。`--veri
 自验出判语——列表绝不宣称它没刚验过的包是完好的；与 `--verify` /
 `--env` 互斥。
 
-## verify（规划中）
+## verify
 
 ```bash
-cage verify runtime/
+cage verify <project-root>         # 审计 output_dir 的构建产物
+cage verify build/                 # 直接审计构建输出目录
+cage verify build/manifest.json    # 或 manifest 文件本身
 ```
 
-验证已经生成的 Artifact。尚未实装，已生成产物的校验由
-[`cage snapshot <dir> --verify`](#snapshot) 承担。
+审计已生成产物：对 manifest 账本逐文件重算 blake3 并核对大小——缺失、
+被改、字节数不符逐条 `FAILED`，退出码 1；干净则 0。manifest 键是
+项目相对路径；构建树内部按项目根解析，直接给输出目录时同时尝试剥去
+首段（`build/`）的部署布局。**只读账本键**——账本之外的文件一概不碰，
+与 `/api/artifact` 同一姿态。快照包有自己的载入侧校验：
+[`cage snapshot <dir> --verify`](#snapshot)。
 
 ## graph
 
