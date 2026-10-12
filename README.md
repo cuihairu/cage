@@ -62,7 +62,7 @@ cage gen config/ --profile server    # generate code bindings only (cs/python/lu
 cage diff build/a build/b          # compare two configuration versions
 cage inspect config/ Item          # inspect the schema and structure (project path required, table name optional)
 cage migrate config/               # preview the migration plan (--write persists, --all runs the whole chain)
-cage web ./                        # start the local Schema editor service (binds 127.0.0.1 only)
+cage web ./                        # start the local Schema editor service (binds 127.0.0.1 only; /status/ shows project status and build freshness)
 cage lsp ./                        # serve the diagnostics-only Language Server over stdio (IDE support)
 ```
 

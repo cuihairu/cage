@@ -117,18 +117,50 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       check/build）。「浏览器打开 → 编辑 → 校验 → 保存 → `cage build`
       复现」整条路径的最小闭环
 - [x] `examples/web-smoke.sh`：端到端冒烟脚本，在临时拷贝上运行（不脏
-      仓库），真实命令逐条回显；任一步失败即 exit 非零。六步：基线
+      仓库），真实命令逐条回显；任一步失败即 exit 非零。七步：基线
       check；编辑器会话（GET 文档 → 加 `stack_size` 字段（UInt8 /
       min 1 / default 1）→ `/api/validate` 零诊断 → `/api/schema` 保存）；
       断言 schema.yaml 落盘 canonical YAML 且含新字段；`cage check` +
-      `cage build` 全链路复现；同一 schema 两次重建产物树哈希逐字节
+      `cage build` 全链路复现；状态页会话（U1，`/status/` 页面 →
+      `/api/status` 断言 client fresh → `POST /api/build` 断言
+      up-to-date）；同一 schema 两次重建产物树哈希逐字节
       一致（确定性契约）；对 `examples/game-config`（schemas/ 目录）
       断言 `POST /api/schema` 得 409 拒写（多文件是作者侧组织，编辑器
       不重写）
 - [x] CI 集成：`web-smoke` job 镜像 example job（checkout + toolchain +
       rust-cache + `bash examples/web-smoke.sh`）
 
+### W5 已实装：项目状态面（U1，路线见 [UI 门面](/ui)）
+
+- [x] `GET /api/status[?profile=&env=&level=]`：一份文档三块——项目
+      事实（name / schema_path / output_dir / profile 列表）、校验面板
+      （**与 `cage check` / `cage lsp` 共用 `validate_project` 单一入口**
+      ：计数 + 全量诊断 + `visible_tables`，页面、CLI、LSP 三处诊断
+      永不分歧）、每 profile 构建事实（freshness = `build_project`
+      第一层比对——同 profile、同环境、同 schema/source/target 指纹、
+      产物完整——**报告而不执行**；`changed_tables` = 第二层的逐表
+      `table_hashes` 比对，告诉用户「哪几张表改了还没重建」；manifest
+      单槽，`last_build_profile` 标明当前归属）
+- [x] `POST /api/build`：触发构建，与 `cage build` 同一 `build_project`
+      管线（完整校验 + 三层增量 + 确定性 manifest）。校验失败 →
+      `{"ok": false, "diagnostics": [...]}`（/api/validate 同形状，页面
+      直接渲染进面板）；已是最新 → `up_to_date: true` 不动任何字节；
+      未知 profile / I/O → 400 + error
+- [x] `/status/` 状态页（docs/public/status/，编译期嵌入，vanilla
+      ES module 零依赖，与编辑器同一深色主题）：校验面板（级别 /
+      环境 / profile 三旋钮）+ 构建卡片（新鲜度徽标、变化表 chips、
+      target 清单、build_id / content_hash 前 12 位、构建按钮）；
+      裸 `/status` 301 到 `/status/`（相对资源引用不撞编辑器的
+      /app.js）；编辑器顶栏加「项目状态 →」互链
+- [x] 测试：web.rs 单测 6 项（状态默认 profile / 未知 profile 400 /
+      构建后 fresh 与 up-to-date / 改源后 `changed_tables` 命名 /
+      坏数据构建被拒带诊断 / 未知 profile 构建拒绝）+ 集成 3 项
+      （状态页路由与 301 / 状态-构建端到端 / 坏数据端到端）+
+      web-smoke 第 5 步（真实服务上状态页 → fresh → up-to-date）
+
 ## 路线图
 
 第三阶段 W 系列至此全部完成（W1 交换模型 → W2 本地服务 → W3 编辑器
-前端 → W4 文档与示例）。示例入口：`examples/web-smoke.sh`（CI 同款）。
+前端 → W4 文档与示例 → W5 项目状态面）。示例入口：
+`examples/web-smoke.sh`（CI 同款）。后续 UI 增量（U2 产物浏览 /
+U3 快照 / registry / 分层 diff）的路线与拍板见 [UI 门面](/ui)。

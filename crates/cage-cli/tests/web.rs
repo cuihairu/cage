@@ -174,6 +174,9 @@ fn json(body: &str) -> serde_json::Value {
 const WEB_TOML: &str = r#"output_dir = "build"
 schema_path = "schema.yaml"
 
+[source_roots]
+main = "config"
+
 [project]
 name = "web-demo"
 version = "0.1.0"
@@ -549,4 +552,136 @@ file_template = "{table}.json"
         tmp.path().join("schema.yaml").is_file(),
         "default save target must be schema.yaml"
     );
+}
+
+// ── U1：项目状态页与状态/构建 API ────────────────────────────────────
+
+#[test]
+fn web_serves_status_page_with_redirect_and_assets() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let server = start_server(tmp.path());
+
+    // Bare /status redirects so ./app.js resolves under /status/ (not into
+    // the editor's /app.js).
+    let (status, _) = request(server.port, "GET", "/status", None);
+    assert_eq!(status, 301, "bare /status must redirect to /status/");
+
+    // The page and its assets are embedded and served with the right types.
+    let (status, body) = request(server.port, "GET", "/status/", None);
+    assert_eq!(status, 200, "status page must serve at /status/");
+    assert!(body.contains("项目状态"), "body: {body}");
+    assert!(
+        body.contains(r#"src="./app.js""#),
+        "the page must load its module: {body}"
+    );
+
+    let (status, body) = request(server.port, "GET", "/status/app.js", None);
+    assert_eq!(status, 200, "status module must be served");
+    assert!(body.contains("/api/status"), "module must call the API");
+    assert!(body.contains("/api/build"), "module must trigger builds");
+
+    let (status, body) = request(server.port, "GET", "/status/app.css", None);
+    assert_eq!(status, 200, "status stylesheet must be served");
+    assert!(body.contains("--accent"), "stylesheet sanity: {body}");
+}
+
+#[test]
+fn web_status_and_build_report_freshness_end_to_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let server = start_server(tmp.path());
+
+    // Initial status: validation runs on the real project (the fixture data
+    // matches the fixture schema), nothing has been built.
+    let (status, body) = request(server.port, "GET", "/api/status", None);
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["project"], "web-demo");
+    assert_eq!(
+        v["profile"], "client",
+        "first configured profile is default"
+    );
+    assert_eq!(v["profile_names"], serde_json::json!(["client", "server"]));
+    assert_eq!(v["validation"]["ok"], true, "body: {body}");
+    assert_eq!(v["validation"]["diagnostics"].as_array().unwrap().len(), 0);
+    assert_eq!(v["builds"]["client"]["fresh"], false);
+    assert_eq!(
+        v["builds"]["client"]["last_build_profile"],
+        serde_json::Value::Null
+    );
+
+    // Build the client profile through the same pipeline `cage build` runs.
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/build",
+        Some(r#"{"profile": "client"}"#),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "body: {body}");
+    assert_eq!(v["up_to_date"], false);
+    assert!(v["artifact_count"].as_u64().unwrap() >= 1, "body: {body}");
+    assert!(tmp.path().join("build/json/Item.json").is_file());
+
+    // The build rotated freshness: client fresh, server still not built,
+    // and an unknown profile is a 400 with the available list.
+    let (_, body) = request(server.port, "GET", "/api/status?profile=client", None);
+    let v = json(&body);
+    assert_eq!(v["builds"]["client"]["fresh"], true, "body: {body}");
+    assert_eq!(
+        v["builds"]["client"]["changed_tables"],
+        serde_json::json!([])
+    );
+    assert!(v["builds"]["client"]["build_id"].as_str().unwrap().len() >= 12);
+    assert_eq!(v["builds"]["server"]["fresh"], false);
+    assert_eq!(v["builds"]["server"]["last_build_profile"], "client");
+
+    let (status, body) = request(server.port, "GET", "/api/status?profile=ghost", None);
+    assert_eq!(status, 400);
+    assert!(json(&body)["error"].as_str().unwrap().contains("available"));
+
+    // A second build is a no-op, not a rebuild.
+    let (_, body) = request(
+        server.port,
+        "POST",
+        "/api/build",
+        Some(r#"{"profile": "client"}"#),
+    );
+    assert_eq!(json(&body)["up_to_date"], true, "body: {body}");
+}
+
+#[test]
+fn web_build_refuses_broken_data_with_diagnostics() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    // Row without the required id: the build must refuse with diagnostics,
+    // same shape /api/validate speaks, and nothing lands in the build dir.
+    fs::write(
+        tmp.path().join("config/item.json"),
+        r#"{"Item": [{"name": "Sword"}]}"#,
+    )
+    .unwrap();
+    let server = start_server(tmp.path());
+
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/build",
+        Some(r#"{"profile": "client"}"#),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], false, "body: {body}");
+    assert!(
+        v["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["severity"] == "error"),
+        "body: {body}"
+    );
+    assert!(!tmp.path().join("build/client/json/Item.json").exists());
 }

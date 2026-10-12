@@ -63,7 +63,7 @@ cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/
 cage diff build/a build/b          # 比较两个配置版本
 cage inspect config/ Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
 cage migrate config/               # 迁移计划预览（--write 落盘，--all 全链）
-cage web ./                        # 启动 Schema 编辑器本地服务（只绑 127.0.0.1）
+cage web ./                        # 启动 Schema 编辑器本地服务（只绑 127.0.0.1；/status/ 项目状态与构建新鲜度）
 ```
 
 ## 一键安装

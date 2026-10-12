@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cage · 项目状态</title>
+<link rel="stylesheet" href="./app.css">
+</head>
+<body>
+<header id="topbar">
+  <h1>cage <span>项目状态</span></h1>
+  <div id="project-meta">
+    <span id="meta-project">–</span>
+    <span class="divider">|</span>
+    <span id="meta-path">–</span>
+    <span class="divider">|</span>
+    <span id="meta-output">–</span>
+  </div>
+  <div id="topbar-actions">
+    <label class="knob">profile <select id="profile-sel"></select></label>
+    <label class="knob">级别 <select id="level-sel">
+      <option value="parse">parse</option>
+      <option value="schema">schema</option>
+      <option value="type">type</option>
+      <option value="value">value</option>
+      <option value="table">table</option>
+      <option value="reference">reference</option>
+      <option value="semantic" selected>semantic</option>
+      <option value="gamerule">gamerule</option>
+    </select></label>
+    <label class="knob">环境 <input id="env-in" type="text" placeholder="（默认）" size="8"></label>
+    <button id="refresh-btn" type="button" class="primary" title="Ctrl/Cmd+Enter">刷新</button>
+    <a id="editor-link" href="/">← 编辑器</a>
+  </div>
+</header>
+<main id="layout">
+  <div id="fatal-error" hidden></div>
+
+  <section id="validation">
+    <div class="section-head">
+      <h2>校验面板</h2>
+      <span id="val-summary" class="muted">–</span>
+    </div>
+    <ul id="val-diags" class="diag-list"></ul>
+  </section>
+
+  <section id="builds">
+    <div class="section-head">
+      <h2>构建状态</h2>
+      <span id="build-summary" class="muted">–</span>
+    </div>
+    <div id="build-cards"></div>
+  </section>
+</main>
+<div id="toast" hidden></div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

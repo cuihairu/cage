@@ -174,7 +174,23 @@ build/server/*）；表级与字段级 `targets`（schema）经
 
 ## 路线图
 
-- [ ] **U1（P0）**：项目与构建状态 + 校验面板（状态端点 + 前端接线）
+- [x] **U1（P0）**：项目与构建状态 + 校验面板（状态端点 + 前端接线）
+      —— **2026-10-12 已实装**，落地记录：
+      `GET /api/status`（三块一文档：项目事实 / 校验面板 / 每 profile
+      构建事实）+ `POST /api/build`（与 `cage build` 同一
+      `build_project` 入口）+ `/status/` 状态页（校验面板 + 构建卡片，
+      编译期嵌入，vanilla ES module 零依赖）。**口径精化两处**：
+      ① freshness = `build_project` 第一层比对的「报告版」——同
+      profile、同环境、同 schema/source/target 指纹、产物完整，外加
+      `changed_tables`（第二层逐表 `table_hashes` 比对）告诉用户哪几张
+      表改了还没重建；manifest 单槽（`<output_dir>/manifest.json` 一次
+      记一个 profile），`last_build_profile` 标明归属，跨 profile 的
+      fresh 直接为 false。② 校验面板经 `validate_project` 单一入口
+      （check / lsp 同源），页面带 `?profile=&env=&level=` 三个旋钮，
+      默认值与 `cage check` 一致（首个 profile、semantic、无环境）。
+      裸 `/status` 301 到 `/status/`——相对资源引用不会撞编辑器的
+      /app.js。验收：web.rs 单测 6 项 + tests/web.rs 集成 3 项 +
+      web-smoke 第 5 步（真实服务：页面 → fresh → up-to-date）。
 - [ ] **U2（P1）**：profile × target 产物浏览 + 编辑器 targets 徽标
       与 profile 作用域视图
 - [ ] **U3（P2）**：快照列/验/打包 + registry 条目浏览 + 分层 diff

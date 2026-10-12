@@ -215,17 +215,23 @@ Cage 支持四种远程输入源，全部在 `cage.toml` 的 `[source_roots]` �
 cage web ./ --port 8765
 ```
 
-启动 Schema 编辑器本地服务（第三阶段），只绑定 `127.0.0.1`、无需鉴权。
-浏览器打开打印的地址即是编辑器单页（编译期嵌入二进制），与 HTTP API
-共用一份交换文档，API 契约见 [Web UI](/web)：
+启动 Schema 编辑器与项目状态页的本地服务（第三阶段 W 系列 + U1），只绑
+定 `127.0.0.1`、无需鉴权。浏览器打开打印的地址即是编辑器单页，
+`/status/` 是项目状态页（校验面板 + 每 profile 构建新鲜度 + 构建
+按钮，编译期嵌入二进制），与 HTTP API 共用一份交换文档，API 契约见
+[Web UI](/web)：
 
 ```text
 GET  /api/schema      → 合并 Schema 的编辑器文档（每请求重载，保存后立即可见）
 POST /api/validate    → 编辑态校验（E1701 / E1004 诊断）
 POST /api/schema      → 保存回环 canonical YAML（单文件 schema_path 才可写）
+GET  /api/status      → 项目状态：校验面板 + 每 profile 构建新鲜度（?profile=&env=&level=）
+POST /api/build       → 触发一次构建（与 cage build 同一 build_project 管线）
 ```
 
-Ctrl+C 停止服务。`--port` 默认 8765。
+状态页与构建 API 消费 `cage check` / `cage build` 的同一入口
+（`validate_project` / `build_project`）——页面、CLI、LSP 三处诊断
+永不分歧。Ctrl+C 停止服务。`--port` 默认 8765。
 
 ## lsp
 

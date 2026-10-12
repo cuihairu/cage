@@ -12,7 +12,7 @@ pub struct SourceLocation {
     pub file: String,
     /// Source format the value was compiled from（excel/csv/json/yaml/msgpack/
     /// gsheet/http/registry…）：靠扩展名倒推在同名不同格式、以及无扩展名的
-    /// 远程源（gsheet:ID / registry:pkg / https://）上都会失手，故由各 source
+    /// 远程源（gsheet:ID / registry:pkg / `https://`）上都会失手，故由各 source
     /// crate 装载时显式填。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,

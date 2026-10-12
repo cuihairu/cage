@@ -274,3 +274,6 @@ input.num-bad, textarea.json-bad { border-color: var(--error); }
 
 #toast.ok { border-color: var(--ok); }
 #toast.err { border-color: var(--error); }
+/* 项目状态页入口（U1） */
+#status-link { color: var(--accent); font-size: 12px; text-decoration: none; }
+#status-link:hover { text-decoration: underline; }

@@ -1,29 +1,37 @@
-//! `cage web` — local HTTP service for the Schema editor (third phase W2).
+//! `cage web` — local HTTP service for the Schema editor (third phase W2)
+//! and the project status face (U1).
 //!
 //! A local tool: binds `127.0.0.1` only, no authentication. The API
 //! exchanges the same documents as [`cage_core::edit`] — the frontend
 //! edits the canonical editor JSON, the server validates it and writes
-//! schemas back as canonical YAML:
+//! schemas back as canonical YAML. U1 adds the status face: validation
+//! through the same `validate_project` entry `check` and the LSP use,
+//! per-profile build freshness (the layer-1 comparison `build_project`
+//! makes, reported instead of acted on), and a build trigger:
 //!
 //! ```text
 //! GET  /api/schema      → editor document of the merged schema (+ project)
 //! POST /api/validate    → E1701 / E1004 diagnostics for an edited document
 //! POST /api/schema      → save the canonical YAML (single-file schema only)
+//! GET  /api/status      → validation panel + per-profile build facts
+//! POST /api/build       → run the build pipeline for one profile
 //! GET  /                → the Schema editor page (W3, embedded below)
 //! GET  /app.js, /app.css→ editor assets
+//! GET  /status/         → the project status page (U1, embedded below)
 //! ```
 //!
 //! The frontend never parses or renders YAML — `cage_core::edit` does the
 //! YAML↔JSON mapping, the server only moves bytes.
 //!
-//! The editor page is compiled into the binary from the `docs/public/editor/`
-//! sources (the single authoring copy; the docs site serves them too), so
-//! the shipped `cage` binary carries its editor — no Node toolchain.
+//! Both pages are compiled into the binary from the `docs/public/` sources
+//! (the single authoring copy; the docs site serves them too), so the
+//! shipped `cage` binary carries its UI — no Node toolchain.
 
 use crate::load_project_config;
 use crate::load_schema_for_config;
 use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_canonical_yaml, to_editor_json};
+use cage_core::error::codes::Severity;
 use cage_core::manifest::ProjectConfig;
 use std::path::{Path, PathBuf};
 
@@ -32,6 +40,11 @@ use std::path::{Path, PathBuf};
 const EDITOR_INDEX: &str = include_str!("../../../docs/public/editor/index.html");
 const EDITOR_APP_JS: &str = include_str!("../../../docs/public/editor/app.js");
 const EDITOR_APP_CSS: &str = include_str!("../../../docs/public/editor/app.css");
+
+/// U1 status page and assets, embedded the same way.
+const STATUS_INDEX: &str = include_str!("../../../docs/public/status/index.html");
+const STATUS_APP_JS: &str = include_str!("../../../docs/public/status/app.js");
+const STATUS_APP_CSS: &str = include_str!("../../../docs/public/status/app.css");
 
 /// Serve the editor API for a project root until killed (Ctrl+C).
 pub fn run_web(root: &Path, port: u16) -> Result<(), String> {
@@ -64,7 +77,13 @@ struct Ctx {
 
 fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
     let method = request.method().clone();
-    let url = request.url().to_string();
+    let full_url = request.url().to_string();
+    // Split off the query string: /api/status takes optional knobs
+    // (?profile= / ?env= / ?level=); the static routes match on the path.
+    let (url, query) = match full_url.split_once('?') {
+        Some((path, q)) => (path.to_string(), q.to_string()),
+        None => (full_url.clone(), String::new()),
+    };
 
     let mut body = String::new();
     if matches!(method, tiny_http::Method::Post) {
@@ -77,26 +96,52 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
         }
     }
 
-    let response = match (method, url.trim_end_matches('/')) {
-        (tiny_http::Method::Get, "/api/schema") => json_response(200, &api_schema(ctx)),
-        (tiny_http::Method::Post, "/api/validate") => json_response(200, &api_validate(&body)),
-        (tiny_http::Method::Post, "/api/schema") => {
-            let (status, value) = api_save(ctx, &body);
-            json_response(status, &value)
+    // /status (no trailing slash) redirects so the page's relative asset
+    // references (./app.js) resolve under /status/ — from the bare path
+    // they would collide with the editor's /app.js.
+    let response = if method == tiny_http::Method::Get && url == "/status" {
+        redirect_response("/status/")
+    } else {
+        match (method, url.trim_end_matches('/')) {
+            (tiny_http::Method::Get, "/api/schema") => json_response(200, &api_schema(ctx)),
+            (tiny_http::Method::Post, "/api/validate") => json_response(200, &api_validate(&body)),
+            (tiny_http::Method::Post, "/api/schema") => {
+                let (status, value) = api_save(ctx, &body);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Get, "/api/status") => {
+                let (status, value) = api_status(ctx, &query);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Post, "/api/build") => {
+                let (status, value) = api_build(ctx, &body);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Get, "" | "/index.html") => {
+                text_response(200, "text/html; charset=utf-8", EDITOR_INDEX.to_string())
+            }
+            (tiny_http::Method::Get, "/app.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                EDITOR_APP_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/app.css") => {
+                text_response(200, "text/css; charset=utf-8", EDITOR_APP_CSS.to_string())
+            }
+            (tiny_http::Method::Get, "/status") => {
+                text_response(200, "text/html; charset=utf-8", STATUS_INDEX.to_string())
+            }
+            (tiny_http::Method::Get, "/status/app.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                STATUS_APP_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/status/app.css") => {
+                text_response(200, "text/css; charset=utf-8", STATUS_APP_CSS.to_string())
+            }
+            (tiny_http::Method::Get, "/favicon.ico") => html_response(404, "not found".to_string()),
+            _ => json_response(404, &serde_json::json!({"ok": false, "error": "not found"})),
         }
-        (tiny_http::Method::Get, "" | "/index.html") => {
-            text_response(200, "text/html; charset=utf-8", EDITOR_INDEX.to_string())
-        }
-        (tiny_http::Method::Get, "/app.js") => text_response(
-            200,
-            "text/javascript; charset=utf-8",
-            EDITOR_APP_JS.to_string(),
-        ),
-        (tiny_http::Method::Get, "/app.css") => {
-            text_response(200, "text/css; charset=utf-8", EDITOR_APP_CSS.to_string())
-        }
-        (tiny_http::Method::Get, "/favicon.ico") => html_response(404, "not found".to_string()),
-        _ => json_response(404, &serde_json::json!({"ok": false, "error": "not found"})),
     };
     let _ = request.respond(response);
 }
@@ -260,6 +305,258 @@ fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
     (200, payload)
 }
 
+/// 301 to a canonical path — used to send bare `/status` to `/status/` so
+/// the page's relative asset references resolve inside its own directory.
+fn redirect_response(location: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    tiny_http::Response::from_string(String::new())
+        .with_status_code(301)
+        .with_header(
+            tiny_http::Header::from_bytes(&b"Location"[..], location.as_bytes())
+                .expect("static header"),
+        )
+}
+
+/// Minimal query-string reader for `/api/status`'s optional knobs
+/// (`?profile=NAME&env=ENV&level=LEVEL`). Values stay raw (the knobs are
+/// identifiers, not free text); unknown keys and bare flags are ignored.
+fn query_params(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter_map(|kv| {
+            let (key, value) = kv.split_once('=')?;
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// GET /api/status[?profile=NAME&env=ENV&level=LEVEL] — the project status
+/// face (U1). Three blocks in one document so the page renders from a
+/// single fetch: project facts, the validation panel for one profile (the
+/// same `validate_project` entry `cage check` and `cage lsp` consume —
+/// page, CLI and editor diagnostics can never diverge), and per-profile
+/// build facts (freshness = the layer-1 comparison `build_project` makes
+/// before deciding to skip, reported instead of acted on). No state: every
+/// request re-reads the project and the manifest from disk, like
+/// `/api/schema`.
+fn api_status(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
+    let params = query_params(query);
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+
+    let profile = match get("profile") {
+        Some(p) => p,
+        // No query → the first configured profile (config order, the same
+        // order `cage build` lists when an unknown one is rejected).
+        None => match ctx.config.profiles.keys().next() {
+            Some(first) => first.clone(),
+            None => {
+                return (
+                    500,
+                    serde_json::json!({"ok": false, "error": "no build profile is configured"}),
+                )
+            }
+        },
+    };
+    if !ctx.config.profiles.contains_key(&profile) {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": format!(
+                "unknown profile '{profile}' (available: {})",
+                ctx.config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+            )}),
+        );
+    }
+    let env = get("env");
+    // Default matches `cage check --level` (semantic).
+    let level = get("level").unwrap_or_else(|| "semantic".to_string());
+
+    let validation =
+        match crate::validate_project(&ctx.root, &level, env.as_deref(), &profile, false) {
+            Ok(out) => {
+                let (mut errors, mut warnings, mut infos) = (0usize, 0usize, 0usize);
+                for d in &out.diagnostics {
+                    match d.severity {
+                        Severity::Error => errors += 1,
+                        Severity::Warning => warnings += 1,
+                        Severity::Info => infos += 1,
+                    }
+                }
+                serde_json::json!({
+                    "ok": !out.diagnostics.has_errors(),
+                    "profile": profile,
+                    "env": env,
+                    "level": level,
+                    "errors": errors,
+                    "warnings": warnings,
+                    "info": infos,
+                    "visible_tables": out.visible_tables,
+                    "diagnostics": diags_json(&out.diagnostics),
+                })
+            }
+            // Project load failure (bad cage.toml, unresolvable schema or
+            // registry reference): the page stays up and names the problem —
+            // this is exactly the state a status face exists for.
+            Err(e) => serde_json::json!({"ok": false, "error": e, "diagnostics": []}),
+        };
+
+    (
+        200,
+        serde_json::json!({
+            "ok": true,
+            "project": ctx.config.project.name,
+            "schema_path": ctx.config.schema_path,
+            "warnings_as_errors": ctx.config.warnings_as_errors,
+            "output_dir": ctx.config.output_dir.as_deref().unwrap_or("build"),
+            "profile_names": ctx.config.profiles.keys().collect::<Vec<_>>(),
+            "profile": profile,
+            "validation": validation,
+            "builds": build_facts(ctx, env.as_deref()),
+        }),
+    )
+}
+
+/// Per-profile build facts for `/api/status`. The manifest is single-slot
+/// (`<output_dir>/manifest.json`, one profile at a time on disk), so
+/// "fresh" additionally implies the last build on disk was for this
+/// profile: same profile, same environment, same schema/source/target
+/// fingerprints, and every listed artifact still intact — the exact
+/// comparison `build_project` layer 1 makes (kept in step by pointing at
+/// the same manifest fields; drift here is a status-page bug, not a build
+/// bug). `changed_tables` is the data-staleness detail: the tables whose
+/// rows fingerprint moved since that build (the layer-2 detector).
+fn build_facts(ctx: &Ctx, env: Option<&str>) -> serde_json::Value {
+    use cage_core::manifest::ManifestGenerator;
+
+    let output_dir = ctx.config.output_dir.as_deref().unwrap_or("build");
+    let prev = crate::load_manifest(&ctx.root.join(output_dir)).ok();
+    // Current inputs: one project load (one pass over the sources), then
+    // each profile projects its own view and hashes.
+    let project =
+        match crate::load_project(&ctx.root, false).and_then(|p| crate::project_with_env(p, env)) {
+            Ok(p) => p,
+            Err(e) => return serde_json::json!({"ok": false, "error": e}),
+        };
+
+    let mut builds = serde_json::Map::new();
+    for (name, build_profile) in &ctx.config.profiles {
+        let target_records = ManifestGenerator::target_records(&build_profile.targets);
+        let (schema, document) = crate::filter_by_profile(&project.schema, &project.document, name);
+        let normalized = cage_core::normalize::normalize_document(&document);
+        let (schema_hash, source_hash) = ManifestGenerator::input_hashes(&schema, &normalized);
+        let cur_table_hashes = ManifestGenerator::table_hashes(&normalized);
+
+        let mut entry = serde_json::json!({
+            "target_count": build_profile.targets.len(),
+            "targets": build_profile.targets.iter().map(|t| serde_json::json!(
+                {"format": t.format, "output_dir": t.output_dir}
+            )).collect::<Vec<_>>(),
+            "manifest_present": prev.is_some(),
+            "fresh": false,
+            "changed_tables": [],
+        });
+        if let Some(m) = &prev {
+            entry["last_build_profile"] = serde_json::json!(m.profile);
+            if m.profile == *name {
+                entry["build_id"] = serde_json::json!(m.build_id);
+                entry["content_hash"] = serde_json::json!(m.content_hash);
+                entry["artifact_count"] = serde_json::json!(m.artifacts.len());
+                let same_inputs = m.environment.as_deref() == env
+                    && m.schema_hash == schema_hash
+                    && m.source_hash == source_hash
+                    && m.targets == target_records
+                    && m.artifacts.keys().all(|rel| ctx.root.join(rel).is_file());
+                entry["fresh"] = serde_json::json!(same_inputs);
+                if !same_inputs && !m.table_hashes.is_empty() {
+                    let changed: Vec<&String> = cur_table_hashes
+                        .keys()
+                        .filter(|t| m.table_hashes.get(*t) != cur_table_hashes.get(*t))
+                        .collect();
+                    entry["changed_tables"] = serde_json::json!(changed);
+                }
+            }
+        } else {
+            entry["last_build_profile"] = serde_json::Value::Null;
+        }
+        builds.insert(name.clone(), entry);
+    }
+    serde_json::Value::Object(builds)
+}
+
+/// POST /api/build — run the build pipeline for one profile: the same
+/// `build_project` entry `cage build` uses (full validation, three-layer
+/// incremental, deterministic manifest). Body is `{"profile": "..."}` with
+/// optional `"env"`, `"level"` and `"incremental": false`. Validation
+/// failures answer `{"ok": false, "diagnostics": [...]}` with 200 (the
+/// /api/validate shape — the page renders them in the panel), usage / I/O
+/// errors answer 400 with `error`, and an up-to-date build answers
+/// `up_to_date: true` without touching anything.
+fn api_build(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("invalid JSON body: {e}")}),
+            )
+        }
+    };
+    let Some(profile) = parsed.get("profile").and_then(|p| p.as_str()) else {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": "body must carry {\"profile\": \"...\"}"}),
+        );
+    };
+    let env = parsed.get("env").and_then(|e| e.as_str());
+    let level = parsed
+        .get("level")
+        .and_then(|l| l.as_str())
+        .unwrap_or("semantic");
+    let incremental = parsed
+        .get("incremental")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+
+    match crate::build_project(&ctx.root, level, profile, env, incremental, false) {
+        Ok(out) => (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "profile": out.profile,
+                "up_to_date": false,
+                "layer2": out.layer2,
+                "regenerated": out.artifacts.len() - out.carried_count,
+                "carried": out.carried_count,
+                "artifact_count": out.artifacts.len(),
+                "manifest_path": out.manifest_path.display().to_string(),
+                "build_id": out.manifest.build_id,
+                "content_hash": out.manifest.content_hash,
+            }),
+        ),
+        Err(crate::BuildFailure::UpToDate {
+            artifacts,
+            manifest,
+        }) => (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "profile": profile,
+                "up_to_date": true,
+                "artifact_count": artifacts,
+                "manifest_path": manifest.display().to_string(),
+            }),
+        ),
+        Err(crate::BuildFailure::Validation(diags)) => (
+            200,
+            serde_json::json!({"ok": false, "diagnostics": diags_json(&diags)}),
+        ),
+        Err(crate::BuildFailure::Io(msg)) => (400, serde_json::json!({"ok": false, "error": msg})),
+    }
+}
+
 fn json(v: &serde_json::Value) -> String {
     serde_json::to_string(v).expect("api response serializes")
 }
@@ -301,6 +598,87 @@ mod tests {
         let mut config = ProjectConfig::default();
         config.project.name = "demo".to_string();
         config.schema_path = schema_path.map(str::to_string);
+        Ctx {
+            root: dir.path().to_path_buf(),
+            config,
+        }
+    }
+
+    /// A full project for the status/build endpoints (U1): two profiles
+    /// (client → json, server → csv), one table, one JSON source. The
+    /// status/build handlers re-read the project from disk (they reuse the
+    /// `check` / `build` entries), so the on-disk cage.toml matters, not
+    /// just the Ctx config object.
+    pub(crate) fn demo_ctx(dir: &TempDir) -> Ctx {
+        use cage_core::manifest::{BuildProfile, TargetConfig};
+
+        fs::write(
+            dir.path().join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[source_roots]
+main = "config"
+
+[project]
+name = "demo"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+
+[profiles.server]
+name = "server"
+
+[[profiles.server.targets]]
+format = "csv"
+output_dir = "build/server/csv"
+"#,
+        )
+        .expect("write config");
+        fs::write(
+            dir.path().join("schema.yaml"),
+            "tables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      \
+             id: { name: id, type: { kind: Int32 }, required: true }\n      \
+             name: { name: name, type: { kind: String } }\nenums: {}\n",
+        )
+        .expect("write schema");
+        fs::create_dir_all(dir.path().join("config")).expect("mkdir config");
+        fs::write(
+            dir.path().join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        )
+        .expect("write source");
+
+        let target = |format: &str, output_dir: &str| TargetConfig {
+            format: format.to_string(),
+            output_dir: output_dir.to_string(),
+            file_template: None,
+            options: None,
+        };
+        let profile = |name: &str, targets: Vec<TargetConfig>| BuildProfile {
+            name: name.to_string(),
+            targets,
+            description: None,
+            variables: indexmap::IndexMap::new(),
+        };
+        let mut config = ProjectConfig::default();
+        config.project.name = "demo".to_string();
+        config.schema_path = Some("schema.yaml".to_string());
+        config
+            .source_roots
+            .insert("main".to_string(), "config".to_string());
+        config.profiles.insert(
+            "client".to_string(),
+            profile("client", vec![target("json", "build/client/json")]),
+        );
+        config.profiles.insert(
+            "server".to_string(),
+            profile("server", vec![target("csv", "build/server/csv")]),
+        );
         Ctx {
             root: dir.path().to_path_buf(),
             config,
@@ -426,6 +804,146 @@ mod tests {
             !fs::exists(dir.path().join("schema.yaml")).expect("stat"),
             "nothing written for a broken document"
         );
+    }
+
+    #[test]
+    fn api_status_reports_validation_and_untouched_build_facts() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        let (status, payload) = api_status(&ctx, "");
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert_eq!(payload["project"], serde_json::json!("demo"));
+        assert_eq!(payload["profile"], serde_json::json!("client"));
+        assert_eq!(
+            payload["profile_names"],
+            serde_json::json!(["client", "server"])
+        );
+        // Validation panel: the on-disk project validates clean.
+        assert_eq!(payload["validation"]["ok"], serde_json::json!(true));
+        assert_eq!(payload["validation"]["errors"], serde_json::json!(0));
+        assert_eq!(
+            payload["validation"]["visible_tables"],
+            serde_json::json!(1)
+        );
+        assert_eq!(payload["validation"]["diagnostics"], serde_json::json!([]));
+        // No manifest yet: nothing built, nothing fresh.
+        let client = &payload["builds"]["client"];
+        assert_eq!(client["fresh"], serde_json::json!(false));
+        assert_eq!(client["last_build_profile"], serde_json::json!(null));
+        assert_eq!(client["target_count"], serde_json::json!(1));
+        assert_eq!(client["changed_tables"], serde_json::json!([]));
+        assert!(client.get("build_id").is_none(), "no build to report");
+        assert_eq!(
+            payload["builds"]["server"]["target_count"],
+            serde_json::json!(1)
+        );
+    }
+
+    #[test]
+    fn api_status_rejects_an_unknown_profile() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        let (status, payload) = api_status(&ctx, "profile=ghost");
+        assert_eq!(status, 400);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        assert!(payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("unknown profile 'ghost'")));
+    }
+
+    #[test]
+    fn api_build_then_status_reports_fresh_and_up_to_date() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        let (status, payload) = api_build(&ctx, r#"{"profile": "client"}"#);
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert_eq!(payload["up_to_date"], serde_json::json!(false));
+        assert!(payload["artifact_count"].as_u64().unwrap() >= 1);
+        assert!(payload["build_id"].as_str().is_some_and(|s| !s.is_empty()));
+        assert!(
+            fs::exists(dir.path().join("build/client/json/Item.json")).expect("stat"),
+            "the json artifact landed"
+        );
+
+        // Status now: client fresh with the manifest facts, server stale
+        // (the single-slot manifest belongs to client).
+        let (_, payload) = api_status(&ctx, "profile=client");
+        let client = &payload["builds"]["client"];
+        assert_eq!(client["fresh"], serde_json::json!(true));
+        assert_eq!(client["last_build_profile"], serde_json::json!("client"));
+        assert_eq!(client["changed_tables"], serde_json::json!([]));
+        assert_eq!(client["build_id"], payload["builds"]["client"]["build_id"]);
+        assert_eq!(
+            payload["builds"]["server"]["fresh"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            payload["builds"]["server"]["last_build_profile"],
+            serde_json::json!("client")
+        );
+
+        // A second build is a no-op, not a rebuild.
+        let (_, payload) = api_build(&ctx, r#"{"profile": "client"}"#);
+        assert_eq!(payload["up_to_date"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn api_status_names_stale_tables_after_a_source_edit() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        api_build(&ctx, r#"{"profile": "client"}"#);
+
+        fs::write(
+            dir.path().join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Axe"}]}"#,
+        )
+        .expect("edit source");
+
+        let (_, payload) = api_status(&ctx, "profile=client");
+        let client = &payload["builds"]["client"];
+        assert_eq!(client["fresh"], serde_json::json!(false));
+        assert_eq!(client["changed_tables"], serde_json::json!(["Item"]));
+    }
+
+    #[test]
+    fn api_build_reports_broken_data_as_diagnostics() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        // Row without the required id — L1 validation must refuse the build.
+        fs::write(
+            dir.path().join("config/item.json"),
+            r#"{"Item": [{"name": "Sword"}]}"#,
+        )
+        .expect("write broken source");
+
+        let (status, payload) = api_build(&ctx, r#"{"profile": "client"}"#);
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        assert!(payload["diagnostics"]
+            .as_array()
+            .is_some_and(|d| !d.is_empty()));
+        assert!(
+            !fs::exists(dir.path().join("build/client/json/Item.json")).expect("stat"),
+            "nothing built on validation failure"
+        );
+    }
+
+    #[test]
+    fn api_build_rejects_an_unknown_profile() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        let (status, payload) = api_build(&ctx, r#"{"profile": "ghost"}"#);
+        assert_eq!(status, 400);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        assert!(payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("unknown profile 'ghost'")));
     }
 }
 
