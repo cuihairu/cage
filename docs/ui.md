@@ -1,0 +1,184 @@
+# UI 门面：Web 增强（设计拍板与路线）
+
+用户反馈：cage 用起来体感不好，想要界面。本篇拍板四件事：形态选型、
+界面覆盖面、变更可视化口径、双端差异表达。定位不变（web.md）：Web UI
+是**同一核心的另一个门面**，前端不复制任何规则语义；零新依赖、单二进制、
+无 node 编辑器链路三条纪律全部延续。
+
+## 实测基线（2026-10-12 拍板时点）
+
+- release exe **10.6 MiB**（lto + strip + opt-level=z）。
+- 编辑器页 48 KB（index.html 2.0 / app.js 37.6 / app.css 8.4 KB），
+  `include_str!` 编译期嵌入（web.rs），单二进制自带界面。
+- 现有 HTTP 面共 6 条：`GET /`、`/app.js`、`/app.css`、
+  `GET /api/schema`、`POST /api/validate`、`POST /api/schema`；
+  仅绑 `127.0.0.1`，无鉴权（本地工具定位）。
+- manifest 哈希双层：`table_hashes` 逐表 blake3 行指纹 → 逐目标规范
+  指纹（按 `(format, output_dir)` 排序）→ 逐文件 hash → 根
+  `content_hash`；`build_id = blake3(profile + schema_hash +
+  source_hash + content_hash)`（输入含 profile）。
+- 增量构建已经消费这层哈希：`prev/cur table_hashes` 逐表比对 +
+  依赖图传播决定跳过集（main.rs）。
+- `cage diff` 现状：两份 manifest 的 `artifacts` 平面对比
+  （`+/-/~` + 计数 + `content_hash` 行）；schema 级 diff 另有
+  `migrate::diff_schemas`。
+
+## 形态拍板：c（现有 web 增强）并吸收 d，a / b 转备选
+
+| 维度 | a) Tauri 桌面壳 | b) 纯 Rust GUI（egui/iced） | c) cage web 增强 | d) 纯 CLI 打磨 |
+|---|---|---|---|---|
+| 包体 | 壳再增 ~8–15 MB（估，系统 WebView） | 增 ~10–20 MB（估，GUI 栈进 exe） | 嵌入字符串 + 薄 JSON API，约 ±0.3 MB，整体仍 ~11 MiB | 不变 |
+| 发布渠道 / 打包 | NSIS/MSI 或便携 exe；Linux 无法交叉产出 Tauri exe，**必须上 Windows runner 打包**，nightly zip 结构要改 | Linux 交叉出 MSVC exe 需新工具链（cargo-xwin 一类），CI 新增面大 | **完全不变**：同一 exe、同一 nightly zip + SHA256SUMS、install.sh/ps1 原样 | 不变 |
+| cage-core 复用 | 进程内直连 | 进程内直连 | 进程内直连（W2 交换模型已通） | 直连 |
+| 脱离终端 | 桌面窗口 | 可以 | 浏览器——且天然跨机器：Linux 服务器跑 `cage web`，Windows 浏览器打开 | 不能 |
+| 维护成本 | 高：巨型依赖树（破零新依赖）+ WebView2/webkit2gtk 双端怪癖 + 打包流水线 | 高：富数据视图（表格 / 树 / diff）在 immediate-mode 全是手写 | **最低**：vanilla JS 无构建链，全部复用 W1–W4 存量 | 最低，但不解决「要界面」 |
+
+**定了什么**：界面形态 = 方向 c——增强现有 `cage web`（W2 本地服务 +
+W3 编辑器页的直接延伸），把 manifest / 产物 / snapshot / registry /
+diff 这些**既有数据**接上门面；方向 d 不单独立项，作为纪律吸收（见
+「d 的吸收口径」）。主要使用拓扑是 Linux 服务器（跑构建）+ Windows
+客户端（看结果、改数据），产物必须能出 exe。
+
+**为什么**：① 拓扑匹配——浏览器是唯一零打包成本横跨「无头服务器 +
+Windows 桌面」的面，桌面壳在服务器上开不了窗口；② 可发版——产物仍
+是那一个 exe，nightly 滚动通道照常带出去（每日构建属正常交付面），
+不触碰版本发布红线，CI 不加 Windows 打包面；③ 存量最高——W1 交换
+模型、W2 本地服务、W3 编辑器、`/api/schema`、`POST /api/validate`、
+E1701/E1004 全部已在，缺的只是门面面积，不是地基。
+
+**备选**：a) Tauri 壳（复用最多 UI 资产但代价是整条打包流水线 +
+依赖树爆炸，且服务器场景无效）；b) egui/iced 单二进制 GUI（依赖树
+可控些但富数据视图全手写、工作最大，同样在无头服务器上是死路）——
+两者转备选不实现。
+
+**边界**：不做游戏逻辑框架（红线不变）；不做多用户 / 远程团队协作
+（web 是单机本地工具）；不做编辑器之外的独立前端构建链（vanilla
+ES module 纪律不变，仍编译期嵌入）。
+
+**卡点条件（a/b 重议的唯一理由）**：出现「必须脱离浏览器」的真实
+使用场景（完全离线桌面环境、无浏览器可用），或界面面积大到嵌入
+字符串不可维护时，重启形态评估。
+
+**远程访问口径（拍板）**：保持仅绑 `127.0.0.1`、无鉴权**不动**；
+服务器 → Windows 客户端的远程场景走 SSH 端口转发（文档写清用法即
+可）。`--bind` / 局域网暴露必须先有鉴权（registry 已有 `--auth-env`
+先例可循），登记为卡点条件，本期不做——本地无鉴权服务暴露到局域网
+是安全倒退，不为便利破例。
+
+**d 的吸收口径（不单独立项）**：CLI 可读性本就是一等公民（E 码 +
+定位 + hint），吸收为两条纪律：① 新界面端点落地时，同参数语义同步
+CLI 输出（文本面与界面共用同一核心函数，单一入口纪律，同
+`validate_project` 先例）；② 任何增量触碰到的 CLI 输出，按
+「错误可读 + 汇总可读」标准过一遍。唯一显式交付：U3 落地时
+`cage diff` 文本输出同步获得分层摘要（见变更可视化节）。
+
+## 界面覆盖面（P0 → P1 → P2）
+
+端点纪律：每个新面 = 一个薄 JSON 端点 + 前端接线。端点全部是对
+cage-core 既有函数的直调，延续 W2 交换模型；服务端不持状态，每请求
+重载落盘现状（与 `/api/schema` 一致）。前端不新增构建链，仍是
+`docs/public/editor/` 单页扩展或平级静态页，编译期嵌入。
+
+### P0（第一批，全是现成数据接线）
+
+- **项目与构建状态**：profile 列表、校验状态（与 `check` 共用
+  `validate_project` 单一入口，界面诊断与 CI 诊断永不分歧）、构建
+  新鲜度（当前源 `table_hashes` vs 上次 manifest 里的旧值——增量
+  构建本来就在比对的数字，直接告诉用户「哪几张表改过还没重建」）、
+  最近一次构建事实（profile、build_id、content_hash、target 数）。
+- **校验面板**：诊断表（code / 严重级 / 文件-Sheet-单元格定位 /
+  hint），数据源 `POST /api/validate`，与 LSP / CLI 三处消费同一份
+  `Diagnostics`。
+
+### P1（第二批）
+
+- **profile × target 产物浏览**：profile 选择器 → target 列表 →
+  `manifest.artifacts` 树（每文件 hash / 大小 / 在线预览 / 下载）；
+  按 `output_dir` 分组即天然按 profile 分层（build/client/*、
+  build/server/*）。
+- **schema 编辑器补齐**：现有 W3 编辑器挂载 E1701/E1004 诊断已通，
+  补字段级 `targets` 徽标等双端可见性表达（见下文专节）。
+
+### P2（第三批，口径先行、随增量落地）
+
+- **快照**：列（历史 snapshot 目录）/ 验（`snapshot --verify` 同款
+  核心调用）/ 打包三动作。
+- **registry 条目浏览**：本地与远程条目列表（远程 list 已落地），
+  版本、依赖 pin、哈希可见。
+- **diff 与变更可视化**：语义分层 diff（下文专节）。
+
+## 变更可视化：不做 Merkle，做语义分层 diff
+
+**定了什么**：diff 的语义呈现分三层，数据全部来自现有 manifest，
+**零格式变更、零哈希重定义**。diff API 返回：
+
+```json
+{
+  "changed_tables": ["item", "stage"],
+  "affected_targets": ["json:build/client/data", "..."],
+  "files": { "added": [], "removed": [], "changed": [] },
+  "roots": { "content_hash": "…", "build_id": "…" }
+}
+```
+
+界面按 **表 → target → 文件** 三层折叠：改了哪些表 → 波及哪些
+target → 落到哪些文件。`changed_tables` = 两份 manifest 的
+`table_hashes` 逐表比对；`affected_targets` = 变更表过依赖图传播
+（增量构建同款逻辑）；`files` = 现有 run_diff 的平面结果挂在对应
+子树下。文本面同步：`cage diff` 获得分层摘要输出（表 / target 行
++ 文件清单），与界面共用同一语义 diff 函数（单一入口）。
+
+**为什么**：现状 `cage diff` 是平面文件清单，「哪一部分变了」要
+用户自己从路径里读。但 `table_hashes` **已经逐表在手**，语义分层
+只差一次比对 + 一次依赖图传播 + 一次 join——全部是展示层工作，
+不碰任何承重结构。
+
+**备选（否决）：Merkle 化**——补内部节点摘要，让 diff 走不同根的
+最小子树。否决理由：① manifest 根（`content_hash` / `build_id`）
+是**承重墙**——确定性构建、registry 版本 pin、snapshot verify、
+增量缓存全部挂在上面，重定义 = 全量缓存失效 + 旧 pin 断裂；② 本地
+diff 两份 manifest 都在盘上，本来就要 O(manifest) 全扫，Merkle
+剪枝**不省本地任何工作**——它的收益只在「远程只拉变化子树」的增量
+同步场景，本仓没有这个场景。
+
+**边界**：不做 manifest 格式版本化迁移（不改格式就没有迁移）；
+diff 语义层只回答「哪里变了」，不回答「内容怎么变了」（逐字段值级
+diff 是新能力面，留待需要时单独立项，schema 级已有
+`diff_schemas` 可循）。
+
+**卡点条件（重议 Merkle 的唯一理由）**：出现「消费者只向远程
+registry / snapshot 拉取变化子树」的增量同步需求时重议。
+
+## 双端差异的表达（profile × target × 字段可见性）
+
+事实基础：profile 决定 target 列表与 `output_dir`（build/client/*、
+build/server/*）；表级与字段级 `targets`（schema）经
+`filter_by_profile` 把字段从该 profile 的 schema 与**全部产物**里
+剔除（示例工程 server-only 字段 `internal_note` 即是）；`build_id`
+输入含 profile。
+
+界面表达四条：
+
+- **产物归属**：manifest 自带 profile 与 build_id，产物浏览器按
+  `output_dir` 分组 + 全局 profile 徽标——任何视图都标着「这是
+  哪一端的产物」。
+- **字段可见性徽标**：`field.targets` / `table.targets` 非空即在
+  编辑器与浏览视图渲染徽标（`internal_note` → 「server only」），
+  数据源就是 schema 本身，无新状态。
+- **profile 作用域视图**：`GET /api/schema?profile=` 出投影版
+  schema（`filter_by_profile` 现成函数直调）；被剔除字段显示
+  「本 profile 不可见」而非消失——藏起来的东西要看得见被藏了。
+- **跨端对照（P2）**：选一张表 → client / server 两列矩阵，字段行
+  「仅 server」「仅 client」「两端可见」三态；产物侧同表并排，
+  server 多出的字段就是可见性剔除的镜像。
+
+## 路线图
+
+- [ ] **U1（P0）**：项目与构建状态 + 校验面板（状态端点 + 前端接线）
+- [ ] **U2（P1）**：profile × target 产物浏览 + 编辑器 targets 徽标
+      与 profile 作用域视图
+- [ ] **U3（P2）**：快照列/验/打包 + registry 条目浏览 + 分层 diff
+      （API + 界面三层折叠 + `cage diff` 分层摘要）
+
+每项落地后在本节追加落地记录（惯例同 design.md）：实装面、口径
+精化、验收方式。
