@@ -1309,3 +1309,29 @@ peer 冲突，改只装 `mermaid` 依赖 + 自渲染（config.mts fence 钩子�
       Any Source-Any Target；顺带修正三处过期表述：13 类 target 已
       实装、最终架构 MsgPack/Protobuf 已实装、目录树 cage-cli 注释
       补 assets）
+
+### §45 连接池 / 大表取行落地（2026-10-13 巡检批，design §45 卡点解除）
+解除条件在本机满足（MariaDB 11.8 系统服务 + docker PostgreSQL 18），
+按 design §45 登记的解除条件开工；语义零变化，测试先行。
+- [x] 进程级按 DSN 连接池（`cage-source-db::pool`）：mysql 走驱动自带
+      `Pool`（0–8 约束、惰性建池、取用健康检查），postgres 手写 60 行
+      空闲栈池（嵌套安全 / 空闲上限 / 失败弃用不回池），零新依赖；
+      每次取连接照旧钉只读，坏 DSN 永不注册
+- [x] 大表取行：mysql `query` 整体缓冲改 `query_iter` 逐行流式（顺带
+      删除被替代的 `to_row_set`）；pg 简单协议无流式 API，实测维持
+      缓冲并在 design 记录口径
+- [x] 测试先行 + live 验证：池机制 7 项单测（假连接：复用 / 失败弃用 /
+      失败重试 / 空闲上限 / 注册表同键同池 / 坏 DSN 恒报错）；
+      环境门控 live 测试 4 项（`CAGE_DB_TEST_MYSQL_DSN` /
+      `CAGE_DB_TEST_PG_DSN`，无 env 自动跳过）对真实 MariaDB 11.8 +
+      PG 18：类型口径往返（DECIMAL 文本 / bytea base64 / BOOL / NULL）、
+      字节确定性、5 次装载服务端连接计数增量 ≤1（复用实证）、只读钉
+      拒写、内省同池、10 万行压测往返。crate 10 → 36 测试全绿
+- [x] live 测试钓出真 bug：MariaDB 文本协议 temporal 列标 charset 63，
+      DATETIME 被 `map_cell` 当二进制 base64 落缓存（旧路径同样存在）
+      ——违背「dates → Text」纪律；修复为按列类型豁免 temporal 的
+      binary 判定，live 断言钉住
+- [x] 并发多源裁定不立项：装载耗时由 canonical JSON 管线主导、串行
+      毫秒级（实测数据见 design §45 落地附记）；解除条件写明
+- [x] 文档：design §45 卡点登记补落地附记、「留待实现期」划线；
+      source.md S2 节补池化口径

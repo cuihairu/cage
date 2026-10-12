@@ -13,11 +13,15 @@
 //! Type discipline: NULL → Null, DECIMAL / NUMERIC → string (no Float
 //! detour, precision is the Schema's call), binary columns → base64.
 //! Rows without ORDER BY are sorted by their serialized form, so the
-//! build never depends on the server's return order.
+//! build never depends on the server's return order. Connections are
+//! pooled per DSN for the process lifetime (`pool`, design §45 落地
+//! 2026-10-13) — the read-only pin still applies to every session
+//! before any statement runs.
 
 pub mod draft;
 mod mysql;
 mod pg;
+mod pool;
 
 use cage_core::error::codes::internal::E9902;
 use cage_core::error::codes::remote::{E1904, E1905};

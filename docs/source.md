@@ -150,7 +150,9 @@ revalidation——缺一半即按无缓存走普通 GET 重建。只有首页 GE
 `E1905`）先跑，之后才解析 `[remote.<scheme>].dsn_env` 指名的
 环境变量（未声明 / 未设置报 `E1904`，DSN 永不进 cage.toml），
 连接后会话钉只读（MySQL `SESSION TRANSACTION READ ONLY`、PG
-`default_transaction_read_only`）。类型口径：DECIMAL / NUMERIC
+`default_transaction_read_only`）。连接按 DSN 进程级池化（design
+§45 落地 2026-10-13）：同一服务器的 N 个源共享一次握手，每次取到
+的会话照旧钉只读，取数失败的会话弃用不回池。类型口径：DECIMAL / NUMERIC
 文本保真不走 Float，NULL → Null，二进制列 base64，其余按列类型
 映射为 JSON 标量。行集序列化成 canonical JSON 落
 `.cage-cache/source/<scheme+DSN+SQL 指纹>/`，再走标准 JSON 解析
