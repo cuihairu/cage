@@ -68,10 +68,10 @@ impl YamlSourceAdapter {
             Ok(v) => v,
             Err(e) => {
                 let loc = if let Some(location) = e.location() {
-                    SourceLocation::new(&file_path)
+                    SourceLocation::new(&file_path).with_format("yaml")
                         .with_line_col(location.line(), location.column())
                 } else {
-                    SourceLocation::new(&file_path)
+                    SourceLocation::new(&file_path).with_format("yaml")
                 };
 
                 diags.add(Diagnostic::error(parse::E0001, format!("YAML syntax error: {e}"))
@@ -281,7 +281,7 @@ impl YamlSourceAdapter {
             let value = map[key].clone();
             let cage_value = Self::yaml_value_to_cage(value);
             let key_str = Self::yaml_value_to_string(key);
-            let loc = SourceLocation::new(file_path)
+            let loc = SourceLocation::new(file_path).with_format("yaml")
                 .with_row(row_idx + 1)
                 .with_column(key_str.clone())
                 .with_field(key_str.clone());
@@ -306,7 +306,7 @@ impl YamlSourceAdapter {
         Row {
             primary_key,
             fields,
-            location: SourceLocation::new(file_path).with_row(row_idx + 1),
+            location: SourceLocation::new(file_path).with_format("yaml").with_row(row_idx + 1),
             index: row_idx,
         }
     }

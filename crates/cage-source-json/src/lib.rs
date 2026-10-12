@@ -68,7 +68,7 @@ impl JsonSourceAdapter {
             Ok(v) => v,
             Err(e) => {
                 let line_col = Self::byte_offset_to_line_col(content, e.line(), e.column());
-                let loc = SourceLocation::new(&file_path)
+                let loc = SourceLocation::new(&file_path).with_format("json")
                     .with_line_col(line_col.0, line_col.1)
                     .with_byte_offset(e.line());
 
@@ -245,7 +245,7 @@ impl JsonSourceAdapter {
         for key in keys {
             let value = obj[key].clone();
             let cage_value = Self::json_value_to_cage(value);
-            let loc = SourceLocation::new(file_path)
+            let loc = SourceLocation::new(file_path).with_format("json")
                 .with_row(row_idx + 1)
                 .with_column(key.clone())
                 .with_field(key.clone());
@@ -270,7 +270,7 @@ impl JsonSourceAdapter {
         Row {
             primary_key,
             fields,
-            location: SourceLocation::new(file_path).with_row(row_idx + 1),
+            location: SourceLocation::new(file_path).with_format("json").with_row(row_idx + 1),
             index: row_idx,
         }
     }

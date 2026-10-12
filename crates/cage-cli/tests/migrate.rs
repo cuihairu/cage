@@ -475,7 +475,7 @@ fn excel_report_carries_cell_level_locations() {
     // The three fixture data rows, sheet-grid addressed (header on row 2,
     // data on rows 3-5); merged-cell rows still carry their own location.
     for row in [3, 4, 5] {
-        let loc = format!("{xlsx} | Sheet: Items | Row: {row}");
+        let loc = format!("{xlsx} | Format: excel | Sheet: Items | Row: {row}");
         assert!(
             out_str.lines().any(|l| l.trim() == loc),
             "missing '{loc}' in:\n{out_str}"
@@ -491,7 +491,7 @@ fn excel_report_carries_cell_level_locations() {
         .collect::<Vec<_>>();
     assert_eq!(note_block.len(), 2, "{out_str}");
     for row in [3, 4] {
-        let loc = format!("{xlsx} | Sheet: Items | Row: {row}");
+        let loc = format!("{xlsx} | Format: excel | Sheet: Items | Row: {row}");
         assert!(
             note_block.iter().any(|l| l.trim() == loc),
             "missing '{loc}' under the note step:\n{out_str}"

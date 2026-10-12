@@ -10,6 +10,12 @@ use std::fmt;
 pub struct SourceLocation {
     /// Source file path (relative to project root)
     pub file: String,
+    /// Source format the value was compiled from（excel/csv/json/yaml/msgpack/
+    /// gsheet/http/registry…）：靠扩展名倒推在同名不同格式、以及无扩展名的
+    /// 远程源（gsheet:ID / registry:pkg / https://）上都会失手，故由各 source
+    /// crate 装载时显式填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
     /// Sheet name (for Excel) or logical section
     pub sheet: Option<String>,
     /// Row number (1-indexed, for tabular sources)
@@ -31,6 +37,7 @@ impl SourceLocation {
     pub fn new(file: impl Into<String>) -> Self {
         Self {
             file: file.into(),
+            format: None,
             sheet: None,
             row: None,
             column: None,
@@ -39,6 +46,12 @@ impl SourceLocation {
             line: None,
             col: None,
         }
+    }
+
+    /// Set the source format（excel / csv / json / yaml / msgpack / …）：由 source crate 装载时填
+    pub fn with_format(mut self, format: impl Into<String>) -> Self {
+        self.format = Some(format.into());
+        self
     }
 
     /// Set the sheet name (Excel) or logical section
@@ -81,6 +94,9 @@ impl SourceLocation {
     /// Human-readable display for diagnostics
     pub fn display(&self) -> String {
         let mut parts = vec![self.file.clone()];
+        if let Some(format) = &self.format {
+            parts.push(format!("Format: {format}"));
+        }
         if let Some(sheet) = &self.sheet {
             parts.push(format!("Sheet: {sheet}"));
         }
@@ -422,6 +438,13 @@ mod tests {
         assert!(display.contains("Row: 27"));
         assert!(display.contains("Col: G"));
         assert!(display.contains("Field: DropItemID"));
+
+        // 源格式（追查同名不同格式文件时的判据）：装载方填了才渲染，不填不占位
+        let with_format = SourceLocation::new("config/Item.xlsx").with_format("excel");
+        assert_eq!(with_format.format.as_deref(), Some("excel"));
+        assert_eq!(with_format.display(), "config/Item.xlsx | Format: excel");
+        assert_eq!(loc.format, None);
+        assert!(!display.contains("Format:"));
     }
 
     #[test]
