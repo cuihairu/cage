@@ -7,7 +7,7 @@
 bash examples/run.sh
 ```
 
-14 步覆盖：check → L7 gamerule → 分环境 `--env` → 双 profile 构建 →
+15 步覆盖：check → L7 gamerule → 四套环境的分环境 `--env` → 双 profile 构建 →
 增量 → 快照打包与回验 → 代码生成 → diff → 声明式迁移 → 注册表发布 →
 远程分发全链路（直推 / presigned / 消费方 resolve）→ 坏数据诊断 → inspect。
 
@@ -19,11 +19,11 @@ game-config/
 ├── schemas/           # 五个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
 │   ├── character.yaml # 角色成长：枚举/唯一约束/正则/范围/默认值/保留字字段 class
 │   │                  #   + hp：L6 语义规则 hp <= attack（E1501）
-│   │                  #   + nickname：env_overrides（dev 放宽、prod 必填）
+│   │                  #   + nickname：env_overrides 四套环境（dev 32 → test 24 → staging 20、prod 必填）
 │   │                  #   + internal_note：targets ["server"]（字段级可见性）
 │   ├── item.yaml      # 道具：整型枚举 + 字符串枚举 + 可选字段
 │   ├── quest.yaml     # 任务：Excel 源、跨表引用、order_by 行排序
-│   ├── shop.yaml      # 商店：MsgPack 源、env_overrides（prod 收紧折扣上限）
+│   ├── shop.yaml      # 商店：MsgPack 源、env_overrides 四套环境（折扣上限 0.9/0.7/0.6/0.5）
 │   └── stage.yaml     # 关卡：数组/对象/跨表引用（含 cardinality: many 数组引用）/Map<string, Array<Int32>>
 ├── config/            # 五种源格式（同一 profile 一起加载）
 │   ├── Character.csv  # CSV：文件名即表名
@@ -52,7 +52,7 @@ game-config/
 | 保留字字段自动转义（`class`） | `Character.class` |
 | Map<K,V> 字段（含嵌套，空 map 合法） | `Stage.drop_table: map<string, Array<Int32>>` |
 | 行排序约束（E1304） | `Quest.order_by: [id]` |
-| 分环境约束覆盖（`--env`，design §48） | `Character.nickname`（dev 放宽 max_length / prod 必填）、`Shop.discount`（prod 上限 0.5） |
+| 分环境约束覆盖（`--env`，四套环境，design §48） | `Character.nickname`（max_length dev 32 → test 24 → staging 20 / prod 必填）、`Shop.discount`（上限 dev 0.9 → test 0.7 → staging 0.6 → prod 0.5） |
 | 字段级可见性（targets + E9006 安全） | `Character.internal_note` 仅 server 视图 |
 | 声明式迁移（dry-run 不写盘，Excel 源只报告） | `migrations/0001_rename_desc.yaml` |
 | 注册表发布（版本化自校验资产） | `run.sh` 第 11 步 |
@@ -70,7 +70,10 @@ game-config/
 ```bash
 cage check examples/game-config                    # L0-L6 校验（5 张表）
 cage check examples/game-config --level gamerule   # 加上 L7 业务规则
-cage check examples/game-config --env prod         # 分环境：nickname 必填、折扣 ≤ 0.5
+cage check examples/game-config --env dev          # 四套环境之一：nickname ≤ 32、折扣 ≤ 0.9
+cage check examples/game-config --env test         # nickname ≤ 24、折扣 ≤ 0.7
+cage check examples/game-config --env staging      # nickname ≤ 20、折扣 ≤ 0.6
+cage check examples/game-config --env prod         # nickname 必填、折扣 ≤ 0.5
 cage build examples/game-config --profile client   # 13 个 target 全量构建（5 张表）
 cage build examples/game-config --profile client --incremental  # up to date
 cage build examples/game-config --profile server   # 服务端视图（internal_note 可见）

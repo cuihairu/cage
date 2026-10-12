@@ -29,19 +29,40 @@ step "[2/15] cage check --level gamerule examples/game-config   —— L7 业务
 echo "\$ cage check examples/game-config --level gamerule"
 "$CAGE_BIN" check "$EX" --level gamerule
 
-step "[3/15] 分环境验证 —— --env dev/prod 放行、未知环境 exit 2"
-echo "\$ cage check examples/game-config --env dev"
-"$CAGE_BIN" check "$EX" --env dev
-echo "\$ cage check examples/game-config --env prod"
-"$CAGE_BIN" check "$EX" --env prod
-echo "\$ cage check examples/game-config --env staging   # 期望退出码 2"
+step "[3/15] 分环境验证 —— --env dev/test/staging/prod 四套放行、未知环境 exit 2"
+for ENV in dev test staging prod; do
+  echo "\$ cage check examples/game-config --env $ENV"
+  "$CAGE_BIN" check "$EX" --env "$ENV"
+done
+# 四套各建一次：manifest 的 environment 字段点名当前环境，解析后的 schema
+# 进 schema_hash、约束进生成的 JSON Schema 故 content_hash 也逐环境不同。
+ENV_ID=()
+for ENV in dev test staging prod; do
+  OUT="$("$CAGE_BIN" build "$EX" --profile client --env "$ENV")"
+  echo "\$ cage build examples/game-config --profile client --env $ENV"
+  echo "$OUT"
+  ENV_ID+=("$(python3 - "$EX/build/manifest.json" "$ENV" << 'PYEOF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+print(f"{m.get('environment')}|{m['build_id'][:12]}|{m['content_hash'][:12]}")
+PYEOF
+)")
+done
+for i in 0 1 2 3; do echo "  ${ENV_ID[$i]}"; done
+for i in 0 1 2 3; do
+  case "${ENV_ID[$i]}" in dev\|*|test\|*|staging\|*|prod\|*) ;; *) echo "FAIL: 第 $((i + 1)) 套环境的 manifest 未点名 environment（${ENV_ID[$i]}）" >&2; exit 1 ;; esac
+done
+ID_UNIQUE="$(printf '%s\n' "${ENV_ID[@]}" | sort -u | wc -l)"
+[ "$ID_UNIQUE" -eq 4 ] || { echo "FAIL: 四套环境指纹未互不相同（去重后 $ID_UNIQUE 个）" >&2; exit 1; }
+echo "\$ cage check examples/game-config --env qa   # 期望退出码 2"
 set +e
-ENV_OUT="$("$CAGE_BIN" check "$EX" --env staging 2>&1)"
+ENV_OUT="$("$CAGE_BIN" check "$EX" --env qa 2>&1)"
 ENV_CODE=$?
 set -e
 echo "$ENV_OUT"
 [ "$ENV_CODE" -eq 2 ] || { echo "FAIL: 未知环境期望退出码 2，实际 ${ENV_CODE}" >&2; exit 1; }
-case "$ENV_OUT" in *"unknown environment 'staging'"*) ;; *) echo "FAIL: 输出未点名 unknown environment" >&2; exit 1 ;; esac
+case "$ENV_OUT" in *"unknown environment 'qa'"*) ;; *) echo "FAIL: 输出未点名 unknown environment" >&2; exit 1 ;; esac
+case "$ENV_OUT" in *"declared: dev, prod, staging, test"*) ;; *) echo "FAIL: 声明清单未含四套环境" >&2; exit 1 ;; esac
 
 step "[4/15] cage build --profile client   —— 验证 + 生成全部 14 个 target（5 张表）"
 echo "\$ cage build examples/game-config --profile client"

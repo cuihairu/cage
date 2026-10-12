@@ -52,7 +52,9 @@ tables:
         name: nickname
         type: { kind: String }
         max_length: 16
-        description: 昵称（可选；prod 环境必填 —— env_overrides 演示）
+        description: >-
+          昵称（可选；按环境把 max_length 从 dev 32 → test 24 → staging 20
+          逐级收紧，prod 改成必填 —— env_overrides 四环境演示）
       internal_note:
         name: internal_note
         type: { kind: String }
@@ -62,6 +64,10 @@ tables:
     env_overrides:
       dev:
         nickname: { max_length: 32 }
+      test:
+        nickname: { max_length: 24 }
+      staging:
+        nickname: { max_length: 20 }
       prod:
         nickname: { required: true }
 enums:

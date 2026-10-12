@@ -1,8 +1,10 @@
-# 商店（源：config/Shop.msgpack —— MsgPack 源演示；env_overrides 演示分环境）
+# 商店（源：config/Shop.msgpack —— MsgPack 源演示；env_overrides 演示四环境）
 tables:
   Shop:
     name: Shop
-    description: 商店表（MsgPack 源；prod 环境把折扣上限收紧到 0.5 —— 同表不同环境不同规则）
+    description: >-
+      商店表（MsgPack 源；同一字段按环境把折扣上限逐级收紧
+      dev 0.9 → test 0.7 → staging 0.6 → prod 0.5 —— 同表不同环境不同规则）
     primary_key: [id]
     fields:
       id: { name: id, type: { kind: Int32 }, required: true, min: 1 }
@@ -16,6 +18,12 @@ tables:
           field: id
       discount: { name: discount, type: { kind: Float64 }, required: true, min: 0, max: 0.9 }
     env_overrides:
+      dev:
+        discount: { max: 0.9 }
+      test:
+        discount: { max: 0.7 }
+      staging:
+        discount: { max: 0.6 }
       prod:
         discount: { max: 0.5 }
 enums: {}

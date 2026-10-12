@@ -1335,3 +1335,33 @@ peer 冲突，改只装 `mermaid` 依赖 + 自渲染（config.mts fence 钩子�
       毫秒级（实测数据见 design §45 落地附记）；解除条件写明
 - [x] 文档：design §45 卡点登记补落地附记、「留待实现期」划线；
       source.md S2 节补池化口径
+
+### 示例四套环境补齐（2026-10-12 用户登记单，2026-10-13 落地）
+用户令（2026-10-12）：示例补齐四环境——开发 dev / 测试 test / 灰度
+staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化，文档
+实测输出同步。验收口径：四套各跑一次 `check` 与 `build --env <name>`
+全部通过；manifest 的 `environment` 字段与指纹随环境变化（换环境即换
+构建）；未知环境仍 exit 2。
+- [x] ① schemas 以 `env_overrides` 键声明四套环境（既有声明机制——
+      `declared_envs()` 取各表键并集，不在 cage.toml 登记）：
+      `Character.nickname` max_length dev 32 → test 24 → staging 20 /
+      prod 必填，`Shop.discount` 上限 dev 0.9 → test 0.7 → staging 0.6
+      → prod 0.5（样例数据最大折扣 0.4，四套都放行）——本轮交付，勾选
+- [x] ② examples/run.sh 第 3 步改四套 check + 四套 build：断言每套
+      manifest `environment` 逐字点名当前环境、四套 build_id/
+      content_hash 两两不同、未知环境 `qa` exit 2 且声明清单含四套
+      ——本轮交付，勾选（15 步全绿）
+- [x] ③ 文档实测输出同步：docs/example.md 完整输出块整块换新（旧
+      `unknown environment 'staging' (declared: dev, prod)` 改实测
+      `unknown environment 'qa' (declared: dev, prod, staging, test)`）、
+      `### cage check --env` 节重写为四套 check + 四套 build 指纹实测；
+      基线/prod 快照与注册表 build_id 因 schema 携带四套 env_overrides
+      轮换（df808dfaa1cd→850ac5e6ac32、b926aded2ac8→55dae1a8e145），
+      全部换实测值；examples/game-config/README.md 同步（顺手把
+      「14 步」改回实况 15 步）——本轮交付，勾选
+- [x] ④ 实测证据：四套 check 全 OK（5 tables, 0 warnings）；四套
+      build 的 manifest `environment` = dev/test/staging/prod，
+      build_id `6271d907b39e`/`fcd7f8107102`/`158f898a3913`/
+      `55dae1a8e145` 两两不同，content_hash 同样逐环境轮换（数据
+      字节不变，约束进生成的 JSON Schema——`Shop.schema.json` 的
+      `maximum` 随环境取 0.9/0.7/0.6/0.5）——本轮交付，勾选

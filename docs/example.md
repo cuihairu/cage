@@ -1,6 +1,6 @@
 # 完整示例
 
-仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 任务 + 商店 + 关卡」五张表、五种源格式（CSV / YAML / JSON / Excel / MsgPack）、一份覆盖常用字段类型与约束用法的 schema、双 profile（client 14 个 target / server 3 个 target）、分环境约束覆盖（`--env`）、快照 / diff / 迁移 / 注册表 / stdio LSP 诊断（`cage lsp`），外加一套触发 L7 Game Rule 与分环境必填的坏数据。
+仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 任务 + 商店 + 关卡」五张表、五种源格式（CSV / YAML / JSON / Excel / MsgPack）、一份覆盖常用字段类型与约束用法的 schema、双 profile（client 14 个 target / server 3 个 target）、四套环境的分环境约束覆盖（`--env dev/test/staging/prod`）、快照 / diff / 迁移 / 注册表 / stdio LSP 诊断（`cage lsp`），外加一套触发 L7 Game Rule 与分环境必填的坏数据。
 
 本页所有命令与输出都是**真实执行结果**（在仓库根目录运行），不是伪代码。
 
@@ -18,6 +18,7 @@ bash examples/run.sh
 ```text
 ==> 构建 cage 可执行文件
 
+
 ============================================================
 ==> [1/15] cage check examples/game-config   —— L0-L6 全量校验（好数据应通过）
 ============================================================
@@ -31,14 +32,30 @@ $ cage check examples/game-config --level gamerule
 cage check: OK (5 tables, 0 warnings, level <= gamerule)
 
 ============================================================
-==> [3/15] 分环境验证 —— --env dev/prod 放行、未知环境 exit 2
+==> [3/15] 分环境验证 —— --env dev/test/staging/prod 四套放行、未知环境 exit 2
 ============================================================
 $ cage check examples/game-config --env dev
 cage check: OK (5 tables, 0 warnings, level <= semantic)
+$ cage check examples/game-config --env test
+cage check: OK (5 tables, 0 warnings, level <= semantic)
+$ cage check examples/game-config --env staging
+cage check: OK (5 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env prod
 cage check: OK (5 tables, 0 warnings, level <= semantic)
-$ cage check examples/game-config --env staging   # 期望退出码 2
-error: unknown environment 'staging' (declared: dev, prod)
+$ cage build examples/game-config --profile client --env dev
+cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+$ cage build examples/game-config --profile client --env test
+cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+$ cage build examples/game-config --profile client --env staging
+cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+$ cage build examples/game-config --profile client --env prod
+cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+  dev|6271d907b39e|b74285f8edb1
+  test|fcd7f8107102|a22c71cd3872
+  staging|158f898a3913|04a35a5f73f9
+  prod|55dae1a8e145|f81e230d62e9
+$ cage check examples/game-config --env qa   # 期望退出码 2
+error: unknown environment 'qa' (declared: dev, prod, staging, test)
 
 ============================================================
 ==> [4/15] cage build --profile client   —— 验证 + 生成全部 14 个 target（5 张表）
@@ -56,13 +73,13 @@ cage build: up to date (profile 'client', 86 artifacts, manifest /home/cui/works
 ==> [6/15] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验
 ============================================================
 $ cage snapshot examples/game-config --profile client
-cage snapshot: OK (profile 'client', 89 files, 86 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-df808dfaa1cd)
+cage snapshot: OK (profile 'client', 89 files, 86 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-850ac5e6ac32)
 $ cage snapshot <dir> --verify
-cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-df808dfaa1cd/ — 88 files checked)
+cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-850ac5e6ac32/ — 88 files checked)
 $ cage snapshot examples/game-config --profile client --env prod   —— 环境化出包（目录名带 env 段）
-cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-b926aded2ac8)
+cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-55dae1a8e145)
 $ cage snapshot <prod-dir> --verify
-cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-b926aded2ac8/ — 88 files checked)
+cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-55dae1a8e145/ — 88 files checked)
 
 ============================================================
 ==> [7/15] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto/fbs 定义）
@@ -98,33 +115,33 @@ cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, no
 ============================================================
 ==> [11/15] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）
 ============================================================
-$ cage registry publish examples/game-config --registry /tmp/tmp.xHLIqr10tN
-cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id df808dfaa1cd, content_hash 750ae6439736)
-$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.xHLIqr10tN   # 同版本换环境 → E1801（一版本一包）
-error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id df808dfaa1cd8be80fa34f4d / content_hash 750ae64397367fe194b00f2c1f9d1576fee3477231d79ed740d9766edb97d9fe — republish under a new version
-$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.xHLIqr10tN --version 0.1.0-prod
-cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 89 files, build_id b926aded2ac8, content_hash 997bd5362ebe)
-$ cage registry list --registry /tmp/tmp.xHLIqr10tN
-cage registry: 1 package(s) in /tmp/tmp.xHLIqr10tN
+$ cage registry publish examples/game-config --registry /tmp/tmp.Jn5f7l8eVG
+cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id 850ac5e6ac32, content_hash edf7f24417fe)
+$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.Jn5f7l8eVG   # 同版本换环境 → E1801（一版本一包）
+error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id 850ac5e6ac32005bd1d5220a / content_hash edf7f24417fe87bfd50fec7f5d6fc91c7cc955cc4b6cfe0447c0fc879a7357ea — republish under a new version
+$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.Jn5f7l8eVG --version 0.1.0-prod
+cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 89 files, build_id 55dae1a8e145, content_hash f81e230d62e9)
+$ cage registry list --registry /tmp/tmp.Jn5f7l8eVG
+cage registry: 1 package(s) in /tmp/tmp.Jn5f7l8eVG
 rpg-demo
-  0.1.0        build df808dfaa1cd  content 750ae6439736  89 files
-  0.1.0-prod   build b926aded2ac8  content 997bd5362ebe  89 files
+  0.1.0        build 850ac5e6ac32  content edf7f24417fe  89 files
+  0.1.0-prod   build 55dae1a8e145  content f81e230d62e9  89 files
 
 ============================================================
 ==> [12/15] 远程分发全链路   —— push 直推 + presigned 直推 + 消费方远端 resolve 构建
 ============================================================
 $ cage registry publish examples/game-config   # 发布进示例本地注册表（push 源）
-cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id df808dfaa1cd, content_hash 750ae6439736)
-(本地对象库 A=http://127.0.0.1:33733 直推 / B=http://127.0.0.1:40903 presigned)
-$ cage registry push examples/game-config --registry http://127.0.0.1:33733
-cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:33733 (89 file(s))
-cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:33733 (89 file(s)) — identical, no-op
-$ cage registry push examples/game-config --presign-map /tmp/tmp.oXE86r18ud/presign.json
-cage registry: pushed rpg-demo/0.1.0 → presigned targets (/tmp/tmp.oXE86r18ud/presign.json) (89 file(s))
-$ cage build /tmp/tmp.ld70x9tyfq/consA --profile client   # 消费方直连远端根构建（consA ← 33733）
-cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.ld70x9tyfq/consA/build/manifest.json)
-$ cage build /tmp/tmp.ld70x9tyfq/consB --profile client   # 消费方直连远端根构建（consB ← 40903）
-cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.ld70x9tyfq/consB/build/manifest.json)
+cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id 850ac5e6ac32, content_hash edf7f24417fe)
+(本地对象库 A=http://127.0.0.1:32905 直推 / B=http://127.0.0.1:36077 presigned)
+$ cage registry push examples/game-config --registry http://127.0.0.1:32905
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:32905 (89 file(s))
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:32905 (89 file(s)) — identical, no-op
+$ cage registry push examples/game-config --presign-map /tmp/tmp.sa450hDEAV/presign.json
+cage registry: pushed rpg-demo/0.1.0 → presigned targets (/tmp/tmp.sa450hDEAV/presign.json) (89 file(s))
+$ cage build /tmp/tmp.9ROByJsNlN/consA --profile client   # 消费方直连远端根构建（consA ← 32905）
+cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.9ROByJsNlN/consA/build/manifest.json)
+$ cage build /tmp/tmp.9ROByJsNlN/consB --profile client   # 消费方直连远端根构建（consB ← 36077）
+cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.9ROByJsNlN/consB/build/manifest.json)
 消费方产物与发布方逐字节一致（5 张表 × 2 条分发路）
 
 ============================================================
@@ -132,7 +149,7 @@ cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.ld70x9tyfq/cons
 ============================================================
 $ cage check examples/game-config/bad   # 期望 E1501（hp > attack，L6 语义规则）+ 退出码 1
 ERROR E1501 — Assertion Failed
-  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1
   Table: Character
   Row: 0
   Message: Semantic rule violation
@@ -142,14 +159,14 @@ ERROR E1501 — Assertion Failed
 cage check: FAILED (1 errors, 0 warnings)
 $ cage check examples/game-config/bad --level gamerule   # 期望 E1601 + 退出码 1
 ERROR E1501 — Assertion Failed
-  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1
   Table: Character
   Row: 0
   Message: Semantic rule violation
   Hint: hp must not exceed attack
 
 ERROR E1601 — Game Rule Validation Failed
-  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1
   Table: Character
   Row: 0
   Message: Game rule violation: power curve
@@ -159,7 +176,7 @@ ERROR E1601 — Game Rule Validation Failed
 cage check: FAILED (2 errors, 0 warnings)
 $ cage check examples/game-config/bad --env prod   # prod 收紧 nickname 必填 → E1001
 ERROR E1001 — Missing Required Field
-  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1 | Field: nickname
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1 | Field: nickname
   Table: Character
   Row: 0
   Field: nickname
@@ -167,7 +184,7 @@ ERROR E1001 — Missing Required Field
   Hint: Add required field 'nickname' to this row
 
 ERROR E1001 — Missing Required Field
-  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 2 | Field: nickname
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 2 | Field: nickname
   Table: Character
   Row: 1
   Field: nickname
@@ -175,7 +192,7 @@ ERROR E1001 — Missing Required Field
   Hint: Add required field 'nickname' to this row
 
 ERROR E1001 — Missing Required Field
-  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 3 | Field: nickname
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 3 | Field: nickname
   Table: Character
   Row: 2
   Field: nickname
@@ -183,7 +200,7 @@ ERROR E1001 — Missing Required Field
   Hint: Add required field 'nickname' to this row
 
 ERROR E1001 — Missing Required Field
-  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 4 | Field: nickname
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 4 | Field: nickname
   Table: Character
   Row: 3
   Field: nickname
@@ -191,7 +208,7 @@ ERROR E1001 — Missing Required Field
   Hint: Add required field 'nickname' to this row
 
 ERROR E1501 — Assertion Failed
-  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1
   Table: Character
   Row: 0
   Message: Semantic rule violation
@@ -289,7 +306,7 @@ $ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501（与 cage
         "severity": 1,
         "code": "E1501",
         "source": "cage",
-        "message": "E1501: Semantic rule violation (/home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Row: 1) [hint: hp must not exceed attack]"
+        "message": "E1501: Semantic rule violation (/home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1) [hint: hp must not exceed attack]"
       }
     ]
   }
@@ -314,11 +331,11 @@ examples/game-config/
 ├── cage.toml          # 工程配置：client（13 target）/ server（3 target）双 profile
 ├── schemas/           # 五个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
 │   ├── character.yaml # 角色成长：枚举/唯一约束/正则/范围/默认值/保留字字段 class
-│   │                  #   + nickname：env_overrides（dev 放宽、prod 必填）
+│   │                  #   + nickname：env_overrides 四套环境（dev 32 → test 24 → staging 20、prod 必填）
 │   │                  #   + internal_note：targets ["server"]（字段级可见性）
 │   ├── item.yaml      # 道具：整型枚举 + 字符串枚举 + 可选字段
 │   ├── quest.yaml     # 任务：Excel 源、跨表引用、order_by 行排序
-│   ├── shop.yaml      # 商店：MsgPack 源、env_overrides（prod 收紧折扣上限）
+│   ├── shop.yaml      # 商店：MsgPack 源、env_overrides 四套环境（折扣上限 0.9/0.7/0.6/0.5）
 │   └── stage.yaml     # 关卡：数组/对象/跨表引用/Map<string, Array<Int32>>
 ├── config/            # 五种源格式（同一 profile 一起加载）
 │   ├── Character.csv  # CSV：文件名即表名
@@ -352,20 +369,37 @@ cage check: OK (5 tables, 0 warnings, level <= gamerule)
 
 ### cage check --env —— 分环境约束覆盖
 
-schema 的 `env_overrides` 按环境换约束（design §48）：dev 把 `Character.nickname` 的 `max_length` 放宽到 32，prod 把它改成必填、`Shop.discount` 上限收紧到 0.5。`--env` 在验证前把覆盖解析进 schema，校验/生成/哈希全部走解析后的形态：
+环境由 schema 的 `env_overrides` 键声明（design §48），本示例声明四套——开发 dev / 测试 test / 灰度 staging / 正式 prod。同一字段四套不同取值：`Character.nickname` 的 `max_length` dev 32 → test 24 → staging 20、prod 改必填；`Shop.discount` 上限 dev 0.9 → test 0.7 → staging 0.6 → prod 0.5（样例数据最大折扣 0.4，四套都放行）。`--env` 在验证前把覆盖解析进 schema，校验/生成/哈希全部走解析后的形态：
 
 ```console
 $ cage check examples/game-config --env dev
 cage check: OK (5 tables, 0 warnings, level <= semantic)
-$ cage check examples/game-config --env prod
+$ cage check examples/game-config --env test
 cage check: OK (5 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env staging
-error: unknown environment 'staging' (declared: dev, prod)
+cage check: OK (5 tables, 0 warnings, level <= semantic)
+$ cage check examples/game-config --env prod
+cage check: OK (5 tables, 0 warnings, level <= semantic)
+$ cage check examples/game-config --env qa
+error: unknown environment 'qa' (declared: dev, prod, staging, test)
 $ echo $?
 2
 ```
 
-未知环境是用法错误（exit 2），不新增 E 码；环境名进 manifest 的 `environment` 字段并参与增量指纹——换环境即换构建。
+四套各建一次：manifest 的 `environment` 字段点名当前环境，解析后的 schema 进 `schema_hash`、约束进生成的 JSON Schema（`Shop.schema.json` 的 `maximum` 随环境取 0.9/0.7/0.6/0.5），`build_id` / `content_hash` 逐环境不同——换环境即换构建（数据字节不变）：
+
+```console
+$ for env in dev test staging prod; do
+>   cage build examples/game-config --profile client --env $env > /dev/null
+>   python3 -c "import json; m=json.load(open('examples/game-config/build/manifest.json')); print(m['environment']+'|'+m['build_id'][:12]+'|'+m['content_hash'][:12])"
+> done
+dev|6271d907b39e|b74285f8edb1
+test|fcd7f8107102|a22c71cd3872
+staging|158f898a3913|04a35a5f73f9
+prod|55dae1a8e145|f81e230d62e9
+```
+
+未知环境是用法错误（exit 2），不新增 E 码；环境名进 manifest 的 `environment` 字段并参与增量指纹。
 
 ### cage build —— 验证 + 全量构建
 
@@ -410,11 +444,11 @@ L1（schema + 源指纹）与 L2（产物指纹）双层守卫；`environment` �
 
 ```console
 $ cage snapshot examples/game-config --profile client
-cage snapshot: OK (profile 'client', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-df808dfaa1cd)
-$ cage snapshot examples/game-config/build/snapshot/client-df808dfaa1cd/ --verify
-cage snapshot: verified (examples/game-config/build/snapshot/client-df808dfaa1cd/ — 88 files checked)
+cage snapshot: OK (profile 'client', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-850ac5e6ac32)
+$ cage snapshot examples/game-config/build/snapshot/client-850ac5e6ac32/ --verify
+cage snapshot: verified (examples/game-config/build/snapshot/client-850ac5e6ac32/ — 88 files checked)
 $ cage snapshot examples/game-config --profile client --env prod
-cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-prod-b926aded2ac8)
+cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-prod-55dae1a8e145)
 ```
 
 快照 = profile 投影的规范 schema（`schema.json`）+ 全部产物 + 逐文件哈希账本（`HASHES.json`），自校验、可回滚、可审计。`--env` 出环境化包：`env_overrides` 先解析进 schema 再验证打包，目录名带 env 段（`client-prod-<build_id>`）、包内 `manifest.json` 记 `environment`、`schema.json` 即 prod 规则。
@@ -466,16 +500,16 @@ cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, no
 
 ```console
 $ cage registry publish examples/game-config --registry /tmp/reg
-cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id df808dfaa1cd, content_hash 750ae6439736)
+cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id 850ac5e6ac32, content_hash edf7f24417fe)
 $ cage registry publish examples/game-config --env prod --registry /tmp/reg   # 同版本换环境 → E1801（一版本一包）
-error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id df808dfaa1cd8be80fa34f4d / content_hash 750ae64397367fe194b00f2c1f9d1576fee3477231d79ed740d9766edb97d9fe — republish under a new version
+error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id 850ac5e6ac32005bd1d5220a / content_hash edf7f24417fe87bfd50fec7f5d6fc91c7cc955cc4b6cfe0447c0fc879a7357ea — republish under a new version
 $ cage registry publish examples/game-config --env prod --registry /tmp/reg --version 0.1.0-prod
-cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 89 files, build_id b926aded2ac8, content_hash 997bd5362ebe)
+cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 89 files, build_id 55dae1a8e145, content_hash f81e230d62e9)
 $ cage registry list --registry /tmp/reg
 cage registry: 1 package(s) in /tmp/reg
 rpg-demo
-  0.1.0        build df808dfaa1cd  content 750ae6439736  89 files
-  0.1.0-prod   build b926aded2ac8  content 997bd5362ebe  89 files
+  0.1.0        build 850ac5e6ac32  content edf7f24417fe  89 files
+  0.1.0-prod   build 55dae1a8e145  content f81e230d62e9  89 files
 ```
 
 快照打成 `rpg-demo/0.1.0` 条目入册：自校验、可寻址、可滚动回收。`publish --env` 出环境化包：一版本一包——同一版本换环境是不同的包（schema/manifest 都变），E1801 拦下冲突，换个版本号（`0.1.0-prod`）即可入册；条目内的 `manifest.json` 记 `environment`。Schema 作为资产的管理与消费端加载见[资产页](/assets)。
@@ -486,7 +520,7 @@ rpg-demo
 
 ```console
 $ cage registry publish examples/game-config                       # 发布进示例本地注册表（push 源）
-cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id df808dfaa1cd, content_hash 750ae6439736)
+cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id 850ac5e6ac32, content_hash edf7f24417fe)
 $ cage registry push examples/game-config --registry http://127.0.0.1:8080   # 直推：匿名探针 + 逐文件 PUT + index 合并收尾
 cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:8080 (89 file(s))
 $ cage registry push examples/game-config --registry http://127.0.0.1:8080   # 重推同字节 → 幂等零 PUT
@@ -610,7 +644,7 @@ schemas:
 | 数组字段 min_items/max_items | `Stage.tags` |
 | Map<K,V>（含嵌套，空 map 合法） | `Stage.drop_table: map<string, Array<Int32>>` |
 | 行排序约束（E1304） | `Quest.order_by: [id]` |
-| 分环境约束覆盖（`--env`） | `Character.nickname`（dev 放宽 max_length / prod 必填）、`Shop.discount`（prod 上限 0.5） |
+| 分环境约束覆盖（`--env`，四套环境） | `Character.nickname`（max_length dev 32 → test 24 → staging 20 / prod 必填）、`Shop.discount`（上限 dev 0.9 → test 0.7 → staging 0.6 → prod 0.5） |
 | 环境化出包（snapshot / registry publish `--env`） | 目录名 env 段 `client-prod-*`、条目 `0.1.0-prod`、同版本换环境 E1801 |
 | 字段级可见性（targets + E9006 安全） | `Character.internal_note` 仅 server 视图 |
 | 保留字字段自动转义（`class`） | `Character.class` → cs `@class`、py/java `class_`、go `Class`；lua/ts/js 不转义（消费端按键名取值） |
@@ -815,7 +849,7 @@ Java 列的 `primitive / wrapper` 取值取决于字段可空性（必填用 pri
 | `Jenkinsfile` | Jenkins（声明式） | `rustup` 引导工具链，`archiveArtifacts` 归档 |
 | `gitlab-ci.yml` | GitLab CI | `rust:1-bookworm` 镜像，`artifacts` 上报 |
 
-三份片段与 `run.sh` 的 14 步一一对应：check（含 `--env` 与坏数据断言）→ 双 profile 构建 → 增量 → 快照回验 → gen → diff → migrate → registry → 远程分发全链路（直推 / presigned / 消费方 resolve），任何一步红都是真烂。
+三份片段与 `run.sh` 的 15 步一一对应：check（含 `--env` 与坏数据断言）→ 双 profile 构建 → 增量 → 快照回验 → gen → diff → migrate → registry → 远程分发全链路（直推 / presigned / 消费方 resolve），任何一步红都是真烂。
 
 ## 资产：Schema 的管理与加载
 
