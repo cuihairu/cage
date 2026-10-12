@@ -236,7 +236,8 @@ impl ExcelSourceAdapter {
                     // Excel column letter (A, B, C... AA, AB...) on the sheet grid
                     let col_letter = Self::col_index_to_letter(range_start.1 as usize + col_idx);
 
-                    let loc = SourceLocation::new(&file_path).with_format("excel")
+                    let loc = SourceLocation::new(&file_path)
+                        .with_format("excel")
                         .with_sheet(sheet_name.clone())
                         .with_row(sheet_row)
                         .with_column(col_letter)
@@ -262,7 +263,8 @@ impl ExcelSourceAdapter {
                 table.rows.push(Row {
                     primary_key,
                     fields,
-                    location: SourceLocation::new(&file_path).with_format("excel")
+                    location: SourceLocation::new(&file_path)
+                        .with_format("excel")
                         .with_sheet(sheet_name.clone())
                         .with_row(sheet_row),
                     index: table.rows.len(),

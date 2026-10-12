@@ -179,7 +179,8 @@ impl MsgPackSourceAdapter {
         let mut primary_key = Vec::new();
         for (key, value) in named {
             let cage_value = Self::cage_value(value, file_path);
-            let loc = SourceLocation::new(file_path).with_format("msgpack")
+            let loc = SourceLocation::new(file_path)
+                .with_format("msgpack")
                 .with_row(row_idx + 1)
                 .with_column(key.clone())
                 .with_field(key.clone());
@@ -199,7 +200,9 @@ impl MsgPackSourceAdapter {
         Row {
             primary_key,
             fields,
-            location: SourceLocation::new(file_path).with_format("msgpack").with_row(row_idx + 1),
+            location: SourceLocation::new(file_path)
+                .with_format("msgpack")
+                .with_row(row_idx + 1),
             index: row_idx,
         }
     }
@@ -322,7 +325,12 @@ mod tests {
         for (name, value) in fields {
             map.insert(
                 (*name).to_string(),
-                TypedValue::new(value.clone(), SourceLocation::new("t").with_format("msgpack").with_field(*name)),
+                TypedValue::new(
+                    value.clone(),
+                    SourceLocation::new("t")
+                        .with_format("msgpack")
+                        .with_field(*name),
+                ),
             );
         }
         Row {
@@ -332,7 +340,9 @@ mod tests {
                 .into_iter()
                 .collect(),
             fields: map,
-            location: SourceLocation::new("t").with_format("msgpack").with_row(index + 1),
+            location: SourceLocation::new("t")
+                .with_format("msgpack")
+                .with_row(index + 1),
             index,
         }
     }

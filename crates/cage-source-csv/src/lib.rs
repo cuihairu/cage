@@ -179,7 +179,8 @@ impl CsvSourceAdapter {
                 let value_str = record.get(col_idx).unwrap_or("");
                 let cage_value = Self::infer_and_parse_value(value_str);
 
-                let loc = SourceLocation::new(&file_path).with_format("csv")
+                let loc = SourceLocation::new(&file_path)
+                    .with_format("csv")
                     .with_row(row_idx + 1)
                     .with_column(header.clone())
                     .with_field(header.clone());
@@ -204,7 +205,9 @@ impl CsvSourceAdapter {
             table.rows.push(Row {
                 primary_key,
                 fields,
-                location: SourceLocation::new(&file_path).with_format("csv").with_row(row_idx + 1),
+                location: SourceLocation::new(&file_path)
+                    .with_format("csv")
+                    .with_row(row_idx + 1),
                 index: row_idx,
             });
         }
@@ -346,7 +349,8 @@ impl CsvSourceAdapter {
                 let value_str = record.get(col_idx).unwrap_or("");
                 let cage_value = Self::infer_and_parse_value(value_str);
 
-                let loc = SourceLocation::new(&file_path).with_format("csv")
+                let loc = SourceLocation::new(&file_path)
+                    .with_format("csv")
                     .with_row(row_idx + 1)
                     .with_column(header.clone())
                     .with_field(header.clone());
@@ -369,7 +373,9 @@ impl CsvSourceAdapter {
             table.rows.push(Row {
                 primary_key,
                 fields,
-                location: SourceLocation::new(&file_path).with_format("csv").with_row(row_idx + 1),
+                location: SourceLocation::new(&file_path)
+                    .with_format("csv")
+                    .with_row(row_idx + 1),
                 index: row_idx,
             });
         }
