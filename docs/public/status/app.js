@@ -236,6 +236,8 @@ async function refresh() {
   renderValidation();
   renderBuilds();
   await loadArtifacts();
+  await loadSnapshots();
+  await loadRegistry();
 }
 
 async function buildProfile(name) {
@@ -398,6 +400,245 @@ async function loadArtifacts() {
   }
 }
 
+// ── 快照（U3 列 / 验 / 打包）────────────────────────────────────────
+
+let snapshotsCache = []; // 最近一次 GET /api/snapshots 负荷（对比下拉也用它）
+
+async function loadSnapshots() {
+  const summary = document.getElementById("snap-summary");
+  const list = document.getElementById("snap-list");
+  const { data } = await api("/api/snapshots");
+  list.replaceChildren();
+  if (!data || !data.ok) {
+    summary.textContent = "不可用";
+    return;
+  }
+  snapshotsCache = data.snapshots || [];
+  summary.textContent = snapshotsCache.length
+    ? `${snapshotsCache.length} 个快照（${data.output_dir}/snapshot/）`
+    : `尚无快照（${data.output_dir}/snapshot/）`;
+
+  snapshotsCache.forEach((s) => {
+    const card = el("div", "card");
+    const head = el("div", "card-head");
+    head.append(el("h3", "", s.name));
+    const badge = el("span", "badge");
+    if (s.verified) {
+      badge.className = "badge ok";
+      badge.textContent = `verified · ${s.files_checked} files`;
+    } else {
+      badge.className = "badge err";
+      badge.textContent = `FAILED · ${(s.problems || []).length} problem(s)`;
+    }
+    head.append(badge);
+    card.append(head);
+    if (!s.verified && (s.problems || []).length) {
+      const pre = el("div", "card-note");
+      pre.textContent = (s.problems || []).join("；");
+      card.append(pre);
+    }
+    const chips = el("div", "chips");
+    if (s.profile) chips.append(el("span", "chip", `profile ${s.profile}${s.environment ? ` / env ${s.environment}` : ""}`));
+    if (s.build_id) chips.append(el("span", "chip", `build ${shortHash(s.build_id)}`));
+    if (s.content_hash) chips.append(el("span", "chip", `content ${shortHash(s.content_hash)}`));
+    if (s.artifact_count != null) chips.append(el("span", "chip", `${s.artifact_count} 产物`));
+    card.append(chips);
+    list.append(card);
+  });
+
+  renderDiffOptions();
+}
+
+async function packSnapshot() {
+  const profile = document.getElementById("profile-sel").value;
+  const env = document.getElementById("env-in").value.trim();
+  const body = JSON.stringify({ profile: profile || null, env: env || null });
+  const btn = document.getElementById("pack-btn");
+  btn.disabled = true;
+  btn.textContent = "打包中…";
+  const { data } = await api("/api/snapshot", body);
+  btn.disabled = false;
+  btn.textContent = "打包快照";
+  if (data && data.ok) {
+    toast(`快照已打包：${data.snapshot_dir}（${data.files} 个文件，自验通过）`, "ok", 7000);
+  } else if (data && data.diagnostics) {
+    if (state.meta) {
+      state.meta.validation = {
+        ok: false,
+        profile,
+        errors: data.diagnostics.filter((d) => d.severity === "error").length,
+        warnings: data.diagnostics.filter((d) => d.severity === "warning").length,
+        info: data.diagnostics.filter((d) => d.severity === "info").length,
+        visible_tables: (state.meta.validation && state.meta.validation.visible_tables) || 0,
+        diagnostics: data.diagnostics,
+      };
+    }
+    renderValidation();
+    toast("快照被拒：构建未通过校验（见校验面板）", "err", 7000);
+  } else {
+    toast(`打包失败：${(data && data.error) || "服务错误"}`, "err", 7000);
+  }
+  await loadSnapshots();
+}
+
+// ── 对比（U3 分层 diff：表 → target → 文件）────────────────────────
+
+function renderDiffOptions() {
+  const fromSel = document.getElementById("diff-from");
+  const toSel = document.getElementById("diff-to");
+  const keep = (sel) => sel.value;
+  const prevFrom = keep(fromSel);
+  const prevTo = keep(toSel);
+  const fill = (sel) => {
+    sel.replaceChildren();
+    const live = el("option", "", `当前构建（${(state.meta && state.meta.output_dir) || "build"}）`);
+    live.value = (state.meta && state.meta.output_dir) || "build";
+    sel.append(live);
+    snapshotsCache.forEach((s) => {
+      const o = el("option", "", `快照 ${s.name}`);
+      o.value = `${(state.meta && state.meta.output_dir) || "build"}/snapshot/${s.name}`;
+      sel.append(o);
+    });
+  };
+  fill(fromSel);
+  fill(toSel);
+  const restore = (sel, prev) => {
+    if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  };
+  restore(fromSel, prevFrom);
+  restore(toSel, prevTo);
+  // 默认基线 = 当前构建，目标 = 最新快照（有快照时）
+  if (!prevFrom && snapshotsCache.length) fromSel.selectedIndex = 0;
+  if (!prevTo && snapshotsCache.length) toSel.selectedIndex = fromSel.selectedIndex ? 0 : Math.min(1, toSel.options.length - 1);
+}
+
+function diffFileRow(f) {
+  const how = f.from_hash === undefined ? "added"
+    : f.to_hash === undefined ? "removed"
+    : f.from_hash === f.to_hash ? "same" : "changed";
+  const mark = how === "added" ? "+" : how === "removed" ? "−" : "~";
+  const row = el("div", "diff-file");
+  row.append(el("span", `diff-mark diff-${how}`, mark), el("span", "diff-path", f.path));
+  if (how === "changed") {
+    row.append(el("span", "muted", `${shortHash(f.from_hash)} → ${shortHash(f.to_hash)}`));
+  }
+  return row;
+}
+
+async function runDiff() {
+  const from = document.getElementById("diff-from").value;
+  const to = document.getElementById("diff-to").value;
+  const result = document.getElementById("diff-result");
+  const summary = document.getElementById("diff-summary");
+  if (!from || !to) {
+    toast("选择基线与目标再对比", "err");
+    return;
+  }
+  if (from === to) {
+    toast("基线与目标是同一份 manifest", "err");
+    return;
+  }
+  summary.textContent = "对比中…";
+  const qs = new URLSearchParams({ from, to });
+  const { data } = await api(`/api/diff?${qs.toString()}`);
+  result.replaceChildren();
+  if (!data || !data.ok) {
+    summary.textContent = "不可用";
+    const err = el("div", "card-note");
+    err.textContent = (data && data.error) || "服务错误";
+    result.append(err);
+    return;
+  }
+
+  const files = [
+    ...(data.files.added || []),
+    ...(data.files.removed || []),
+    ...(data.files.changed || []),
+  ];
+  const unchanged = data.roots && data.roots.build_id && data.roots.build_id.from === data.roots.build_id.to;
+  summary.textContent = unchanged && files.length === 0
+    ? "两次构建逐字节一致"
+    : `${data.changed_tables.length} 张表 · ${data.affected_targets.length} 个 target · ${files.length} 个文件有变化`;
+
+  // 根：build_id / content_hash 的 from → to
+  const roots = el("div", "facts");
+  const fact = (label, a, b) => {
+    roots.append(el("span", "", label), el("b", "", a === b ? shortHash(a) : `${shortHash(a)} → ${shortHash(b)}`));
+  };
+  fact("build_id", data.roots.build_id.from, data.roots.build_id.to);
+  fact("content_hash", data.roots.content_hash.from, data.roots.content_hash.to);
+  result.append(roots);
+
+  if (files.length === 0) return;
+
+  const chips = el("div", "chips");
+  (data.changed_tables || []).forEach((t) => chips.append(el("span", "chip stale", t)));
+  (data.affected_targets || []).forEach((t) => chips.append(el("span", "chip", t)));
+  result.append(chips);
+
+  // 三层折叠：表 → target → 文件
+  const byTable = new Map();
+  for (const f of files) {
+    const table = f.table || "（无表归属）";
+    if (!byTable.has(table)) byTable.set(table, []);
+    byTable.get(table).push(f);
+  }
+  for (const [table, list] of byTable) {
+    const det = el("details", "diff-table");
+    det.append(el("summary", "", `${table}（${list.length} 个文件）`));
+    const byTarget = new Map();
+    for (const f of list) {
+      const target = f.target || "（未知 target）";
+      if (!byTarget.has(target)) byTarget.set(target, []);
+      byTarget.get(target).push(f);
+    }
+    for (const [target, tfiles] of byTarget) {
+      const inner = el("details", "diff-target");
+      inner.append(el("summary", "", `${target}（${tfiles.length}）`));
+      tfiles.forEach((f) => inner.append(diffFileRow(f)));
+      det.append(inner);
+    }
+    result.append(det);
+  }
+}
+
+// ── Registry 浏览（U3）──────────────────────────────────────────────
+
+async function loadRegistry() {
+  const summary = document.getElementById("registry-summary");
+  const list = document.getElementById("registry-list");
+  const { data } = await api("/api/registry");
+  list.replaceChildren();
+  if (!data || !data.ok) {
+    summary.textContent = "不可用";
+    const note = el("div", "card-note");
+    note.textContent = (data && data.error) || "服务错误";
+    list.append(note);
+    return;
+  }
+  const packages = data.packages || [];
+  if (packages.length === 0) {
+    summary.textContent = data.note || "空";
+    return;
+  }
+  summary.textContent = `${packages.length} 个包（registry ${data.registry}）`;
+  packages.forEach((p) => {
+    const card = el("div", "card");
+    const head = el("div", "card-head");
+    head.append(el("h3", "", p.package));
+    head.append(el("span", "muted", `${(p.entries || []).length} 个版本`));
+    card.append(head);
+    const chips = el("div", "chips");
+    (p.entries || []).forEach((v) => {
+      const chip = el("span", "chip", `v${v.version} · build ${shortHash(v.build_id)} · ${v.files} files`);
+      chip.title = `content_hash ${v.content_hash}`;
+      chips.append(chip);
+    });
+    card.append(chips);
+    list.append(card);
+  });
+}
+
 // ── 启动 ────────────────────────────────────────────────────────────
 
 async function init() {
@@ -405,6 +646,8 @@ async function init() {
   document.getElementById("profile-sel").addEventListener("change", refresh);
   document.getElementById("level-sel").addEventListener("change", refresh);
   document.getElementById("env-in").addEventListener("change", refresh);
+  document.getElementById("pack-btn").addEventListener("click", packSnapshot);
+  document.getElementById("diff-btn").addEventListener("click", runDiff);
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();

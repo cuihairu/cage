@@ -221,6 +221,39 @@ section { margin-bottom: 22px; }
 
 .card-note { color: var(--text-dim); font-size: 12px; margin-top: 6px; }
 
+/* ── 快照 / 对比 / registry（U3）── */
+
+.knob-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+
+details.diff-table, details.diff-target {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  margin-bottom: 8px;
+  padding: 6px 10px;
+}
+details.diff-target { margin: 6px 0 4px 12px; background: var(--bg-hover); }
+details > summary {
+  cursor: pointer;
+  font: 13px/1.6 var(--mono);
+  color: var(--text);
+  user-select: none;
+}
+details > summary:hover { color: var(--accent); }
+
+.diff-file {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 12px/1.7 var(--mono);
+  padding: 1px 4px 1px 16px;
+}
+.diff-mark { width: 14px; flex: none; font-weight: 600; }
+.diff-mark.diff-added { color: var(--ok); }
+.diff-mark.diff-removed { color: var(--error); }
+.diff-mark.diff-changed { color: var(--warning); }
+.diff-path { word-break: break-all; }
+
 /* ── toast ── */
 
 #toast {

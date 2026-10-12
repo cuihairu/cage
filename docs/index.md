@@ -65,7 +65,7 @@ cage assets config/ --write assets.json   # 资产清单基线（--check 复核�
 - [Source](/source) / [Schema](/schema) / [Validation](/validation) / [Target](/target)：数据管线四阶段
 - [CLI](/cli) / [Build](/build)：命令行与确定性构建
 - [Web UI](/web)：第三阶段 Schema 编辑器 + 项目状态面（交换模型 W1、本地服务 W2、编辑器界面 W3、示例与冒烟 W4、项目状态与构建 API W5 已实装）
-- [UI 门面](/ui)：Web 增强的形态拍板与路线——项目与构建状态 / 校验面板（P0，U1 已实装）、产物浏览 + 编辑器 targets 徽标 / profile 作用域视图（P1，U2a/U2b 已实装）、快照 / registry / 分层 diff（P2）；不做 Merkle，改做语义分层 diff
+- [UI 门面](/ui)：Web 增强的形态拍板与路线——项目与构建状态 / 校验面板（P0，U1 已实装）、产物浏览 + 编辑器 targets 徽标 / profile 作用域视图（P1，U2a/U2b 已实装）、快照 / registry / 分层 diff（P2，U3 已实装）；不做 Merkle，改做语义分层 diff
 - [IDE 支持](/cli#lsp)：`cage lsp` stdio Language Server（design §49 I 系列已实装——只做诊断的 LSP 子集，与 check 共用校验管线，零新依赖手写帧协议）
 - [Registry](/cli#registry)：第三阶段 R 系列配置仓库（本地发布/列表 + `registry:` 源与 Schema 解析 + `[dependencies]` 版本 pin + 远程解析 + verify 全册审计 / gc 滚动窗口 / remove 显式移除，R1–R4 已实装；A 系列 bundle 导出/导入 + `registry push` 直推远端 + `--presign-map` presigned URL 直推已实装）
 - [资产](/assets)：Schema/源数据/构建规则三类输入资产 + 产物追溯的资产管理（design §50：`cage assets` 资产清单与基线复核、备份四层防线、快照与注册表的版本化能力；[`examples/asset-workspace`](https://github.com/cuihairu/cage/tree/main/examples/asset-workspace) 全生命周期示范）

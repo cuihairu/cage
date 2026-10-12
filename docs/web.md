@@ -195,9 +195,41 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       → server 保留 → ghost 400）+ web-smoke 第 7 步（game-config 的
       `internal_note`：client 投影剔除、server 保留、ghost 400）
 
+### W8 已实装：快照 / 分层 diff / registry 浏览（U3，路线见 [UI 门面](/ui)）
+
+- [x] `GET /api/snapshots`：列 `<output_dir>/snapshot/` 下全部包，
+      每包**现场** `verify_snapshot`——列表绝不宣称它没刚验过的包是
+      完好的；另附 manifest 事实（profile / env / build_id /
+      content_hash / 产物数，读不出 manifest 的包仍列，标注坏）
+- [x] `POST /api/snapshot`：与 `cage snapshot` 同一管线（完整
+      `build_project` → `pack_snapshot`，同参数含环境）；校验失败
+      200 + 诊断（与构建面板同一合并逻辑），Io 400
+- [x] `GET /api/diff?from=&to=`：两个 manifest 的语义分层 diff——
+      `changed_tables` / `affected_targets` / `files:{added,removed,
+      changed}`（每条带 table 与 target 归属）/ `roots`（content_hash
+      与 build_id 的 from→to）。table/target 元数据随文件条目走，
+      界面三层折叠（表 → target → 文件）就是纯分组；不做 Merkle 化，
+      卡点（出现「只拉变化子树」的增量同步需求）见 [UI 门面](/ui)
+- [x] `GET /api/registry`：浏览 `[registry] path` 下的包与版本
+      （cage_core registry 同一入口）；未配置出 ok + 说明而非报错
+- [x] 状态页：新增「快照」（自验徽标 + 打包钮）、「对比」（基线/
+      目标旋钮：live 构建与各快照；三层折叠，逐字节一致出判语）、
+      「Registry」三个区
+- [x] CLI 对齐：`cage snapshot --list`（列包 + 每包自验判语，与
+      `--verify`/`--env` 互斥）；`cage diff` 增「tables changed /
+      targets affected」分层摘要，与状态页同数据源（manifest
+      `table_hashes` 与产物路径）
+- [x] 测试：web.rs 单测 +3（快照打包/列表自验/坏体 400 / diff 分层
+      与缺参、未知基线 400 / registry 未配置说明 + 已配置浏览）+
+      `cage snapshot` CLI 测试（--list 列包与篡改判语、--list 与
+      --verify/--env 冲突）+ 集成 1 项（registry 未配置 → 打包 →
+      列表 → 跨快照 diff → ghost 400）+ web-smoke 第 5 步（打包 →
+      自验 → 零差异 diff → registry 空态）
+
 ## 路线图
 
-第三阶段 W 系列至此全部完成（W1 交换模型 → W2 本地服务 → W3 编辑器
-前端 → W4 文档与示例 → W5 项目状态面 → W6 产物浏览 → W7 作用域视图）。
-示例入口：`examples/web-smoke.sh`（CI 同款）。后续 UI 增量（U3 快照 /
-registry / 分层 diff）的路线与拍板见 [UI 门面](/ui)。
+第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务
+→ W3 编辑器前端 → W4 文档与示例 → W5 项目状态面 → W6 产物浏览 →
+W7 作用域视图 → W8 快照 / 分层 diff / registry 浏览）。
+示例入口：`examples/web-smoke.sh`（CI 同款）。后续 UI 增量的路线与
+拍板见 [UI 门面](/ui)。

@@ -102,10 +102,10 @@ cage-core 既有函数的直调，延续 W2 交换模型；服务端不持状态
 ### P2（第三批，口径先行、随增量落地）
 
 - **快照**：列（历史 snapshot 目录）/ 验（`snapshot --verify` 同款
-  核心调用）/ 打包三动作。
+  核心调用）/ 打包三动作。（U3 已实装）
 - **registry 条目浏览**：本地与远程条目列表（远程 list 已落地），
-  版本、依赖 pin、哈希可见。
-- **diff 与变更可视化**：语义分层 diff（下文专节）。
+  版本、依赖 pin、哈希可见。（U3 已实装）
+- **diff 与变更可视化**：语义分层 diff（下文专节）。（U3 已实装）
 
 ## 变更可视化：不做 Merkle，做语义分层 diff
 
@@ -205,8 +205,33 @@ build/server/*）；表级与字段级 `targets`（schema）经
       「本 profile 不可见」而非消失；未保存改动时投影提示语标注
       「按已保存 schema 投影」。验收：web.rs 单测 +2 + 集成 1 项 +
       web-smoke 第 7 步（game-config `internal_note` 三态断言）
-- [ ] **U3（P2）**：快照列/验/打包 + registry 条目浏览 + 分层 diff
-      （API + 界面三层折叠 + `cage diff` 分层摘要）
+- [x] **U3（P2）快照列/验/打包 + registry 条目浏览 + 分层 diff**：
+      —— **2026-10-12 已实装**，落地记录：
+      ① `GET /api/snapshots`（列 `<output_dir>/snapshot/` 全部包，
+      每包**现场** `verify_snapshot`——列表绝不宣称它没刚验过的包是
+      完好的；附 manifest 事实：profile / env / build_id /
+      content_hash / 产物数）+ `POST /api/snapshot`（与 `cage snapshot`
+      同一管线：完整 build → pack_snapshot；校验失败 200 + 诊断，
+      Io 400）+ 状态页「快照」区（verified 徽标 + 事实 chips + 打包钮）。
+      ② `GET /api/diff?from=&to=`（两个 manifest 的语义分层 diff，
+      形态即拍板原文：`changed_tables` / `affected_targets` /
+      `files:{added,removed,changed:[path,table,target,from_hash,to_hash]}`
+      / `roots:{content_hash,build_id}`；table/target 元数据随文件条目
+      走，界面三层折叠就是纯分组，无新计算）+ 状态页「对比」区
+      （基线/目标旋钮含 live 构建与各快照，表 → target → 文件三层
+      折叠，逐字节一致出「两次构建逐字节一致」）。
+      ③ `GET /api/registry`（读 `[registry] path`，未配置出 ok + 说明
+      而非报错；每版本 build_id / content_hash / files chips）+ 状态页
+      「Registry」区。④ CLI：`cage snapshot --list`（列包 + 每包自验
+      判语；与 `--verify`/`--env` clap 冲突）、`cage diff` 增
+      「tables changed / targets affected」分层摘要两行。**Merkle 化
+      卡点维持原判**：出现「只拉变化子树」的增量同步需求前不做。
+      验收：web.rs 单测 +3（快照打包/列表/坏体、diff 分层与 400、
+      registry 浏览与未配置）+ `cage snapshot` CLI 测试 5 项（含
+      --list 列包与篡改判语、describe 冲突断言）+ 集成 1 项
+      （registry 未配置 → 打包 → 列表自验 → 跨快照 diff → ghost 400
+      端到端）+ web-smoke 第 5 步（真实服务：打包 → 自验 → 零差异
+      diff → registry 空态）
 
 每项落地后在本节追加落地记录（惯例同 design.md）：实装面、口径
 精化、验收方式。

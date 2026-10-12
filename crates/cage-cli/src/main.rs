@@ -163,8 +163,8 @@ enum Commands {
         /// Target build directory (or manifest.json)
         target: PathBuf,
     },
-    /// Build and package a self-verifying Configuration Snapshot, or verify
-    /// an existing snapshot directory without rebuilding
+    /// Build and package a self-verifying Configuration Snapshot, verify an
+    /// existing snapshot directory, or list the packed snapshots
     Snapshot {
         /// Project root directory (or snapshot directory with --verify)
         path: PathBuf,
@@ -173,11 +173,15 @@ enum Commands {
         profile: String,
         /// Environment to apply before packaging (schema `env_overrides`);
         /// the packed schema.json and artifacts carry the resolved rules
-        #[arg(long, conflicts_with = "verify")]
+        #[arg(long, conflicts_with_all = ["verify", "list"])]
         env: Option<String>,
         /// Verify an existing snapshot directory instead of building
-        #[arg(long)]
+        #[arg(long, conflicts_with = "list")]
         verify: bool,
+        /// List the packed snapshots under `<output_dir>/snapshot/` (each
+        /// with a fresh verification pass) instead of building
+        #[arg(long)]
+        list: bool,
     },
     /// Serve the local Schema editor (third phase W3): editor page + HTTP API
     Web {
@@ -548,8 +552,11 @@ fn main() {
             profile,
             env,
             verify,
+            list,
         } => {
-            if verify {
+            if list {
+                run_snapshot_list(&path)
+            } else if verify {
                 run_snapshot_verify(&path)
             } else {
                 run_snapshot(&path, &profile, env.as_deref())
@@ -2304,6 +2311,71 @@ fn run_snapshot_verify(dir: &Path) -> i32 {
     }
 }
 
+/// `cage snapshot --list <root>` — the packed snapshots under
+/// `<output_dir>/snapshot/`, each named, ledgered (manifest facts) and
+/// freshly verified (the same `verify_snapshot` entry `--verify` uses):
+/// listing never claims a clean pack it did not just check.
+fn run_snapshot_list(path: &Path) -> i32 {
+    let config = match load_project_config(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let output_dir = config.output_dir.as_deref().unwrap_or("build");
+    let snap_root = path.join(output_dir).join("snapshot");
+    let mut dirs: Vec<PathBuf> = match std::fs::read_dir(&snap_root) {
+        Ok(rd) => rd
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
+        Err(e) => {
+            println!("cage snapshot: no snapshots ({})", snap_root.display());
+            let _ = e;
+            return 0;
+        }
+    };
+    dirs.sort();
+    if dirs.is_empty() {
+        println!("cage snapshot: no snapshots ({})", snap_root.display());
+        return 0;
+    }
+    println!(
+        "cage snapshot: {} pack(s) in {}",
+        dirs.len(),
+        snap_root.display()
+    );
+    for dir in dirs {
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let facts = match load_manifest(&dir) {
+            Ok(m) => format!(
+                "profile {}{}  build {}  content {}  {} artifacts",
+                m.profile,
+                m.environment
+                    .as_deref()
+                    .map_or_else(String::new, |e| format!("/env {e}")),
+                &m.build_id[..m.build_id.len().min(12)],
+                &m.content_hash[..m.content_hash.len().min(12)],
+                m.artifacts.len(),
+            ),
+            Err(e) => format!("unreadable manifest ({e})"),
+        };
+        let verdict = match cage_core::snapshot::verify_snapshot(&dir) {
+            Ok(report) if report.ok => format!("verified ({} files)", report.files_checked),
+            Ok(report) => format!("FAILED ({} problem(s))", report.mismatches.len()),
+            Err(e) => format!("FAILED ({e})"),
+        };
+        println!("  {name}  {facts}  {verdict}");
+    }
+    0
+}
+
 /// Write a snapshot file map under `dir`, creating parents as needed.
 fn write_snapshot_files(dir: &Path, files: &IndexMap<String, Vec<u8>>) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
@@ -3446,6 +3518,41 @@ fn run_diff(baseline: &Path, target: &Path) -> i32 {
         }
     }
 
+    // Layered summary (U3): what moved semantically, above the per-file
+    // listing — tables (the manifest's per-table fingerprints) and the
+    // targets whose outputs sit under any moved file.
+    let mut changed_tables: Vec<&String> = base
+        .table_hashes
+        .keys()
+        .chain(new.table_hashes.keys())
+        .filter(|t| base.table_hashes.get(*t) != new.table_hashes.get(*t))
+        .collect();
+    changed_tables.sort();
+    changed_tables.dedup();
+    let mut targets: Vec<&str> = base
+        .targets
+        .iter()
+        .chain(new.targets.iter())
+        .map(|t| t.output_dir.as_str())
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    let touches = |file: &str, dir: &str| {
+        let dir = dir.trim_end_matches('/');
+        file == dir || file.starts_with(&format!("{dir}/"))
+    };
+    let affected: Vec<&str> = targets
+        .iter()
+        .filter(|dir| {
+            added
+                .iter()
+                .chain(removed.iter())
+                .chain(changed.iter())
+                .any(|f| touches(f, dir))
+        })
+        .copied()
+        .collect();
+
     for p in &added {
         println!("+ {p}");
     }
@@ -3462,6 +3569,20 @@ fn run_diff(baseline: &Path, target: &Path) -> i32 {
         changed.len(),
         same
     );
+    if !changed_tables.is_empty() {
+        println!(
+            "tables changed ({}): {}",
+            changed_tables.len(),
+            changed_tables
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !affected.is_empty() {
+        println!("targets affected: {}", affected.join(", "));
+    }
     if base.content_hash != new.content_hash {
         println!(
             "content_hash: {} -> {}",
@@ -3682,8 +3803,9 @@ mod tests {
                 profile,
                 env,
                 verify,
+                list,
             } => format!(
-                "snapshot {} {profile} {} {verify}",
+                "snapshot {} {profile} {} {verify} {list}",
                 path.display(),
                 env.as_deref().unwrap_or("<base>")
             ),
@@ -5294,12 +5416,18 @@ file_template = "{{table}}.csv"
         assert!(snap.join("HASHES.json").is_file());
         // Self-verification passes on the just-written snapshot.
         assert_eq!(run_snapshot_verify(&snap), 0);
+        // The list names the pack with a fresh verification pass (U3).
+        assert_eq!(run_snapshot_list(&proj), 0);
         // Tamper: the ledger no longer re-hashes clean.
         let artifact = snap.join("data/client/json/Item.json");
         std::fs::write(&artifact, b"[]").expect("tamper");
         assert_eq!(run_snapshot_verify(&snap), 1);
+        // The listing still lists, but the pack carries its FAILED verdict.
+        assert_eq!(run_snapshot_list(&proj), 0);
         // A missing snapshot dir is a usage error.
         assert_eq!(run_snapshot_verify(&root.join("ghost")), 2);
+        // Listing a non-project root is a usage error too.
+        assert_eq!(run_snapshot_list(&root.join("ghost")), 2);
     }
 
     #[test]
@@ -6309,7 +6437,7 @@ main = "config"
                     "server",
                     "--verify",
                 ],
-                "snapshot proj server <base> true".to_string(),
+                "snapshot proj server <base> true false".to_string(),
             ),
             (
                 &[
@@ -6321,11 +6449,15 @@ main = "config"
                     "--env",
                     "prod",
                 ],
-                "snapshot proj server prod false".to_string(),
+                "snapshot proj server prod false false".to_string(),
             ),
             (
                 &["cage", "snapshot", "proj"],
-                "snapshot proj client <base> false".to_string(),
+                "snapshot proj client <base> false false".to_string(),
+            ),
+            (
+                &["cage", "snapshot", "proj", "--list"],
+                "snapshot proj client <base> false true".to_string(),
             ),
             (
                 &["cage", "web", "proj", "--port", "9000"],
@@ -6353,6 +6485,12 @@ main = "config"
             let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert_eq!(describe(&cli.command), want, "{args:?}");
         }
+        // --list refuses the build/verify modes: a listing neither builds
+        // nor re-verifies one named pack.
+        let cli = Cli::try_parse_from(["cage", "snapshot", "proj", "--list", "--verify"]);
+        assert!(cli.is_err(), "--list and --verify must conflict");
+        let cli = Cli::try_parse_from(["cage", "snapshot", "proj", "--list", "--env", "prod"]);
+        assert!(cli.is_err(), "--list and --env must conflict");
     }
 
     #[test]

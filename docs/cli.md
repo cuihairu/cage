@@ -153,7 +153,9 @@ cage diff build/a build/b
 ```
 
 比较两个配置版本；两个位置参数也接受 manifest.json 文件路径（不限于
-构建目录）。
+构建目录）。文件清单后附分层摘要两行——`tables changed`（逐表
+`table_hashes` 比对命中的表）与 `targets affected`（受波及文件的
+`output_dir`），与状态页对比区同数据源。
 
 ## snapshot
 
@@ -161,6 +163,7 @@ cage diff build/a build/b
 cage snapshot <project> --profile client    # 构建 + 打包自校验快照
 cage snapshot <project> --env prod          # 环境化出包（env_overrides 先解析再打包）
 cage snapshot <snapshot-dir> --verify       # 载入前校验（服务器入口）
+cage snapshot <project> --list              # 列已打包快照并逐包自验
 ```
 
 打包[Configuration Snapshot](/build#configuration-snapshot)：把 profile
@@ -171,7 +174,10 @@ schema.json / data/ / generated/ / HASHES.json），构建后自校验。`--veri
 失败。`--profile` 默认 `client`。`--env` 出环境化包：schema 的
 `env_overrides` 先解析进 schema 再验证打包，目录名带 env 段、包内
 `manifest.json` 记 `environment`、`schema.json` 即该环境的规则；`--env`
-与 `--verify` 互斥（回验不看环境）。
+与 `--verify` 互斥（回验不看环境）。`--list` 列 `<output_dir>/snapshot/`
+下全部包（profile / env / build_id / content_hash / 产物数），逐包现场
+自验出判语——列表绝不宣称它没刚验过的包是完好的；与 `--verify` /
+`--env` 互斥。
 
 ## verify（规划中）
 
@@ -215,8 +221,9 @@ Cage 支持四种远程输入源，全部在 `cage.toml` 的 `[source_roots]` �
 cage web ./ --port 8765
 ```
 
-启动 Schema 编辑器与项目状态页的本地服务（第三阶段 W 系列 + U1），只绑
-定 `127.0.0.1`、无需鉴权。浏览器打开打印的地址即是编辑器单页，
+启动 Schema 编辑器与项目状态页的本地服务（第三阶段 W 系列 +
+U1..U3），只绑定 `127.0.0.1`、无需鉴权。浏览器打开打印的地址即是
+编辑器单页，
 `/status/` 是项目状态页（校验面板 + 每 profile 构建新鲜度 + 构建
 按钮，编译期嵌入二进制），与 HTTP API 共用一份交换文档，API 契约见
 [Web UI](/web)：
@@ -230,6 +237,10 @@ GET  /api/status      → 项目状态：校验面板 + 每 profile 构建新鲜
 POST /api/build       → 触发一次构建（与 cage build 同一 build_project 管线）
 GET  /api/artifacts   → 产物清单：profile 的 build manifest 账本（每文件 hash/大小/所属表）
 GET  /api/artifact    → 单文件伺服：只认 manifest 键（无路径穿越），伺服前重算 blake3 比对
+GET  /api/snapshots   → 快照包列表：每包现场 verify_snapshot + manifest 事实
+POST /api/snapshot    → 打包快照：与 cage snapshot 同一管线（完整构建 → pack）
+GET  /api/diff        → 分层 diff：changed_tables / affected_targets / files / roots
+GET  /api/registry    → registry 条目浏览（读 [registry] path；未配置出说明）
 ```
 
 状态页与构建 API 消费 `cage check` / `cage build` 的同一入口

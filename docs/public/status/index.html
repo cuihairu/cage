@@ -62,6 +62,36 @@
     <div id="artifact-preview-head" class="muted"></div>
     <pre id="artifact-preview" hidden></pre>
   </section>
+
+  <section id="snapshots">
+    <div class="section-head">
+      <h2>快照</h2>
+      <span id="snap-summary" class="muted">–</span>
+      <button id="pack-btn" type="button" title="按当前 profile/环境 打包并自验">打包快照</button>
+    </div>
+    <div id="snap-list"></div>
+  </section>
+
+  <section id="diffsec">
+    <div class="section-head">
+      <h2>对比</h2>
+      <span id="diff-summary" class="muted">两次构建的分层 diff：表 → target → 文件</span>
+    </div>
+    <div class="knob-row">
+      <label class="knob">基线 <select id="diff-from"></select></label>
+      <label class="knob">目标 <select id="diff-to"></select></label>
+      <button id="diff-btn" type="button">对比</button>
+    </div>
+    <div id="diff-result"></div>
+  </section>
+
+  <section id="registrysec">
+    <div class="section-head">
+      <h2>Registry</h2>
+      <span id="registry-summary" class="muted">–</span>
+    </div>
+    <div id="registry-list"></div>
+  </section>
 </main>
 <div id="toast" hidden></div>
 <script type="module" src="./app.js"></script>

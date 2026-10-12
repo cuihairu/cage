@@ -16,6 +16,12 @@
 //! POST /api/schema      → save the canonical YAML (single-file schema only)
 //! GET  /api/status      → validation panel + per-profile build facts
 //! POST /api/build       → run the build pipeline for one profile
+//! GET  /api/artifacts   → the build manifest as the artifact ledger
+//! GET  /api/artifact    → serve one ledgered artifact (hash-verified)
+//! GET  /api/snapshots   → packed snapshots, each freshly verified
+//! POST /api/snapshot    → pack one profile (the `cage snapshot` pipeline)
+//! GET  /api/diff        → layered diff between two build manifests
+//! GET  /api/registry    → the local registry index ([registry] in config)
 //! GET  /                → the Schema editor page (W3, embedded below)
 //! GET  /app.js, /app.css→ editor assets
 //! GET  /status/         → the project status page (U1, embedded below)
@@ -129,6 +135,22 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
             (tiny_http::Method::Get, "/api/artifact") => {
                 let (status, mime, bytes) = api_artifact(ctx, &query);
                 bytes_response(status, mime, bytes)
+            }
+            (tiny_http::Method::Get, "/api/snapshots") => {
+                let (status, value) = api_snapshots(ctx);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Post, "/api/snapshot") => {
+                let (status, value) = api_snapshot(ctx, &body);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Get, "/api/diff") => {
+                let (status, value) = api_diff(ctx, &query);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Get, "/api/registry") => {
+                let (status, value) = api_registry(ctx);
+                json_response(status, &value)
             }
             (tiny_http::Method::Get, "" | "/index.html") => {
                 text_response(200, "text/html; charset=utf-8", EDITOR_INDEX.to_string())
@@ -772,6 +794,300 @@ fn artifact_mime(rel: &str) -> &'static str {
     }
 }
 
+/// GET /api/snapshots — the packed snapshots under
+/// `<output_dir>/snapshot/` (U3 列/验): each pack with its ledger facts
+/// (profile / environment / `build_id` / `content_hash` / artifact count)
+/// and a fresh verification pass — the same `verify_snapshot` entry
+/// `cage snapshot --verify` runs, so the page never claims a clean pack it
+/// did not just check.
+fn api_snapshots(ctx: &Ctx) -> (u16, serde_json::Value) {
+    let output_dir = ctx.config.output_dir.as_deref().unwrap_or("build");
+    let snap_root = ctx.root.join(output_dir).join("snapshot");
+    let mut dirs: Vec<PathBuf> = match std::fs::read_dir(&snap_root) {
+        Ok(rd) => rd
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    dirs.sort();
+    let snapshots: Vec<serde_json::Value> = dirs
+        .iter()
+        .map(|dir| {
+            let name = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            let (verified, files_checked, problems) =
+                match cage_core::snapshot::verify_snapshot(dir) {
+                    Ok(report) if report.ok => (true, report.files_checked, Vec::new()),
+                    Ok(report) => (false, report.files_checked, report.mismatches),
+                    Err(e) => (false, 0, vec![e]),
+                };
+            let manifest = crate::load_manifest(dir).ok();
+            let name_ref = &name;
+            serde_json::json!({
+                "name": name_ref,
+                "profile": manifest.as_ref().map(|m| m.profile.clone()),
+                "environment": manifest.as_ref().and_then(|m| m.environment.clone()),
+                "build_id": manifest.as_ref().map(|m| m.build_id.clone()),
+                "content_hash": manifest.as_ref().map(|m| m.content_hash.clone()),
+                "artifact_count": manifest.as_ref().map(|m| m.artifacts.len()),
+                "verified": verified,
+                "files_checked": files_checked,
+                "problems": problems,
+            })
+        })
+        .collect();
+    (
+        200,
+        serde_json::json!({
+            "ok": true,
+            "output_dir": output_dir,
+            "snapshots": snapshots,
+        }),
+    )
+}
+
+/// POST /api/snapshot — pack one profile into a self-verifying snapshot
+/// (U3 打包): the same pipeline as `cage snapshot` — a fresh full build
+/// (no incremental carry-over) through `build_project`, then
+/// `pack_snapshot`, which refuses to hand out a pack that does not
+/// self-verify. `{profile, env}`; env optional.
+fn api_snapshot(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("invalid JSON body: {e}")}),
+            );
+        }
+    };
+    let profile = parsed
+        .get("profile")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| ctx.config.profiles.keys().next().cloned());
+    let Some(profile) = profile else {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": "no profile in body and no profiles configured"}),
+        );
+    };
+    if !ctx.config.profiles.contains_key(&profile) {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": format!("unknown profile '{profile}'")}),
+        );
+    }
+    let env = parsed
+        .get("env")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    match crate::build_project(&ctx.root, "gamerule", &profile, env, false, false) {
+        Ok(out) => match crate::pack_snapshot(&ctx.root, &out) {
+            Ok((snap_dir, files)) => {
+                let rel = snap_dir.strip_prefix(&ctx.root).map_or_else(
+                    |_| snap_dir.to_string_lossy().to_string(),
+                    |p| p.to_string_lossy().to_string(),
+                );
+                (
+                    200,
+                    serde_json::json!({
+                        "ok": true,
+                        "snapshot_dir": rel,
+                        "files": files,
+                        "artifacts": out.artifacts.len(),
+                        "build_id": out.manifest.build_id,
+                    }),
+                )
+            }
+            Err(e) => (500, serde_json::json!({"ok": false, "error": e})),
+        },
+        Err(crate::BuildFailure::Validation(diags)) => {
+            (200, serde_json::json!({"ok": false, "diagnostics": diags}))
+        }
+        Err(crate::BuildFailure::Io(msg)) => (400, serde_json::json!({"ok": false, "error": msg})),
+        Err(crate::BuildFailure::UpToDate { .. }) => (
+            500,
+            serde_json::json!({"ok": false, "error": "internal: snapshot build did not rebuild"}),
+        ),
+    }
+}
+
+/// GET /api/diff?from=REL&to=REL — the layered diff between two build
+/// manifests (U3): paths are project-root-relative and name a directory
+/// holding `manifest.json` (the build output dir or a snapshot dir) or a
+/// manifest file. Shape per the UI ruling: `{changed_tables,
+/// affected_targets, files:{added,removed,changed},
+/// roots:{content_hash, build_id}}` — the page folds 表 → target → 文件
+/// from it. `table`/`target` ride on each file entry so the fold is pure
+/// grouping.
+fn api_diff(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
+    let params = query_params(query);
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+            .filter(|v| !v.is_empty())
+    };
+    let (Some(from), Some(to)) = (get("from"), get("to")) else {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": "missing from/to parameters (?from=REL&to=REL)"}),
+        );
+    };
+    let base = match crate::load_manifest(&ctx.root.join(&from)) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("baseline '{from}': {e}")}),
+            );
+        }
+    };
+    let new = match crate::load_manifest(&ctx.root.join(&to)) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("target '{to}': {e}")}),
+            );
+        }
+    };
+
+    // Layer 1: tables whose per-table fingerprint moved (either side).
+    let mut changed_tables: Vec<String> = base
+        .table_hashes
+        .keys()
+        .chain(new.table_hashes.keys())
+        .filter(|t| base.table_hashes.get(*t) != new.table_hashes.get(*t))
+        .cloned()
+        .collect();
+    changed_tables.sort();
+    changed_tables.dedup();
+
+    // Layer 3: the files, each tagged with its table (the manifests'
+    // ledger) and target (the output_dir the path lives under) so the UI
+    // folds without re-deriving either.
+    let mut target_dirs: Vec<&str> = base
+        .targets
+        .iter()
+        .chain(new.targets.iter())
+        .map(|t| t.output_dir.as_str())
+        .collect();
+    target_dirs.sort_unstable();
+    target_dirs.dedup();
+    let target_of = |file: &str| -> Option<String> {
+        target_dirs
+            .iter()
+            .rfind(|dir| {
+                let dir = dir.trim_end_matches('/');
+                *file == *dir || file.starts_with(&format!("{dir}/"))
+            })
+            .map(std::string::ToString::to_string)
+    };
+    let entry = |path: &str,
+                 from: Option<&cage_core::manifest::ArtifactInfo>,
+                 to: Option<&cage_core::manifest::ArtifactInfo>| {
+        let table = to
+            .and_then(|i| i.table.clone())
+            .or_else(|| from.and_then(|i| i.table.clone()));
+        serde_json::json!({
+            "path": path,
+            "table": table,
+            "target": target_of(path),
+            "from_hash": from.map(|i| i.hash.clone()),
+            "to_hash": to.map(|i| i.hash.clone()),
+        })
+    };
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    for (path, info) in &new.artifacts {
+        match base.artifacts.get(path) {
+            None => added.push(entry(path, None, Some(info))),
+            Some(old) if old.hash != info.hash => changed.push(entry(path, Some(old), Some(info))),
+            Some(_) => {}
+        }
+    }
+    for (path, info) in &base.artifacts {
+        if !new.artifacts.contains_key(path) {
+            removed.push(entry(path, Some(info), None));
+        }
+    }
+
+    // Layer 2: the targets whose outputs sit under any moved file.
+    let touches = |file: &str, dir: &str| {
+        let dir = dir.trim_end_matches('/');
+        file == dir || file.starts_with(&format!("{dir}/"))
+    };
+    let moved: Vec<&str> = added
+        .iter()
+        .chain(removed.iter())
+        .chain(changed.iter())
+        .filter_map(|e| e["path"].as_str())
+        .collect();
+    let affected_targets: Vec<String> = target_dirs
+        .iter()
+        .filter(|dir| moved.iter().any(|f| touches(f, dir)))
+        .map(std::string::ToString::to_string)
+        .collect();
+
+    (
+        200,
+        serde_json::json!({
+            "ok": true,
+            "from": from,
+            "to": to,
+            "changed_tables": changed_tables,
+            "affected_targets": affected_targets,
+            "files": {"added": added, "removed": removed, "changed": changed},
+            "roots": {
+                "content_hash": {"from": base.content_hash, "to": new.content_hash},
+                "build_id": {"from": base.build_id, "to": new.build_id},
+            },
+        }),
+    )
+}
+
+/// GET /api/registry — the local registry this project would publish into
+/// (`[registry] path` in cage.toml), browsed (U3): packages with their
+/// published versions. Unconfigured → ok with an empty list and a note;
+/// a corrupt index is the registry's own error string.
+fn api_registry(ctx: &Ctx) -> (u16, serde_json::Value) {
+    let Some(reg) = &ctx.config.registry else {
+        return (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "packages": [],
+                "note": "no [registry] configured in cage.toml",
+            }),
+        );
+    };
+    let reg_root = ctx.root.join(&reg.path);
+    match cage_core::registry::packages(&reg_root) {
+        Ok(indexes) => (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "registry": reg.path,
+                "packages": indexes,
+            }),
+        ),
+        Err(e) => (
+            200,
+            serde_json::json!({"ok": false, "error": e, "registry": reg.path}),
+        ),
+    }
+}
+
 fn json(v: &serde_json::Value) -> String {
     serde_json::to_string(v).expect("api response serializes")
 }
@@ -1322,6 +1638,156 @@ output_dir = "build/server/csv"
         // The manifest still lists what the build produced — with the
         // stale badge the page can say "看可以，别当新鲜".
         assert_ne!(payload["artifacts"].as_array().expect("list").len(), 0);
+    }
+
+    #[test]
+    fn api_snapshot_packs_and_api_snapshots_verifies() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        // No snapshots yet — ok with an empty list.
+        let (status, payload) = api_snapshots(&ctx);
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert_eq!(payload["snapshots"], serde_json::json!([]));
+
+        // Pack one profile: the `cage snapshot` pipeline, self-verified.
+        let (status, pack) = api_snapshot(&ctx, r#"{"profile": "client"}"#);
+        assert_eq!(status, 200, "{pack}");
+        assert_eq!(pack["ok"], serde_json::json!(true));
+        let rel = pack["snapshot_dir"].as_str().expect("snapshot dir");
+        assert!(
+            rel.starts_with("build/snapshot/client-"),
+            "pack lands under output_dir/snapshot: {rel}"
+        );
+        assert!(pack["files"].as_u64().expect("files") >= 3, "{pack}");
+
+        // The listing now shows it, freshly verified.
+        let (_, list) = api_snapshots(&ctx);
+        let snaps = list["snapshots"].as_array().expect("list");
+        assert_eq!(snaps.len(), 1, "{list}");
+        assert_eq!(
+            snaps[0]["name"],
+            serde_json::json!(rel.rsplit('/').next().unwrap())
+        );
+        assert_eq!(snaps[0]["verified"], serde_json::json!(true));
+        assert_eq!(snaps[0]["profile"], serde_json::json!("client"));
+        assert_eq!(snaps[0]["build_id"], pack["build_id"]);
+
+        // Unknown profile and broken body refuse.
+        let (status, err) = api_snapshot(&ctx, r#"{"profile": "ghost"}"#);
+        assert_eq!(status, 400);
+        assert_eq!(err["ok"], serde_json::json!(false));
+        let (status, err) = api_snapshot(&ctx, "not json");
+        assert_eq!(status, 400);
+        assert_eq!(err["ok"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn api_diff_layers_tables_targets_and_files() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        api_build(&ctx, r#"{"profile": "client"}"#);
+
+        // Identical manifests: nothing moved, roots agree.
+        let (status, d) = api_diff(&ctx, "from=build&to=build");
+        assert_eq!(status, 200);
+        assert_eq!(d["ok"], serde_json::json!(true));
+        assert_eq!(d["changed_tables"], serde_json::json!([]));
+        assert_eq!(d["affected_targets"], serde_json::json!([]));
+        assert_eq!(d["files"]["changed"], serde_json::json!([]));
+        assert_eq!(
+            d["roots"]["content_hash"]["from"],
+            d["roots"]["content_hash"]["to"]
+        );
+
+        // Baseline manifest aside, then edit the source and rebuild.
+        fs::copy(
+            dir.path().join("build/manifest.json"),
+            dir.path().join("baseline.json"),
+        )
+        .expect("keep baseline");
+        fs::write(
+            dir.path().join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Axe"}]}"#,
+        )
+        .expect("edit source");
+        api_build(&ctx, r#"{"profile": "client"}"#);
+
+        let (status, d) = api_diff(&ctx, "from=baseline.json&to=build");
+        assert_eq!(status, 200, "{d}");
+        assert_eq!(
+            d["changed_tables"],
+            serde_json::json!(["Item"]),
+            "the table fingerprint moved"
+        );
+        assert_eq!(
+            d["affected_targets"],
+            serde_json::json!(["build/client/json"]),
+            "the target under the changed file"
+        );
+        let changed = d["files"]["changed"].as_array().expect("changed");
+        assert_eq!(changed.len(), 1, "{d}");
+        assert_eq!(
+            changed[0]["path"],
+            serde_json::json!("build/client/json/Item.json")
+        );
+        assert_eq!(changed[0]["table"], serde_json::json!("Item"));
+        assert_eq!(changed[0]["target"], serde_json::json!("build/client/json"));
+        assert_ne!(
+            d["roots"]["content_hash"]["from"],
+            d["roots"]["content_hash"]["to"]
+        );
+        assert_ne!(d["roots"]["build_id"]["from"], d["roots"]["build_id"]["to"]);
+
+        // Missing parameters and missing manifests refuse with 400.
+        let (status, err) = api_diff(&ctx, "from=build");
+        assert_eq!(status, 400);
+        assert_eq!(err["ok"], serde_json::json!(false));
+        let (status, err) = api_diff(&ctx, "from=ghost/manifest.json&to=build");
+        assert_eq!(status, 400);
+        assert!(err["error"].as_str().expect("msg").contains("baseline"));
+    }
+
+    #[test]
+    fn api_registry_browses_the_configured_registry() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut ctx = demo_ctx(&dir);
+
+        // Unconfigured: ok with an empty list and a note.
+        let (status, reg) = api_registry(&ctx);
+        assert_eq!(status, 200);
+        assert_eq!(reg["ok"], serde_json::json!(true));
+        assert_eq!(reg["packages"], serde_json::json!([]));
+        assert!(reg["note"].as_str().expect("note").contains("registry"));
+
+        // Configure [registry], pack a snapshot, publish it for real, and
+        // the browse endpoint lists the package.
+        ctx.config.registry = Some(cage_core::manifest::RegistryConfig {
+            path: "reg".to_string(),
+            auth_env: None,
+        });
+        let (_, pack) = api_snapshot(&ctx, r#"{"profile": "client"}"#);
+        let snap_rel = pack["snapshot_dir"].as_str().expect("snapshot dir");
+        cage_core::registry::publish(
+            &dir.path().join("reg"),
+            "demo",
+            "0.1.0",
+            &dir.path().join(snap_rel),
+        )
+        .expect("publish");
+
+        let (status, reg) = api_registry(&ctx);
+        assert_eq!(status, 200);
+        assert_eq!(reg["ok"], serde_json::json!(true));
+        assert_eq!(reg["registry"], serde_json::json!("reg"));
+        let packages = reg["packages"].as_array().expect("packages");
+        assert_eq!(packages.len(), 1, "{reg}");
+        assert_eq!(packages[0]["package"], serde_json::json!("demo"));
+        assert_eq!(
+            packages[0]["entries"][0]["version"],
+            serde_json::json!("0.1.0")
+        );
     }
 }
 

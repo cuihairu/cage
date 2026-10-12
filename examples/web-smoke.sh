@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# cage web 端到端冒烟（第三阶段 W4 + U1 状态面 + U2a 产物 + U2b 投影）：
-#   编辑 → 校验 → 保存 → cage build 复现 → 状态页（新鲜度 + up-to-date
-#   + 产物账本）→ 目录 schema 409 拒写 + profile 投影。
+# cage web 端到端冒烟（第三阶段 W4 + U1 状态面 + U2a 产物 + U2b 投影
+#   + U3 快照/对比/registry）：编辑 → 校验 → 保存 → cage build 复现
+#   → 状态页（新鲜度 + up-to-date + 产物账本 + 快照 + 分层 diff）
+#   → 目录 schema 409 拒写 + profile 投影。
 # 演示对象是 examples/web-demo/（单文件 schema），全部写操作发生在拷贝上，
 # 脚本本身不脏仓库；真实命令逐条打印，任一步失败立即退出。
 # 用法：bash examples/web-smoke.sh        （默认 cargo build 后取 target/debug/cage）
@@ -152,7 +153,28 @@ status, raw = req_raw(f"/api/artifact?path={urllib.parse.quote(rel)}")
 assert_true(status == 200 and len(raw) > 0, f"artifact serve {rel}: {status}")
 status, raw = req("GET", "/api/artifact?path=schema.yaml")
 assert_true(status == 404, f"non-ledgered path must 404, got {status}")
-print("status session ok: page served, client fresh, rebuild up-to-date, artifacts served")
+
+# 5) 快照（U3）：打包 → 列表自验 → 对比（同输入 = 同字节 → 零差异）
+status, pack = req("POST", "/api/snapshot", {"profile": "client"})
+assert_true(status == 200 and pack["ok"], f"POST /api/snapshot: {status} {pack}")
+snap_dir = pack["snapshot_dir"]
+assert_true(snap_dir.startswith("build/snapshot/client-"), f"pack dir: {snap_dir}")
+status, snaps = req("GET", "/api/snapshots")
+assert_true(status == 200 and snaps["ok"], f"GET /api/snapshots: {status} {snaps}")
+assert_true(len(snaps["snapshots"]) == 1, f"snapshots: {snaps}")
+assert_true(snaps["snapshots"][0]["verified"], f"pack must self-verify: {snaps}")
+status, d = req("GET", f"/api/diff?from=build&to={urllib.parse.quote(snap_dir)}")
+assert_true(status == 200 and d["ok"], f"GET /api/diff: {status} {d}")
+assert_true(d["files"]["added"] == [] and d["files"]["removed"] == [] and d["files"]["changed"] == [],
+            f"identical inputs diff to nothing: {d}")
+assert_true(d["roots"]["build_id"]["from"] == d["roots"]["build_id"]["to"], f"roots: {d}")
+
+# 6) registry（U3）：demo 工程未配置 [registry] → 空列表 + note
+status, reg = req("GET", "/api/registry")
+assert_true(status == 200 and reg["ok"], f"GET /api/registry: {status} {reg}")
+assert_true(reg["packages"] == [] and "registry" in reg.get("note", ""), f"registry: {reg}")
+
+print("status session ok: page served, client fresh, rebuild up-to-date, artifacts served, snapshot packed+verified+diffed, registry browsed")
 PY
 }
 
@@ -239,7 +261,7 @@ echo "\$ $CAGE_BIN check $WORK/demo && $CAGE_BIN build $WORK/demo --profile clie
 "$CAGE_BIN" check "$WORK/demo"
 "$CAGE_BIN" build "$WORK/demo" --profile client
 
-step "[5/7] cage web /status —— 状态页（U1）：新鲜度 + API 构建 up-to-date"
+step "[5/7] cage web /status —— 状态页（U1/U2/U3）：新鲜度 + 产物 + 快照 + 对比 + registry"
 PORT="$(pick_port)"
 echo "\$ $CAGE_BIN web $WORK/demo --port $PORT &"
 "$CAGE_BIN" web "$WORK/demo" --port "$PORT" &
@@ -249,6 +271,9 @@ status_session "$PORT"
 echo "\$ kill \$WEB_PID"
 kill "$WEB_PID"
 wait "$WEB_PID" 2>/dev/null || true
+# 快照包落在 build/snapshot/ 下，而第 6 步比较的是 build 树的确定性
+# 字节——清掉派生包，让下一步面对未打包的纯净构建树。
+rm -rf "$WORK/demo/build/snapshot"
 
 step "[6/7] 确定性复现：同一 canonical schema 重建两次，产物树逐字节一致"
 hash_tree "$WORK/demo/build" > "$WORK/h1.txt"
@@ -271,4 +296,4 @@ wait "$MULTI_PID" 2>/dev/null || true
 
 echo
 echo
-echo "✔ web 冒烟全部通过：编辑 → 校验 → 保存 → build 复现（确定性字节）→ 状态页（新鲜度 + up-to-date + 产物）→ 目录 409 + profile 投影"
+echo "✔ web 冒烟全部通过：编辑 → 校验 → 保存 → build 复现（确定性字节）→ 状态页（新鲜度 + up-to-date + 产物 + 快照 + 分层 diff + registry）→ 目录 409 + profile 投影"
