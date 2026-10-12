@@ -37,9 +37,9 @@ use cage_core::{
     error::codes::{internal, parse},
     value::{Document, Row, SourceLocation, Table, TypedValue, Value},
 };
-use calamine::{open_workbook_auto, Data, DataType, Range, Reader, Sheets};
+use calamine::{open_workbook_auto, Data, DataType, Range, Reader, SheetVisible, Sheets};
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Excel Source Adapter
@@ -105,9 +105,23 @@ impl ExcelSourceAdapter {
         doc.metadata.format = "excel".to_string();
         doc.source_files.push(file_path.clone());
 
+        // Sheet metadata: a hidden sheet is authoring scratch — drafts and
+        // staging never ship, so hidden/veryHidden sheets are skipped before
+        // any parsing (2026-10-12 ruling, design §3.1). ODS workbooks
+        // default to visible; calamine maps ODS `style:display` when set.
+        let hidden: HashSet<String> = workbook
+            .sheets_metadata()
+            .iter()
+            .filter(|s| s.visible != SheetVisible::Visible)
+            .map(|s| s.name.clone())
+            .collect();
+
         let sheet_names = workbook.sheet_names();
 
         for sheet_name in &sheet_names {
+            if hidden.contains(sheet_name) {
+                continue;
+            }
             let range = match workbook.worksheet_range(sheet_name) {
                 Ok(r) => r,
                 Err(e) => {
@@ -718,6 +732,40 @@ mod tests {
         build_stored_zip(&entries)
     }
 
+    /// Like [`minimal_xlsx`], but the caller supplies the workbook.xml (to
+    /// exercise sheet metadata such as visibility states) plus one XML part
+    /// per `rIdN` it declares.
+    fn minimal_xlsx_with_workbook(workbook_xml: &str, sheets: &[(&str, &str)]) -> Vec<u8> {
+        let package_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
+        use std::fmt::Write as _;
+        let mut rel = String::from(
+            r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>"#,
+        );
+        let mut entries = vec![
+            ("_rels/.rels".to_string(), package_rels.to_string()),
+            ("xl/workbook.xml".to_string(), workbook_xml.to_string()),
+        ];
+        for (n, (part, xml)) in sheets.iter().enumerate() {
+            if n > 0 {
+                let _ = write!(
+                    rel,
+                    r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/{part}"/>"#,
+                    n + 1
+                );
+            }
+            entries.push((format!("xl/worksheets/{part}"), (*xml).to_string()));
+        }
+        let workbook_rels = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rel}</Relationships>"#
+        );
+        entries.insert(2, ("xl/_rels/workbook.xml.rels".to_string(), workbook_rels));
+        let refs: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(name, xml)| (name.as_str(), xml.as_str()))
+            .collect();
+        build_stored_zip(&refs)
+    }
+
     /// A file in the system temp dir, removed on drop (the crate has no
     /// tempfile dev-dependency).
     struct TempWorkbook(PathBuf);
@@ -881,6 +929,60 @@ mod tests {
             .expect("missing sheet part is a warning");
 
         assert!(doc.tables.is_empty());
+    }
+
+    /// Sheet metadata: hidden and veryHidden sheets are authoring scratch —
+    /// drafts never ship, so only the visible sheet reaches the canonical
+    /// model (2026-10-12 ruling, design §3.1).
+    #[test]
+    fn test_handbuilt_xlsx_hidden_sheets_are_skipped() {
+        let sheet = |cells: &str| {
+            format!(
+                concat!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                    r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+                    r#"<dimension ref="A1:C2"/>"#,
+                    "<sheetData>",
+                    r#"<row r="1"><c r="A1" t="inlineStr"><is><t>id</t></is></c><c r="C1" t="inlineStr"><is><t>name</t></is></c></row>"#,
+                    r#"<row r="2">"#,
+                    "{}",
+                    "</row></sheetData></worksheet>"
+                ),
+                cells
+            )
+        };
+        let visible =
+            sheet(r#"<c r="A2"><v>1001</v></c><c r="C2" t="inlineStr"><is><t>Sword</t></is></c>"#);
+        let hidden = sheet(
+            r#"<c r="A2"><v>9001</v></c><c r="C2" t="inlineStr"><is><t>DraftRow</t></is></c>"#,
+        );
+        let very_hidden = sheet(
+            r#"<c r="A2"><v>9002</v></c><c r="C2" t="inlineStr"><is><t>SecretRow</t></is></c>"#,
+        );
+        let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Draft" sheetId="2" state="hidden" r:id="rId2"/><sheet name="Secrets" sheetId="3" state="veryHidden" r:id="rId3"/></sheets></workbook>"#;
+        let bytes = minimal_xlsx_with_workbook(
+            workbook,
+            &[
+                ("sheet1.xml", visible.as_str()),
+                ("sheet2.xml", hidden.as_str()),
+                ("sheet3.xml", very_hidden.as_str()),
+            ],
+        );
+        let wb = TempWorkbook::new(&bytes, "staging.xlsx");
+
+        let adapter = ExcelSourceAdapter::default();
+        let doc = adapter.parse_file(wb.path()).expect("workbook parses");
+
+        assert_eq!(doc.tables.len(), 1, "only the visible sheet is a table");
+        let table = doc.tables.get("Data").expect("Data table");
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(
+            table.rows[0].fields["id"].value,
+            Value::Int(1001),
+            "the shipped row is the visible sheet's, not a hidden sheet's"
+        );
+        assert!(doc.tables.get("Draft").is_none());
+        assert!(doc.tables.get("Secrets").is_none());
     }
 
     /// An ODS workbook takes the non-Xlsx arm: sheet data is still read, but

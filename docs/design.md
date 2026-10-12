@@ -168,6 +168,28 @@ Source 只负责：
 
 它不应该负责业务验证。
 
+### Excel 表级元数据与单元格注释的拍板（2026-10-12）
+
+原「未实装」两项（source.md：单元格注释 Comment / 表级元数据 Sheet
+Metadata）一并裁定：一项立项实装、一项明确不做。
+
+**Sheet Metadata → 立项实装：隐藏 sheet 不进 Canonical Model。**
+calamine 0.36 暴露 `sheets_metadata()`（`SheetVisible::Visible /
+Hidden / VeryHidden`，ODS 映射 `style:display`）。裁定：`visible !=
+Visible` 的 sheet 在解析前跳过——隐藏是作者的主动表达，草稿/暂存
+面从不交付；隐藏 sheet 进产物是行为缺陷而非能力缺口。不产警告
+（跳过即是语义，不是异常）；不引入「显式点名隐藏 sheet」的逃逸口
+（真要恢复就把 sheet 取消隐藏，作者意图单点表达在 Excel 里）。
+
+**单元格注释（Comment）→ 明确不做（登记理由 + 重开条件）。**
+注释是作者侧批注，不是数据：校验不消费它、产物不含它、diff 不比
+它——Canonical Model 与全链路携带它的唯一效果是扩大 `TypedValue`
+面与每次序列化。且注释锚定依赖 `xl/comments*.xml` + VML 形状
+（ClientData Row/Col）的手写 OOXML 解析，calamine 不暴露——为零
+管线消费者引入这套解析不成比例。**重开条件**：编辑器要做作者意图
+内联展示时立项，届时它属于编辑器交换层（W1 交换模型加字段），不进
+构建链。
+
 ---
 
 ## 3.2 Schema

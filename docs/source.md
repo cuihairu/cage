@@ -55,7 +55,11 @@ Excel Adapter（基于 [calamine](https://crates.io/crates/calamine) 读取 `.xl
 - Formula（公式缓存值，不重算）
 - Cell Type
 
-单元格注释（Comment）与表级元数据（Sheet Metadata）未实装。
+表级元数据（Sheet Metadata）：隐藏 sheet（`hidden` /
+`veryHidden`）是作者的草稿/暂存面，解析前即跳过、不进 Canonical
+Model（2026-10-12 拍板，[design §3.1](https://github.com/cuihairu/cage/blob/main/docs/design.md#31-source)）。单元格
+注释（Comment）明确不做——注释是作者批注不是数据，管线零消费者；
+重开条件与理由见同一拍板。
 
 错误定位精确到单元格（诊断 `Source` 字段渲染形如
 `monster.xlsx | Sheet: Monster | Row: 27 | Col: G`）。
