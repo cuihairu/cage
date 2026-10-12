@@ -191,8 +191,13 @@ build/server/*）；表级与字段级 `targets`（schema）经
       裸 `/status` 301 到 `/status/`——相对资源引用不会撞编辑器的
       /app.js。验收：web.rs 单测 6 项 + tests/web.rs 集成 3 项 +
       web-smoke 第 5 步（真实服务：页面 → fresh → up-to-date）。
-- [ ] **U2（P1）**：profile × target 产物浏览 + 编辑器 targets 徽标
-      与 profile 作用域视图
+- [x] **U2a（P1）产物浏览**：`/api/artifacts`（manifest 账本，单槽跨
+      profile 返回空清单 + `manifest_profile`，stale 复用第一层判语）+
+      `/api/artifact`（只认 manifest 键 + 伺服前重算 blake3，篡改 409、
+      非账本 404）+ 状态页「产物」区（按 output_dir 分组、预览/下载）。
+      验收：web.rs 单测 3 项 + tests/web.rs 集成 1 项（列表 → 逐字节
+      伺服 → 404 → 409）+ web-smoke 第 5 步产物断言
+- [ ] **U2b（P1）**：编辑器 targets 徽标与 profile 作用域视图
 - [ ] **U3（P2）**：快照列/验/打包 + registry 条目浏览 + 分层 diff
       （API + 界面三层折叠 + `cage diff` 分层摘要）
 

@@ -227,6 +227,8 @@ POST /api/validate    → 编辑态校验（E1701 / E1004 诊断）
 POST /api/schema      → 保存回环 canonical YAML（单文件 schema_path 才可写）
 GET  /api/status      → 项目状态：校验面板 + 每 profile 构建新鲜度（?profile=&env=&level=）
 POST /api/build       → 触发一次构建（与 cage build 同一 build_project 管线）
+GET  /api/artifacts   → 产物清单：profile 的 build manifest 账本（每文件 hash/大小/所属表）
+GET  /api/artifact    → 单文件伺服：只认 manifest 键（无路径穿越），伺服前重算 blake3 比对
 ```
 
 状态页与构建 API 消费 `cage check` / `cage build` 的同一入口

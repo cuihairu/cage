@@ -235,6 +235,7 @@ async function refresh() {
   }
   renderValidation();
   renderBuilds();
+  await loadArtifacts();
 }
 
 async function buildProfile(name) {
@@ -272,6 +273,129 @@ async function buildProfile(name) {
     toast(`构建失败：${(data && data.error) || "服务错误"}`, "err", 7000);
   }
   await refresh();
+}
+
+// ── 渲染：产物区（U2a）─────────────────────────────────────────────
+
+function humanSize(n) {
+  if (n == null) return "–";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function artifactMimeLabel(path) {
+  if (path.endsWith(".msgpack")) return "二进制";
+  if (path.endsWith(".json")) return "JSON";
+  if (path.endsWith(".csv")) return "CSV";
+  return "文本";
+}
+
+async function showPreview(rel, btn) {
+  const pre = document.getElementById("artifact-preview");
+  let res;
+  try {
+    res = await fetch(`/api/artifact?path=${encodeURIComponent(rel)}`);
+  } catch (e) {
+    pre.hidden = false;
+    pre.textContent = `无法连接：${e}`;
+    return;
+  }
+  const raw = await res.arrayBuffer();
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = JSON.parse(new TextDecoder().decode(raw)).error || msg; } catch {}
+    pre.hidden = false;
+    pre.textContent = `无法读取产物：${msg}`;
+    return;
+  }
+  pre.hidden = false;
+  document.getElementById("artifact-preview-head").textContent = rel;
+  if (rel.endsWith(".msgpack")) {
+    pre.textContent = `二进制产物（${humanSize(raw.byteLength)}），不预渲染——用「下载」取文件。`;
+  } else {
+    const text = new TextDecoder().decode(raw);
+    if (rel.endsWith(".json")) {
+      try { pre.textContent = JSON.stringify(JSON.parse(text), null, 2); }
+      catch { pre.textContent = text; }
+    } else {
+      pre.textContent = text;
+    }
+  }
+  btn.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function loadArtifacts() {
+  const summary = document.getElementById("artifact-summary");
+  const note = document.getElementById("artifact-note");
+  const groups = document.getElementById("artifact-groups");
+  const preview = document.getElementById("artifact-preview");
+  const profile = document.getElementById("profile-sel").value;
+  const env = document.getElementById("env-in").value.trim();
+  summary.textContent = "–";
+  note.hidden = true;
+  groups.replaceChildren();
+  preview.hidden = true;
+  if (!profile) return;
+
+  const qs = new URLSearchParams({ profile });
+  if (env) qs.set("env", env);
+  const { data } = await api(`/api/artifacts?${qs.toString()}`);
+  if (!data || !data.ok) {
+    summary.textContent = "不可用";
+    return;
+  }
+
+  if (data.manifest_profile !== profile) {
+    summary.textContent = "未构建";
+    note.hidden = false;
+    note.textContent = data.manifest_profile
+      ? `manifest 当前属于 ${data.manifest_profile}——构建 ${profile} 后即可浏览其产物。`
+      : "尚无构建记录——构建后即可浏览产物。";
+    return;
+  }
+
+  const arts = data.artifacts || [];
+  summary.textContent = `${arts.length} 个文件 · build_id ${shortHash(data.build_id)}`;
+  if (data.stale) {
+    note.hidden = false;
+    note.textContent = "产物已过期：源数据在上次构建后有变化（见构建状态）——浏览前建议重新构建。";
+  }
+
+  // 按 target output_dir 分组（manifest target 顺序 = profile 配置顺序）
+  const byDir = new Map();
+  for (const t of data.targets || []) byDir.set(t.output_dir, { t, files: [] });
+  const rest = [];
+  for (const a of arts) {
+    const hit = [...byDir.keys()].find((d) => a.path === d || a.path.startsWith(d + "/"));
+    if (hit) byDir.get(hit).files.push(a);
+    else rest.push(a);
+  }
+
+  for (const { t, files } of byDir.values()) {
+    const card = el("div", "card");
+    const head = el("div", "card-head");
+    head.append(el("h3", "", `${t.format} → ${t.output_dir}`));
+    head.append(el("span", "muted", `${files.length} 个文件`));
+    card.append(head);
+    const chips = el("div", "chips");
+    files.forEach((a) => {
+      const chip = el("span", "chip artifact");
+      chip.title = `blake3 ${a.hash}`;
+      const name = el("span", "artifact-name", a.path);
+      const size = el("span", "artifact-size", humanSize(a.size));
+      const btn = el("button", "mini", "预览");
+      btn.addEventListener("click", () => showPreview(a.path, btn));
+      const dl = el("a", "", "下载");
+      dl.href = `/api/artifact?path=${encodeURIComponent(a.path)}`;
+      dl.download = a.path.split("/").pop();
+      chip.append(name, size, btn, dl);
+      chips.append(chip);
+    });
+    if (files.length === 0) chips.append(el("span", "muted", "（无文件）"));
+    card.append(chips);
+    groups.append(card);
+  }
 }
 
 // ── 启动 ────────────────────────────────────────────────────────────

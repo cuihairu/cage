@@ -117,6 +117,14 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
                 let (status, value) = api_build(ctx, &body);
                 json_response(status, &value)
             }
+            (tiny_http::Method::Get, "/api/artifacts") => {
+                let (status, value) = api_artifacts(ctx, &query);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Get, "/api/artifact") => {
+                let (status, mime, bytes) = api_artifact(ctx, &query);
+                bytes_response(status, mime, bytes)
+            }
             (tiny_http::Method::Get, "" | "/index.html") => {
                 text_response(200, "text/html; charset=utf-8", EDITOR_INDEX.to_string())
             }
@@ -179,6 +187,20 @@ fn text_response(
 
 fn html_response(status: u16, html: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     text_response(status, "text/html; charset=utf-8", html)
+}
+
+/// Binary response (artifact file serving): bytes + content type.
+fn bytes_response(
+    status: u16,
+    mime: &str,
+    bytes: Vec<u8>,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    tiny_http::Response::from_data(bytes)
+        .with_status_code(status)
+        .with_header(
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes())
+                .expect("static header"),
+        )
 }
 
 /// GET /api/schema — merged schema as the editor document plus the project
@@ -554,6 +576,155 @@ fn api_build(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
             serde_json::json!({"ok": false, "diagnostics": diags_json(&diags)}),
         ),
         Err(crate::BuildFailure::Io(msg)) => (400, serde_json::json!({"ok": false, "error": msg})),
+    }
+}
+
+/// GET /api/artifacts[?profile=NAME&env=ENV] — the artifact tree of one
+/// profile's build, straight from the build manifest (the ledger the build
+/// wrote). The manifest is single-slot: when another profile owns
+/// `<output_dir>/manifest.json`, this profile reports `manifest_profile`
+/// and an empty list instead of reading unverifiable leftovers — build it
+/// to browse it. `stale` repeats the status face's layer-1 verdict: a
+/// manifest whose inputs moved describes a build that no longer matches
+/// the sources.
+fn api_artifacts(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
+    let params = query_params(query);
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    let profile = match get("profile") {
+        Some(p) => p,
+        None => match ctx.config.profiles.keys().next() {
+            Some(first) => first.clone(),
+            None => {
+                return (
+                    500,
+                    serde_json::json!({"ok": false, "error": "no build profile is configured"}),
+                )
+            }
+        },
+    };
+    if !ctx.config.profiles.contains_key(&profile) {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": format!(
+                "unknown profile '{profile}' (available: {})",
+                ctx.config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+            )}),
+        );
+    }
+    let env = get("env");
+    let output_dir = ctx.config.output_dir.as_deref().unwrap_or("build");
+    let Ok(manifest) = crate::load_manifest(&ctx.root.join(output_dir)) else {
+        return (
+            200,
+            serde_json::json!({
+                "ok": true, "profile": profile, "manifest_profile": null,
+                "fresh": false, "stale": false, "targets": [], "artifacts": [],
+            }),
+        );
+    };
+    if manifest.profile != profile {
+        return (
+            200,
+            serde_json::json!({
+                "ok": true, "profile": profile, "manifest_profile": manifest.profile,
+                "fresh": false, "stale": false, "targets": [], "artifacts": [],
+            }),
+        );
+    }
+
+    let builds = build_facts(ctx, env.as_deref());
+    let fresh = builds
+        .get(&profile)
+        .and_then(|b| b.get("fresh"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    (
+        200,
+        serde_json::json!({
+            "ok": true,
+            "profile": profile,
+            "manifest_profile": manifest.profile,
+            "fresh": fresh,
+            "stale": !fresh,
+            "build_id": manifest.build_id,
+            "content_hash": manifest.content_hash,
+            "targets": manifest.targets,
+            "artifacts": manifest.artifacts.values().collect::<Vec<_>>(),
+        }),
+    )
+}
+
+/// GET /api/artifact?path=REL — one artifact's bytes for preview /
+/// download. The path must be a key of the build manifest (a lookup,
+/// never join-and-pray: nothing outside the ledger is servable), and the
+/// bytes are re-hashed against the recorded blake3 before serving — a
+/// file that no longer matches answers 409 instead of handing out
+/// tampered content, the same verify-first stance the snapshot loader
+/// takes.
+fn api_artifact(ctx: &Ctx, query: &str) -> (u16, &'static str, Vec<u8>) {
+    const JSON: &str = "application/json; charset=utf-8";
+    let Some(rel) = query_params(query)
+        .iter()
+        .find(|(k, _)| k == "path")
+        .map(|(_, v)| v.clone())
+    else {
+        return (
+            400,
+            JSON,
+            br#"{"ok": false, "error": "missing path parameter"}"#.to_vec(),
+        );
+    };
+    let output_dir = ctx.config.output_dir.as_deref().unwrap_or("build");
+    let manifest = match crate::load_manifest(&ctx.root.join(output_dir)) {
+        Ok(m) => m,
+        Err(e) => {
+            let mut err = serde_json::json!({"ok": false, "error": e});
+            err["error"] = serde_json::json!(format!(
+                "no build manifest under {output_dir} — build first",
+            ));
+            return (404, JSON, json(&err).into_bytes());
+        }
+    };
+    let Some(info) = manifest.artifacts.get(&rel) else {
+        let err = serde_json::json!({"ok": false, "error": format!(
+            "'{rel}' is not in the build manifest — only ledgered artifacts are served"
+        )});
+        return (404, JSON, json(&err).into_bytes());
+    };
+    let Ok(bytes) = std::fs::read(ctx.root.join(&rel)) else {
+        let err = serde_json::json!({"ok": false, "error": format!(
+            "cannot read artifact '{rel}'"
+        )});
+        return (500, JSON, json(&err).into_bytes());
+    };
+    if blake3::hash(&bytes).to_hex().to_string() != info.hash {
+        let err = serde_json::json!({"ok": false, "error": format!(
+            "artifact '{rel}' no longer matches its manifest hash — rebuild (the file \
+             changed or was tampered with after the build)"
+        )});
+        return (409, JSON, json(&err).into_bytes());
+    }
+    (200, artifact_mime(&rel), bytes)
+}
+
+/// Content type for an artifact path — preview-rendering hint for the
+/// status page; anything unknown serves as plain text.
+fn artifact_mime(rel: &str) -> &'static str {
+    let ext = Path::new(rel)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext {
+        "json" => "application/json; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
+        "yaml" | "yml" => "text/yaml; charset=utf-8",
+        "msgpack" => "application/octet-stream",
+        _ => "text/plain; charset=utf-8",
     }
 }
 
@@ -944,6 +1115,102 @@ output_dir = "build/server/csv"
         assert!(payload["error"]
             .as_str()
             .is_some_and(|e| e.contains("unknown profile 'ghost'")));
+    }
+
+    #[test]
+    fn api_artifacts_lists_manifest_files_for_the_built_profile() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        // Nothing built: an empty list, no manifest_profile.
+        let (status, payload) = api_artifacts(&ctx, "profile=client");
+        assert_eq!(status, 200);
+        assert_eq!(payload["manifest_profile"], serde_json::json!(null));
+        assert_eq!(payload["artifacts"], serde_json::json!([]));
+
+        api_build(&ctx, r#"{"profile": "client"}"#);
+        let (_, payload) = api_artifacts(&ctx, "profile=client");
+        assert_eq!(payload["manifest_profile"], serde_json::json!("client"));
+        assert_eq!(payload["fresh"], serde_json::json!(true));
+        assert_eq!(payload["stale"], serde_json::json!(false));
+        let artifacts = payload["artifacts"].as_array().expect("artifact list");
+        assert_ne!(artifacts.len(), 0);
+        assert!(artifacts[0]["path"].as_str().is_some());
+        assert!(artifacts[0]["hash"].as_str().is_some());
+        assert_ne!(artifacts.len(), 0);
+        let targets = payload["targets"].as_array().expect("target records");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0]["format"], serde_json::json!("json"));
+
+        // The single-slot manifest belongs to client: server reports the
+        // owner and an empty list instead of unverifiable leftovers.
+        let (_, payload) = api_artifacts(&ctx, "profile=server");
+        assert_eq!(payload["manifest_profile"], serde_json::json!("client"));
+        assert_eq!(payload["artifacts"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn api_artifact_serves_ledgered_bytes_and_refuses_the_rest() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        let (_, payload) = api_build(&ctx, r#"{"profile": "client"}"#);
+        drop(payload);
+
+        // A ledgered file serves byte-identical content with a JSON type.
+        let (status, mime, bytes) = api_artifact(&ctx, "path=build/client/json/Item.json");
+        assert_eq!(status, 200);
+        assert_eq!(mime, "application/json; charset=utf-8");
+        assert_eq!(
+            bytes,
+            fs::read(dir.path().join("build/client/json/Item.json")).expect("read artifact")
+        );
+
+        // A path outside the manifest is refused outright — lookup, never
+        // join-and-pray (path traversal included).
+        let (status, _, bytes) = api_artifact(&ctx, "path=schema.yaml");
+        assert_eq!(status, 404);
+        assert!(String::from_utf8_lossy(&bytes).contains("not in the build manifest"));
+        let (status, _, bytes) = api_artifact(&ctx, "path=../cage.toml");
+        assert_eq!(status, 404);
+        assert!(String::from_utf8_lossy(&bytes).contains("not in the build manifest"));
+        let (status, _, _bytes) = api_artifact(&ctx, "");
+        assert_eq!(status, 400);
+
+        // A file edited after the build no longer matches its hash: 409,
+        // not tampered content.
+        fs::write(
+            dir.path().join("build/client/json/Item.json"),
+            r#"{"hacked":1}"#,
+        )
+        .expect("tamper");
+        let (status, _, bytes) = api_artifact(&ctx, "path=build/client/json/Item.json");
+        assert_eq!(status, 409);
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("no longer matches"),
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+
+    #[test]
+    fn api_artifacts_names_stale_manifests() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        api_build(&ctx, r#"{"profile": "client"}"#);
+
+        fs::write(
+            dir.path().join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Axe"}]}"#,
+        )
+        .expect("edit source");
+
+        let (_, payload) = api_artifacts(&ctx, "profile=client");
+        assert_eq!(payload["stale"], serde_json::json!(true));
+        assert_eq!(payload["fresh"], serde_json::json!(false));
+        // The manifest still lists what the build produced — with the
+        // stale badge the page can say "看可以，别当新鲜".
+        assert_ne!(payload["artifacts"].as_array().expect("list").len(), 0);
     }
 }
 

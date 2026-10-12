@@ -102,7 +102,7 @@ PY
 # 状态页会话（U1）：页面 → /api/status 新鲜度 → /api/build up-to-date
 status_session() {
   python3 - "$1" <<'PY'
-import json, sys, urllib.request, urllib.error
+import json, sys, urllib.parse, urllib.request, urllib.error
 
 port = sys.argv[1]
 base = f"http://127.0.0.1:{port}"
@@ -141,7 +141,18 @@ assert_true(len(client["build_id"]) >= 12, f"build_id present: {client}")
 # 3) API 构建：同一 build 管线，已是最新 → up_to_date
 status, b = req("POST", "/api/build", {"profile": "client"})
 assert_true(status == 200 and b["ok"] and b["up_to_date"], f"build: {status} {b}")
-print("status session ok: page served, client fresh, rebuild up-to-date")
+
+# 4) 产物（U2a）：manifest 账本列表 + 验哈希伺服
+status, arts = req("GET", "/api/artifacts?profile=client")
+assert_true(status == 200 and arts["ok"], f"GET /api/artifacts: {status} {arts}")
+assert_true(arts["manifest_profile"] == "client", f"owner: {arts}")
+assert_true(len(arts["artifacts"]) >= 1, f"artifacts: {arts}")
+rel = arts["artifacts"][0]["path"]
+status, raw = req_raw(f"/api/artifact?path={urllib.parse.quote(rel)}")
+assert_true(status == 200 and len(raw) > 0, f"artifact serve {rel}: {status}")
+status, raw = req("GET", "/api/artifact?path=schema.yaml")
+assert_true(status == 404, f"non-ledgered path must 404, got {status}")
+print("status session ok: page served, client fresh, rebuild up-to-date, artifacts served")
 PY
 }
 

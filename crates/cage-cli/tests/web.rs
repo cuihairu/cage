@@ -685,3 +685,74 @@ fn web_build_refuses_broken_data_with_diagnostics() {
     );
     assert!(!tmp.path().join("build/client/json/Item.json").exists());
 }
+
+#[test]
+fn web_artifacts_serve_ledgered_files_end_to_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let server = start_server(tmp.path());
+
+    // Build, then list artifacts for the built profile.
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/build",
+        Some(r#"{"profile": "client"}"#),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(json(&body)["ok"], true);
+
+    let (status, body) = request(server.port, "GET", "/api/artifacts?profile=client", None);
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["manifest_profile"], "client");
+    assert_eq!(v["fresh"], true);
+    assert_eq!(v["stale"], false);
+    let arts = v["artifacts"].as_array().expect("artifact list");
+    assert!(!arts.is_empty(), "body: {body}");
+    let item = arts
+        .iter()
+        .find(|a| a["path"] == "build/json/Item.json")
+        .expect("Item.json must be ledgered");
+    assert!(item["hash"].as_str().unwrap().len() >= 12, "body: {body}");
+
+    // A ledgered file serves byte-identical to disk.
+    let (status, body) = request(
+        server.port,
+        "GET",
+        "/api/artifact?path=build/json/Item.json",
+        None,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        fs::read_to_string(tmp.path().join("build/json/Item.json")).unwrap()
+    );
+
+    // Outside the ledger: 404, never join-and-pray. Edited after the
+    // build: 409, never tampered content.
+    let (status, body) = request(server.port, "GET", "/api/artifact?path=schema.yaml", None);
+    assert_eq!(status, 404);
+    assert!(
+        json(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("not in the build manifest"),
+        "body: {body}"
+    );
+    fs::write(tmp.path().join("build/json/Item.json"), r#"{"hacked": 1}"#).unwrap();
+    let (status, body) = request(
+        server.port,
+        "GET",
+        "/api/artifact?path=build/json/Item.json",
+        None,
+    );
+    assert_eq!(status, 409, "body: {body}");
+    assert!(
+        json(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("no longer matches"),
+        "body: {body}"
+    );
+}

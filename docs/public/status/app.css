@@ -181,6 +181,34 @@ section { margin-bottom: 22px; }
 }
 .chip.stale { color: var(--warning); border-color: rgba(245, 165, 36, 0.5); }
 
+/* 产物行 chip：路径 + 大小 + 预览/下载 内联 */
+.chip.artifact {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+}
+.chip.artifact .artifact-name { font-family: var(--mono); color: var(--text); }
+.chip.artifact .artifact-size { color: var(--text-dim); font-size: 11px; }
+.chip.artifact button {
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 3px;
+}
+.chip.artifact a { font-size: 11px; }
+
+#artifact-preview {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: 12px/1.55 var(--mono);
+  overflow: auto;
+  max-height: 420px;
+  white-space: pre;
+}
+#artifact-preview-head { margin-top: 10px; }
+
 .facts {
   display: grid;
   grid-template-columns: max-content repeat(2, max-content);

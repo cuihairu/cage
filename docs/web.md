@@ -158,6 +158,27 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       （状态页路由与 301 / 状态-构建端到端 / 坏数据端到端）+
       web-smoke 第 5 步（真实服务上状态页 → fresh → up-to-date）
 
+### W6 已实装：产物浏览（U2a，路线见 [UI 门面](/ui)）
+
+- [x] `GET /api/artifacts[?profile=&env=]`：产物账本 = build manifest。
+      manifest 单槽，**跨 profile 不读遗留**——manifest 属于别的
+      profile 时返回 `manifest_profile` + 空清单（未构建的 profile 没有
+      可信产物，构建即可浏览）；`stale` 复用 U1 的第一层判语
+      （产物照列，但页面标注「已过期」）；每个条目带
+      path / blake3 hash / size / format / 所属表 / encoding，前端按
+      `output_dir` 分组即天然按 profile 分层
+- [x] `GET /api/artifact?path=REL`：单文件伺服给预览/下载。安全口径
+      两条：① **只认 manifest 键**（查表，不 join-and-pray，路径穿越
+      一并拒绝）；② 伺服前**重算 blake3 比对记录哈希**，不一致 409
+      ——与 snapshot loader 同一 verify-first 姿态，绝不送出被改过的字节
+- [x] 状态页「产物」区：按 target `output_dir` 分组列出文件（路径 /
+      大小 / hash 前缀 / 预览 / 下载），预览对 JSON 格式化、文本原样、
+      msgpack 标「二进制不预渲染」；未构建/跨 profile 出说明而非空壳；
+      过期产物出过期提示
+- [x] 测试：web.rs 单测 3 项（清单跨 profile 与空态 / 伺服 + 非账本
+      404 + 篡改 409 / stale 标注）+ 集成 1 项（列表 → 逐字节伺服 →
+      404 → 409 端到端）+ web-smoke 第 5 步补产物断言
+
 ## 路线图
 
 第三阶段 W 系列至此全部完成（W1 交换模型 → W2 本地服务 → W3 编辑器
