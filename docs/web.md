@@ -179,9 +179,25 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       404 + 篡改 409 / stale 标注）+ 集成 1 项（列表 → 逐字节伺服 →
       404 → 409 端到端）+ web-smoke 第 5 步补产物断言
 
+### W7 已实装：targets 徽标 + profile 作用域视图（U2b，路线见 [UI 门面](/ui)）
+
+- [x] `GET /api/schema?profile=NAME`：附 `projection`（`filter_by_profile`
+      直调——构建管线同一投影函数，未知 profile 400）。前端语义零复制：
+      只做「全量 − 投影」集合差得到隐藏集，可见性规则不进 JS
+- [x] targets 徽标：`field.targets` / `table.targets` 非空即在编辑器渲染
+      chip（左栏表项 / 字段行 / 表标题），数据源就是 schema 本身，无新状态
+- [x] 作用域视图：编辑器顶栏「作用域」旋钮（（全部）/ 各 profile）；
+      被投影剔除的表/字段**灰显 + 「本 profile 不可见」徽标**而非消失——
+      藏起来的东西要看得见被藏了；投影按已保存 schema 计算，未保存改动
+      时提示语显式标注（保存全程作者主导，不自动保存）
+- [x] 测试：web.rs 单测 +2（投影 gate 表与字段 / 未知 profile 400）+
+      集成 1 项（无 profile 无 projection → client 剔除 server-only 字段
+      → server 保留 → ghost 400）+ web-smoke 第 7 步（game-config 的
+      `internal_note`：client 投影剔除、server 保留、ghost 400）
+
 ## 路线图
 
 第三阶段 W 系列至此全部完成（W1 交换模型 → W2 本地服务 → W3 编辑器
-前端 → W4 文档与示例 → W5 项目状态面）。示例入口：
-`examples/web-smoke.sh`（CI 同款）。后续 UI 增量（U2 产物浏览 /
-U3 快照 / registry / 分层 diff）的路线与拍板见 [UI 门面](/ui)。
+前端 → W4 文档与示例 → W5 项目状态面 → W6 产物浏览 → W7 作用域视图）。
+示例入口：`examples/web-smoke.sh`（CI 同款）。后续 UI 增量（U3 快照 /
+registry / 分层 diff）的路线与拍板见 [UI 门面](/ui)。

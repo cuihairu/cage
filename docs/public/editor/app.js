@@ -41,6 +41,7 @@ const state = {
   field: null,       // 当前表内选中的字段名
   diags: [],         // 最近一次校验结果
   dirty: false,
+  scope: null,       // profile 作用域（U2b）：{profile, hiddenTables, hiddenFields}；null = 全部
 };
 
 const enumNames = () => (state.doc ? Object.keys(state.doc.enums || {}) : []);
@@ -59,6 +60,15 @@ function option(value, label) {
   o.value = value;
   o.textContent = label !== undefined ? label : value;
   return o;
+}
+
+// targets 徽标（U2b）：field/table 的 profile 可见性列表原样成 chip，
+// 数据源就是 schema 本身（targets: ["server"] → server only），无新状态。
+function targetsChips(targets) {
+  if (!targets || !targets.length) return null;
+  const wrap = el("span", "targets-chips");
+  for (const t of targets) wrap.append(el("span", "targets-chip", t));
+  return wrap;
 }
 
 async function api(path, body) {
@@ -86,6 +96,8 @@ function markDirty() {
     const flag = document.getElementById("dirty-flag");
     flag.hidden = false;
   }
+  // 作用域投影按「已保存的 schema」计算，未保存改动让它显式说明。
+  if (state.scope) updateScopeNote();
 }
 
 function toast(msg, kind, ms) {
@@ -438,6 +450,8 @@ function renderTableForm() {
 
   const tPath = ["tables", state.sel.name];
   const title = el("h2", null, `表 · ${state.sel.name}`);
+  const titleChips = targetsChips(table.targets);
+  if (titleChips) title.append(titleChips);
   box.append(title);
 
   // —— 表定义 ——
@@ -514,6 +528,13 @@ function renderTableForm() {
     tr.classList.toggle("active", state.field === fname);
     tr.dataset.field = fname;
     const tdName = el("td", "name-cell", fname);
+    const fHiddenSet = state.scope ? state.scope.hiddenFields.get(state.sel.name) : null;
+    if (fHiddenSet && fHiddenSet.has(fname)) {
+      tr.classList.add("scoped-hidden");
+      tdName.append(el("span", "scope-badge", "本 profile 不可见"));
+    }
+    const fChips = targetsChips(f.targets);
+    if (fChips) tdName.append(fChips);
     const tdType = el("td", "type-cell", typeLabel(f.type));
     const tdReq = el("td", "req-cell", f.required ? "必填" : "");
     const tdDel = el("td");
@@ -813,6 +834,13 @@ function renderTree() {
     const item = el("div", "tree-item");
     item.classList.toggle("active", state.sel && state.sel.kind === "table" && state.sel.name === name);
     item.textContent = name;
+    const tableHidden = state.scope && state.scope.hiddenTables.has(name);
+    if (tableHidden) {
+      item.classList.add("scoped-hidden");
+      item.append(el("span", "scope-badge", "本 profile 不可见"));
+    }
+    const tChips = targetsChips(table.targets);
+    if (tChips) item.append(tChips);
     item.append(el("span", "type-tag", `${Object.keys(table.fields || {}).length} 字段`));
     item.addEventListener("click", () => selectEntity("table", name));
     li.append(item);
@@ -941,6 +969,53 @@ function focusDiag(d) {
   }
 }
 
+// ── 作用域（profile 投影视图，U2b）──────────────────────────────────
+//
+// 语义全部在服务端：GET /api/schema?profile=NAME 用 filter_by_profile
+// （构建管线同一函数）出投影版。前端只做集合差（全量 − 投影 = 隐藏集）
+// 并据此灰显——可见性规则不进 JS。隐藏项不消失，而是带「本 profile
+// 不可见」徽标：藏起来的东西要看得见被藏了。
+
+function applyScope(profile) {
+  if (!profile) {
+    state.scope = null;
+    updateScopeNote();
+    refreshEntity();
+    return;
+  }
+  api(`/api/schema?profile=${encodeURIComponent(profile)}`).then(({ data }) => {
+    if (!data || !data.ok || !data.projection) {
+      toast(`作用域装载失败：${(data && data.error) || "服务错误"}`, "err");
+      return;
+    }
+    // 对比服务器这份全量文档（state.doc 可能含未保存改动，不参与计算）。
+    const full = data.schema.tables || {};
+    const proj = data.projection.schema.tables || {};
+    const hiddenTables = new Set(Object.keys(full).filter((t) => !proj[t]));
+    const hiddenFields = new Map();
+    for (const [t, td] of Object.entries(full)) {
+      const pt = proj[t];
+      if (!pt) continue;
+      const hid = Object.keys(td.fields || {}).filter((f) => !pt.fields[f]);
+      if (hid.length) hiddenFields.set(t, new Set(hid));
+    }
+    state.scope = { profile, hiddenTables, hiddenFields };
+    updateScopeNote();
+    refreshEntity();
+  });
+}
+
+function updateScopeNote() {
+  const note = document.getElementById("scope-note");
+  if (!state.scope) {
+    note.hidden = true;
+    return;
+  }
+  note.hidden = false;
+  const caveat = state.dirty ? "（按已保存 schema 投影）" : "";
+  note.textContent = `作用域 ${state.scope.profile}${caveat}：灰显项对该 profile 不可见`;
+}
+
 // ── 启动 ────────────────────────────────────────────────────────────
 
 async function init() {
@@ -960,6 +1035,11 @@ async function init() {
   document.getElementById("meta-profiles").textContent =
     `profiles: ${(data.profile_names || []).join(", ") || "（无）"}`;
   if (data.warnings_as_errors) document.getElementById("meta-wae").hidden = false;
+
+  // 作用域旋钮（U2b）：切 profile 出投影视图
+  const scopeSel = document.getElementById("scope-sel");
+  for (const p of data.profile_names || []) scopeSel.append(option(p));
+  scopeSel.addEventListener("change", () => applyScope(scopeSel.value));
 
   // 枚举名 datalist（枚举类型引用输入用）
   const dl = el("datalist");

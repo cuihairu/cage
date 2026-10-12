@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# cage web 端到端冒烟（第三阶段 W4 + U1 状态面）：
-#   编辑 → 校验 → 保存 → cage build 复现 → 状态页（新鲜度 + up-to-date）
-#   → 目录 schema 409 拒写。
+# cage web 端到端冒烟（第三阶段 W4 + U1 状态面 + U2a 产物 + U2b 投影）：
+#   编辑 → 校验 → 保存 → cage build 复现 → 状态页（新鲜度 + up-to-date
+#   + 产物账本）→ 目录 schema 409 拒写 + profile 投影。
 # 演示对象是 examples/web-demo/（单文件 schema），全部写操作发生在拷贝上，
 # 脚本本身不脏仓库；真实命令逐条打印，任一步失败立即退出。
 # 用法：bash examples/web-smoke.sh        （默认 cargo build 后取 target/debug/cage）
@@ -156,23 +156,51 @@ print("status session ok: page served, client fresh, rebuild up-to-date, artifac
 PY
 }
 
-# 目录 schema 409：多文件工程（schemas/）编辑器拒写
+# 目录 schema 409：多文件工程（schemas/）编辑器拒写 + U2b profile 投影
 dir_refuse() {
   python3 - "$1" <<'PY'
 import json, sys, urllib.request, urllib.error
 
 port = sys.argv[1]
-body = json.dumps({"tables": {}, "enums": {}, "metadata": None}).encode()
-url = f"http://127.0.0.1:{port}/api/schema"
-try:
-    with urllib.request.urlopen(urllib.request.Request(url, data=body, method="POST",
-                                                       headers={"Content-Type": "application/json"}), timeout=5) as resp:
-        sys.exit(f"ASSERT FAIL: expected 409, got {resp.status}")
-except urllib.error.HTTPError as e:
-    assert e.code == 409, f"expected 409, got {e.code}"
-    payload = json.loads(e.read().decode())
-    assert "directory" in payload["error"], f"error must mention directory: {payload}"
-    print(f"directory schema refused ok: 409 {payload['error'][:60]}...")
+base = f"http://127.0.0.1:{port}"
+
+def req(method, path, payload=None):
+    data = None if payload is None else json.dumps(payload).encode()
+    r = urllib.request.Request(base + path, data=data, method=method,
+                               headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(r, timeout=10) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode())
+
+def assert_true(cond, msg):
+    if not cond:
+        sys.exit(f"ASSERT FAIL: {msg}")
+
+# 1) 目录 schema 仍是 409 拒写
+body = json.dumps({"tables": {}, "enums": {}, "metadata": None})
+status, payload = req("POST", "/api/schema", json.loads(body))
+assert_true(status == 409 and "directory" in payload["error"],
+            f"directory must 409: {status} {payload}")
+
+# 2) U2b 投影：internal_note 是 server-only 字段
+status, doc = req("GET", "/api/schema?profile=client")
+assert_true(status == 200 and doc["ok"], f"GET /api/schema?profile=client: {status}")
+assert_true(doc["projection"]["profile"] == "client", f"projection owner: {doc.get('projection')}")
+fields = doc["projection"]["schema"]["tables"]["Character"]["fields"]
+assert_true("internal_note" not in fields, "client projection must drop internal_note")
+full_fields = doc["schema"]["tables"]["Character"]["fields"]
+assert_true("internal_note" in full_fields, "full document must keep internal_note")
+
+status, doc = req("GET", "/api/schema?profile=server")
+assert_true(status == 200 and doc["ok"], f"GET /api/schema?profile=server: {status}")
+fields = doc["projection"]["schema"]["tables"]["Character"]["fields"]
+assert_true("internal_note" in fields, "server projection must keep internal_note")
+
+status, doc = req("GET", "/api/schema?profile=ghost")
+assert_true(status == 400 and not doc["ok"], f"unknown profile must 400: {status} {doc}")
+print("directory refuse + profile projection ok: 409, client hides internal_note, server keeps it, ghost 400")
 PY
 }
 
@@ -231,7 +259,7 @@ hash_tree "$WORK/demo/build" > "$WORK/h2.txt"
 cmp "$WORK/h1.txt" "$WORK/h2.txt" || { echo "两次构建产物哈希不一致"; exit 1; }
 echo "==> 两次构建 $(wc -l < "$WORK/h1.txt") 个文件哈希逐字节一致"
 
-step "[7/7] 多文件 schema（schemas/ 目录）→ POST /api/schema 应得 409 拒写"
+step "[7/7] 多文件 schema 409 拒写 + U2b profile 投影（internal_note 仅 server 可见）"
 echo "\$ $CAGE_BIN web $WORK/multi --port $PORT &   # 另一个服务"
 PORT2="$(pick_port)"
 "$CAGE_BIN" web "$MULTI_WORK" --port "$PORT2" &
@@ -243,4 +271,4 @@ wait "$MULTI_PID" 2>/dev/null || true
 
 echo
 echo
-echo "✔ web 冒烟全部通过：编辑 → 校验 → 保存 → build 复现（确定性字节）→ 状态页（新鲜度 + up-to-date）→ 目录 409"
+echo "✔ web 冒烟全部通过：编辑 → 校验 → 保存 → build 复现（确定性字节）→ 状态页（新鲜度 + up-to-date + 产物）→ 目录 409 + profile 投影"

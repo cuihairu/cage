@@ -164,10 +164,11 @@ build/server/*）；表级与字段级 `targets`（schema）经
   哪一端的产物」。
 - **字段可见性徽标**：`field.targets` / `table.targets` 非空即在
   编辑器与浏览视图渲染徽标（`internal_note` → 「server only」），
-  数据源就是 schema 本身，无新状态。
+  数据源就是 schema 本身，无新状态。（U2b 已实装）
 - **profile 作用域视图**：`GET /api/schema?profile=` 出投影版
   schema（`filter_by_profile` 现成函数直调）；被剔除字段显示
   「本 profile 不可见」而非消失——藏起来的东西要看得见被藏了。
+  （U2b 已实装）
 - **跨端对照（P2）**：选一张表 → client / server 两列矩阵，字段行
   「仅 server」「仅 client」「两端可见」三态；产物侧同表并排，
   server 多出的字段就是可见性剔除的镜像。
@@ -197,7 +198,13 @@ build/server/*）；表级与字段级 `targets`（schema）经
       非账本 404）+ 状态页「产物」区（按 output_dir 分组、预览/下载）。
       验收：web.rs 单测 3 项 + tests/web.rs 集成 1 项（列表 → 逐字节
       伺服 → 404 → 409）+ web-smoke 第 5 步产物断言
-- [ ] **U2b（P1）**：编辑器 targets 徽标与 profile 作用域视图
+- [x] **U2b（P1）编辑器 targets 徽标 + profile 作用域视图**：
+      `GET /api/schema?profile=` 附 `filter_by_profile` 投影（未知
+      profile 400）；前端只做集合差，可见性语义零复制进 JS；targets
+      非空即渲染徽标（左栏 / 字段行 / 表标题），被剔除项灰显 +
+      「本 profile 不可见」而非消失；未保存改动时投影提示语标注
+      「按已保存 schema 投影」。验收：web.rs 单测 +2 + 集成 1 项 +
+      web-smoke 第 7 步（game-config `internal_note` 三态断言）
 - [ ] **U3（P2）**：快照列/验/打包 + registry 条目浏览 + 分层 diff
       （API + 界面三层折叠 + `cage diff` 分层摘要）
 

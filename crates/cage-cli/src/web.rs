@@ -10,7 +10,8 @@
 //! makes, reported instead of acted on), and a build trigger:
 //!
 //! ```text
-//! GET  /api/schema      → editor document of the merged schema (+ project)
+//! GET  /api/schema      → editor document of the merged schema (+ project);
+//!                         ?profile= adds the projected (filtered) schema
 //! POST /api/validate    → E1701 / E1004 diagnostics for an edited document
 //! POST /api/schema      → save the canonical YAML (single-file schema only)
 //! GET  /api/status      → validation panel + per-profile build facts
@@ -33,6 +34,7 @@ use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_canonical_yaml, to_editor_json};
 use cage_core::error::codes::Severity;
 use cage_core::manifest::ProjectConfig;
+use cage_core::value::Document;
 use std::path::{Path, PathBuf};
 
 /// W3 editor page and assets, embedded at compile time from the docs-site
@@ -103,7 +105,10 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
         redirect_response("/status/")
     } else {
         match (method, url.trim_end_matches('/')) {
-            (tiny_http::Method::Get, "/api/schema") => json_response(200, &api_schema(ctx)),
+            (tiny_http::Method::Get, "/api/schema") => {
+                let (status, value) = api_schema(ctx, &query);
+                json_response(status, &value)
+            }
             (tiny_http::Method::Post, "/api/validate") => json_response(200, &api_validate(&body)),
             (tiny_http::Method::Post, "/api/schema") => {
                 let (status, value) = api_save(ctx, &body);
@@ -203,23 +208,62 @@ fn bytes_response(
         )
 }
 
-/// GET /api/schema — merged schema as the editor document plus the project
-/// facts the frontend needs (profiles, write-back target).
-fn api_schema(ctx: &Ctx) -> serde_json::Value {
+/// GET /api/schema[?profile=NAME] — merged schema as the editor document
+/// plus the project facts the frontend needs (profiles, write-back
+/// target). With a `profile` the payload also carries the projected
+/// schema: `filter_by_profile` — the exact gating the build pipeline
+/// applies — run against the same merged schema. The frontend diffs
+/// full-minus-projected to grey out what the profile would drop (hidden
+/// things stay visibly hidden), so no visibility semantics live in JS.
+fn api_schema(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
     let schema = match load_schema_for_config(&ctx.root, &ctx.config) {
         Ok(s) => s,
         Err(e) => {
-            return serde_json::json!({"ok": false, "error": e});
+            return (200, serde_json::json!({"ok": false, "error": e}));
         }
     };
-    serde_json::json!({
+    let profile = query_params(query)
+        .into_iter()
+        .find(|(k, _)| k == "profile")
+        .map(|(_, v)| v)
+        .filter(|v| !v.is_empty());
+    let projection = match profile.as_deref() {
+        None => None,
+        Some(name) => {
+            if !ctx.config.profiles.contains_key(name) {
+                return (
+                    400,
+                    serde_json::json!({"ok": false, "error": format!("unknown profile '{name}'")}),
+                );
+            }
+            // The projection only gates schema tables/fields; the empty
+            // document just satisfies filter_by_profile's signature (its
+            // row filtering is a no-op on no rows).
+            let empty = Document {
+                tables: indexmap::IndexMap::new(),
+                source_files: Vec::new(),
+                metadata: cage_core::DocumentMetadata::default(),
+            };
+            let (projected, _) = crate::filter_by_profile(&schema, &empty, name);
+            Some(serde_json::json!({
+                "profile": name,
+                "schema": to_editor_json(&projected),
+                "visible_tables": projected.tables.len(),
+            }))
+        }
+    };
+    let mut payload = serde_json::json!({
         "ok": true,
         "project": ctx.config.project.name,
         "schema_path": ctx.config.schema_path,
         "profile_names": ctx.config.profiles.keys().collect::<Vec<_>>(),
         "warnings_as_errors": ctx.config.warnings_as_errors,
         "schema": to_editor_json(&schema),
-    })
+    });
+    if let Some(p) = projection {
+        payload["projection"] = p;
+    }
+    (200, payload)
 }
 
 /// POST /api/validate — run the editor-side checks on an edited document:
@@ -886,19 +930,86 @@ output_dir = "build/server/csv"
         fs::write(dir.path().join("schema.yaml"), "tables: {}\nenums: {}\n").expect("write schema");
         let ctx = ctx_in(&dir, Some("schema.yaml"));
 
-        let doc = api_schema(&ctx);
+        let (status, doc) = api_schema(&ctx, "");
+        assert_eq!(status, 200);
         assert_eq!(doc["ok"], serde_json::json!(true));
         assert_eq!(doc["project"], serde_json::json!("demo"));
         assert_eq!(doc["schema_path"], serde_json::json!("schema.yaml"));
         assert!(doc["schema"].is_object(), "editor schema present");
         let profiles = doc["profile_names"].as_array().expect("profiles");
         assert!(profiles.iter().any(|p| p == "client"));
+        assert!(
+            doc.get("projection").is_none(),
+            "no profile → no projection"
+        );
 
         // No schema_path configured → an empty editor document, still ok.
         let empty = ctx_in(&dir, None);
-        let doc = api_schema(&empty);
+        let (status, doc) = api_schema(&empty, "");
+        assert_eq!(status, 200);
         assert_eq!(doc["ok"], serde_json::json!(true));
         assert_eq!(doc["schema_path"], serde_json::json!(null));
+    }
+
+    #[test]
+    fn api_schema_projection_gates_tables_and_fields() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        // Rewrite the demo schema with a server-only field and a
+        // server-only table — filter_by_profile's exact input shape.
+        fs::write(
+            dir.path().join("schema.yaml"),
+            "tables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      \
+             id: { name: id, type: { kind: Int32 }, required: true }\n      \
+             name: { name: name, type: { kind: String } }\n      \
+             internal_note: { name: internal_note, type: { kind: String }, targets: [server] }\n  \
+             ServerOnly:\n    name: ServerOnly\n    primary_key: [id]\n    targets: [server]\n    fields:\n      \
+             id: { name: id, type: { kind: Int32 }, required: true }\nenums: {}\n",
+        )
+        .expect("rewrite schema");
+
+        // client: both the server-only field and table drop out of the
+        // projection while the full document keeps them.
+        let (status, doc) = api_schema(&ctx, "profile=client");
+        assert_eq!(status, 200);
+        assert_eq!(doc["ok"], serde_json::json!(true));
+        assert_eq!(doc["projection"]["profile"], serde_json::json!("client"));
+        let full = &doc["schema"]["tables"];
+        let proj = &doc["projection"]["schema"]["tables"];
+        assert!(full.get("ServerOnly").is_some(), "full keeps the table");
+        assert!(
+            proj.get("ServerOnly").is_none(),
+            "client projection drops it"
+        );
+        assert!(
+            full["Item"]["fields"].get("internal_note").is_some(),
+            "full keeps the field"
+        );
+        assert!(
+            proj["Item"]["fields"].get("internal_note").is_none(),
+            "client projection drops it"
+        );
+        assert_eq!(doc["projection"]["visible_tables"], serde_json::json!(1));
+
+        // server: the projected view matches the full document.
+        let (_, doc) = api_schema(&ctx, "profile=server");
+        let proj = &doc["projection"]["schema"]["tables"];
+        assert!(proj.get("ServerOnly").is_some(), "server sees the table");
+        assert!(
+            proj["Item"]["fields"].get("internal_note").is_some(),
+            "server sees the field"
+        );
+    }
+
+    #[test]
+    fn api_schema_rejects_an_unknown_projection_profile() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        let (status, doc) = api_schema(&ctx, "profile=ghost");
+        assert_eq!(status, 400);
+        assert_eq!(doc["ok"], serde_json::json!(false));
+        let err = doc["error"].as_str().expect("error message");
+        assert!(err.contains("ghost"), "error names the profile: {err}");
     }
 
     #[test]
@@ -1346,7 +1457,8 @@ file_template = "{table}.json"
     fn api_schema_reports_a_missing_schema_file() {
         let dir = TempDir::new().expect("tempdir");
         let ctx = ctx_in(&dir, Some("absent.yaml"));
-        let doc = api_schema(&ctx);
+        let (status, doc) = api_schema(&ctx, "");
+        assert_eq!(status, 200);
         assert_eq!(doc["ok"], serde_json::json!(false));
         assert!(doc["schema"].is_null(), "{doc}");
     }

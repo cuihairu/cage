@@ -222,7 +222,8 @@ cage web ./ --port 8765
 [Web UI](/web)：
 
 ```text
-GET  /api/schema      → 合并 Schema 的编辑器文档（每请求重载，保存后立即可见）
+GET  /api/schema      → 合并 Schema 的编辑器文档（每请求重载，保存后立即可见；
+                         ?profile=NAME 附 filter_by_profile 投影版）
 POST /api/validate    → 编辑态校验（E1701 / E1004 诊断）
 POST /api/schema      → 保存回环 canonical YAML（单文件 schema_path 才可写）
 GET  /api/status      → 项目状态：校验面板 + 每 profile 构建新鲜度（?profile=&env=&level=）

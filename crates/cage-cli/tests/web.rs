@@ -279,6 +279,68 @@ fn web_serves_editor_document() {
 }
 
 #[test]
+fn web_schema_projection_gates_by_profile() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    // A server-only field on top of the base fixture — the exact shape
+    // `filter_by_profile` gates (examples/game-config carries the same
+    // pattern as its `internal_note` field).
+    fs::write(
+        tmp.path().join("schema.yaml"),
+        r#"tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String } }
+      internal_note: { name: internal_note, type: { kind: String }, targets: [server] }
+enums: {}
+"#,
+    )
+    .unwrap();
+    let server = start_server(tmp.path());
+
+    // No profile → the full document, no projection.
+    let (status, body) = request(server.port, "GET", "/api/schema", None);
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert!(v.get("projection").is_none(), "no profile → no projection");
+
+    // client: the projection drops the server-only field, the full
+    // document keeps it (hidden stays visibly hidden).
+    let (status, body) = request(server.port, "GET", "/api/schema?profile=client", None);
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["projection"]["profile"], "client");
+    assert_eq!(
+        v["schema"]["tables"]["Item"]["fields"]["internal_note"]["name"], "internal_note",
+        "the full document keeps the field"
+    );
+    assert!(
+        v["projection"]["schema"]["tables"]["Item"]["fields"]
+            .get("internal_note")
+            .is_none(),
+        "the client projection drops it"
+    );
+
+    // server: the projection keeps the field.
+    let (status, body) = request(server.port, "GET", "/api/schema?profile=server", None);
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(
+        v["projection"]["schema"]["tables"]["Item"]["fields"]["internal_note"]["targets"],
+        serde_json::json!(["server"])
+    );
+
+    // Unknown profile → 400 JSON.
+    let (status, body) = request(server.port, "GET", "/api/schema?profile=ghost", None);
+    assert_eq!(status, 400);
+    assert_eq!(json(&body)["ok"], false);
+}
+
+#[test]
 fn web_serves_editor_page_and_assets() {
     let tmp = tempfile::tempdir().unwrap();
     write_project(tmp.path());
