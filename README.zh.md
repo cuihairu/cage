@@ -73,6 +73,48 @@ cage migrate config/               # 迁移计划预览（--write 落盘，--all
 cage web ./                        # 启动 Schema 编辑器本地服务（只绑 127.0.0.1；/status/ 项目状态与构建新鲜度）
 ```
 
+## AI 助手（MCP）
+
+`cage mcp --stdio` 把校验/结构/构建预演包成 [Model Context Protocol](https://modelcontextprotocol.io) 工具，让 AI 客户端（Claude Desktop、Claude Code 等）直接驱动真正的编译器：读 JSON 结构化结果、拿到错误码 + `file:line` 定位 + 可操作建议，然后告诉你怎么改。所有工具只读——不写盘、不改配置。
+
+在 MCP 客户端里加一段（Claude Desktop / Claude Code 的 `claude_desktop_config.json` 或 `.mcp.json` 通用写法）：
+
+```json
+{
+  "mcpServers": {
+    "cage": {
+      "command": "cage",
+      "args": ["mcp", "--stdio"]
+    }
+  }
+}
+```
+
+工具清单（参数 `path` 一律是配置工程根目录，默认当前目录）：
+
+| 工具 | 用途 |
+| --- | --- |
+| `check_schema` | 校验配置（同 `cage check`）：返回错误码、`file:line`/行列表定位、原因与建议（缺字段/类型不符/环境未声明…） |
+| `list_tables` | 全部表：主键、字段、行数、跨表引用、各表声明的环境 |
+| `list_fields` | 字段定义：类型、必填、默认值、范围/长度/正则、枚举、引用、profile 可见性 |
+| `list_envs` | 已声明环境（`--env` 合法值）与各表 `env_overrides` 差异（如 Shop.discount 四环境 0.9→0.5） |
+| `build_dry_run` | 构建预演（不落盘）：产物清单（路径/大小/格式/表）、目标列表、schema/source 哈希与 build_id |
+| `explain_config` | 解释 `cage.toml` 每节的语义、项目实际取值与配置优先级链 |
+
+示例问答：AI 调 `check_schema` 得到
+
+```json
+{
+  "code": "E1201",
+  "file": "config/Item.csv",
+  "where": "config/Item.csv:row 1:price",
+  "message": "Value below minimum",
+  "suggestion": "Minimum allowed: 0"
+}
+```
+
+即可直接回答「把 `config/Item.csv` 第 1 行的 `price` 调回 ≥ 0，或放宽 schema 的 `min`」。不带 `--stdio` 跑 `cage mcp` 只打印工具清单，方便先看看有什么。
+
 ## 一键安装
 
 从滚动 [nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly) 匿名直链下载二进制（不走 Actions artifacts、不带 token），自动校验 SHA256，无需 Rust 工具链。

@@ -73,6 +73,48 @@ cage web ./                        # start the local Schema editor service (bind
 cage lsp ./                        # serve the diagnostics-only Language Server over stdio (IDE support)
 ```
 
+## AI Assistant (MCP)
+
+`cage mcp --stdio` exposes the check / structure / build-preview capabilities as [Model Context Protocol](https://modelcontextprotocol.io) tools, so an AI client (Claude Desktop, Claude Code, …) drives the real compiler: it reads JSON-structured results — error code + `file:line` location + actionable suggestion — and can tell you exactly what to change. Every tool is read-only: nothing is written to disk.
+
+Add this to your MCP client config (Claude Desktop / Claude Code `claude_desktop_config.json` or a `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "cage": {
+      "command": "cage",
+      "args": ["mcp", "--stdio"]
+    }
+  }
+}
+```
+
+Tool list (the `path` argument is always the configuration project root, default the current directory):
+
+| Tool | Purpose |
+| --- | --- |
+| `check_schema` | Validate (same pipeline as `cage check`): error codes, `file:line` / row-column locations, reasons and suggestions (missing field / type mismatch / undeclared environment / …) |
+| `list_tables` | All tables: primary keys, fields, row counts, cross-table references, declared environments |
+| `list_fields` | Field definitions: type, required, default, range/length/pattern, enum, reference, profile visibility |
+| `list_envs` | Declared environments (valid `--env` values) and the per-table `env_overrides` diff |
+| `build_dry_run` | Build preview (nothing written): artifact list (path/size/format/table), targets, schema/source hashes and build_id |
+| `explain_config` | What each `cage.toml` section means, this project's actual values, and the config precedence chain |
+
+Example: the AI calls `check_schema` and gets
+
+```json
+{
+  "code": "E1201",
+  "file": "config/Item.csv",
+  "where": "config/Item.csv:row 1:price",
+  "message": "Value below minimum",
+  "suggestion": "Minimum allowed: 0"
+}
+```
+
+and can answer directly: "set `price` in row 1 of `config/Item.csv` back to ≥ 0, or loosen the schema's `min`". Running `cage mcp` without `--stdio` just prints the tool list.
+
 
 ## 本地测试口径
 

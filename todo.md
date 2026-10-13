@@ -1392,7 +1392,7 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       重跑 exit 1 且 `cage.toml` 字节未变。README 中英「快速开始」
       已加 `cage init` 两行；`docs/cli.md` 加 `## init` 节与命令清单
       补齐（新增 `init`/`graph`/`verify`/`lsp`）
-- [ ] **功能 B：`cage mcp` MCP server（stdio）**——`cage mcp --stdio`
+- [x] **功能 B：`cage mcp` MCP server（stdio）**——`cage mcp --stdio`
       （官方 rmcp SDK），复用 core：`check_schema`（结构化错误：错误
       码、file:line、原因、可操作建议）、`list_tables` /
       `list_fields` / `list_envs`（结构与四套环境差异）、
@@ -1402,6 +1402,23 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       片段 + 工具清单）；验收 = MCP 集成测试（initialize → list_tools
       → ≥3 tool 真调用，含一条故意写错的配置断言 file:line 与建议）
       + cargo test/clippy 全绿；单 commit 英文简短
+      —— 实现 `crates/cage-cli/src/mcp.rs:1`（server + 6 工具 + 12 单测）、
+      `crates/cage-cli/tests/mcp_server.rs:1`（2 集成测试：initialize →
+      list_tools → 6 次真调用）；`crates/cage-cli/src/main.rs:76` 的
+      `enum Commands` 加 `Mcp` 变体（`main.rs:115`，分发 `main.rs:592`），
+      `generate_target_items` 从 build_project 抽出共享；
+      文档 `README.md:76`/`README.zh.md:76`/`docs/cli.md`（`## mcp` 节）。
+      验收：真跑 server 得 serverInfo.name=cage + tools 6 个；故意写错的
+      工程 `check_schema` 返回 E1101/E1201，定位
+      `config/Item.csv:row 2:price` / `row 1:price` 各带 suggestion；
+      `build_dry_run` written=false、86 artifacts 不落盘；`explain_config`
+      precedence 8 步。门禁全绿：`cargo test --workspace` 925 passed /
+      0 failed、`cargo clippy --workspace --all-targets -- -D warnings` 0
+      error、`cargo fmt --all --check` OK、rustdoc `-D warnings` OK、
+      `bash examples/run.sh`「全部通过」、`asset-workspace.sh`「恢
+      复演练通过」、`web-smoke.sh`「✔ web 冒烟全部通过」、
+      `npm run docs:build` OK、`npm audit --omit=dev` 0 vulnerabilities。
+      commit: 11b7f6e
 - [ ] **文档 + UI 单**——①文档开头「游戏配置的生命周期」：mermaid
       主流程图（需求改表→check→依赖/registry 解析→目标生成→增量→进
       游戏/服务）每步标状态流转（草稿/校验失败-带错误码/就绪/已生成/

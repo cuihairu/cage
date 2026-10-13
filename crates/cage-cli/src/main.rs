@@ -57,6 +57,7 @@ use cage_core::DocumentMetadata;
 
 mod init;
 mod lsp;
+mod mcp;
 mod remote;
 mod web;
 
@@ -107,6 +108,14 @@ enum Commands {
         /// Skip the example tables (empty project skeleton)
         #[arg(long = "no-examples")]
         no_examples: bool,
+    },
+    /// AI assistant (MCP) server: expose check/build/inspect as tools over
+    /// stdio JSON-RPC (official rmcp SDK). `--stdio` serves; without it the
+    /// tool list is printed
+    Mcp {
+        /// Serve the MCP server on stdin/stdout (for MCP clients)
+        #[arg(long)]
+        stdio: bool,
     },
     /// Validate only, do not generate runtime artifacts
     Check {
@@ -580,6 +589,13 @@ fn main() {
             git,
             no_examples,
         ),
+        Commands::Mcp { stdio } => {
+            if stdio {
+                mcp::serve_stdio()
+            } else {
+                mcp::print_tools()
+            }
+        }
         Commands::Check {
             path,
             level,
@@ -2133,32 +2149,7 @@ fn build_project(
     let mut artifacts = carried;
     for target in &build_profile.targets {
         let (gen_schema, gen_doc) = target_inputs(target);
-        let generated = match code_target_items(target, &gen_schema, &schema_hash, path) {
-            // Bundled code targets (cs/python/lua/ts/…) are schema-driven
-            // and infallible; the user-template target can fail (template
-            // fault or missing directory) and surfaces through Io.
-            Some(Ok(items)) => Ok(items),
-            Some(Err(e)) => Err(BuildFailure::Io(e)),
-            None => match target.format.as_str() {
-                "json" => cage_target_json::JsonTargetGenerator::from_config(target)
-                    .generate(&gen_doc, &[])
-                    .map_err(BuildFailure::Validation),
-                "csv" => cage_target_csv::CsvTargetGenerator::from_config(target)
-                    .generate(&gen_doc, &[])
-                    .map_err(BuildFailure::Validation),
-                "msgpack" | "messagepack" => {
-                    cage_target_msgpack::MsgPackTargetGenerator::from_config(target)
-                        .generate(&gen_doc, &[])
-                        .map_err(BuildFailure::Validation)
-                }
-                other => {
-                    return Err(BuildFailure::Io(format!(
-                        "unsupported target format '{other}'"
-                    )));
-                }
-            },
-        };
-        let items = generated?;
+        let items = generate_target_items(target, &gen_schema, &gen_doc, &schema_hash, path)?;
         write_artifact_files(path, items, &target.format, &mut artifacts)
             .map_err(BuildFailure::Io)?;
     }
@@ -3418,6 +3409,41 @@ fn code_target_items(
     }
 }
 
+/// Generate one target's artifacts in memory — the per-target half of the
+/// build loop, shared by `cage build` and the MCP `build_dry_run` tool so
+/// both compute the same bytes from the same inputs. Bundled code targets
+/// (cs/python/lua/ts/…) are schema-driven and infallible; the user-template
+/// target can fail (template fault or missing directory); data targets
+/// serialize the (possibly profile-filtered) document.
+fn generate_target_items(
+    target: &TargetConfig,
+    gen_schema: &Schema,
+    gen_doc: &Document,
+    schema_hash: &str,
+    path: &Path,
+) -> Result<Vec<(String, Vec<u8>)>, BuildFailure> {
+    match code_target_items(target, gen_schema, schema_hash, path) {
+        Some(Ok(items)) => Ok(items),
+        Some(Err(e)) => Err(BuildFailure::Io(e)),
+        None => match target.format.as_str() {
+            "json" => cage_target_json::JsonTargetGenerator::from_config(target)
+                .generate(gen_doc, &[])
+                .map_err(BuildFailure::Validation),
+            "csv" => cage_target_csv::CsvTargetGenerator::from_config(target)
+                .generate(gen_doc, &[])
+                .map_err(BuildFailure::Validation),
+            "msgpack" | "messagepack" => {
+                cage_target_msgpack::MsgPackTargetGenerator::from_config(target)
+                    .generate(gen_doc, &[])
+                    .map_err(BuildFailure::Validation)
+            }
+            other => Err(BuildFailure::Io(format!(
+                "unsupported target format '{other}'"
+            ))),
+        },
+    }
+}
+
 /// `options.lang_filters` (design §22 G4): comma-separated language keys
 /// whose filter libraries mount into the user-template engine. Unknown
 /// keys fail up front, before any rendering.
@@ -4095,6 +4121,7 @@ mod tests {
             } => format!(
                 "init {path:?} {name:?} {source:?} {envs:?} {targets:?} {template:?} {git:?} {no_examples}"
             ),
+            Commands::Mcp { stdio } => format!("mcp {stdio}"),
             Commands::Check {
                 path,
                 level,
@@ -4373,6 +4400,15 @@ mod tests {
             describe(&cli.command),
             "init Some(\"proj\") None None None None None false true"
         );
+    }
+
+    #[test]
+    fn parse_mcp_subcommand() {
+        // 不带 --stdio 只打印工具清单（人看的），带了才起 server。
+        let cli = Cli::try_parse_from(["cage", "mcp"]).expect("parse mcp");
+        assert_eq!(describe(&cli.command), "mcp false");
+        let cli = Cli::try_parse_from(["cage", "mcp", "--stdio"]).expect("parse mcp stdio");
+        assert_eq!(describe(&cli.command), "mcp true");
     }
 
     #[test]

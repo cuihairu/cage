@@ -4,6 +4,7 @@ Cage 的命令行入口（`cage-cli` crate，基于 [clap](https://crates.io/cra
 
 ```bash
 cage init
+cage mcp
 cage check
 cage build
 cage gen
@@ -29,7 +30,42 @@ R1–R4 均已实装），A 系列分发（bundle 导出/导入、直推远端�
 起草，design §46）已随 M1–M3 实装，`cage schema-draft`（库表内省起草
 schema，design §45 / S9）已实装，`cage graph`（读依赖图）已实装，
 `cage verify runtime/`（验证已生成产物）见 [verify](#verify)，
-`cage init`（交互式脚手架）见 [init](#init)。
+`cage init`（交互式脚手架）见 [init](#init)，
+`cage mcp`（AI 助手 MCP server）见 [mcp](#mcp)。
+
+## mcp
+
+```bash
+cage mcp            # 打印工具清单（人看的）
+cage mcp --stdio    # 以 stdio JSON-RPC 起 MCP server（给 MCP 客户端）
+```
+
+AI 助手（MCP）：`cage mcp --stdio` 用官方 [rmcp](https://crates.io/crates/rmcp)
+SDK 把现有 check / 结构 / 构建预演能力包成 [Model Context Protocol](https://modelcontextprotocol.io)
+tools，AI 客户端（Claude Desktop、Claude Code、其它 MCP 客户端）配一段
+`{"mcpServers": {"cage": {"command": "cage", "args": ["mcp", "--stdio"]}}}`
+即可调用。输出一律 JSON 结构化，所有工具**只读**——不写盘、不改配置：
+
+- **check_schema**：同 `cage check` 管道（level/profile/env/--no-cache
+  语义一致），返回 `{ok, error_count, errors: [{code, file, where, line,
+  row, column, table, field, message, suggestion, …}], warnings, next}`——
+  错误码 + 定位 + 原因 + 可操作建议（缺字段/类型不符/环境未声明/模板变量
+  不存在…）；`where` 是复合定位（文本源 `file:line`，无行号的源
+  `file:row N:col`）。
+- **list_tables / list_fields**：schema 结构（表/字段/主键/行数/枚举/引用/
+  profile 可见性）。
+- **list_envs**：已声明环境（`--env` 合法值）与各表 `env_overrides`
+  差异；未知环境如何修也写在建议里。
+- **build_dry_run**：与 `cage build` 同一条生成链
+  （`generate_target_items`）算产物清单与全部哈希，但**不落盘**
+  （`written: false`），校验失败时同样给结构化错误。
+- **explain_config**：`cage.toml` 各节语义 + 项目实际取值 +
+  配置优先级链（发现顺序 → level → profile → env → 源合并 → 产物 → 增量）。
+
+集成测试见 `crates/cage-cli/tests/mcp_server.rs`：起真 server 走完
+initialize → tools/list → 六个 tools/call（含一条故意写错的配置，
+断言错误带 file 与建议）。README 中英「AI 助手（MCP）」有客户端配置
+片段与工具清单。
 
 ## init
 

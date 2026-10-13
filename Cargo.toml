@@ -85,6 +85,17 @@ tera = "1"
 mysql = "28"
 postgres = "0.19"
 
+# AI 助手 (MCP) server — official Model Context Protocol Rust SDK;
+# `server`/`macros` build the stdio JSON-RPC transport (features/quarantine:
+# the MCP stack lands only in cage-cli, no other crate pulls it in)
+rmcp = { version = "3.5.1", default-features = false, features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-io",
+] }
+tokio = { version = "1", features = ["rt", "io-std", "macros"] }
+
 # Testing
 tempfile = "3.10"
 

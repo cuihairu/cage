@@ -47,6 +47,11 @@ toml = { workspace = true }
 # `cage migrate --write` rewrites CSV sources in place (same crate the
 # source/target adapters use, so quoting round-trips)
 csv = { workspace = true }
+# `cage mcp --stdio`: AI 助手 MCP server (official MCP Rust SDK)
+rmcp = { workspace = true }
+tokio = { workspace = true }
+# MCP tool 参数结构体的 Deserialize derive（rmcp 的 Parameters<T> 需要）
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
