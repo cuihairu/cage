@@ -1442,4 +1442,4 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       `npm run docs:build` 绿（mermaid 两图渲染进资产、无死链、
       4 张截图入库 dist/assets）。**待用户拍板**：Web UI 形态 /
       引用联动 / 环境折叠（见 design-prototypes.md 第三节）。
-      commit: __HASH__
+      commit: df34632（生命周期 + 场景）+ b4315dc（UI 原型）
