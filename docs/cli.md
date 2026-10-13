@@ -3,14 +3,18 @@
 Cage 的命令行入口（`cage-cli` crate，基于 [clap](https://crates.io/crates/clap)）：
 
 ```bash
+cage init
 cage check
 cage build
 cage gen
 cage inspect
 cage assets
 cage diff
+cage graph
+cage verify
 cage snapshot
 cage web
+cage lsp
 cage registry
 cage migrate
 cage migrate-draft
@@ -24,7 +28,43 @@ R1–R4 均已实装），A 系列分发（bundle 导出/导入、直推远端�
 已随 A1–A3 实装，M 系列迁移（`cage migrate` 执行 + `cage migrate-draft`
 起草，design §46）已随 M1–M3 实装，`cage schema-draft`（库表内省起草
 schema，design §45 / S9）已实装，`cage graph`（读依赖图）已实装，
-`cage verify runtime/`（验证已生成产物）见 [verify](#verify)。
+`cage verify runtime/`（验证已生成产物）见 [verify](#verify)，
+`cage init`（交互式脚手架）见 [init](#init)。
+
+## init
+
+```bash
+cage init my-game                                   # 终端里交互式问答生成项目骨架
+cage init my-game --source csv --envs four \
+  --targets json,csv --template game --git          # 全 flag 非交互（CI/脚本友好）
+cage init my-game --no-examples                     # 只要空骨架（不生成示例表与样例数据）
+```
+
+`cage init` 生成一个开箱即用的配置工程：`cage.toml`（结构同
+`examples/game-config/cage.toml`，
+不引入第二种配置格式）+ `schemas/item.yaml` 示例表 + `config/Item.*`
+示例数据 + `README.md` + `.gitignore`。生成的项目**零改动**即可
+`cage check .` 与 `cage build . --env dev` 通过。
+
+- **交互模式**：有 TTY 且一个 flag 都没传时进问答——项目目录 → 项目名 →
+  配置源类型（excel/csv/json/yaml/sheets/db/http）→ 环境套（`four` =
+  dev/test/staging/prod 四套，内置）→ 目标生成器（按仓库实际有的
+  `cage-target-*` 列出：json/csv/msgpack/proto/flatbuffers/csharp/python/
+  lua/typescript/javascript/cpp/go/java/jsonschema/template）→ 模板风格
+  → 是否 `git init` → 是否带示例表。每题回车取默认值、`b` 回退上一题，
+  结束前打印待生成清单再确认（选 `n` 不写任何文件）。
+- **非交互模式**：传任意 flag（或 stdin 不是 TTY，例如 CI/管道）即用
+  flag 与默认值直接生成，绝不会卡在提示上。`--source` / `--envs` /
+  `--targets` / `--template` 取未知值 → exit 2。
+- **不覆盖**：目录里已有 `cage.toml` / `schemas/` / `config/` /
+  `README.md` / `.gitignore` 任一项就拒绝（exit 1），列出冲突项，
+  一个文件都不动。
+- `excel` / `sheets` / `db` / `http` 这几个源类型没有零依赖样例，所以
+  保留本地文本样例数据（`config/Item.csv`）并在 `cage.toml` 里留一段
+  注释好的远程源配置；项目照样开箱校验通过，把注释解开即可换源。
+- `--envs four` 在 `schemas/item.yaml` 里写 `env_overrides`
+  （dev 1000 → test 800 → staging 600 → prod 500 的 price 上限），
+  四套环境的校验都能跑；`--envs none` 则不声明任何环境。
 
 ## check
 

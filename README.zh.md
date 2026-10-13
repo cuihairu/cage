@@ -56,6 +56,13 @@ bash examples/run.sh   # 一键跑通完整示例工程：校验 → 构建 12 �
 示例工程详解见 [`examples/game-config/`](examples/game-config/README.md) 与文档站「完整示例」页。其余常用命令：
 
 ```bash
+cage init my-game            # 新项目：交互式脚手架（终端问答生成骨架）
+cage init my-game --source csv --envs four --targets json,csv --git   # 全 flag 非交互
+```
+
+`cage init` 生成的项目零改动即可 `cage check .` 与 `cage build . --env dev` 通过。常用命令：
+
+```bash
 cage check config/                 # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
 cage snapshot config/ --profile client  # 构建 + 打包自校验快照；快照目录 --verify 载入前校验

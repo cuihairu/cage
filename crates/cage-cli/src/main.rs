@@ -55,6 +55,7 @@ use cage_core::value::Document;
 use cage_core::Diagnostics;
 use cage_core::DocumentMetadata;
 
+mod init;
 mod lsp;
 mod remote;
 mod web;
@@ -74,6 +75,39 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Scaffold a new configuration project (cage.toml + schema + sample
+    /// data + README). Interactive Q&A when run in a terminal without any
+    /// flag — every question can go back with `b` or be skipped with the
+    /// default; flags drive it unattended from CI. Re-running in a
+    /// directory that already holds a project refuses instead of
+    /// overwriting
+    Init {
+        /// Project directory (default: current directory)
+        path: Option<PathBuf>,
+        /// Project name (default: directory name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Sample source kind: excel/csv/json/yaml/sheets/db/http
+        /// (excel/sheets/db/http keep a local text sample plus a
+        /// commented config stanza, so a fresh project still checks clean)
+        #[arg(long)]
+        source: Option<String>,
+        /// Environment set: four (dev/test/staging/prod) or none
+        #[arg(long)]
+        envs: Option<String>,
+        /// Comma-separated target generators (e.g. json,csv,proto)
+        #[arg(long)]
+        targets: Option<String>,
+        /// Template style (currently: game)
+        #[arg(long)]
+        template: Option<String>,
+        /// Run `git init` after scaffolding
+        #[arg(long)]
+        git: bool,
+        /// Skip the example tables (empty project skeleton)
+        #[arg(long = "no-examples")]
+        no_examples: bool,
+    },
     /// Validate only, do not generate runtime artifacts
     Check {
         /// Configuration project root directory
@@ -527,6 +561,25 @@ fn project_with_env(project: Project, env: Option<&str>) -> Result<Project, Stri
 fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
+        Commands::Init {
+            path,
+            name,
+            source,
+            envs,
+            targets,
+            template,
+            git,
+            no_examples,
+        } => init::run_init(
+            path,
+            name,
+            source,
+            envs,
+            targets,
+            template,
+            git,
+            no_examples,
+        ),
         Commands::Check {
             path,
             level,
@@ -4030,6 +4083,18 @@ mod tests {
     /// never-taken false arm leaves an uncovered region on the assert line.
     fn describe(cmd: &Commands) -> String {
         match cmd {
+            Commands::Init {
+                path,
+                name,
+                source,
+                envs,
+                targets,
+                template,
+                git,
+                no_examples,
+            } => format!(
+                "init {path:?} {name:?} {source:?} {envs:?} {targets:?} {template:?} {git:?} {no_examples}"
+            ),
             Commands::Check {
                 path,
                 level,
@@ -4268,6 +4333,45 @@ mod tests {
         assert_eq!(
             describe(&cli.command),
             "check proj semantic client <base> true"
+        );
+    }
+
+    #[test]
+    fn parse_init_subcommand() {
+        // Bare form: everything defaults (non-interactive path).
+        let cli = Cli::try_parse_from(["cage", "init"]).expect("parse init");
+        assert_eq!(
+            describe(&cli.command),
+            "init None None None None None None false false"
+        );
+        // Full flag form drives generation unattended.
+        let cli = Cli::try_parse_from([
+            "cage",
+            "init",
+            "proj",
+            "--name",
+            "demo",
+            "--source",
+            "csv",
+            "--envs",
+            "four",
+            "--targets",
+            "json,csv,proto",
+            "--template",
+            "game",
+            "--git",
+        ])
+        .expect("parse init flags");
+        assert_eq!(
+            describe(&cli.command),
+            "init Some(\"proj\") Some(\"demo\") Some(\"csv\") Some(\"four\") Some(\"json,csv,proto\") Some(\"game\") true false"
+        );
+        // --no-examples is the opt-out for the sample tables.
+        let cli = Cli::try_parse_from(["cage", "init", "proj", "--no-examples"])
+            .expect("parse init no-examples");
+        assert_eq!(
+            describe(&cli.command),
+            "init Some(\"proj\") None None None None None false true"
         );
     }
 

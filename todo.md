@@ -1365,3 +1365,52 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       `55dae1a8e145` 两两不同，content_hash 同样逐环境轮换（数据
       字节不变，约束进生成的 JSON Schema——`Shop.schema.json` 的
       `maximum` 随环境取 0.9/0.7/0.6/0.5）——本轮交付，勾选
+
+### 两个功能单（2026-10-13 用户登记，本轮落地 A）
+
+- [x] **功能 A：`cage init` 交互式脚手架**——`enum Commands` 挂
+      `Init`（`crates/cage-cli/src/main.rs:76`），实现见
+      `crates/cage-cli/src/init.rs`：全部参数可 flag 传（无 TTY/CI
+      友好），有 TTY 且无 flag 时进问答（目录→项目名→源类型
+      excel/csv/json/yaml/sheets/db/http→环境套 four/none→目标生成器
+      按 `cage-target-*` 实际列 15 个→模板风格→git init→示例表），
+      每题回车默认、`b` 回退、结束前打印待生成清单再确认；生成物 =
+      `cage.toml`（种子= `examples/game-config/cage.toml`，不造第二套
+      配置格式）+ `schemas/item.yaml`（四套 `env_overrides`
+      dev 1000/test 800/staging 600/prod 500）+ `config/Item.*` 示例
+      数据 + `README` + `.gitignore`；excel/sheets/db/http 保留本地
+      文本样例 + 注释好远程源配置段（开箱校验仍绿）；同目录已有
+      `cage.toml`/`schemas/`/`config/`/`README.md`/`.gitignore` 任一
+      项即拒绝（exit 1，列冲突项，不动文件）。单测 14 例（含
+      `b` 回退、无效选项重问、EOF 中止、拒绝覆盖）+ 集成测试
+      `tests/init_scaffold.rs` 9 例。验收实测：flag 模式
+      `cage init /tmp/initdemo --name demo --source csv --envs four
+      --targets json,csv` → `cage check .` OK (1 tables, 0 warnings)
+      + `cage build . --env dev` OK (2 artifacts) 零改动通过；
+      TTY 交互（`script` 模拟真终端，9 题问答 + 清单确认）生成的
+      `proj` 同样 check OK + build OK；`--env qa` 仍 exit 2；同目录
+      重跑 exit 1 且 `cage.toml` 字节未变。README 中英「快速开始」
+      已加 `cage init` 两行；`docs/cli.md` 加 `## init` 节与命令清单
+      补齐（新增 `init`/`graph`/`verify`/`lsp`）
+- [ ] **功能 B：`cage mcp` MCP server（stdio）**——`cage mcp --stdio`
+      （官方 rmcp SDK），复用 core：`check_schema`（结构化错误：错误
+      码、file:line、原因、可操作建议）、`list_tables` /
+      `list_fields` / `list_envs`（结构与四套环境差异）、
+      `build_dry_run`（预演不落盘）、`explain_config`（配置项语义与
+      来源，同配置优先级链）；输出一律 JSON 结构化、错误带建议；
+      README 中英加「AI 助手（MCP）」节（claude/其它 MCP 客户端配置
+      片段 + 工具清单）；验收 = MCP 集成测试（initialize → list_tools
+      → ≥3 tool 真调用，含一条故意写错的配置断言 file:line 与建议）
+      + cargo test/clippy 全绿；单 commit 英文简短
+- [ ] **文档 + UI 单**——①文档开头「游戏配置的生命周期」：mermaid
+      主流程图（需求改表→check→依赖/registry 解析→目标生成→增量→进
+      游戏/服务）每步标状态流转（草稿/校验失败-带错误码/就绪/已生成/
+      增量命中）+ 失败分支（E18xx 等）+ 同页文字版要点；②逐个子命令
+      按 `main.rs:76 enum Commands` 逐个（用途/何时用/关键参数/生命周期
+      哪一步/可复制示例与真实输出），清单至少含 check/build/schema
+      draft/migrate/LSP/web/init/mcp/verify；③≥5 场景章节（①日常改表
+      迭代 ②新增环境四套 ③CI 集成 ④远程 registry 依赖 ⑤历史库迁移
+      migrate draft→apply）；④UI 设计只出设计不写码：init 问答流程
+      原型 + 校验结果可视化（错误列表/结构树/环境差异）HTML 静态原型
+      放 `docs/design/` 带截图，**原型给用户过目后再实现**；门禁 =
+      文档构建绿 + 链接检查，单 commit 分两（文档图/场景、UI 原型）
