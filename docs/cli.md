@@ -35,6 +35,8 @@ schema，design §45 / S9）已实装，`cage graph`（读依赖图）已实装�
 
 ## mcp
 
+> **生命周期**：横切 · ②④⑤（AI 驱动校验/生成/预演）。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage mcp            # 打印工具清单（人看的）
 cage mcp --stdio    # 以 stdio JSON-RPC 起 MCP server（给 MCP 客户端）
@@ -68,6 +70,8 @@ initialize → tools/list → 六个 tools/call（含一条故意写错的配置
 片段与工具清单。
 
 ## init
+
+> **生命周期**：① 之前 · 起工程骨架。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
 cage init my-game                                   # 终端里交互式问答生成项目骨架
@@ -104,6 +108,8 @@ cage init my-game --no-examples                     # 只要空骨架（不生�
 
 ## check
 
+> **生命周期**：② · 校验。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage check config/
 ```
@@ -129,6 +135,8 @@ gen 同）。`--env`（check / build / gen 同）按 Schema `env_overrides`
 
 ## build
 
+> **生命周期**：④⑤ · 目标生成 + 增量。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage build config/ --profile client
 cage build config/ --profile server
@@ -145,6 +153,8 @@ target，详见[增量构建](/build#增量构建)）。
 
 ## gen
 
+> **生命周期**：④ · 代码绑定生成。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage gen config/ --profile server
 cage gen config/ --env prod    # 按环境约束生成
@@ -160,6 +170,8 @@ Target（json/csv/msgpack）会被跳过，需要
 
 ## inspect
 
+> **生命周期**：横切 · ②（结构查看）。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage inspect config/ Item     # 项目路径必填；表名可选，省略时列出全部表
 ```
@@ -167,6 +179,8 @@ cage inspect config/ Item     # 项目路径必填；表名可选，省略时列
 查看 Schema 和配置结构。
 
 ## assets
+
+> **生命周期**：横切 · 资产基线。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
 cage assets <project>                       # 文本清单：路径 / 类别 / blake3 / 大小
@@ -205,6 +219,8 @@ cage build config/ --no-cache    # check / build / gen / inspect 通用
 
 ## schema-draft
 
+> **生命周期**：① 之前 · 库表内省起草 schema。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage schema-draft . mysql:Items pg:public.Monsters   # 内省库表 → stdout
 cage schema-draft . mysql:Items -o schemas/draft.yaml
@@ -223,6 +239,8 @@ JSON 的实际形态）。凭据纪律同远程源：DSN 只从
 
 ## diff
 
+> **生命周期**：横切 · 版本对比。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage diff build/a build/b
 ```
@@ -233,6 +251,8 @@ cage diff build/a build/b
 `output_dir`），与状态页对比区同数据源。
 
 ## snapshot
+
+> **生命周期**：⑥ · 自校验快照。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
 cage snapshot <project> --profile client    # 构建 + 打包自校验快照
@@ -256,6 +276,8 @@ schema.json / data/ / generated/ / HASHES.json），构建后自校验。`--veri
 
 ## verify
 
+> **生命周期**：⑥ · 产物校验。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage verify <project-root>         # 审计 output_dir 的构建产物
 cage verify build/                 # 直接审计构建输出目录
@@ -270,6 +292,8 @@ cage verify build/manifest.json    # 或 manifest 文件本身
 [`cage snapshot <dir> --verify`](#snapshot)。
 
 ## graph
+
+> **生命周期**：横切 · ③（依赖图）。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
 cage graph <project>               # 文本视图（默认）
@@ -303,6 +327,8 @@ Cage 支持四种远程输入源，全部在 `cage.toml` 的 `[source_roots]` �
 
 ## web
 
+> **生命周期**：⑥ · Schema 编辑器服务。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage web ./ --port 8765
 ```
@@ -335,6 +361,8 @@ GET  /api/registry    → registry 条目浏览（读 [registry] path；未配�
 
 ## lsp
 
+> **生命周期**：横切 · ②（IDE 诊断）。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 cage lsp <project>
 ```
@@ -366,6 +394,8 @@ IDE 立项）：手写 JSON-RPC 2.0 帧协议（`Content-Length` 头 + 定长体
 模型，单独立项）。stderr 是自由格式日志通道。
 
 ## registry
+
+> **生命周期**：③ · 配置包仓库。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
 cage registry publish <project> [--registry <dir>] [--package name] [--version 1.0.0] [--profile client] [--env prod]
@@ -622,6 +652,8 @@ presigned PUT URL；`index.get` 可省（远端尚无此包），`index.put`
 
 ## migrate（M 系列）
 
+> **生命周期**：①→② · 数据迁移执行。见[游戏配置的生命周期](/lifecycle)。
+
 ```bash
 # 先改 schema.yaml 到新版，再写 migrations/0001-xxx.yaml（from/to/steps）
 cage migrate .                    # 单段 dry-run 预演（默认：只报告，不落盘）
@@ -666,6 +698,8 @@ cage migrate . --to latest --write # 整链（latest 解析为链终点，与 --
   是只读构建输入，同样只报告。
 
 ## migrate-draft（M 系列）
+
+> **生命周期**：①→② · 迁移链起草。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
 # 对比两份 schema 版本，起草一份迁移规则稿（write 到 stdout 或 -o 落盘）
