@@ -54,6 +54,13 @@ bash examples/run.sh   # one command through the full example project: validate 
 See [`examples/game-config/`](examples/game-config/README.md) and the full-example page of the documentation site for a walkthrough. Other common commands:
 
 ```bash
+cage init my-game            # new project: interactive scaffold (terminal Q&A)
+cage init my-game --source csv --envs four --targets json,csv --git   # all flags, non-interactive
+```
+
+A scaffolded project runs `cage check .` and `cage build . --env dev` with zero edits. More common commands:
+
+```bash
 cage check config/                 # validate only, generate nothing
 cage check config/ --env prod        # validate under a schema-declared environment (env_overrides)
 cage build config/ --profile client  # validate and generate the target artifacts
@@ -65,6 +72,18 @@ cage migrate config/               # preview the migration plan (--write persist
 cage web ./                        # start the local Schema editor service (binds 127.0.0.1 only; /status/ shows project status and build freshness)
 cage lsp ./                        # serve the diagnostics-only Language Server over stdio (IDE support)
 ```
+
+
+## 本地测试口径
+
+CI 与本地开发按改动面三路分流——改一行文档不该全量编译。
+
+1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的
+   `paths-ignore` 已跳过这些路径。
+2. **代码改动**：只跑改动子集，不全量。
+   - `cargo test -p <改动 crate>`
+3. **全量**（`cargo test --workspace --locked`）：仅以下情形触发——Cargo.toml / Cargo.lock、
+   `.github/**`、Docker/Compose 配置、发布前。
 
 ## One-Command Install
 
