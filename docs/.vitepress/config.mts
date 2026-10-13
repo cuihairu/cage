@@ -54,6 +54,7 @@ export default defineConfig({
     nav: [
       { text: '首页', link: '/' },
       { text: '架构', link: '/architecture' },
+      { text: '生命周期', link: '/lifecycle' },
       { text: 'Source', link: '/source' },
       { text: 'Schema', link: '/schema' },
       { text: 'Validation', link: '/validation' },
@@ -62,6 +63,7 @@ export default defineConfig({
       { text: 'Build', link: '/build' },
       { text: 'Web', link: '/web' },
       { text: 'UI', link: '/ui' },
+      { text: 'UI 原型', link: '/design-prototypes' },
       { text: '资产', link: '/assets' },
       { text: '完整示例', link: '/example' }
     ],
@@ -72,6 +74,7 @@ export default defineConfig({
           text: '概览',
           items: [
             { text: '架构', link: '/architecture' },
+            { text: '生命周期', link: '/lifecycle' },
             { text: '完整示例', link: '/example' }
           ]
         },
@@ -93,7 +96,8 @@ export default defineConfig({
             { text: 'Build：确定性构建', link: '/build' },
             { text: '资产：Schema 管理与加载', link: '/assets' },
             { text: 'Web：Schema 编辑器', link: '/web' },
-            { text: 'UI：界面门面', link: '/ui' }
+            { text: 'UI：界面门面', link: '/ui' },
+            { text: 'UI 设计原型', link: '/design-prototypes' }
           ]
         }
       ]

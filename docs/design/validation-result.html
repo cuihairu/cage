@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>cage check — 校验结果可视化原型</title>
+<style>
+  :root{
+    --brand:#b95932; --brand-soft:rgba(185,89,50,.12);
+    --ok:#3a9e5f; --warn:#d98324; --err:#cf3b2a; --info:#5b7fa6;
+    --bg:#f7f6f4; --card:#fff; --line:#e2ddd6;
+    --ink:#1c1a17; --ink2:#6b655c; --ink3:#9a938a;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Pingang SC",sans-serif}
+  .wrap{max-width:1020px;margin:0 auto;padding:28px 24px 64px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--ink2);font-size:13px;margin:0 0 18px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    overflow:hidden}
+  .bar{display:flex;align-items:center;gap:8px;padding:9px 14px;
+    background:#efece7;border-bottom:1px solid var(--line)}
+  .dot{width:11px;height:11px;border-radius:50%;background:#d3cdc5}
+  .dot.r{background:#ec8376}.dot.y{background:#efc06b}.dot.g{background:#98d18f}
+  .title{margin-left:8px;font-size:12px;color:var(--ink2);font-family:var(--mono)}
+
+  .head{display:flex;align-items:center;gap:12px;padding:16px 20px;
+    border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .stat{display:flex;flex-direction:column;align-items:center;padding:4px 18px;
+    border-right:1px solid var(--line)}
+  .stat b{font-size:24px;line-height:1.1}
+  .stat span{font-size:11.5px;color:var(--ink2);margin-top:2px}
+  .cmd{margin-left:auto;font-family:var(--mono);font-size:12.5px;color:var(--ink3)}
+  .ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}
+
+  .tabs{display:flex;border-bottom:1px solid var(--line);padding:0 12px}
+  .tab{font:600 13px/1 inherit;padding:11px 16px;cursor:pointer;color:var(--ink2);
+    border-bottom:2.5px solid transparent;margin-bottom:-1px;background:none;border-top:0;
+    border-left:0;border-right:0}
+  .tab.on{color:var(--brand);border-bottom-color:var(--brand)}
+  .tab .n{display:inline-block;min-width:20px;text-align:center;margin-left:6px;
+    padding:1px 5px;border-radius:9px;background:var(--brand-soft);color:var(--brand);
+    font-size:11px;font-weight:700}
+  .body{padding:18px 20px}
+
+  /* ---- 错误列表 ---- */
+  .err{display:grid;grid-template-columns:64px 1fr;gap:14px;padding:14px 0;
+    border-bottom:1px solid var(--line)}
+  .err:last-child{border-bottom:0}
+  .code{font-family:var(--mono);font-weight:700;font-size:13.5px;color:var(--err)}
+  .loc{font-family:var(--mono);font-size:12.5px;color:var(--ink2);margin:4px 0 6px}
+  .loc .f{color:var(--ink)}
+  .msg{font-size:13.5px}
+  .sug{font-size:13px;margin-top:6px;padding:9px 12px;border-radius:7px;
+    background:var(--brand-soft);color:#7a3a20}
+  .sug b{font-weight:600}
+  .chip{display:inline-block;font-size:11px;padding:2px 8px;border-radius:5px;
+    margin-right:6px;font-weight:700;vertical-align:1px}
+
+  /* ---- 结构树 ---- */
+  .tree{font-family:var(--mono);font-size:13px;line-height:1.8}
+  .trow{display:flex;gap:10px;align-items:baseline}
+  .caret{color:var(--ink3);width:12px;display:inline-block;user-select:none}
+  .tname{font-weight:600;color:var(--ink)}
+  .ttyp{color:var(--brand)}
+  .treq{color:var(--err);font-size:11px}
+  .tdef{color:var(--ink3);font-size:12px}
+  .tk{color:var(--info)}
+  .rules{margin-top:16px;padding-top:12px;border-top:1px dashed var(--line);
+    font-size:12.5px;color:var(--ink2)}
+
+  /* ---- 环境差异 ---- */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line)}
+  th{font-size:11.5px;color:var(--ink2);font-weight:600;background:#fbfaf8}
+  td.mono{font-family:var(--mono);font-size:12.5px}
+  td.num{font-family:var(--mono);text-align:right}
+  .diff{font-family:var(--mono);font-weight:700}
+  .up{color:var(--err)}.down{color:var(--ok)}
+  .note{margin-top:16px;font-size:12.5px;color:var(--ink3);line-height:1.7}
+  .kbd{font-family:var(--mono);font-size:11.5px;padding:1px 6px;border-radius:4px;
+    background:#efece7;border:1px solid var(--line);border-bottom-width:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>cage check — 校验结果可视化原型</h1>
+  <p class="sub">三视图：错误列表（错误码 + 定位 + 建议）、结构树（schema
+  与字段约束）、环境差异（四套 <span class="kbd">env_overrides</span>）。</p>
+
+  <div class="panel">
+    <div class="bar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">cage check . --env prod</span>
+    </div>
+    <div class="head">
+      <div class="stat"><b class="err">2</b><span>错误</span></div>
+      <div class="stat"><b class="err">1</b><span>警告</span></div>
+      <div class="stat"><b class="ok">5</b><span>表</span></div>
+      <div class="stat"><b>23</b><span>字段</span></div>
+      <div class="cmd">exit 2 · level ≤ semantic</div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab on" data-v="err">错误列表 <span class="n">2</span></button>
+      <button class="tab" data-v="tree">结构树</button>
+      <button class="tab" data-v="env">环境差异</button>
+    </div>
+
+    <div class="body" id="view"></div>
+  </div>
+
+  <p class="note">
+    <b>交互契约</b>：错误列表支持按表/级别过滤、点击定位跳到源文件对应行、
+    一键复制诊断 JSON（给 <span class="kbd">cage mcp check_schema</span> 用）；
+    结构树展示 schema 与字段的真实层级、类型、约束与 profile 可见性；
+    环境差异用热力图呈现四套 <span class="kbd">env_overrides</devspan> 的
+    字段级约束收敛。默认只读——诊断与修复建议分离。
+  </p>
+</div>
+
+<script>
+const V = {
+err: `
+<div class="err">
+  <div class="code">E1201</div>
+  <div>
+    <div class="loc"><span class="f">config/Item.csv</span> · row 1 · 字段 price</div>
+    <div class="msg">Value below minimum（取值低于最小值）</div>
+    <div class="sug"><b>建议</b>　price = -5 小于 schema 声明的 min = 0。
+      把这一行改回 ≥ 0，或放宽 schemas/item.yaml 里 price 的 min。</div>
+  </div>
+</div>
+<div class="err">
+  <div class="code">E1101</div>
+  <div>
+    <div class="loc"><span class="f">config/Item.csv</span> · row 2 · 字段 price</div>
+    <div class="msg">Expected type: Int32, got: string（类型不符）</div>
+    <div class="sug"><b>建议</b>　price 声明为 Int32，但 row 2 的值 "oops"
+      不是数字。改成整数（CSV 里的整数按 Int32/Int64 声明，不是 UInt）。</div>
+  </div>
+</div>
+<div class="err" style="border-bottom:0">
+  <div class="code" style="color:var(--warn)">W0000</div>
+  <div>
+    <div class="loc"><span class="f">schemas/item.yaml</span> · 顶层</div>
+    <div class="msg">schema 未声明 enums（不影响校验）</div>
+    <div class="sug"><b>建议</b>　补 <span class="kbd">enums: {}</span> 占位，
+      后续加命名枚举时不必改结构。</div>
+  </div>
+</div>`,
+
+tree: `
+<div class="tree">
+  <div class="trow"><span class="caret">▾</span><span class="tname">Item</span>
+    <span class="tdef">· 主键 [id] · profile: client, server</span></div>
+  <div class="trow" style="padding-left:26px"><span class="caret">▸</span>
+    <span class="tk">id</span> <span class="ttyp">Int32</span>
+    <span class="treq">required</span> <span class="tdef">min: 1</span></div>
+  <div class="trow" style="padding-left:26px"><span class="caret">▸</span>
+    <span class="tk">price</span> <span class="ttyp">Int32</span>
+    <span class="treq">required</span> <span class="tdef">min: 0 · max: 999999</span></div>
+  <div class="trow" style="padding-left:26px"><span class="caret">▸</span>
+    <span class="tk">type</span> <span class="ttyp">Enum(ItemType)</span>
+    <span class="tdef">default: weapon</span></div>
+
+  <div class="trow" style="margin-top:10px"><span class="caret">▾</span>
+    <span class="tname">Shop</span>
+    <span class="tdef">· 主键 [id] · env_overrides: dev/test/staging/prod</span></div>
+  <div class="trow" style="padding-left:26px"><span class="caret">▸</span>
+    <span class="tk">id</span> <span class="ttyp">Int32</span>
+    <span class="treq">required</span></div>
+  <div class="trow" style="padding-left:26px"><span class="caret">▸</span>
+    <span class="tk">discount</span> <span class="ttyp">Float</span>
+    <span class="treq">required</span> <span class="tdef">min: 0</span>
+    <span class="diff down">max: 0.9 → 0.5</span></div>
+  <div class="trow" style="padding-left:26px"><span class="caret">▸</span>
+    <span class="tk">item_id</span> <span class="ttyp">Ref(Item.id)</span>
+    <span class="tdef">cardinality: many_to_one</span></div>
+
+  <div class="trow" style="margin-top:10px"><span class="caret">▸</span>
+    <span class="tname">Character</span>
+    <span class="tdef">· 主键 [id] · env_overrides: dev/test/staging/prod</span></div>
+  <div class="trow" style="margin-top:10px"><span class="caret">▸</span>
+    <span class="tname">Quest</span> <span class="tdef">· 主键 [id]</span></div>
+  <div class="trow" style="margin-top:10px"><span class="caret">▸</span>
+    <span class="tname">Drop</span> <span class="tdef">· 主键 [id]</span></div>
+</div>
+<div class="rules">
+  <b>语义规则</b>（L6，行级）：<span class="kbd">assert: min_level &lt;= max_level</span>
+  　·　<b>业务规则</b>（L7，需 --level gamerule）：<span class="kbd">hp &lt;= attack</span>
+</div>`,
+
+env: `
+<table>
+<thead><tr><th>表 · 字段 · 约束</th><th>dev</th><th>test</th><th>staging</th><th>prod</th></tr></thead>
+<tbody>
+<tr><td class="mono">Shop.discount.max</td>
+  <td class="num diff down">0.9</td><td class="num diff down">0.7</td>
+  <td class="num diff up">0.6</td><td class="num diff up">0.5</td></tr>
+<tr><td class="mono">Shop.discount.min</td>
+  <td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td class="mono">Shop.stock.max</td>
+  <td class="num diff down">9999</td><td class="num diff down">999</td>
+  <td class="num">999</td><td class="num">999</td></tr>
+<tr><td class="mono">Character.hp.max</td>
+  <td class="num diff down">99999</td><td class="num diff down">9999</td>
+  <td class="num diff up">9999</td><td class="num diff up">5000</td></tr>
+<tr><td class="mono">Character.attack.max</td>
+  <td class="num">9999</td><td class="num">9999</td>
+  <td class="num">9999</td><td class="num">9999</td></tr>
+<tr><td class="mono">Item.price.max</td>
+  <td class="num">999999</td><td class="num">999999</td>
+  <td class="num">999999</td><td class="num">999999</td></tr>
+</tbody>
+</table>
+<p style="font-size:12.5px;color:var(--ink2);margin:12px 0 0">
+<span class="diff down">红</span> = 该环境比 dev 收紧　<span class="diff up">绿</span> =
+该环境相对上一套收紧（越往 prod 越严）。无覆盖的字段四套一致，不参与差异。</p>`
+};
+
+const view = document.getElementById("view");
+function show(v){
+  view.innerHTML = V[v];
+  document.querySelectorAll(".tab").forEach(t=>
+    t.classList.toggle("on", t.dataset.v===v));
+}
+document.querySelectorAll(".tab").forEach(t=>
+  t.onclick = ()=>show(t.dataset.v));
+show("err");
+</script>
+</body>
+</html>

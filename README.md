@@ -201,7 +201,7 @@ The binaries can be fetched without a Rust toolchain from the [Nightly Release](
 
 Full design and usage documentation: **https://cuihairu.github.io/cage/**
 
-- [Design notes](docs/design.md) · [Requirements](docs/需求整理.md) · [Roadmap](todo.md)
+- [Design notes](docs/design.md) · [Requirements](docs/需求整理.md) · [Lifecycle](https://cuihairu.github.io/cage/lifecycle) · [UI prototypes](https://cuihairu.github.io/cage/design-prototypes) · [Roadmap](todo.md)
 
 ## Foundations
 

@@ -1419,7 +1419,7 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       复演练通过」、`web-smoke.sh`「✔ web 冒烟全部通过」、
       `npm run docs:build` OK、`npm audit --omit=dev` 0 vulnerabilities。
       commit: f190e4b
-- [ ] **文档 + UI 单**——①文档开头「游戏配置的生命周期」：mermaid
+- [x] **文档 + UI 单**——①文档开头「游戏配置的生命周期」：mermaid
       主流程图（需求改表→check→依赖/registry 解析→目标生成→增量→进
       游戏/服务）每步标状态流转（草稿/校验失败-带错误码/就绪/已生成/
       增量命中）+ 失败分支（E18xx 等）+ 同页文字版要点；②逐个子命令
@@ -1431,3 +1431,15 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       原型 + 校验结果可视化（错误列表/结构树/环境差异）HTML 静态原型
       放 `docs/design/` 带截图，**原型给用户过目后再实现**；门禁 =
       文档构建绿 + 链接检查，单 commit 分两（文档图/场景、UI 原型）
+      —— ①`docs/lifecycle.md:1`（主流程图 + 状态流转图 + 文字版 +
+      子命令位置表 + 5 场景）；②`docs/cli.md` 17 个 `## ` 子命令节
+      各加「生命周期」步标（覆盖 enum Commands 全部 17 个顶层变体 +
+      registry 9 个子命令）；③5 场景同 lifecycle.md；④`docs/design/
+      init-wizard.html` + `docs/design/validation-result.html` +
+      4 张截图（init-wizard / validation-result / -tree / -env），
+      索引页 `docs/design-prototypes.md`（含 3 条待拍板）；nav/sidebar
+      加「生命周期」「UI 原型」，README 中英加链接。门禁：
+      `npm run docs:build` 绿（mermaid 两图渲染进资产、无死链、
+      4 张截图入库 dist/assets）。**待用户拍板**：Web UI 形态 /
+      引用联动 / 环境折叠（见 design-prototypes.md 第三节）。
+      commit: __HASH__

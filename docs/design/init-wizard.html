@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>cage init — 交互问答原型</title>
+<style>
+  :root{
+    --brand:#b95932; --brand-soft:rgba(185,89,50,.12);
+    --ok:#3a9e5f; --warn:#d98324; --err:#cf3b2a;
+    --bg:#f7f6f4; --card:#fff; --line:#e2ddd6;
+    --ink:#1c1a17; --ink2:#6b655c; --ink3:#9a938a;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:32px 24px 64px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--ink2);font-size:13px;margin:0 0 24px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .bar{display:flex;align-items:center;gap:8px;padding:9px 14px;background:#efece7;
+    border-bottom:1px solid var(--line)}
+  .dot{width:11px;height:11px;border-radius:50%;background:#d3cdc5}
+  .dot.r{background:#ec8376}.dot.y{background:#efc06b}.dot.g{background:#98d18f}
+  .title{margin-left:8px;font-size:12px;color:var(--ink2);
+    font-family:var(--mono)}
+  .term{background:#1b1814;color:#e8e2d8;font-family:var(--mono);font-size:13px;
+    line-height:1.75;padding:18px 20px;white-space:pre-wrap;min-height:330px}
+  .u{color:var(--brand);font-weight:600}
+  .a{color:#e8e2d8}
+  .h{color:#8a8478}
+  .ok{color:#7ecf95}.warn{color:#f0b168}.err{color:#f28b7a}
+  .cur{display:inline-block;width:8px;height:15px;background:#e8e2d8;
+    vertical-align:-2px;margin-left:2px;animation:bl 1.1s steps(1) infinite}
+  @keyframes bl{50%{opacity:0}}
+  .ctrl{display:flex;align-items:center;gap:10px;padding:12px 14px;
+    border-top:1px solid var(--line);background:#fbfaf8}
+  button{font:600 13px/1 inherit;padding:8px 16px;border-radius:7px;cursor:pointer;
+    border:1px solid var(--line);background:var(--card);color:var(--ink)}
+  button.pri{background:var(--brand);border-color:var(--brand);color:#fff}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .stepper{display:flex;gap:4px;flex:1;justify-content:center}
+  .sp{height:5px;border-radius:3px;background:var(--line);transition:background .2s}
+  .sp.on{background:var(--brand)}
+  .meta{display:flex;justify-content:space-between;font-size:12px;color:var(--ink2)}
+  .plan{margin-top:18px;padding:16px 18px;border:1px dashed var(--line);border-radius:8px;
+    font-size:13px}
+  .plan b{font-weight:600}
+  .kv{display:grid;grid-template-columns:110px 1fr;gap:4px 12px;
+    font-family:var(--mono);font-size:12.5px}
+  .kv span:nth-child(odd){color:var(--ink2)}
+  .note{margin-top:16px;font-size:12.5px;color:var(--ink3);line-height:1.7}
+  .kbd{font-family:var(--mono);font-size:11.5px;padding:1px 6px;border-radius:4px;
+    background:#efece7;border:1px solid var(--line);border-bottom-width:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>cage init — 交互问答流程原型</h1>
+  <p class="sub">9 题终端问答。每题可 <span class="kbd">b</span> 回退上一题，
+  留空用默认值；全部 flag 化即可非交互跑 CI。</p>
+
+  <div class="panel">
+    <div class="bar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">cage init .</span>
+    </div>
+    <div class="term" id="term"></div>
+    <div class="ctrl">
+      <button class="pri" id="next">下一步 →</button>
+      <button id="back">← 回退</button>
+      <div class="stepper" id="stepper"></div>
+      <span class="meta"><span id="stepno">1 / 9</span><span id="stepname"></span></span>
+    </div>
+  </div>
+
+  <div class="plan" id="plan"></div>
+
+  <p class="note">
+    <b>交互契约</b>：每题为单行输入，回车确认，<span class="kbd">b</span> 回退，
+    留空取方括号默认值；多选题（目标生成器）用逗号分隔，编号/值均可；
+    未知取值提示可选值并重问，不静默兜底。生成前打印待生成清单并要求确认。
+    同目录已存在工程时拒绝覆盖并 exit 1。
+  </p>
+</div>
+
+<script>
+const STEPS = [
+  { name:"项目目录", q:"项目目录", d:".", ans:"my-game" },
+  { name:"项目名", q:"项目名", d:"my-game", ans:"my-game" },
+  { name:"配置源", q:"配置源类型 [1]excel [2]csv [3]json [4]yaml [5]sheets [6]db [7]http", d:"1", ans:"2", hint:"csv" },
+  { name:"环境套", q:"环境套 [1]four(dev/test/staging/prod) [2]none", d:"1", ans:"1", hint:"four" },
+  { name:"目标生成器", q:"目标生成器", d:"json,csv", ans:"json,csv,msgpack", hint:"可用：json csv msgpack proto fbs cs py lua ts js cpp go java jsonschema" },
+  { name:"模板风格", q:"模板风格 [1]game", d:"1", ans:"1", hint:"game" },
+  { name:"git init", q:"生成后执行 git init？", d:"n", ans:"y" },
+  { name:"示例表", q:"带示例表（schemas/item.yaml + config/Item.*）？", d:"y", ans:"y" },
+  { name:"确认", q:"确认生成？", d:"y", ans:"y" },
+];
+const CHOICES = { 2:"2", 3:"1", 5:"1" };
+
+let i = 0;
+const term = document.getElementById("term");
+const plan = document.getElementById("plan");
+const stepper = document.getElementById("stepper");
+stepper.innerHTML = STEPS.map(()=>'<span class="sp"></span>').join("");
+
+function draw(){
+  let out = '<span class="h">$ </span><span class="a">cage init .</span>\n';
+  for(let k=0;k<=i;k++){
+    const s = STEPS[k];
+    out += '\n<span class="h">['+(k+1)+'/9 · '+s.name+']</span>\n';
+    out += '<span class="u">'+s.q+' ['+s.d+']</span>: <span class="a">'+s.ans+'</span>\n';
+    if(s.hint && k>0) out += '<span class="h">→ '+s.hint+'</span>\n';
+  }
+  if(i < STEPS.length-1) out += '\n<span class="cur"></span>';
+  else out += tail();
+  term.innerHTML = out;
+  term.scrollTop = term.scrollHeight;
+
+  [...stepper.children].forEach((el,k)=>el.classList.toggle("on",k<=i));
+  document.getElementById("stepno").textContent = (i+1)+' / '+STEPS.length;
+  document.getElementById("stepname").textContent = STEPS[i].name;
+  document.getElementById("next").disabled = i >= STEPS.length-1;
+  document.getElementById("back").disabled = i === 0;
+
+  if(i < STEPS.length-1){
+    plan.innerHTML = '<b>第 '+(i+1)+' 步 · '+STEPS[i].name+'</b>　当前问题：'+
+      STEPS[i].q+'（默认 <span style="font-family:var(--mono)">'+STEPS[i].d+'</span>）';
+  }else{
+    plan.innerHTML = '<b>待生成清单</b>'+
+      '<div class="kv" style="margin-top:8px">'+
+        '<span>项目目录</span><span>my-game/</span>'+
+        '<span>项目名</span><span>my-game</span>'+
+        '<span>配置源</span><span>csv</span>'+
+        '<span>环境套</span><span>four（dev / test / staging / prod）</span>'+
+        '<span>目标生成器</span><span>json, csv, msgpack</span>'+
+        '<span>模板风格</span><span>game</span>'+
+        '<span>git init</span><span>是</span>'+
+        '<span>示例表</span><span>是（schemas/item.yaml + config/Item.csv）</span>'+
+      '</div>'+
+      '<div style="margin-top:10px;color:var(--ok)">'+
+      '→ 生成 cage.toml · schemas/item.yaml · config/Item.csv · README.md · .gitignore</div>';
+  }
+}
+
+function tail(){
+  return '\n<span class="ok">  生成 my-game/cage.toml</span>\n'+
+         '<span class="ok">  生成 my-game/schemas/item.yaml</span>\n'+
+         '<span class="ok">  生成 my-game/config/Item.csv</span>\n'+
+         '<span class="ok">  生成 my-game/README.md</span>\n'+
+         '<span class="ok">  生成 my-game/.gitignore</span>\n'+
+         '<span class="ok">完成：my-game</span>\n'+
+         '<span class="h">下一步：cd my-game && cage check . && cage build . --env dev</span>';
+}
+
+document.getElementById("next").onclick = ()=>{ if(i<STEPS.length-1){ i++; draw(); } };
+document.getElementById("back").onclick = ()=>{ if(i>0){ i--; draw(); } };
+draw();
+</script>
+</body>
+</html>
