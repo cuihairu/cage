@@ -1418,7 +1418,7 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       `bash examples/run.sh`「全部通过」、`asset-workspace.sh`「恢
       复演练通过」、`web-smoke.sh`「✔ web 冒烟全部通过」、
       `npm run docs:build` OK、`npm audit --omit=dev` 0 vulnerabilities。
-      commit: 11b7f6e
+      commit: f190e4b
 - [ ] **文档 + UI 单**——①文档开头「游戏配置的生命周期」：mermaid
       主流程图（需求改表→check→依赖/registry 解析→目标生成→增量→进
       游戏/服务）每步标状态流转（草稿/校验失败-带错误码/就绪/已生成/
