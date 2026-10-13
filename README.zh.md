@@ -78,6 +78,12 @@ cage web ./                        # 启动 Schema 编辑器本地服务（只�
    curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.sh | sh
    ```
 
+   安装脚本**默认**把安装目录加入 PATH：往 shell profile 追加一行
+   `export PATH=...`（`~/.zshrc` / bash 登录 profile / `~/.profile`），写入前先备份为
+   `<profile>.bak-<日期>`；重复执行是幂等的，最多留一行。脚本会打印写入的文件并提示
+   `source` 或重开终端生效；写入失败（profile 不可写等）会显式报错并给出手动命令，
+   不会静默。传 `--no-path` 可完全关闭 PATH 写入（此时只打印手动 `export` 行）。
+
    预期输出（末两行）：
 
    ```text
@@ -85,17 +91,14 @@ cage web ./                        # 启动 Schema 编辑器本地服务（只�
    cage 0.1.0
    ```
 
-2. 若提示安装目录不在 PATH 中，重开终端，或手动加入：
-
-   ```sh
-   export PATH="$HOME/.local/bin:$PATH"
-   ```
-
-3. 验证：
+2. 验证（`source` profile 或重开终端后）：
 
    ```sh
    cage --version
    ```
+
+   回滚 PATH 行：删除 profile 中 `# added by cage install.sh` 那一行，
+   或直接还原安装脚本留在旁边的 `.bak-<日期>` 备份。
 
 **Windows**（PowerShell 5.1+，无需管理员）：
 
@@ -112,7 +115,7 @@ cage web ./                        # 启动 Schema 编辑器本地服务（只�
    cage 0.1.0
    ```
 
-2. 脚本已把安装目录加入用户级 PATH，重开终端生效。
+2. 脚本默认把安装目录加入用户级 PATH（幂等；`-NoPath` 关闭并打印手动命令），重开终端生效。
 
 3. 验证：
 
@@ -130,7 +133,7 @@ sh <(curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/ins
 irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -Version v0.1.0   # Windows
 ```
 
-安装目录可用环境变量覆盖（`CAGE_INSTALL_DIR`，Windows 固定 `%LOCALAPPDATA%\cage`）；`--path`（sh）/ 自动（ps1）把安装目录写进 shell profile / 用户级 PATH；`--uninstall`（sh）/ `-Uninstall`（ps1）卸载——删除二进制后，再手动从 profile / 用户级 PATH 移除对应条目即可。
+安装目录可用环境变量覆盖（`CAGE_INSTALL_DIR`，Windows 固定 `%LOCALAPPDATA%\cage`）；两个平台默认都把安装目录写进 shell profile / 用户级 PATH（`--path`（sh）保留为默认行为的兼容写法；`--no-path` / `-NoPath` 关闭）；`--uninstall`（sh）/ `-Uninstall`（ps1）卸载——删除二进制后，再手动从 profile / 用户级 PATH 移除对应条目即可。
 
 平台覆盖：Linux x86_64（正式腿）、macOS aarch64 与 Windows x86_64（试运行腿）；其余架构暂无资产。脚本与本体一样随 `nightly` Release 分发（`install.sh` / `install.ps1` 资产），源码在 [`scripts/`](scripts/)。
 

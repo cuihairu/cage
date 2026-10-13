@@ -78,6 +78,8 @@ Download the binary over an anonymous direct link from the rolling [nightly rele
    curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.sh | sh
    ```
 
+   The installer adds the install directory to your PATH **by default**: it appends one `export PATH=...` line to your shell profile (`~/.zshrc` / a login profile for bash / `~/.profile`), backing the file up to `<profile>.bak-<date>` first. Re-running is idempotent — at most one line. It prints the written file and tells you to `source` it or reopen the terminal; if the write fails (missing profile, no permission) it says so explicitly with the manual line instead of staying silent. Pass `--no-path` to skip the PATH write entirely (it then prints the manual `export` line).
+
    Expected output (last two lines):
 
    ```text
@@ -85,17 +87,13 @@ Download the binary over an anonymous direct link from the rolling [nightly rele
    cage 0.1.0
    ```
 
-2. If the installer reports that the install directory is not on PATH, reopen the terminal, or add it manually:
-
-   ```sh
-   export PATH="$HOME/.local/bin:$PATH"
-   ```
-
-3. Verify:
+2. Verify (after `source`-ing the profile or reopening the terminal):
 
    ```sh
    cage --version
    ```
+
+   To roll back the PATH line: remove the `# added by cage install.sh` line from your profile, or restore the `.bak-<date>` backup the installer left next to it.
 
 **Windows** (PowerShell 5.1+, no administrator required):
 
@@ -112,7 +110,7 @@ Download the binary over an anonymous direct link from the rolling [nightly rele
    cage 0.1.0
    ```
 
-2. The script has already added the install directory to the user PATH; reopen the terminal for it to take effect.
+2. The script adds the install directory to the user PATH by default (idempotent; `-NoPath` opts out and prints the manual command); reopen the terminal for it to take effect.
 
 3. Verify:
 
@@ -130,7 +128,7 @@ sh <(curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/ins
 irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -Version v0.1.0   # Windows
 ```
 
-The install directory can be overridden with the `CAGE_INSTALL_DIR` environment variable (on Windows it is fixed to `%LOCALAPPDATA%\cage`); `--path` (sh) / automatic (ps1) writes the install directory into your shell profile / user PATH; `--uninstall` (sh) / `-Uninstall` (ps1) uninstalls — after the binary is removed, remove the corresponding entry from your profile / user PATH manually.
+The install directory can be overridden with the `CAGE_INSTALL_DIR` environment variable (on Windows it is fixed to `%LOCALAPPDATA%\cage`); writing the install directory into your shell profile / user PATH is the default on both platforms (`--path` (sh) is kept as an accepted alias of the default; `--no-path` / `-NoPath` opt out); `--uninstall` (sh) / `-Uninstall` (ps1) uninstalls — after the binary is removed, remove the corresponding entry from your profile / user PATH manually.
 
 Platform coverage: Linux x86_64 (primary track), macOS aarch64 and Windows x86_64 (trial tracks); no assets for other architectures yet. The scripts ship with the `nightly` release just like the binaries themselves (`install.sh` / `install.ps1` assets); their sources live in [`scripts/`](scripts/).
 

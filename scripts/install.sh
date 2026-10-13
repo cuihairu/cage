@@ -5,9 +5,10 @@
 #
 # 用法：
 #   curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.sh | sh
-#   ./install.sh                # 装最新 nightly
+#   ./install.sh                # 装最新 nightly（默认把安装目录加入 PATH）
+#   ./install.sh --no-path      # 装完不写 PATH，只打印手动加入方法
+#   ./install.sh --path         # 兼容旧写法（写 PATH 现在是默认行为）
 #   ./install.sh v0.1.0         # 装指定 Release tag（需该 tag 的 Release 带对应平台资产）
-#   ./install.sh --path         # 装完并把安装目录追加进 shell profile
 #   ./install.sh --uninstall    # 卸载
 #
 # 依赖：curl 或 wget 其一；sha256sum 或 shasum 其一；tar + gzip。
@@ -17,14 +18,15 @@ set -eu
 REPO="${CAGE_REPO:-cuihairu/cage}"
 TAG=""
 INSTALL_DIR="${CAGE_INSTALL_DIR:-$HOME/.local/bin}"
-AUTO_PATH=0
+AUTO_PATH=1
 UNINSTALL=0
 
 # 参数整理：第一个非 flag 参数是 Release tag（默认 nightly）
 for arg in "$@"; do
   case "$arg" in
     --uninstall) UNINSTALL=1 ;;
-    --path) AUTO_PATH=1 ;;
+    --path) AUTO_PATH=1 ;;   # 兼容旧写法：写 PATH 现在是默认行为
+    --no-path) AUTO_PATH=0 ;;
     -h|--help)
       sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -128,29 +130,55 @@ mkdir -p "$INSTALL_DIR"
 mv "$TMP/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
 chmod +x "$INSTALL_DIR/$BIN_NAME"
 
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
-  *)
-    echo
-    echo "注意：$INSTALL_DIR 不在 PATH 中。任选其一："
-    echo "  1. 重开终端（若已用 --path 自动配置）"
-    echo "  2. 手动加入：export PATH=\"$INSTALL_DIR:\$PATH\""
-    ;;
-esac
+# add_path_line <profile>：把安装目录幂等写入 shell profile（跑两次只留一行）。
+# 写入前备份 <profile>.bak-<日期>；写失败显式降级说明，不静默跳过。
+add_path_line() {
+  local line profile bak
+  profile="$1"
+  line="export PATH=\"$INSTALL_DIR:\$PATH\""
+  if [ -f "$profile" ] && grep -qs "PATH=.*$INSTALL_DIR" "$profile"; then
+    echo "PATH 配置已存在于 $profile（跳过）"
+    return 0
+  fi
+  if [ -f "$profile" ]; then
+    bak="$profile.bak-$(date +%Y%m%d)"
+    if ! cp -p "$profile" "$bak" 2>/dev/null; then
+      echo "install.sh: 警告：备份 $profile 失败（$bak），继续写入" >&2
+    fi
+  fi
+  if printf '\n# added by cage install.sh\n%s\n' "$line" 2>/dev/null >> "$profile"; then
+    echo "已写入 $profile：$line"
+    echo "执行 source $profile 或重开终端生效"
+  else
+    echo "install.sh: 警告：写入 $profile 失败，PATH 未配置。" >&2
+    echo "  请手动添加：export PATH=\"$INSTALL_DIR:\$PATH\"" >&2
+  fi
+}
 
 if [ "$AUTO_PATH" = 1 ]; then
-  line="export PATH=\"$INSTALL_DIR:\$PATH\""
   case "${SHELL:-}" in
     *zsh) profile="$HOME/.zshrc" ;;
-    *bash) profile="${HOME}/.bashrc"; [ -f "$HOME/.bash_profile" ] && profile="$HOME/.bash_profile" ;;
+    *bash)
+      # bash 登录壳（ssh / bash -l / su）不读 .bashrc，只有交互非登录壳读；
+      # 锚定登录 profile 让两类会话都能拿到 PATH。
+      if [ -f "$HOME/.bash_profile" ]; then
+        profile="$HOME/.bash_profile"
+      else
+        profile="$HOME/.profile"
+      fi
+      ;;
     *) profile="$HOME/.profile" ;;
   esac
-  if [ -f "$profile" ] && grep -qs "PATH=.*$INSTALL_DIR" "$profile"; then
-    echo "PATH 配置已存在于 $profile"
-  else
-    printf '\n# added by cage install.sh\n%s\n' "$line" >> "$profile"
-    echo "已写入 $profile：$line"
-  fi
+  add_path_line "$profile"
+else
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *)
+      echo
+      echo "注意：未把 $INSTALL_DIR 加入 PATH（--no-path）。手动加入："
+      echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+      ;;
+  esac
 fi
 
 echo

@@ -5,7 +5,8 @@
 #
 # 用法（PowerShell）：
 #   irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 | iex
-#   .\install.ps1                 # 装最新 nightly
+#   .\install.ps1                 # 装最新 nightly（默认把安装目录加进用户级 PATH）
+#   .\install.ps1 -NoPath         # 装完不写 PATH，只打印手动加入方法
 #   .\install.ps1 -Version v0.1.0 # 装指定 Release tag（需该 tag 的 Release 带对应平台资产）
 #   .\install.ps1 -Uninstall      # 卸载
 #
@@ -13,6 +14,7 @@
 
 param(
   [string]$Version = "nightly",
+  [switch]$NoPath,
   [switch]$Uninstall
 )
 
@@ -81,12 +83,25 @@ try {
   New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
   Move-Item (Join-Path $Tmp $ExeName) $ExePath -Force
 
-  # 用户级 PATH（无需管理员）；已含则不重复追加
-  $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-  if (($UserPath -split ";") -notcontains $InstallDir) {
-    $NewPath = if ($UserPath) { "$UserPath;$InstallDir" } else { $InstallDir }
-    [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
-    Write-Host "已把 $InstallDir 加入用户级 PATH（重开终端生效）"
+  # 用户级 PATH（无需管理员）：默认写入，-NoPath 关闭；已含则不重复追加。
+  if ($NoPath) {
+    Write-Host ""
+    Write-Host "注意：未把 $InstallDir 加入用户级 PATH（-NoPath）。手动加入："
+    Write-Host '  [Environment]::SetEnvironmentVariable("Path", "' + $InstallDir + ';" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")'
+  } else {
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (($UserPath -split ";") -notcontains $InstallDir) {
+      try {
+        $NewPath = if ($UserPath) { "$UserPath;$InstallDir" } else { $InstallDir }
+        [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
+        Write-Host "已把 $InstallDir 加入用户级 PATH（重开终端生效）"
+      } catch {
+        Write-Host "install.ps1: 警告：写入用户级 PATH 失败：$($_.Exception.Message)"
+        Write-Host "  请手动把 $InstallDir 加入用户级 PATH（重开终端生效）"
+      }
+    } else {
+      Write-Host "$InstallDir 已在用户级 PATH 中（跳过，重开终端生效）"
+    }
   }
 
   Write-Host ""
