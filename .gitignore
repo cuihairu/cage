@@ -25,6 +25,10 @@ node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 
+# VSCode extension build outputs (npm run compile / vsce package)
+editors/vscode/out/
+*.vsix
+
 # Example project build outputs (regenerate with examples/run.sh)
 examples/*/build/
 # Example local registry materialized by run.sh step 12 (push source)

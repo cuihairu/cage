@@ -1,0 +1,67 @@
+{
+  "name": "cage",
+  "displayName": "Cage",
+  "description": "Cage configuration diagnostics — cage check pipeline as editor diagnostics (cage lsp)",
+  "version": "0.1.0",
+  "publisher": "cuihairu",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cuihairu/cage.git",
+    "directory": "editors/vscode"
+  },
+  "homepage": "https://github.com/cuihairu/cage#readme",
+  "bugs": {
+    "url": "https://github.com/cuihairu/cage/issues"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Linters"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/cage.toml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Cage",
+      "properties": {
+        "cage.env": {
+          "type": "string",
+          "default": "",
+          "description": "Environment to validate under (schema env_overrides). Empty = base schema. Changing requires a window reload."
+        },
+        "cage.level": {
+          "type": "string",
+          "enum": [
+            "parse",
+            "schema",
+            "type",
+            "value",
+            "table",
+            "reference",
+            "semantic",
+            "gamerule"
+          ],
+          "default": "semantic",
+          "description": "Highest validation level to run. Changing requires a window reload."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "test": "node --test",
+    "package": "vsce package --no-git-tag-version"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^2.20.0",
+    "typescript": "^5.4.0"
+  }
+}

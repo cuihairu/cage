@@ -133,6 +133,43 @@ jobs:
       - name: Run web editor smoke (edit → validate → save → build)
         run: bash examples/web-smoke.sh
 
+  # VSCode 扩展防烂腿：契约测试 + 对真实 cage 二进制的 LSP 协议握手
+  # （test/handshake.test.mjs 跑 initialize→didOpen→publishDiagnostics→
+  # shutdown→exit）。扩展 spawn 的协议面烂了这里就红。
+  editor:
+    name: VSCode extension
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Build cage binary (handshake target)
+        run: cargo build --locked -p cage-cli
+      - name: Install dependencies
+        run: npm ci
+      - name: Compile
+        run: npm run compile
+      - name: Test
+        run: npm test
+      - name: Package VSIX
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cage-vsix-ci
+          path: editors/vscode/*.vsix
+          if-no-files-found: error
+          retention-days: 14
+
   # 覆盖率：llvm-cov 出 lcov 上传 Codecov。tokenless 走 OIDC
   # （codecov-action use_oidc，无需仓库 secret；受保护分支下裸
   # tokenless 上传会被 Codecov 以 "Token required" 拒绝）。

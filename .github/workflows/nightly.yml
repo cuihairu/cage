@@ -1,5 +1,6 @@
-# Cage 每日构建分发面：release profile 产出 cage 二进制，发布固定 tag
-# `nightly` 的滚动 Release（资产清旧传新，notes 带 commit SHA 与构建时间）。
+# Cage 每日构建分发面：release profile 产出 cage 二进制与 VSCode 扩展
+# VSIX，发布固定 tag `nightly` 的滚动 Release（资产清旧传新，notes 带
+# commit SHA 与构建时间）。
 # daily.yml 是全量验证面（测试 + 文档）；本文件是产物交付面——Release
 # 资产是硬交付，Actions artifacts 只是 run 页临时下载（14 天过期）。
 #
@@ -78,9 +79,40 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # VSCode 扩展产物腿：VSIX 随同一 nightly Release 分发（与二进制同一条
+  # 滚动交付面）。continue-on-error 同试运行腿理由——新腿首飞问题（npm /
+  # vsce 供应链故障）不拖垮二进制资产交付；扩展是否可用由 ci.yml / daily.yml
+  # 的扩展门禁（测试 + 打包）判定，红了那里就红。
+  vsix:
+    name: VSCode extension (vsix)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Compile
+        run: npm run compile
+      - name: Package
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cage-nightly-vsix
+          path: editors/vscode/*.vsix
+          if-no-files-found: error
+          retention-days: 14
+
   publish:
     name: Publish nightly release
-    needs: build
+    needs: [build, vsix]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -127,6 +159,7 @@ jobs:
               *linux-x86_64*) note="Linux x86_64（正式腿，CI 全量验证同平台）" ;;
               *macos-aarch64*) note="macOS arm64（试运行腿）" ;;
               *windows-x86_64*) note="Windows x86_64（试运行腿）" ;;
+              *.vsix) note="VSCode 扩展（VSIX）——需先装 \`cage\` 二进制，见扩展 README" ;;
               install.sh) note="一键安装脚本（Linux / macOS，用法见 README「一键安装」）" ;;
               install.ps1) note="一键安装脚本（Windows PowerShell，用法见 README「一键安装」）" ;;
               *) note="" ;;

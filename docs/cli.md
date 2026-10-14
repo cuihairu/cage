@@ -393,6 +393,18 @@ IDE 立项）：手写 JSON-RPC 2.0 帧协议（`Content-Length` 头 + 定长体
 **不做**补全 / 悬停 / 跳转定义 / 格式化 / 重命名（需要 schema 语义
 模型，单独立项）。stderr 是自由格式日志通道。
 
+### VSCode 扩展（薄壳客户端）
+
+[`editors/vscode/`](https://github.com/cuihairu/cage/tree/main/editors/vscode)
+是 `cage lsp` 的薄壳客户端：`vscode-languageclient` 官方库 + 约 50 行
+TS，零 Rust 改动——激活条件 `workspaceContains:**/cage.toml`，spawn
+`cage lsp <workspace 根>`，`cage.env` / `cage.level` 两个设置映射
+initializationOptions（改动需重载窗口）。问题面板即 cage 诊断面板
+（E 码 + 定位 + 建议，文件级零宽 range 无内联波浪线）。契约测试
+（`npm test`：行为级 activate/deactivate + 对真实二进制的 LSP 握手 +
+VSIX 打包断言）与打包在 CI（ci.yml / daily.yml 的 editor 腿）门禁；
+VSIX 随 nightly Release 附件分发（同二进制口径，非正式版本）。
+
 ## registry
 
 > **生命周期**：③ · 配置包仓库。见[游戏配置的生命周期](/lifecycle)。

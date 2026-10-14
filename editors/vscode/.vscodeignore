@@ -1,0 +1,11 @@
+.vscode/**
+src/**
+test/**
+tsconfig.json
+.gitignore
+*.vsix
+# No `node_modules/**` here on purpose: the compiled extension.js requires
+# vscode-languageclient at activation and tsc does not bundle it, so vsce
+# must bundle the runtime dependency (it bundles exactly the packages listed
+# in `dependencies`). A blanket `node_modules/**` here silently broke that —
+# test/package.test.mjs asserts the package still carries it.
