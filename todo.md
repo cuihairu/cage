@@ -1464,4 +1464,26 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
   - 关键事实：本仓**已有 `Lsp` 子命令**，这正是编辑器接入的天然入口——**优先评估复用 LSP，而不是新造一套编辑器协议**
   - 评估要点：LSP 当前实现了哪些能力（补全/跳转/诊断？）；VSCode 插件只做薄壳（启动 LSP + 注册语言）还是需要更多；**成本与收益**
   - 验收：先出评估结论（含"值不值得做"），**经用户拍板后再实现**
+  - **评估结论（2026-10-14 巡检 PATR1014，以 `crates/cage-cli/src/lsp.rs:1` 源码为准）**：
+    ① LSP 现有能力：诊断推送服务器——协议子集 initialize/initialized/didOpen/
+    didChange/didClose/shutdown/exit + `publishDiagnostics` 推送，**无补全/悬停/
+    跳转定义/格式化/重命名**（模块头明确「不做」，需要 schema 语义模型，单独立项）；
+    诊断 = `validate_project` 全量输出（与 `cage check` 同一入口，诊断永不分歧），
+    映射为**文件级零宽 range (0,0)-(0,0)**，消息体带 E 码 + 真实定位 + 修复提示；
+    `env`/`level` 走 initializationOptions；同步单线程、手写帧协议、零新依赖。
+    ② 插件形态拍板建议：**薄壳**——`vscode-languageclient` 官方客户端库 + ~200 行
+    TS（spawn `cage lsp <root>` stdio 子进程、激活条件 `workspaceContains:cage.toml`、
+    设置项映射 initializationOptions），纯客户端零 Rust 改动，问题面板即用。
+    ③ 成本：薄壳半天~一天（新建 `editors/vscode/`，Node 工具链仅构建期，仓库现有
+    node_modules 先例）；VSIX 打包 `vsce package` 可先手动侧载、不上架市场（发布
+    红线同口径：不建正式 Release，走 nightly 或手动分发需用户点头）。
+    ④ 收益：问题面板全量 cage 诊断（E 码 + 定位 + 建议）、错误数徽标、
+    env/level 可切换；与 CI 诊断同源零分歧。
+    ⑤ 主要短板：零宽 range = **无内联波浪线**（squiggle 锚在文件头，定位全靠
+    点开面板条目读消息体）——薄壳不做任何服务端改动时这就是最终体验；要内联
+    需第二步服务端增强（文本源把 Diagnostic 的行信息映射为真实 range，Excel 等
+    非文本源保持文件级），量级比薄壳大。
+    ⑥ **结论：值得做薄壳**（成本低、复用现有 LSP、诊断同源）；内联波浪线服务端
+    增强另评估。**待用户拍板后再实现**——拍板点：(a) 做不做；(b) 只做薄壳还是
+    连服务端真实 range 一起做；(c) VSIX 分发方式（侧载 / nightly 附件 / 上架市场）。
 
