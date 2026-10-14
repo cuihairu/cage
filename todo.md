@@ -1443,3 +1443,12 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       4 张截图入库 dist/assets）。**待用户拍板**：Web UI 形态 /
       引用联动 / 环境折叠（见 design-prototypes.md 第三节）。
       commit: df34632（生命周期 + 场景）+ b4315dc（UI 原型）
+
+- [ ] 文档与实际子命令脱节（来源：用户 2026-10-14）
+  - 现状实测：`crates/cage-cli/src/main.rs` 的 `enum Commands` 有 **17 个**子命令——`Init Mcp Check Build Inspect Assets Gen Diff Graph Verify Snapshot Web Lsp Registry Migrate MigrateDraft SchemaDraft`，**文档未跟上（用户点名 `init` 都没有）**
+  - 验收：**按 `enum Commands` 逐个子命令**核对文档，缺失的补齐、过时的更正；每个子命令要有一行用途 + 关键参数 + 一个可跑的示例；**以源码为准**，不许凭印象写
+- [ ] VSCode 插件支持（来源：用户 2026-10-14，待评估）
+  - 关键事实：本仓**已有 `Lsp` 子命令**，这正是编辑器接入的天然入口——**优先评估复用 LSP，而不是新造一套编辑器协议**
+  - 评估要点：LSP 当前实现了哪些能力（补全/跳转/诊断？）；VSCode 插件只做薄壳（启动 LSP + 注册语言）还是需要更多；**成本与收益**
+  - 验收：先出评估结论（含"值不值得做"），**经用户拍板后再实现**
+
