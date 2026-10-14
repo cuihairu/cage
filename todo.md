@@ -1444,9 +1444,22 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       引用联动 / 环境折叠（见 design-prototypes.md 第三节）。
       commit: df34632（生命周期 + 场景）+ b4315dc（UI 原型）
 
-- [ ] 文档与实际子命令脱节（来源：用户 2026-10-14）
-  - 现状实测：`crates/cage-cli/src/main.rs` 的 `enum Commands` 有 **17 个**子命令——`Init Mcp Check Build Inspect Assets Gen Diff Graph Verify Snapshot Web Lsp Registry Migrate MigrateDraft SchemaDraft`，**文档未跟上（用户点名 `init` 都没有）**
-  - 验收：**按 `enum Commands` 逐个子命令**核对文档，缺失的补齐、过时的更正；每个子命令要有一行用途 + 关键参数 + 一个可跑的示例；**以源码为准**，不许凭印象写
+- [x] 文档与实际子命令脱节（来源：用户 2026-10-14）——已交付（2026-10-14
+      巡检 PATR1014）：以 `crates/cage-cli/src/main.rs` `enum Commands` 17 个
+      顶层子命令 + `RegistryCmd` 9 个子命令为权威清单逐个核对四文档面
+      （docs/cli.md / docs/index.md / README.md / README.zh.md）。核对结论：
+      cli.md 17 节齐全且 flags/默认值/退出码与源码逐一相符（抽查 run_verify
+      0/1/2、assets 互斥三模式、registry --keep 默认 3、--port 8765 等），
+      漂移在三处入口面——① README 双语快速开始缺 assets/graph/verify/
+      migrate-draft（zh 另缺 lsp）已补齐一行示例；② index.md 快速开始缺
+      init/mcp/snapshot/web/registry/migrate-draft/schema-draft 已补齐
+      （init 置首）且删掉重复的 `title: Target 插件` 空行、修过时的
+      「IDE 留待后续」（cage lsp 已实装）；③ 过时事实更正：cli.md 快速开始
+      `cage inspect Item` → `cage inspect config/ Item`（path 必填）、
+      README「12 targets / 9 语言」→ 14 target（代码 format 分派表实测
+      3 数据 + 11 代码）/ 8 语言 + proto/fbs/jsonschema 定义文件、
+      architecture.md「全部 12 个 target」→ 14。验收：17 子命令 × 4 文档面
+      覆盖矩阵全非零（grep 复核），`npm run docs:build` 绿。commit: 5823d4a
 - [ ] VSCode 插件支持（来源：用户 2026-10-14，待评估）
   - 关键事实：本仓**已有 `Lsp` 子命令**，这正是编辑器接入的天然入口——**优先评估复用 LSP，而不是新造一套编辑器协议**
   - 评估要点：LSP 当前实现了哪些能力（补全/跳转/诊断？）；VSCode 插件只做薄壳（启动 LSP + 注册语言）还是需要更多；**成本与收益**
