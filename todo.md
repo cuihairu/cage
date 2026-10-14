@@ -1460,10 +1460,25 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       3 数据 + 11 代码）/ 8 语言 + proto/fbs/jsonschema 定义文件、
       architecture.md「全部 12 个 target」→ 14。验收：17 子命令 × 4 文档面
       覆盖矩阵全非零（grep 复核），`npm run docs:build` 绿。commit: 5823d4a
-- [ ] VSCode 插件支持（来源：用户 2026-10-14，待评估）
+- [x] VSCode 插件支持（来源：用户 2026-10-14）——评估 + 薄壳实现已交付
+      （2026-10-14 巡检 7K2M，用户拍板：做薄壳 + VSIX 随 nightly 附件）：
+      `editors/vscode/` 薄壳客户端——`vscode-languageclient` 9.x + ~50 行 TS
+      零 Rust 改动（激活 `workspaceContains:**/cage.toml`，spawn
+      `cage lsp <workspace 根>`，`cage.env`/`cage.level` 设置映射
+      initializationOptions，空 env 不上线）；测试 ×12（行为级
+      activate/deactivate 契约 + 对真实二进制的 LSP 协议握手 E1601 断言 +
+      VSIX 打包断言——期间修掉真 bug：.vscodeignore 的
+      `node_modules/**` 把运行时依赖挡在包外，扩展激活即 MODULE_NOT_FOUND）；
+      CI 三腿——ci.yml/daily.yml editor 门禁（build + compile + test +
+      package）、nightly.yml vsix 产物腿（continue-on-error 同试运行腿
+      理由，publish needs [build, vsix]，资产表注 VSIX 行），.gitignore
+      收口 out//*.vsix；docs/cli.md lsp 节增「VSCode 扩展」小节 +
+      index.md IDE 行同步。验收门禁：扩展 npm test 12/12、全量
+      cargo test --workspace 925/0（CI 文件改动触发全量）、
+      npm run docs:build 绿。commit: 42a8c7b
   - 关键事实：本仓**已有 `Lsp` 子命令**，这正是编辑器接入的天然入口——**优先评估复用 LSP，而不是新造一套编辑器协议**
   - 评估要点：LSP 当前实现了哪些能力（补全/跳转/诊断？）；VSCode 插件只做薄壳（启动 LSP + 注册语言）还是需要更多；**成本与收益**
-  - 验收：先出评估结论（含"值不值得做"），**经用户拍板后再实现**
+  - 验收：先出评估结论（含"值不值得做"），经用户拍板（已完成）
   - **评估结论（2026-10-14 巡检 PATR1014，以 `crates/cage-cli/src/lsp.rs:1` 源码为准）**：
     ① LSP 现有能力：诊断推送服务器——协议子集 initialize/initialized/didOpen/
     didChange/didClose/shutdown/exit + `publishDiagnostics` 推送，**无补全/悬停/
@@ -1484,6 +1499,6 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
     需第二步服务端增强（文本源把 Diagnostic 的行信息映射为真实 range，Excel 等
     非文本源保持文件级），量级比薄壳大。
     ⑥ **结论：值得做薄壳**（成本低、复用现有 LSP、诊断同源）；内联波浪线服务端
-    增强另评估。**待用户拍板后再实现**——拍板点：(a) 做不做；(b) 只做薄壳还是
-    连服务端真实 range 一起做；(c) VSIX 分发方式（侧载 / nightly 附件 / 上架市场）。
+    增强另评估。拍板（2026-10-14 巡检 7K2M，用户已定）：(a) 做；(b) 只做薄壳；
+    (c) VSIX 随 nightly 附件分发。
 
