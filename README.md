@@ -48,7 +48,7 @@ Authoring Sources → Source Adapters → Canonical Model
 ## Quick Start
 
 ```bash
-bash examples/run.sh   # one command through the full example project: validate → build 12 targets → generate code in 9 languages → E1501/E1601 bad-data diagnosis demo
+bash examples/run.sh   # one command through the full example project: validate → build all 14 targets → generate code in 8 languages plus proto/fbs/jsonschema definition files → E1501/E1601 bad-data diagnosis demo
 ```
 
 See [`examples/game-config/`](examples/game-config/README.md) and the full-example page of the documentation site for a walkthrough. Other common commands:
@@ -65,12 +65,16 @@ cage check config/                 # validate only, generate nothing
 cage check config/ --env prod        # validate under a schema-declared environment (env_overrides)
 cage build config/ --profile client  # validate and generate the target artifacts
 cage snapshot config/ --profile client  # build + pack a self-verifying snapshot; load a snapshot directory with --verify to check it first
-cage gen config/ --profile server    # generate code bindings only (cs/python/lua/ts/js/cpp/go/java)
+cage gen config/ --profile server    # generate code bindings and definition files only (cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema)
 cage diff build/a build/b          # compare two configuration versions
 cage inspect config/ Item          # inspect the schema and structure (project path required, table name optional)
 cage migrate config/               # preview the migration plan (--write persists, --all runs the whole chain)
 cage web ./                        # start the local Schema editor service (binds 127.0.0.1 only; /status/ shows project status and build freshness)
 cage lsp ./                        # serve the diagnostics-only Language Server over stdio (IDE support)
+cage assets config/ --write assets.json   # inventory rule/source assets with blake3 hashes; --check audits the working tree against the baseline
+cage graph config/ --format dot    # print the table reference dependency graph (text/dot/json, with topo order and cycle list)
+cage verify build/                 # audit generated artifacts against the manifest ledger (re-hash every file)
+cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # draft a migration rule file from two schema versions
 ```
 
 ## AI Assistant (MCP)

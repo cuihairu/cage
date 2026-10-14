@@ -26,12 +26,11 @@ features:
   - title: 跨配置引用校验
     details: 存在性 + 兼容性检查，引用对象存在但类型不合法同样报错；语义谓词校验预留。
   - title: Diagnostics 一等公民
-    details: 错误码 + 精确定位（文件 / Sheet / 单元格 / 字段 / 值）+ 修复提示，CLI 与 Web UI 直接消费，IDE 留待后续。
+    details: 错误码 + 精确定位（文件 / Sheet / 单元格 / 字段 / 值）+ 修复提示，CLI、Web UI 与 IDE（`cage lsp`）直接消费。
   - title: 确定性构建
     details: 相同输入 → 相同产物、哈希与 Manifest，可追踪、可回滚、可增量。
   - title: Profile 机制
     details: client / server 配置不同 targets 与字段可见性，一份配置两端复用，不维护两套表。
-  - title: Target 插件
   - title: Target 插件
     details: JSON / CSV 数据产物起步，已扩展 MessagePack（确定性二进制）、Protobuf `.proto` 与 FlatBuffers `.fbs` 定义文件，以及 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（Tera 自定义模板）（Binary / SQLite 等留待后续）；数据序列化与代码生成分离。
   - title: 声明式数据迁移
@@ -51,14 +50,23 @@ Excel 只是 Cage 的一种输入源。所有输入进入统一 Canonical Model�
 ## 快速开始
 
 ```bash
+cage init my-game                    # 新项目：交互式脚手架（终端问答），零改动即可 check/build
 cage check config/                   # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
-cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
+cage gen config/ --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema）
 cage diff build/a build/b            # 比较两个配置版本
 cage graph config/                   # 表引用依赖图（text/dot/json，含拓扑序与环清单）
 cage verify build/                   # 审计已生成产物（逐文件重算 blake3 对照账本）
 cage inspect config/ Item            # 查看 Schema 与配置结构（项目路径必填，表名可选）
 cage assets config/ --write assets.json   # 资产清单基线（--check 复核缺失/篡改/多余）
+cage snapshot config/ --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
+cage registry publish config/        # 多版本配置仓库（发布/列表/审计/GC/移除/导出/导入/直推）
+cage migrate config/                 # 数据迁移预演（dry-run；--write 落盘并全栈回验，--all 全链）
+cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
+cage schema-draft . mysql:Items      # 只读内省库表起草 schema（MySQL/PostgreSQL）
+cage web ./                          # 本地 Schema 编辑器与项目状态页（只绑 127.0.0.1）
+cage lsp ./                          # stdio Language Server（IDE 诊断，与 check 同一校验管线）
+cage mcp --stdio                     # AI 助手 MCP server（校验/结构/构建预演做成只读 tools）
 ```
 
 ## 文档栏目

@@ -50,7 +50,7 @@ Authoring Sources → Source Adapters → Canonical Model
 ## 快速开始
 
 ```bash
-bash examples/run.sh   # 一键跑通完整示例工程：校验 → 构建 12 个 target → 生成 9 语言代码 → E1601 坏数据诊断演示
+bash examples/run.sh   # 一键跑通完整示例工程：校验 → 构建全部 14 个 target → 生成 8 语言代码与 proto/fbs/jsonschema 定义文件 → E1601 坏数据诊断演示
 ```
 
 示例工程详解见 [`examples/game-config/`](examples/game-config/README.md) 与文档站「完整示例」页。其余常用命令：
@@ -66,11 +66,16 @@ cage init my-game --source csv --envs four --targets json,csv --git   # 全 flag
 cage check config/                 # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
 cage snapshot config/ --profile client  # 构建 + 打包自校验快照；快照目录 --verify 载入前校验
-cage gen config/ --profile server    # 只生成代码绑定（cs/python/lua/ts/js/cpp/go/java）
+cage gen config/ --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema）
 cage diff build/a build/b          # 比较两个配置版本
 cage inspect config/ Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
 cage migrate config/               # 迁移计划预览（--write 落盘，--all 全链）
 cage web ./                        # 启动 Schema 编辑器本地服务（只绑 127.0.0.1；/status/ 项目状态与构建新鲜度）
+cage lsp ./                        # stdio Language Server（IDE 诊断，与 check 同一校验管线）
+cage assets config/ --write assets.json   # 资产清单基线（blake3 逐文件盘点；--check 复核工作树）
+cage graph config/ --format dot    # 表引用依赖图（text/dot/json，含拓扑序与环清单）
+cage verify build/                 # 审计已生成产物（对照 manifest 账本逐文件重算 blake3）
+cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
 ```
 
 ## AI 助手（MCP）

@@ -734,10 +734,21 @@ cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0 -o migrations/0001-
 ## 快速开始
 
 ```bash
+cage init my-game                  # 交互式脚手架：cage.toml + schema + 示例数据（零改动即可 check/build）
 cage check config/                 # 只验证，不生成
 cage build config/ --profile client  # 验证并生成目标产物
 cage gen config/ --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema）
+cage inspect config/ Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
+cage assets config/ --write assets.json   # 资产清单基线（blake3 逐文件盘点；--check 复核工作树）
 cage diff build/a build/b          # 比较两个配置版本
-cage inspect Item                  # 查看 Schema 与配置结构
-cage migrate .                     # 迁移预演（dry-run，不改任何文件）
+cage graph config/ --format dot    # 表引用依赖图（text/dot/json，含拓扑序与环清单）
+cage verify build/                 # 审计已生成产物（对照 manifest 账本逐文件重算 blake3）
+cage snapshot config/ --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
+cage web ./                        # 本地 Schema 编辑器与项目状态页服务（只绑 127.0.0.1）
+cage lsp ./                        # stdio Language Server（IDE 诊断，与 check 同一校验管线）
+cage registry publish config/      # 配置包仓库：发布/列表/审计/GC/移除/导出/导入/直推/keygen（见 registry 节）
+cage migrate .                     # 迁移预演（dry-run；--write 落盘并全栈回验，--all 全链）
+cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
+cage schema-draft . mysql:Items    # 只读内省库表起草 schema（MySQL/PostgreSQL）
+cage mcp --stdio                   # AI 助手 MCP server（校验/结构/构建预演做成只读 tools）
 ```
