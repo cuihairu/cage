@@ -120,6 +120,17 @@ cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schem
 
 即可直接回答「把 `config/Item.csv` 第 1 行的 `price` 调回 ≥ 0，或放宽 schema 的 `min`」。不带 `--stdio` 跑 `cage mcp` 只打印工具清单，方便先看看有什么。
 
+## 本地测试口径
+
+CI 与本地开发按改动面三路分流——改一行文档不该全量编译。
+
+1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的
+   `paths-ignore` 已跳过这些路径。
+2. **代码改动**：只跑改动子集，不全量。
+   - `cargo test -p <改动 crate>`
+3. **全量**（`cargo test --workspace --locked`）：仅以下情形触发——Cargo.toml / Cargo.lock、
+   `.github/**`、Docker/Compose 配置、发布前。
+
 ## 一键安装
 
 从滚动 [nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly) 匿名直链下载二进制（不走 Actions artifacts、不带 token），自动校验 SHA256，无需 Rust 工具链。

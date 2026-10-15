@@ -120,16 +120,17 @@ Example: the AI calls `check_schema` and gets
 and can answer directly: "set `price` in row 1 of `config/Item.csv` back to ≥ 0, or loosen the schema's `min`". Running `cage mcp` without `--stdio` just prints the tool list.
 
 
-## 本地测试口径
+## Local Test Scope
 
-CI 与本地开发按改动面三路分流——改一行文档不该全量编译。
+CI and local development are split three ways by change surface — a one-line doc change must not
+trigger a full build.
 
-1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的
-   `paths-ignore` 已跳过这些路径。
-2. **代码改动**：只跑改动子集，不全量。
-   - `cargo test -p <改动 crate>`
-3. **全量**（`cargo test --workspace --locked`）：仅以下情形触发——Cargo.toml / Cargo.lock、
-   `.github/**`、Docker/Compose 配置、发布前。
+1. **Docs only** (`*.md`, `docs/**`, images): no build. The main CI workflow's `paths-ignore`
+   already skips those paths.
+2. **Code**: run only the changed subset, never the full suite.
+   - `cargo test -p <changed crate>`
+3. **Full** (`cargo test --workspace --locked`): only for these — `Cargo.toml` / `Cargo.lock`,
+   `.github/**`, Docker/Compose config, pre-release.
 
 ## One-Command Install
 
