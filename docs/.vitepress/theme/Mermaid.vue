@@ -24,6 +24,12 @@ async function render() {
       securityLevel: 'strict',
       theme: dark ? 'dark' : 'neutral',
       fontFamily: 'inherit',
+      // SVG text labels: node boxes are sized from measured text metrics, so
+      // multi-line labels can never be cut off by the node border. With the
+      // default htmlLabels (foreignObject divs) the box is sized from an
+      // estimate; when a label wraps to more lines than estimated (long
+      // <br/> segments, CJK fonts), the extra lines are clipped top and bottom.
+      htmlLabels: false,
     })
     const id = `mermaid-svg-${seq}-${Date.now().toString(36)}`
     const { svg: out } = await mermaid.render(id, props.code)

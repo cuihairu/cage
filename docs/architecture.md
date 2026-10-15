@@ -6,7 +6,7 @@ Cage 解决的问题不是「Excel 转 JSON」，而是：**如何将游戏开�
 
 ```mermaid
 flowchart TD
-    A["Authoring Sources<br/>Excel · CSV · JSON · YAML · MySQL / PostgreSQL · HTTP · Google Sheets"]
+    A["Authoring Sources<br/>Excel · CSV · JSON · YAML<br/>MySQL / PostgreSQL · HTTP · Google Sheets"]
     B[Source Adapters]
     C[Canonical Model]
     D["Validation Pipeline<br/>L0 Syntax · L1 Schema · L2 Type · L3 Value<br/>L4 Table · L5 Reference · L6 Semantic · L7 Game Rules"]
@@ -15,7 +15,7 @@ flowchart TD
     G1["数据产物<br/>JSON · CSV · MsgPack"]
     G2["代码绑定<br/>C# · Python · Lua · TS · JS"]
     G3["代码绑定<br/>C++ · Go · Java"]
-    G4["契约与模板<br/>Protobuf Schema · JSON Schema · Template"]
+    G4["契约与模板<br/>Protobuf / JSON Schema<br/>Template"]
     A --> B --> C --> D --> E --> F
     F --> G1
     F --> G2
