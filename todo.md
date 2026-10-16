@@ -1511,11 +1511,18 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       build / cli / design-prototypes / example / index / lifecycle / schema /
       source / target / ui / validation / web；2 个中文文件名页按约定改用英文名
       `requirements.md` / `audit-doc-consistency.md`，不改任何已存在文档名）；
-      两份顶部
-      首屏语言切换器（index.md 因 VitePress frontmatter 必须首行，切换器置于
-      frontmatter 后，唯一豁免）；英文版为真实翻译非占位——命令、路径、代码块、
+      两份顶部首屏语言切换器（index.md / index.en.md 因 VitePress frontmatter 必须
+      占首行，markdown 切换器只能置于 frontmatter 之后，另在 hero actions 补语言
+      按钮保证首屏可见——唯一豁免）；英文版为真实翻译非占位——命令、路径、代码块、
       E 码、专有名词原样保留；`requirements.md` 随中文版一并 srcExclude 不入站；
       站内互链改指 `.en` 路由（跨页锚点丢弃防死链）。门禁 `npm run docs:build` 绿。
+      英文版占位符回归修正：cli / build / lifecycle / target 四份 .en.md 正文里
+      残留的中文占位（`<包>` `<版本>` `<指纹>` `<表|具名查询>` `<workspace 根>`
+      `registry:包@版本` 等 24 处）已改回英文，并逐条对齐代码事实
+      （`Sheet: <name> | Row: <n>` 对 cage-core/src/value/mod.rs:101；
+      `M.<Enum> = { member = value }` 对 cage-target-lua/src/lib.rs:13）。
+      两处中文为有意保留：architecture.en.md 的「In Chinese」对照引块、
+      cli.en.md:606 指向中文 design.md 标题的锚点链（翻译锚点即死链）。
 - [x] D2 design.md（3244 行）处理口径：篇幅过长不硬造劣质翻译，首屏已加
       「暂无英文译版」标注并指向 architecture / cli 精简版（如实标注优先于造假）
 - [ ] D2b design.md 完整英文版（可选）：如需须分节翻译或按栏目配对，另立项

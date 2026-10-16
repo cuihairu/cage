@@ -9,7 +9,7 @@ Status as of the 2026-10 code: the MVP is fully delivered, phase two is fully de
 
 ## Core flow
 
-Authoring Sources → Source Adapters → Canonical Model → Validation Pipeline（L0-L7）→ Normalize/IR → Target Generators → Manifest/Hash
+`Authoring Sources → Source Adapters → Canonical Model → Validation Pipeline（L0-L7）→ Normalize/IR → Target Generators → Manifest/Hash`
 
 ## MVP (phase one, see design draft §36) — fully delivered
 

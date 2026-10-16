@@ -430,7 +430,7 @@ Key generation rules:
 ### Lua Target (implemented)
 
 Generates table binding modules from the Schema. One `{table}.lua` per table, shared enums
-centralized in `cage_enums.lua` (flat tables of the form `M.<Enum> = { 成员 = 值, ... }`);
+centralized in `cage_enums.lua` (flat tables of the form `M.<Enum> = { member = value, ... }`);
 the determinism policy matches C#/Python.
 
 ```toml
@@ -576,8 +576,8 @@ file_template = "{table}.go"   # 默认 {table}.go
 Key generation rules:
 
 - Field names export in PascalCase (`player_id` → `PlayerId`), always carrying a
-  `json:"原始字段名"` tag; required fields or fields with defaults are plain types, optional
-  value types without defaults use pointers (`*int32` / `*string` / `*枚举`),
+  `json:"original_field_name"` tag; required fields or fields with defaults are plain types, optional
+  value types without defaults use pointers (`*int32` / `*string` / `*enum`),
   and slices/maps use nil to express absence
 - `New{Table}()` is always generated: it fills only fields with renderable defaults, with literals
   allocated fresh on each call (not shared across rows); non-finite floats use

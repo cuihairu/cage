@@ -252,7 +252,7 @@ cage schema-draft . mysql:Items -o schemas/draft.yaml
 ```
 
 Generates a schema draft from live database table shapes (design §45): each
-`mysql:<表>` / `pg:<表>` spec introspects `information_schema` over a read-only
+`mysql:<table>` / `pg:<table>` spec introspects `information_schema` over a read-only
 session (the table name is bound as a parameter) and renders tables, primary keys,
 and `NOT NULL → required`; DECIMAL / date-time / JSON / unknown types are flagged
 with inline comments as semantics requiring a decision (min / max / pattern /
@@ -354,11 +354,11 @@ credentials (they never enter `cage.toml` or land in logs):
 | Syntax | crate | Key features |
 | --- | --- | --- |
 | `https://...` / `http://...` | `cage-source-http` | GET response bytes are cached, then parsed as standard JSON; `ETag`/`Last-Modified` conditional GET (304 reuses the cache); `Link: rel="next"` pagination follows the chain and merges (a page = a row array); 429 with `Retry-After` backs off and retries up to 30s; `E1901` fetch failure / pagination violation, `E1902` 401/403, `E0001` bad JSON |
-| `mysql:<表|具名查询>` | `cage-source-db` | SELECT whitelist (a single statement, starting with SELECT; semicolons/comments/row locks/CTE/`INTO` rejected) → `dsn_env` resolution → session pinned read-only (`SESSION TRANSACTION READ ONLY`); DECIMAL preserved as text, `E1905` whitelist, `E1904` credentials, `E1901` connection/statement |
-| `pg:<表|具名查询>` | `cage-source-db` | Same as above; on the PG side, read-only uses `default_transaction_read_only` |
+| `mysql:<table|named query>` | `cage-source-db` | SELECT whitelist (a single statement, starting with SELECT; semicolons/comments/row locks/CTE/`INTO` rejected) → `dsn_env` resolution → session pinned read-only (`SESSION TRANSACTION READ ONLY`); DECIMAL preserved as text, `E1905` whitelist, `E1904` credentials, `E1901` connection/statement |
+| `pg:<table|named query>` | `cage-source-db` | Same as above; on the PG side, read-only uses `default_transaction_read_only` |
 | `gsheet:<spreadsheet_id>/<tab>` | `cage-source-sheets` | Sheets API v4 `values` + `UNFORMATTED_VALUE`; first row is the header, blank rows skipped, short rows padded with null; shape gate `E1903` (not a row set / empty header / majorDimension not ROWS) |
 
-The three sources share the cache layout `.cage-cache/source/<指纹>/`: remote bytes
+The three sources share the cache layout `.cage-cache/source/<fingerprint>/`: remote bytes
 hit disk first, then go through standard JSON parsing and the full L0-L7 validation,
 **no bypass**. See [Source](/source.en) for details.
 
@@ -446,7 +446,7 @@ logging channel.
 [`editors/vscode/`](https://github.com/cuihairu/cage/tree/main/editors/vscode)
 is a thin-shell client for `cage lsp`: the official `vscode-languageclient` library +
 about 50 lines of TS, zero Rust changes — activation condition
-`workspaceContains:**/cage.toml`, spawns `cage lsp <workspace 根>`, and the
+`workspaceContains:**/cage.toml`, spawns `cage lsp <workspace root>`, and the
 `cage.env` / `cage.level` settings map to initializationOptions (changes require a
 window reload). The Problems panel is the cage diagnostics panel (E code + location
 + suggestion; the file-level zero-width range means no inline squiggles). Contract
@@ -475,7 +475,7 @@ cage registry push    <project> [package[@version]] (--registry <remote-url> | -
 The local Configuration Registry (phase-three R series,
 [design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)).
 `publish` runs a full build → packs a [self-verifying snapshot](/build.en) → once
-the ledger check passes, registers it under `<registry>/<包>/<版本>/` (package
+the ledger check passes, registers it under `<registry>/<package>/<version>/` (package
 defaults to `project.name`, version defaults to `project.version`); only one package
 per version — republishing judges idempotency by the whole-package fingerprint
 (`build_id` + `content_hash`): an identical fingerprint is a no-op, and any
@@ -521,12 +521,12 @@ publishing stays local-only.
 path = "https://registry.example.com/config"   # http(s):// 前缀 = 远程根
 ```
 
-The protocol is anonymous GET (design §29): `GET <根>/<包>/index.json`,
-`GET <根>/<包>/<版本>/HASHES.json`, `GET <根>/<包>/<版本>/<文件>`; an entry's
+The protocol is anonymous GET (design §29): `GET <root>/<package>/index.json`,
+`GET <root>/<package>/<version>/HASHES.json`, `GET <root>/<package>/<version>/<file>`; an entry's
 bytes are immutable once published. Resolution flow: fetch the index → pick the
 version per the pin (same rules as local) → download file by file per the ledger and
 verify each blake3 (mismatch → `E1803`) → land in the in-project cache
-`.cage-cache/registry/<url 指纹>/` → deliver only after passing the
+`.cage-cache/registry/<url fingerprint>/` → deliver only after passing the
 `verify_snapshot` trust gate. A cache that re-verifies clean is reused directly;
 after the first online pull, **offline builds work** (the index also has a local
 copy as a fallback); unreachable with no cache → `E1802`.
@@ -547,7 +547,7 @@ before publishing). One GET per package, anonymous by default; when `--auth-env 
 names one, GETs carry the same Bearer as the push protocol (`VAR` unset/empty →
 `E2105`, 401/403 → `E2102`, reporting only the variable name, never the value). The
 `path` positional argument anchors
-`.cage-cache/registry/<url 指纹>/<包>/index.json`, shared with resolution: fetching
+`.cage-cache/registry/<url fingerprint>/<package>/index.json`, shared with resolution: fetching
 fresh online wins and is written to the cache; on transport failure it falls back to
 the cached copy and marks the output offline; omitting `path` fetches fresh every
 time and writes nothing to disk. Network failures other than 401/403,
@@ -556,8 +556,8 @@ time and writes nothing to disk. Network failures other than 401/403,
 ### Dependency declarations and version ranges (R2)
 
 `[dependencies]` declares version pins for registry packages: a reference that
-omits `@版本` resolves per the pin (taking the highest version satisfying the
-range); an explicit `@版本` must also fall inside the pin, otherwise `E1802`.
+omits `@<version>` resolves per the pin (taking the highest version satisfying the
+range); an explicit `@<version>` must also fall inside the pin, otherwise `E1802`.
 
 ```toml
 [dependencies]
@@ -593,7 +593,7 @@ still pinned to a version about to be removed. `--dry-run` reports the exact sam
 removal list without touching the registry.
 
 Entry removal is an explicit administrative operation
-(`cage registry remove <包> <版本>`); the registry itself never rewrites history
+(`cage registry remove <package> <version>`); the registry itself never rewrites history
 (same version, different bytes is always `E1801`). remove deletes the version
 directory together with the index record (`--dry-run` only checks existence and name
 legality); the package's index is kept (even if it becomes empty); a version slot
@@ -614,7 +614,7 @@ cage registry export common -o common.tar.zst --compress zstd --registry ../regi
 Packs a registered entry into a **deterministic tar bundle**: all the entry's files
 (`data/`, `generated/`, `manifest.json`, `schema.json`, the `HASHES.json` ledger)
 plus a package-index extract (`index.json`, containing only the exported entry),
-with member paths `<包>/<版本>/<文件>`. The same entry always yields the same
+with member paths `<package>/<version>/<file>`. The same entry always yields the same
 bytes — members are written in name order, mtime/uid/gid zeroed, permission bits
 fixed at 0o644 — independent of the exporting machine and time, so it can go
 straight into object storage or diff/audit pipelines. The bundle carries its own
@@ -755,7 +755,7 @@ map, and hands it to `--presign-map`:
 }
 ```
 
-`uploads` maps entry-relative paths (`包/版本/文件`; keys with or without a leading
+`uploads` maps entry-relative paths (`package/version/file`; keys with or without a leading
 `/` both work) to presigned PUT URLs; `index.get` may be omitted (the remote does
 not have the package yet), `index.put` is required. The push discipline is
 **word-for-word identical** to direct push — probe GET (via `index.get`), merge,
@@ -791,7 +791,7 @@ Runs declarative migration over existing source data (design §46): the
 (safe-widening direction table + per-row value domain), `remap_values` (unmapped
 values pass through as-is), and `rename_table` (table order preserved). After
 execution, it re-validates against the **current schema** (the full L0–L6 stack).
-When the schema comes from `registry:<包>` and `[dependencies]` declares a pin for
+When the schema comes from `registry:<package>` and `[dependencies]` declares a pin for
 that package, the selected chain's end version must fall inside the pin, otherwise
 `E1802` rejects it (dry-run and `--write` judged alike) — data must not be migrated
 onto a schema version the project does not accept.
@@ -799,7 +799,7 @@ onto a schema version the project does not accept.
 - **Flow**: load the project → apply segment by segment (each step reports affected
   row counts; a failure fails the whole segment and aborts, `E2003`; for Excel
   tables, the step's line carries cell-level locations of affected rows —
-  `file.xlsx | Sheet: 名 | Row: 行号`, in source order, with more than 8 rows folded
+  `file.xlsx | Sheet: <name> | Row: <n>`, in source order, with more than 8 rows folded
   into one `… +K more row(s)` line; JSON/YAML/CSV sources keep file-level reporting
   without row-level noise) → re-validate (`E2004` carries the full diagnostics; on
   failure, **nothing is written**) → report the disposition of every source file. A

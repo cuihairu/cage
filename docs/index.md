@@ -10,6 +10,9 @@ hero:
       text: 从架构开始
       link: /architecture
     - theme: alt
+      text: English
+      link: /index.en
+    - theme: alt
       text: CLI 速览
       link: /cli
     - theme: alt

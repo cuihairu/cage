@@ -50,7 +50,7 @@ stateDiagram-v2
    business rules) + a precise location (file / Sheet / cell / field / value)
    + a fix suggestion. **Run this step first after editing**; do not build
    directly.
-3. **Dependency / registry resolution**: the `registry:包@版本` entries
+3. **Dependency / registry resolution**: the `registry:<package>@<version>` entries
    declared under `[dependencies]` are resolved here; remote http(s) roots are
    fetched and cached, and remain usable offline.
 4. **Target generation**: `cage build` / `cage gen` generate artifacts per

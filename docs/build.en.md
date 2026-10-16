@@ -77,7 +77,7 @@ Current fields versus the ledger target (the landing point for the Manifest's ga
 | `source_hash` | implemented | Blake3, covering all source content |
 | `content_hash` | implemented | Blake3, covering all artifact bytes |
 | `artifacts` | implemented | per artifact: path / hash / size / format / table / encoding |
-| `dependencies` | implemented | cross-table reference ledger: `表 -> 引用表名有序列表` (ManifestGenerator writes the ledger once the L5 dependency graph is wired, D2; older manifests missing the field are tolerated via serde(default)) |
+| `dependencies` | implemented | cross-table reference ledger: `table -> ordered list of referenced table names` (ManifestGenerator writes the ledger once the L5 dependency graph is wired, D2; older manifests missing the field are tolerated via serde(default)) |
 | `table_hashes` | implemented | per-table row-level fingerprint (incremental layer 2 change detection) |
 | `targets` | implemented | per-target configuration fingerprint: a list of `TargetRecord`s sorted by (format, output_dir), hash being blake3 (covers format/output_dir/file_template/options, option keys sorted); identity is (format, output_dir) (incremental layer 3 change detection; older manifests missing the field are tolerated via serde(default)) |
 | `ir_hash` | omitted as of the IR scope decision | IR is isomorphic to Canonical (see the architecture doc), covered by schema_hash + source_hash |
@@ -226,7 +226,7 @@ The snapshot carries its own verification information and does not depend on the
 
 ## Configuration Registry (R1–R4 implemented, design §29)
 
-The registry elevates the independently loadable snapshots above into a **multi-version configuration repository**: one package can hold several versions of a [self-verifying snapshot](/cli.en) (`<registry>/<包>/<版本>/` is one Snapshot, with a per-file blake3 ledger); the package directory carries a deterministic `index.json` (version order / build_id / content_hash / file count); consumers load an entry via `registry:<包>[@<版本>]`—nothing enters the registry without verification, and nothing loads without verification.
+The registry elevates the independently loadable snapshots above into a **multi-version configuration repository**: one package can hold several versions of a [self-verifying snapshot](/cli.en) (`<registry>/<package>/<version>/` is one Snapshot, with a per-file blake3 ledger); the package directory carries a deterministic `index.json` (version order / build_id / content_hash / file count); consumers load an entry via `registry:<package>[@<version>]`—nothing enters the registry without verification, and nothing loads without verification.
 
 After the initial R1 (local publish/resolve), the R series kept advancing:
 
