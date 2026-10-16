@@ -45,7 +45,7 @@ export default defineConfig({
   ],
 
   // 原始设计稿与需求整理作为底稿保留，不进站点路由
-  srcExclude: ['design.md', '需求整理.md'],
+  srcExclude: ['design.md', '需求整理.md', 'requirements.md'],
 
   themeConfig: {
     logo: '/logo.svg',

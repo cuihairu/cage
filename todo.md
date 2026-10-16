@@ -1502,3 +1502,38 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
     增强另评估。拍板（2026-10-14 巡检 7K2M，用户已定）：(a) 做；(b) 只做薄壳；
     (c) VSIX 随 nightly 附件分发。
 
+
+## 文档双语（2026-10-16 执行单）
+
+- [x] D1 docs 根目录双语配对（用户口径：本轮只做 `docs/` 根目录实质文档，
+      排除 CHANGELOG/LICENSE 类；hello-* 教学仓不做双语）：
+      16 个中文页补对应英文版（14 个走 `<名>.en.md`：architecture / assets /
+      build / cli / design-prototypes / example / index / lifecycle / schema /
+      source / target / ui / validation / web；2 个中文文件名页按约定改用英文名
+      `requirements.md` / `audit-doc-consistency.md`，不改任何已存在文档名）；
+      两份顶部
+      首屏语言切换器（index.md 因 VitePress frontmatter 必须首行，切换器置于
+      frontmatter 后，唯一豁免）；英文版为真实翻译非占位——命令、路径、代码块、
+      E 码、专有名词原样保留；`requirements.md` 随中文版一并 srcExclude 不入站；
+      站内互链改指 `.en` 路由（跨页锚点丢弃防死链）。门禁 `npm run docs:build` 绿。
+- [x] D2 design.md（3244 行）处理口径：篇幅过长不硬造劣质翻译，首屏已加
+      「暂无英文译版」标注并指向 architecture / cli 精简版（如实标注优先于造假）
+- [ ] D2b design.md 完整英文版（可选）：如需须分节翻译或按栏目配对，另立项
+- [ ] D3 站点英文导航：.en 页已入站（/architecture.en 等路由可达、切换器可用），
+      README 站点链接也已改指 .en；但站点 nav/sidebar/搜索框/大纲标签仍是中文
+      硬编码，需 VitePress locales 双套主题配置或 nav 增加语言入口
+- [ ] D4 docs/design/ 两个 HTML 原型（init-wizard / validation-result）界面文案
+      为中文，是否双语待原型评审拍板后一并处理
+- [x] D4b 子目录缺口核查（2026-10-16 实测，非登记待办）：执行单预期
+      `docs/design/`、`docs/api/` 等子目录还有待配对的 markdown，实测
+      `find docs -mindepth 2 -name '*.md'` = 0——本仓 docs 除根目录 32 个
+      .md 外无任何子目录 markdown（`docs/design/` 仅 2 个 HTML 原型 + 4 张 PNG，
+      `docs/public/` 无 markdown）。故无「下一轮补子目录」的缺口可登记，
+      后续若新增 docs 子目录文档再另立项。
+- [x] D5 README.md 双语收口（另一执行单，本轮不动其文件）：两处站点链接改指
+      .en 路由（/lifecycle.en、/design-prototypes.en）；`[Requirements]` 仍指向
+      中文页 `docs/%E9%9C%80%E6%B1%82%E6%95%B4%E7%90%86.md`（英文页 `docs/requirements.md`
+      为 srcExclude 底稿，未入站，故不宜链接），如需改为英文页须先解除 srcExclude
+      另立项；设计稿
+      docs/design.md 暂无英文版保持原链；安装输出「安装完成：」是程序输出原文
+      （scripts/install.sh:185 / install.ps1:108），按红线代码块原样保留不译

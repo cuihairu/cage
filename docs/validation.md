@@ -1,3 +1,5 @@
+[English](validation.en.md) | 中文
+
 # Validation：验证流水线
 
 Cage 的核心不是 Transform，而是 **Validation**。

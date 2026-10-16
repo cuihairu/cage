@@ -1,5 +1,8 @@
 # Cage
 
+> 语言：**中文** | English（暂无英文译版——本稿 3244 行，篇幅过长，不硬造劣质翻译。
+> 对外发布的英文内容见栏目页 [architecture](architecture.en.md) / [cli](cli.en.md)，均为精简版）
+
 > Game Configuration Compiler, Validation & Transformation Framework
 
 **Cage** 是一个面向游戏研发的通用配置编译、验证与转换框架。

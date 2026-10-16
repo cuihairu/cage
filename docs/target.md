@@ -1,3 +1,5 @@
+[English](target.en.md) | 中文
+
 # Target：规范化与产出
 
 验证通过后进入规范化（Normalize），再由 Target Generator 产出目标资产（Artifact）。

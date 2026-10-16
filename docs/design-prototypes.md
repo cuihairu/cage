@@ -1,3 +1,5 @@
+[English](design-prototypes.en.md) | 中文
+
 # UI 设计原型（待评审）
 
 两个静态 HTML 原型，只做设计、不接代码。**待评审通过后再实现**。

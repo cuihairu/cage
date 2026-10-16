@@ -1,3 +1,5 @@
+[English](example.en.md) | 中文
+
 # 完整示例
 
 仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 任务 + 商店 + 关卡」五张表、五种源格式（CSV / YAML / JSON / Excel / MsgPack）、一份覆盖常用字段类型与约束用法的 schema、双 profile（client 14 个 target / server 3 个 target）、四套环境的分环境约束覆盖（`--env dev/test/staging/prod`）、快照 / diff / 迁移 / 注册表 / stdio LSP 诊断（`cage lsp`），外加一套触发 L7 Game Rule 与分环境必填的坏数据。

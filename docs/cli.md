@@ -1,3 +1,5 @@
+[English](cli.en.md) | 中文
+
 # CLI
 
 Cage 的命令行入口（`cage-cli` crate，基于 [clap](https://crates.io/crates/clap)）：

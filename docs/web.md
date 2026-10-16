@@ -1,3 +1,5 @@
+[English](web.en.md) | 中文
+
 # Web UI / Schema Editor（第三阶段）
 
 第三阶段第一项：为策划与程序提供 Schema 的 Web 编辑入口。红线不变：

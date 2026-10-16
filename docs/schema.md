@@ -1,3 +1,5 @@
+[English](schema.en.md) | 中文
+
 # Schema：结构定义
 
 Schema 定义配置的结构和约束：字段、类型、必填、默认值、范围、枚举、数组、对象、唯一性、引用、输出信息。它是独立于输入源的 DSL 文件（YAML 或 JSON，`schema_path` 可为单文件或目录——目录下按文件名序合并加载全部 `yaml`/`yml`/`json`），不依附于任何一种 Source。
@@ -170,4 +172,3 @@ cage.toml 登记）。`cage check` / `build` / `gen` 以 `--env <名>` 选
 暴露）；带 `--env` 时硬错误（exit 2）。`cage snapshot` /
 `registry publish` 同样支持 `--env` 出环境化包（见
 [build](/build#configuration-snapshot) 与 [cli](/cli#snapshot)）。
-

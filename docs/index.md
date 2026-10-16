@@ -37,6 +37,9 @@ features:
     details: cage migrate 按版本步进链对已验证配置做规则变换（改名 / 补默认 / 删字段 / 类型加宽 / 值重映射），默认 dry-run 报告，--write 原路写回并全栈回验。
 ---
 
+[English](index.en.md) | 中文
+
+
 ## 核心链路
 
 ```text

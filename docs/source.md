@@ -1,3 +1,5 @@
+[English](source.en.md) | 中文
+
 # Source：输入源
 
 Source Adapter 是 Cage 的输入插件。每种输入格式一个 Adapter，统一产出 [Canonical Model](/architecture#canonical-model)。
