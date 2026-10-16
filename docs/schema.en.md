@@ -173,9 +173,9 @@ tables:
     # … 基线字段 …
     env_overrides:
       dev:
-        hp: { required: false }          # loosen
+        hp: { required: false }          # 放宽
       prod:
-        hp: { required: true, min: 100 } # tighten
+        hp: { required: true, min: 100 } # 收紧
         rarity: { enum_values: [common, rare, epic] }
 ```
 
