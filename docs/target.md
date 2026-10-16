@@ -1,4 +1,3 @@
-[English](target.en.md) | 中文
 
 # Target：规范化与产出
 

@@ -1,4 +1,3 @@
-[English](example.en.md) | 中文
 
 # 完整示例
 

@@ -1,4 +1,3 @@
-[English](design-prototypes.en.md) | 中文
 
 # UI 设计原型（待评审）
 

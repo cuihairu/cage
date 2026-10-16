@@ -25,32 +25,15 @@ function renderMermaidFences(md) {
   }
 }
 
-export default defineConfig({
+const sharedEditLink = {
+  pattern: 'https://github.com/cuihairu/cage/edit/main/docs/:path',
+}
+
+const zhTheme = {
+  label: '简体中文',
   lang: 'zh-CN',
-  title: 'Cage',
-  description: '游戏配置编译与验证框架——把异构配置源编译为经过验证、确定性构建的运行时配置资产',
-  base: '/cage/',
-  cleanUrls: true,
-  lastUpdated: true,
-
-  markdown: {
-    config(md) {
-      renderMermaidFences(md)
-    },
-  },
-
-  // favicon 不走自动 base，写全路径；导航 logo 见 themeConfig.logo（自动加 base）
-  head: [
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/cage/favicon.svg' }]
-  ],
-
-  // 原始设计稿与需求整理作为底稿保留，不进站点路由
-  srcExclude: ['design.md', '需求整理.md', 'requirements.md'],
-
+  link: '/',
   themeConfig: {
-    logo: '/logo.svg',
-    siteTitle: 'Cage',
-
     nav: [
       { text: '首页', link: '/' },
       { text: '架构', link: '/architecture' },
@@ -103,10 +86,6 @@ export default defineConfig({
       ]
     },
 
-    socialLinks: [
-      { icon: 'github', link: 'https://github.com/cuihairu/cage' }
-    ],
-
     search: {
       provider: 'local',
       options: {
@@ -124,17 +103,150 @@ export default defineConfig({
     outline: { level: [2, 3], label: '本页目录' },
     docFooter: { prev: '上一篇', next: '下一篇' },
     lastUpdated: { text: '最后更新' },
-
     darkModeSwitchLabel: '主题',
     lightModeSwitchTitle: '切换到浅色',
     darkModeSwitchTitle: '切换到深色',
     sidebarMenuLabel: '菜单',
     returnToTopLabel: '回到顶部',
+    editLink: { ...sharedEditLink, text: '在 GitHub 上编辑此页' }
+  }
+}
 
-    editLink: {
-      pattern: 'https://github.com/cuihairu/cage/edit/main/docs/:path',
-      text: '在 GitHub 上编辑此页'
+const enTheme = {
+  label: 'English',
+  lang: 'en-US',
+  link: '/en/',
+  themeConfig: {
+    nav: [
+      { text: 'Home', link: '/en/' },
+      { text: 'Architecture', link: '/en/architecture' },
+      { text: 'Lifecycle', link: '/en/lifecycle' },
+      { text: 'Source', link: '/en/source' },
+      { text: 'Schema', link: '/en/schema' },
+      { text: 'Validation', link: '/en/validation' },
+      { text: 'Target', link: '/en/target' },
+      { text: 'CLI', link: '/en/cli' },
+      { text: 'Build', link: '/en/build' },
+      { text: 'Web', link: '/en/web' },
+      { text: 'UI', link: '/en/ui' },
+      { text: 'UI Prototypes', link: '/en/design-prototypes' },
+      { text: 'Assets', link: '/en/assets' },
+      { text: 'Example', link: '/en/example' }
+    ],
+
+    sidebar: {
+      '/en/': [
+        {
+          text: 'Overview',
+          items: [
+            { text: 'Architecture', link: '/en/architecture' },
+            { text: 'Lifecycle', link: '/en/lifecycle' },
+            { text: 'Example', link: '/en/example' }
+          ]
+        },
+        {
+          text: 'Data Pipeline',
+          collapsed: false,
+          items: [
+            { text: 'Source', link: '/en/source' },
+            { text: 'Schema', link: '/en/schema' },
+            { text: 'Validation', link: '/en/validation' },
+            { text: 'Target', link: '/en/target' }
+          ]
+        },
+        {
+          text: 'Engineering',
+          collapsed: false,
+          items: [
+            { text: 'CLI', link: '/en/cli' },
+            { text: 'Build', link: '/en/build' },
+            { text: 'Assets', link: '/en/assets' },
+            { text: 'Web', link: '/en/web' },
+            { text: 'UI', link: '/en/ui' },
+            { text: 'UI Prototypes', link: '/en/design-prototypes' }
+          ]
+        }
+      ]
     },
+
+    search: {
+      provider: 'local',
+      options: {
+        translations: {
+          button: { buttonText: 'Search docs', buttonAriaLabel: 'Search docs' },
+          modal: {
+            noResultsText: 'No results found',
+            resetButtonTitle: 'Reset query',
+            footer: { selectText: 'Select', navigateText: 'Navigate', closeText: 'Close' }
+          }
+        }
+      }
+    },
+
+    outline: { level: [2, 3], label: 'On this page' },
+    docFooter: { prev: 'Previous', next: 'Next' },
+    lastUpdated: { text: 'Last updated' },
+    darkModeSwitchLabel: 'Theme',
+    lightModeSwitchTitle: 'Switch to light theme',
+    darkModeSwitchTitle: 'Switch to dark theme',
+    sidebarMenuLabel: 'Menu',
+    returnToTopLabel: 'Back to top',
+    editLink: { ...sharedEditLink, text: 'Edit this page on GitHub' }
+  }
+}
+
+export default defineConfig({
+  lang: 'zh-CN',
+  title: 'Cage',
+  description: '游戏配置编译与验证框架——把异构配置源编译为经过验证、确定性构建的运行时配置资产',
+  base: '/cage/',
+  cleanUrls: true,
+  lastUpdated: true,
+
+  markdown: {
+    config(md) {
+      renderMermaidFences(md)
+    },
+  },
+
+  // favicon 不走自动 base，写全路径；导航 logo 见 themeConfig.logo（自动加 base）
+  head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/cage/favicon.svg' }]
+  ],
+
+  // 原始设计稿与需求整理作为底稿保留，不进站点路由
+  srcExclude: ['design.md', '需求整理.md', 'requirements.md'],
+
+  // 英文源文件保留 <name>.en.md，站点路由归入 /en/ 以启用 locale 主题。
+  rewrites: {
+    'index.en.md': 'en/index.md',
+    'architecture.en.md': 'en/architecture.md',
+    'assets.en.md': 'en/assets.md',
+    'build.en.md': 'en/build.md',
+    'cli.en.md': 'en/cli.md',
+    'design-prototypes.en.md': 'en/design-prototypes.md',
+    'example.en.md': 'en/example.md',
+    'lifecycle.en.md': 'en/lifecycle.md',
+    'schema.en.md': 'en/schema.md',
+    'source.en.md': 'en/source.md',
+    'target.en.md': 'en/target.md',
+    'ui.en.md': 'en/ui.md',
+    'validation.en.md': 'en/validation.md',
+    'web.en.md': 'en/web.md'
+  },
+
+  locales: {
+    root: zhTheme,
+    en: enTheme
+  },
+
+  themeConfig: {
+    logo: '/logo.svg',
+    siteTitle: 'Cage',
+
+    socialLinks: [
+      { icon: 'github', link: 'https://github.com/cuihairu/cage' }
+    ],
 
     footer: {
       message: '基于 Apache-2.0 许可发布',

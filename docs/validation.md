@@ -1,4 +1,3 @@
-[English](validation.en.md) | 中文
 
 # Validation：验证流水线
 

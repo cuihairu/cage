@@ -1,4 +1,3 @@
-[English](build.en.md) | 中文
 
 # Build：确定性构建
 

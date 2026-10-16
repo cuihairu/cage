@@ -8,13 +8,13 @@ hero:
   actions:
     - theme: brand
       text: Start with the architecture
-      link: /architecture.en
+      link: /en/architecture
     - theme: alt
       text: 中文
-      link: /index
+      link: /
     - theme: alt
       text: CLI at a glance
-      link: /cli.en
+      link: /en/cli
     - theme: alt
       text: GitHub
       link: https://github.com/cuihairu/cage
@@ -40,7 +40,7 @@ features:
     details: cage migrate steps through a versioned chain applying rule transforms (rename / fill defaults / drop fields / widen types / remap values) to validated configuration; it reports as a dry run by default, --write writes back in place and re-validates the whole stack.
 ---
 
-[中文](index.md) | English
+[中文](/) | English
 
 
 ## Core flow
@@ -77,11 +77,11 @@ cage mcp --stdio                     # AI 助手 MCP server（校验/结构/构�
 
 ## Documentation sections
 
-- [Architecture](/architecture.en): positioning, core concepts, the plugin model and the project structure
-- [Source](/source.en) / [Schema](/schema.en) / [Validation](/validation.en) / [Target](/target.en): the four stages of the data pipeline
-- [CLI](/cli.en) / [Build](/build.en): the command line and deterministic builds
-- [Web UI](/web.en): phase-three schema editor + project status surface (exchange model W1, local service W2, editor UI W3, samples and smoke W4, project status and build API W5 — all implemented)
-- [UI front end](/ui.en): the decisions and roadmap for the web-enhanced shape — project and build status / validation panel (P0, U1 implemented), artifact browsing + editor target badges / profile-scoped views (P1, U2a/U2b implemented), snapshot / registry / layered diff (P2, U3 implemented); no Merkle, a semantic layered diff instead
-- [IDE support](/cli.en): the `cage lsp` stdio Language Server (the I series of `docs/design.md §49` is implemented — a diagnostics-only LSP subset sharing the validation pipeline with check, a hand-written frame protocol with zero new dependencies) + a thin VSCode extension shell (the Problems panel is cage diagnostics, the VSIX ships with nightly)
-- [Registry](/cli.en): the R series configuration registry of phase three (local publish/list + the `registry:` source and Schema resolution + `[dependencies]` version pinning + remote resolution + verify auditing the whole registry / gc rolling window / remove explicit removal, R1–R4 implemented; the A series bundle export/import + `registry push` straight to a remote + `--presign-map` presigned-URL push are also implemented)
-- [Assets](/assets.en): three kinds of input assets — Schema / source data / build rules — plus asset management with artifact traceability (`docs/design.md §50`: the `cage assets` asset manifest and baseline re-check, four layers of backup defense, snapshot and registry versioning capabilities; [`examples/asset-workspace`](https://github.com/cuihairu/cage/tree/main/examples/asset-workspace) demonstrates the full lifecycle)
+- [Architecture](/en/architecture): positioning, core concepts, the plugin model and the project structure
+- [Source](/en/source) / [Schema](/en/schema) / [Validation](/en/validation) / [Target](/en/target): the four stages of the data pipeline
+- [CLI](/en/cli) / [Build](/en/build): the command line and deterministic builds
+- [Web UI](/en/web): phase-three schema editor + project status surface (exchange model W1, local service W2, editor UI W3, samples and smoke W4, project status and build API W5 — all implemented)
+- [UI front end](/en/ui): the decisions and roadmap for the web-enhanced shape — project and build status / validation panel (P0, U1 implemented), artifact browsing + editor target badges / profile-scoped views (P1, U2a/U2b implemented), snapshot / registry / layered diff (P2, U3 implemented); no Merkle, a semantic layered diff instead
+- [IDE support](/en/cli): the `cage lsp` stdio Language Server (the I series of `docs/design.md §49` is implemented — a diagnostics-only LSP subset sharing the validation pipeline with check, a hand-written frame protocol with zero new dependencies) + a thin VSCode extension shell (the Problems panel is cage diagnostics, the VSIX ships with nightly)
+- [Registry](/en/cli): the R series configuration registry of phase three (local publish/list + the `registry:` source and Schema resolution + `[dependencies]` version pinning + remote resolution + verify auditing the whole registry / gc rolling window / remove explicit removal, R1–R4 implemented; the A series bundle export/import + `registry push` straight to a remote + `--presign-map` presigned-URL push are also implemented)
+- [Assets](/en/assets): three kinds of input assets — Schema / source data / build rules — plus asset management with artifact traceability (`docs/design.md §50`: the `cage assets` asset manifest and baseline re-check, four layers of backup defense, snapshot and registry versioning capabilities; [`examples/asset-workspace`](https://github.com/cuihairu/cage/tree/main/examples/asset-workspace) demonstrates the full lifecycle)

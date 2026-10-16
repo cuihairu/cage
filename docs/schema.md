@@ -1,4 +1,3 @@
-[English](schema.en.md) | 中文
 
 # Schema：结构定义
 

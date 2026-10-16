@@ -1,4 +1,3 @@
-[English](ui.en.md) | 中文
 
 # UI 门面：Web 增强（设计拍板与路线）
 

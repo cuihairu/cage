@@ -1,4 +1,3 @@
-[English](assets.en.md) | 中文
 
 # 资产：Schema 的管理与加载
 

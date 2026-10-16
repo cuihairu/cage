@@ -1,4 +1,3 @@
-[English](web.en.md) | 中文
 
 # Web UI / Schema Editor（第三阶段）
 

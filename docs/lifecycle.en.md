@@ -1,4 +1,3 @@
-[中文](lifecycle.md) | English
 
 # The Lifecycle of Game Configuration
 

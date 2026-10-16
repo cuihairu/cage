@@ -1,4 +1,3 @@
-[中文](ui.md) | English
 
 # UI Facade: Web Enhancement (Decisions and Roadmap)
 

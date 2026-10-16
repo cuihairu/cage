@@ -1,4 +1,3 @@
-[中文](design-prototypes.md) | English
 
 # UI Design Prototypes (Pending Review)
 

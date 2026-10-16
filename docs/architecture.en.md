@@ -1,4 +1,3 @@
-[中文](architecture.md) | English
 
 # Architecture
 
@@ -102,7 +101,7 @@ A Source is only responsible for:
 
 > **Reading external data into Cage.**
 
-It should not be responsible for business validation. See the [Source section](/source.en).
+It should not be responsible for business validation. See the [Source section](/en/source).
 
 ### Schema
 
@@ -128,7 +127,7 @@ enums:
       - { name: Consumable, value: 3 }
 ```
 
-Schema defines: fields, types, required fields, default values, ranges, enums, arrays, objects, uniqueness, references, output information (this is the actual wire format; for the full DSL see the [Schema section](/schema.en)).
+Schema defines: fields, types, required fields, default values, ranges, enums, arrays, objects, uniqueness, references, output information (this is the actual wire format; for the full DSL see the [Schema section](/en/schema)).
 
 ### Canonical Model
 

@@ -1526,9 +1526,12 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
 - [x] D2 design.md（3244 行）处理口径：篇幅过长不硬造劣质翻译，首屏已加
       「暂无英文译版」标注并指向 architecture / cli 精简版（如实标注优先于造假）
 - [ ] D2b design.md 完整英文版（可选）：如需须分节翻译或按栏目配对，另立项
-- [ ] D3 站点英文导航：.en 页已入站（/architecture.en 等路由可达、切换器可用），
-      README 站点链接也已改指 .en；但站点 nav/sidebar/搜索框/大纲标签仍是中文
-      硬编码，需 VitePress locales 双套主题配置或 nav 增加语言入口
+- [x] D3 站点英文导航：英文源文件保留 <name>.en.md，通过 VitePress rewrites
+      统一发布到 /en/ 路由；root 配置中文 nav/sidebar/搜索/大纲/编辑/翻页文案，
+      /en/ 配置对应英文主题文案，并启用 VitePress 原生语言切换器。站内
+      英文互链与 README 站点链接同步改指 /en/，中文首页保留 English 按钮、
+      英文首页保留中文按钮；验收 `npm run docs:build` 绿，构建产物包含
+      14 个 /en/ 页面且英文页出现英文 sidebar/outline 文案
 - [ ] D4 docs/design/ 两个 HTML 原型（init-wizard / validation-result）界面文案
       为中文，是否双语待原型评审拍板后一并处理
 - [x] D4b 子目录缺口核查（2026-10-16 实测，非登记待办）：执行单预期
@@ -1537,8 +1540,9 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       .md 外无任何子目录 markdown（`docs/design/` 仅 2 个 HTML 原型 + 4 张 PNG，
       `docs/public/` 无 markdown）。故无「下一轮补子目录」的缺口可登记，
       后续若新增 docs 子目录文档再另立项。
-- [x] D5 README.md 双语收口（另一执行单，本轮不动其文件）：两处站点链接改指
-      .en 路由（/lifecycle.en、/design-prototypes.en）；`[Requirements]` 仍指向
+- [x] D5 README.md 双语收口（另一执行单，本轮只同步 D3 路由）：两处站点链接
+      原先改指 .en 路由，D3 落地后同步为 /en/ 路由（/en/lifecycle、
+      /en/design-prototypes）；`[Requirements]` 仍指向
       中文页 `docs/%E9%9C%80%E6%B1%82%E6%95%B4%E7%90%86.md`（英文页 `docs/requirements.md`
       为 srcExclude 底稿，未入站，故不宜链接），如需改为英文页须先解除 srcExclude
       另立项；设计稿

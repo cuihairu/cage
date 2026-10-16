@@ -1,4 +1,3 @@
-[中文](build.md) | English
 
 # Build: Deterministic Build
 
@@ -128,7 +127,7 @@ This dependency graph can be used for:
 - Circular dependency detection
 - Debugging
 
-Status: the core types and algorithms are implemented and tested (reference/mod.rs: `DependencyGraph` / `IncrementalPlanner`, cycle detection, topology, incremental planning), and the build path is wired up—the reference graph is built from the schema reference declarations via `DependencyGraph::from_schema` (running before and independently of L5 validation), L5 validation and the second incremental layer in the cli consume it together, and the manifest records the `dependencies` reference ledger. Core-to-cli wiring is covered in tests/incremental.rs (including layers 2/3 end to end: change propagation + carry-over + target-configuration add/edit/remove + manifest convergence + older-manifest migration). `cage graph` (implemented 2026-10-12) renders the same graph for humans: edges carry the reference field label, in three forms—text / Graphviz dot / json—plus a topological build order and a cycle list (see [CLI](/cli.en)).
+Status: the core types and algorithms are implemented and tested (reference/mod.rs: `DependencyGraph` / `IncrementalPlanner`, cycle detection, topology, incremental planning), and the build path is wired up—the reference graph is built from the schema reference declarations via `DependencyGraph::from_schema` (running before and independently of L5 validation), L5 validation and the second incremental layer in the cli consume it together, and the manifest records the `dependencies` reference ledger. Core-to-cli wiring is covered in tests/incremental.rs (including layers 2/3 end to end: change propagation + carry-over + target-configuration add/edit/remove + manifest convergence + older-manifest migration). `cage graph` (implemented 2026-10-12) renders the same graph for humans: edges carry the reference field label, in three forms—text / Graphviz dot / json—plus a topological build order and a cycle list (see [CLI](/en/cli)).
 
 ## Incremental Build
 
@@ -226,7 +225,7 @@ The snapshot carries its own verification information and does not depend on the
 
 ## Configuration Registry (R1–R4 implemented, design §29)
 
-The registry elevates the independently loadable snapshots above into a **multi-version configuration repository**: one package can hold several versions of a [self-verifying snapshot](/cli.en) (`<registry>/<package>/<version>/` is one Snapshot, with a per-file blake3 ledger); the package directory carries a deterministic `index.json` (version order / build_id / content_hash / file count); consumers load an entry via `registry:<package>[@<version>]`—nothing enters the registry without verification, and nothing loads without verification.
+The registry elevates the independently loadable snapshots above into a **multi-version configuration repository**: one package can hold several versions of a [self-verifying snapshot](/en/cli) (`<registry>/<package>/<version>/` is one Snapshot, with a per-file blake3 ledger); the package directory carries a deterministic `index.json` (version order / build_id / content_hash / file count); consumers load an entry via `registry:<package>[@<version>]`—nothing enters the registry without verification, and nothing loads without verification.
 
 After the initial R1 (local publish/resolve), the R series kept advancing:
 
@@ -238,7 +237,7 @@ After the initial R1 (local publish/resolve), the R series kept advancing:
   and republishing the same package (idempotence decided by the whole-package fingerprint `build_id + content_hash`—a changed schema or environment is a different package,
   and republishing the same version reports E1801).
 
-Commands, configuration syntax, and rollback discipline: see [CLI: registry](/cli.en); protocol and error codes: see [design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry) and [validation.md E180x](/validation.en).
+Commands, configuration syntax, and rollback discipline: see [CLI: registry](/en/cli); protocol and error codes: see [design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry) and [validation.md E180x](/en/validation).
 
 ## CI/CD
 
@@ -275,4 +274,4 @@ cage build --profile client
 cage build --profile server
 ```
 
-Configuration errors fail in CI first, so they never reach the game. This repository is itself guarded by a CI gate (all tests green) and daily builds; the `warnings_as_errors` policy is covered in [Validation: Warning Policy](/validation.en).
+Configuration errors fail in CI first, so they never reach the game. This repository is itself guarded by a CI gate (all tests green) and daily builds; the `warnings_as_errors` policy is covered in [Validation: Warning Policy](/en/validation).

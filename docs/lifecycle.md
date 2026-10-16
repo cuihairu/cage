@@ -1,4 +1,3 @@
-[English](lifecycle.en.md) | 中文
 
 # 游戏配置的生命周期
 

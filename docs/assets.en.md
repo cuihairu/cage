@@ -1,4 +1,3 @@
-[中文](assets.md) | English
 
 # Assets: Managing and Loading Schemas
 
@@ -130,14 +129,14 @@ one command runs the whole thing: `bash examples/asset-workspace.sh`.
 
 ## The JSON Schema (Standard) Form
 
-The cage schema is a homegrown DSL (YAML; see the [Schema docs](/schema.en))
+The cage schema is a homegrown DSL (YAML; see the [Schema docs](/en/schema))
 — it is the source of truth for rules, not a standard JSON Schema document.
 The standard JSON Schema form consumed by non-cage toolchains (editors, ajv,
 front-end forms, and the like) is produced by the **`format = "jsonschema"`
 target**: one self-contained `{table}.schema.json` per table (draft-07 by
 default, 2020-12 optional; enums inlined, closed-shape objects),
 schema-driven, deterministic bytes, evolving with the source schema — see
-[Target · JSON Schema](/target.en). The `schema.json` inside a snapshot (the
+[Target · JSON Schema](/en/target). The `schema.json` inside a snapshot (the
 canonical structure projected by the profile) is cage's own form, consumed
 as-is by editors / front ends; the two each do their own job: the homegrown
 form serves consumption inside the compilation chain, the standard form

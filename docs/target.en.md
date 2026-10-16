@@ -1,4 +1,3 @@
-[中文](target.md) | English
 
 # Target: Normalization and Artifacts
 
@@ -28,7 +27,7 @@ The goal of Normalize:
 > within one representation layer: strings identical after trim and object keys identical after
 > sorting share one canonical form).
 
-Normalization uses deterministic rules (`BTreeMap`, stable sorting), so identical inputs always yield identical outputs — the groundwork for [deterministic builds](/build.en).
+Normalization uses deterministic rules (`BTreeMap`, stable sorting), so identical inputs always yield identical outputs — the groundwork for [deterministic builds](/en/build).
 
 ## Transform
 
@@ -36,7 +35,7 @@ Transform is responsible for:
 
 > Canonical Model → Target Artifact
 
-rather than re-validating data. Validation is already complete in the [Validation pipeline](/validation.en); Transform only converts:
+rather than re-validating data. Validation is already complete in the [Validation pipeline](/en/validation); Transform only converts:
 
 ```text
                   Valid Model
@@ -147,7 +146,7 @@ A data target: Canonical Model → MessagePack binary, one
 
 This format doubles as a source format: `cage-source-msgpack` re-consumes the
 `.msgpack` files it wrote itself (registry entries under `data/**` are packaged in this format; see
-the fidelity choice in [CLI · registry](/cli.en)), with lossless round-trips for
+the fidelity choice in [CLI · registry](/en/cli)), with lossless round-trips for
 floats/Bytes/integers beyond i64.
 
 ```toml
@@ -710,7 +709,7 @@ table={{ table.name }} pk-snake={{ table.name | snake_case }}
 ## Profile: frontend / backend
 
 Do not hard-code "client" and "server" into Core. Build Profiles can be defined (real syntax in
-[CLI: build](/cli.en), project config `cage.toml`):
+[CLI: build](/en/cli), project config `cage.toml`):
 
 ```toml
 [profiles.client]

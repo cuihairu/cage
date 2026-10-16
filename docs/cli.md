@@ -1,4 +1,3 @@
-[English](cli.en.md) | 中文
 
 # CLI
 

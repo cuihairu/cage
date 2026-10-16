@@ -1,4 +1,3 @@
-[中文](cli.md) | English
 
 # CLI
 
@@ -38,7 +37,7 @@ AI-assistant MCP server).
 
 ## mcp
 
-> **Lifecycle**: cross-cutting · ②④⑤ (AI-driven validation/generation/dry-run). See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: cross-cutting · ②④⑤ (AI-driven validation/generation/dry-run). See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage mcp            # 打印工具清单（人看的）
@@ -82,7 +81,7 @@ client configuration snippet and the tool list.
 
 ## init
 
-> **Lifecycle**: before ① · project scaffolding. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: before ① · project scaffolding. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage init my-game                                   # 终端里交互式问答生成项目骨架
@@ -124,7 +123,7 @@ introduced) + the `schemas/item.yaml` example table + `config/Item.*` example da
 
 ## check
 
-> **Lifecycle**: ② · validation. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ② · validation. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage check config/
@@ -145,7 +144,7 @@ including L7 business rules requires an explicit `--level gamerule`). `--profile
 defaults to `client` (same for check / build / gen). `--env` (same for check /
 build / gen) validates after applying the constraint overrides declared by the
 Schema's `env_overrides` for that environment — an undeclared environment name is a
-usage error (exit 2); see [Schema per-environment constraint overrides](/schema.en).
+usage error (exit 2); see [Schema per-environment constraint overrides](/en/schema).
 Even without `--env`, bad overrides are guarded: structurally bad overrides in any
 declared environment (pointing at a nonexistent field / empty patch) are reported
 one by one as `warning:` at load time (without blocking); with `--env`, that same
@@ -153,7 +152,7 @@ defect is a hard error (exit 2).
 
 ## build
 
-> **Lifecycle**: ④⑤ · target generation + incremental. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ④⑤ · target generation + incremental. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage build config/ --profile client
@@ -165,23 +164,23 @@ cage build config/ --incremental       # 哈希与上次 manifest 一致时跳�
 `--level`, with the same semantics as check (default semantic), can raise or lower
 the validation level.
 
-Validates and generates target artifacts, and outputs the [Build Manifest](/build.en)
+Validates and generates target artifacts, and outputs the [Build Manifest](/en/build)
 at the same time. `--incremental` performs three-layer incrementality based on the
 schema/source/target fingerprints in the manifest (validation still runs in full; a
 schema change falls back to a full build, and a target configuration change only
-regenerates the corresponding target — see [incremental build](/build.en) for
+regenerates the corresponding target — see [incremental build](/en/build) for
 details).
 
 ## gen
 
-> **Lifecycle**: ④ · code binding generation. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ④ · code binding generation. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage gen config/ --profile server
 cage gen config/ --env prod    # 按环境约束生成
 ```
 
-Generates only code-class artifacts ([C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf](/target.en),
+Generates only code-class artifacts ([C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf](/en/target),
 plus the `template` user-defined Tera template target), and runs no data validation:
 code generation is Schema-driven — types and metadata all come from the Schema, and
 no configuration row data is consumed (source files still must load and parse
@@ -191,7 +190,7 @@ Build Manifest (same rules as build), last writer wins.
 
 ## inspect
 
-> **Lifecycle**: cross-cutting · ② (structure inspection). See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: cross-cutting · ② (structure inspection). See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage inspect config/ Item     # 项目路径必填；表名可选，省略时列出全部表
@@ -201,7 +200,7 @@ Inspect the Schema and configuration structure.
 
 ## assets
 
-> **Lifecycle**: cross-cutting · asset baseline. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: cross-cutting · asset baseline. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage assets <project>                       # 文本清单：路径 / 类别 / blake3 / 大小
@@ -210,7 +209,7 @@ cage assets <project> --write assets.json   # 基线落盘（随仓入库）
 cage assets <project> --check assets.json   # 对基线复核工作树
 ```
 
-The asset manifest (design §50; see [Assets · classification and backup strategy](/assets.en)
+The asset manifest (design §50; see [Assets · classification and backup strategy](/en/assets)
 for details): takes the project's build rules (`cage.toml`), rule assets (the
 `schema_path` file set + `migrations/`), and source data assets (the
 `[source_roots]` file set), inventories each file's blake3 hash + size, and sorts
@@ -233,18 +232,18 @@ cage build config/ --no-cache    # check / build / gen / inspect 通用
 
 All four commands `check` / `build` / `gen` / `inspect` take `--no-cache`: it
 disables the offline fallback for remote sources (HTTP / MySQL / PostgreSQL /
-Google Sheets, see [source](/source.en)) — by default a transport-class fetch
+Google Sheets, see [source](/en/source)) — by default a transport-class fetch
 failure falls back to the last cached copy and emits an `E1906` WARNING; under
 `--no-cache`, failing to reach the remote is a failure (`E1901`, exit code 2), even
 if a cached copy exists. This suits the pre-release check of "must build from the
 remote's latest bytes". Strict does not mean no caching at all: HTTP sources default
-to conditional GET (ETag/Last-Modified, see [source](/source.en)), and under
+to conditional GET (ETag/Last-Modified, see [source](/en/source)), and under
 `--no-cache` conditional requests are still sent — a 304 is the server confirming
 the cache, not the cache answering itself.
 
 ## schema-draft
 
-> **Lifecycle**: before ① · schema drafting from database-table introspection. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: before ① · schema drafting from database-table introspection. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage schema-draft . mysql:Items pg:public.Monsters   # 内省库表 → stdout
@@ -266,7 +265,7 @@ human-reviewed before it can serve as `schema_path`.
 
 ## diff
 
-> **Lifecycle**: cross-cutting · version comparison. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: cross-cutting · version comparison. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage diff build/a build/b
@@ -280,7 +279,7 @@ files) — sharing its data source with the status page's diff section.
 
 ## snapshot
 
-> **Lifecycle**: ⑥ · self-verifying snapshot. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ⑥ · self-verifying snapshot. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage snapshot <project> --profile client    # 构建 + 打包自校验快照
@@ -289,7 +288,7 @@ cage snapshot <snapshot-dir> --verify       # 载入前校验（服务器入口�
 cage snapshot <project> --list              # 列已打包快照并逐包自验
 ```
 
-Packs a [Configuration Snapshot](/build.en): the profile's build artifacts are
+Packs a [Configuration Snapshot](/en/build): the profile's build artifacts are
 packed into a directory that loads standalone and carries its own blake3 ledger,
 `<output_dir>/snapshot/<profile>[-<env>]-<build_id[..12]>` (manifest.json /
 schema.json / data/ / generated/ / HASHES.json), and self-verifies after building.
@@ -308,7 +307,7 @@ exclusive with `--verify` / `--env`.
 
 ## verify
 
-> **Lifecycle**: ⑥ · artifact verification. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ⑥ · artifact verification. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage verify <project-root>         # 审计 output_dir 的构建产物
@@ -328,7 +327,7 @@ Snapshot packages have their own load-side check:
 
 ## graph
 
-> **Lifecycle**: cross-cutting · ③ (dependency graph). See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: cross-cutting · ③ (dependency graph). See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage graph <project>               # 文本视图（默认）
@@ -336,7 +335,7 @@ cage graph <project> --format dot  # Graphviz DOT
 cage graph <project> --format json # 机器可读
 ```
 
-Outputs the [configuration dependency graph](/build.en): schema reference
+Outputs the [configuration dependency graph](/en/build): schema reference
 declarations form the graph via `DependencyGraph::from_schema` — the same entry
 point as the reference check (L5) and incremental planning (the second layer of
 `build --incremental`). Edges carry the referencing-field label (in schema order),
@@ -360,7 +359,7 @@ credentials (they never enter `cage.toml` or land in logs):
 
 The three sources share the cache layout `.cage-cache/source/<fingerprint>/`: remote bytes
 hit disk first, then go through standard JSON parsing and the full L0-L7 validation,
-**no bypass**. See [Source](/source.en) for details.
+**no bypass**. See [Source](/en/source) for details.
 
 ### Offline fallback and `--no-cache`
 
@@ -368,7 +367,7 @@ See the [`--no-cache` section](#no-cache-offline-fallback-toggle-for-remote-sour
 
 ## web
 
-> **Lifecycle**: ⑥ · Schema editor service. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ⑥ · Schema editor service. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage web ./ --port 8765
@@ -381,7 +380,7 @@ single-page app;
 `/status/` is the project status page (validation panel + per-profile build
 freshness + build button, embedded into the binary at compile time), sharing one
 exchange document with the HTTP API; the API contract is in
-[Web UI](/web.en):
+[Web UI](/en/web):
 
 ```text
 GET  /api/schema      → 合并 Schema 的编辑器文档（每请求重载，保存后立即可见；
@@ -405,7 +404,7 @@ the CLI, and the LSP never disagree. Ctrl+C stops the service. `--port` defaults
 
 ## lsp
 
-> **Lifecycle**: cross-cutting · ② (IDE diagnostics). See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: cross-cutting · ② (IDE diagnostics). See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage lsp <project>
@@ -457,7 +456,7 @@ binary channel, not an official release).
 
 ## registry
 
-> **Lifecycle**: ③ · configuration package registry. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ③ · configuration package registry. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 cage registry publish <project> [--registry <dir>] [--package name] [--version 1.0.0] [--profile client] [--env prod]
@@ -474,7 +473,7 @@ cage registry push    <project> [package[@version]] (--registry <remote-url> | -
 
 The local Configuration Registry (phase-three R series,
 [design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)).
-`publish` runs a full build → packs a [self-verifying snapshot](/build.en) → once
+`publish` runs a full build → packs a [self-verifying snapshot](/en/build) → once
 the ledger check passes, registers it under `<registry>/<package>/<version>/` (package
 defaults to `project.name`, version defaults to `project.version`); only one package
 per version — republishing judges idempotency by the whole-package fingerprint
@@ -772,7 +771,7 @@ probing.
 
 ## migrate (M series)
 
-> **Lifecycle**: ①→② · data migration execution. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ①→② · data migration execution. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 # 先改 schema.yaml 到新版，再写 migrations/0001-xxx.yaml（from/to/steps）
@@ -830,7 +829,7 @@ onto a schema version the project does not accept.
 
 ## migrate-draft (M series)
 
-> **Lifecycle**: ①→② · migration chain drafting. See [The Lifecycle of Game Configuration](/lifecycle.en).
+> **Lifecycle**: ①→② · migration chain drafting. See [The Lifecycle of Game Configuration](/en/lifecycle).
 
 ```bash
 # 对比两份 schema 版本，起草一份迁移规则稿（write 到 stdout 或 -o 落盘）

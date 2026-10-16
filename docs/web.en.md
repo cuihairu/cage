@@ -1,4 +1,3 @@
-[中文](web.md) | English
 
 # Web UI / Schema Editor (Stage 3)
 
@@ -114,7 +113,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
 - [x] CI integration: the `web-smoke` job mirrors the example job
   (checkout + toolchain + rust-cache + `bash examples/web-smoke.sh`)
 
-### W5 implemented: project status panel (U1, see the roadmap in [UI facade](/ui.en))
+### W5 implemented: project status panel (U1, see the roadmap in [UI facade](/en/ui))
 
 - [x] `GET /api/status[?profile=&env=&level=]`: one document,
   three blocks—project facts (name / schema_path / output_dir / profile list),
@@ -142,7 +141,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   + 3 integration tests (status page routing and the 301 / status-build end to end /
   bad data end to end) + web-smoke step 5 (the status page against a real server → fresh → up-to-date)
 
-### W6 implemented: artifact browsing (U2a, roadmap in [UI facade](/ui.en))
+### W6 implemented: artifact browsing (U2a, roadmap in [UI facade](/en/ui))
 
 - [x] `GET /api/artifacts[?profile=&env=]`: the artifact ledger = the build manifest. The manifest has a single slot,
   so **it never reads leftovers across profiles**—when the manifest belongs to another profile it returns `manifest_profile` plus an empty list (a profile that has not been built has no trustworthy artifacts;
@@ -163,7 +162,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   serving + 404 for a non-ledger path + 409 for tampering / the stale marker)
   + 1 integration test (list → byte-exact serving → 404 → 409 end to end) + artifact assertions added to web-smoke step 5
 
-### W7 implemented: targets badges + profile-scoped view (U2b, roadmap in [UI facade](/ui.en))
+### W7 implemented: targets badges + profile-scoped view (U2b, roadmap in [UI facade](/en/ui))
 
 - [x] `GET /api/schema?profile=NAME`: also returns `projection` (a direct call to `filter_by_profile`—the same projection function as the build pipeline;
   unknown profile 400). Zero semantic duplication in the front end: it only takes the "full − projection" set difference to get the hidden set;
@@ -179,7 +178,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   + web-smoke step 7 (game-config's `internal_note`: dropped by the client projection,
   kept by server, ghost 400)
 
-### W8 implemented: snapshots / layered diff / registry browsing (U3, roadmap in [UI facade](/ui.en))
+### W8 implemented: snapshots / layered diff / registry browsing (U3, roadmap in [UI facade](/en/ui))
 
 - [x] `GET /api/snapshots`: lists every package under `<output_dir>/snapshot/`,
   running `verify_snapshot` on each one right now—the list never claims a package is sound that it did not just verify;
@@ -193,7 +192,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       changed}` (each with its table and target owner) / `roots` (content_hash
       and build_id from → to). The table/target metadata rides along with the file entries,
       so the UI's three-level collapsing (table → target → file) is pure grouping; no Merkle-ification,
-      and the sticking point (an incremental-sync need for "fetch only the changed subtree") is covered in [UI facade](/ui.en)
+      and the sticking point (an incremental-sync need for "fetch only the changed subtree") is covered in [UI facade](/en/ui)
 - [x] `GET /api/registry`: browses the packages and versions under the `[registry] path` (the same entry point as cage_core's registry);
   if nothing is configured, it returns ok + an explanation rather than an error
 - [x] The status page: three new sections—"Snapshots" (a self-verify badge + a pack button),
@@ -212,4 +211,4 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
 
 ## Roadmap
 
-With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in [UI facade](/ui.en).
+With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in [UI facade](/en/ui).

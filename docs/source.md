@@ -1,4 +1,3 @@
-[English](source.en.md) | 中文
 
 # Source：输入源
 
