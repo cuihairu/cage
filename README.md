@@ -149,7 +149,7 @@ Download the binary over an anonymous direct link from the rolling [nightly rele
    Expected output (last two lines):
 
    ```text
-   安装完成：/home/<你>/.local/bin/cage
+   Installed to: /home/<you>/.local/bin/cage
    cage 0.1.0
    ```
 
@@ -172,7 +172,7 @@ Download the binary over an anonymous direct link from the rolling [nightly rele
    Expected output (last two lines):
 
    ```text
-   安装完成：C:\Users\<你>\AppData\Local\cage\cage.exe
+   Installed to: C:\Users\<you>\AppData\Local\cage\cage.exe
    cage 0.1.0
    ```
 
@@ -206,7 +206,7 @@ The binaries can be fetched without a Rust toolchain from the [Nightly Release](
 
 Full design and usage documentation: **https://cuihairu.github.io/cage/**
 
-- [Design notes](docs/design.md) · [Requirements](docs/需求整理.md) · [Lifecycle](https://cuihairu.github.io/cage/lifecycle) · [UI prototypes](https://cuihairu.github.io/cage/design-prototypes) · [Roadmap](todo.md)
+- [Design notes](docs/design.md) · [Requirements](docs/%E9%9C%80%E6%B1%82%E6%95%B4%E7%90%86.md) · [Lifecycle](https://cuihairu.github.io/cage/lifecycle.en) · [UI prototypes](https://cuihairu.github.io/cage/design-prototypes.en) · [Roadmap](todo.md)
 
 ## Foundations
 
