@@ -215,7 +215,7 @@ export default defineConfig({
   ],
 
   // 原始设计稿与需求整理作为底稿保留，不进站点路由
-  srcExclude: ['design.md', '需求整理.md', 'requirements.md'],
+  srcExclude: ['design.md', 'design.en.md', '需求整理.md', 'requirements.md'],
 
   // 英文源文件保留 <name>.en.md，站点路由归入 /en/ 以启用 locale 主题。
   rewrites: {
