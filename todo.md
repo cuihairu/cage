@@ -1566,35 +1566,38 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       3) 表三「值得补的能力」：只做评估与分期建议，**不实现**（需用户拍板）
       每完成一项勾掉并写证据；全部测试通过后 commit+push；不 bump 版本号。
       进度（2026-10-18 首轮）：
-      - [x] 表一#1 增量删除越界：main.rs 新增 manifest_rel_path_is_safe /
-        resolved_within_root——prev manifest 载入即拒绝非常规相对路径（回退
-        全量构建），carry 读与 stale 删除前再做 canonical 包含性复核；
-        tests/incremental.rs 两个篡改回归（利用先行：artifact 键 `../` 向量
-        修复前实测删除了项目根外文件，测试先红后绿）
-      - [x] 表一#2 Web 边界：web.rs 请求体上限 8 MiB（413）+ 30s 读取预算
-        （408，含滴漏喂入防护，钳在两次 read 之间）+ Host/Origin loopback
-        校验（403，防 DNS rebinding 与跨站写）；web.rs 新增 3 组单测，
-        tests/web.rs 13 例改发 loopback Host 后全绿，cage-cli 25 套件全绿
-      - [x] 表一#3 + 表二#6 快照语义：verify_snapshot 定性为内容一致性校验
-        （信任根=包内 HASHES.json，不认证发布者）写入 snapshot/mod.rs 模块
-        注释；README zh/en 撤回「自校验/篡改即暴露」的过度表述，指向
-        registry 签名 bundle 路径（验签能力列表三，不实装）
-      - [x] 表二#1-#5 文档对齐（以代码为准，未动业务代码）：README/index
-        zh+en 谓词校验已实装（E1410，validation/mod.rs:1195）；lifecycle
-        migrate 示例对齐 CLI 签名（schema-draft <项目> <spec>、migrate-draft
-        <old> <new> --from --to，main.rs:292-328）；architecture zh/en 环境
-        行——坏覆盖 lint 与 snapshot/registry `--env` 出包已实装；
-        validation.md IDE 已接入（cage lsp + VSCode 扩展）；需求整理/
-        requirements CSV 措辞改「L2 类型族严格匹配（E1101，不自动转换）」
+      - [x] 表一#1 增量删除越界：main.rs:2075-2096 拒绝不安全 manifest 路径并
+        回退全量构建；:2197-2205 carry 读取与 :2279-2291 stale 删除前做
+        canonical 根包含性复核；helpers :4219-4234。tests/incremental.rs:640,
+        :686 两个篡改回归（`../` 利用修复前曾实测删除项目根外文件）
+      - [x] 表一#2 Web 边界：web.rs:86-93 请求体 8 MiB / 30s 总预算，
+        :101-147 Host/Origin loopback 校验，:156-197 限长/截止时间读取，
+        :213-230 错误映射 403/413/408；tiny_http socket read timeout 在
+        vendor/tiny_http/src/lib.rs:294-305（仅 cage-cli 启用 Cargo feature，
+        1s socket idle timeout），client.rs:206-215 / web.rs:175-184 将
+        timeout 转 408；web.rs:2003-2026 真实 socket 滞留回归。web.rs 单测及
+        tests/web.rs 13 例（全发 loopback Host）全绿
+      - [x] 表一#3 + 表二#6 快照语义：snapshot/mod.rs:17-22 定性为内容一致性
+        （包内 HASHES.json 是信任根，不认证发布者）；README.zh.md:44 /
+        README.md:42 明确数据与账本同时替换无法识别，发布者认证指向
+        registry 签名 bundle（只解释既有能力，不实现快照验签）
+      - [x] 表二#1-#5 文档对齐（以代码为准，未改业务行为）：README.zh.md:40 /
+        README.md:38 引用谓词 E1410；lifecycle.md:132-133 命令示例与
+        main.rs:292-328 参数定义一致；architecture.md:211 /
+        architecture.en.md:207 环境 lint 与出包状态对应 main.rs:537-548、
+        main.rs:231-240,337-347,2377-2407,2594-2597；validation.md:479 的
+        IDE 状态对应 main.rs:257-264、editors/vscode/src/extension.ts:1-5,29-55；
+        需求整理.md:18 / requirements.md:18 的 CSV/L2 措辞对应
+        validation/mod.rs:450-519
       - [x] 附带修复：luna-review 两报告加入 srcExclude（文件含 ANSI 控制
         序列与原始工具记录，Vue 编译器报 "Element is missing end tag"，
         docs:build 自 ff2bdd9 起实际不可构建；本轮修复后 9.15s 绿）
-      - [x] 表一#4 迁移写回事务性：write_migrated_sources 两阶段化——
+      - [x] 表一#4 迁移写回事务性：main.rs:1644-1701 两阶段化——
         先全量渲染+读回（任一失败零落盘），再逐文件临时文件 + rename
-        原子替换；替换失败按已写序逆序回滚原字节并报错（"rolled back N
-        earlier write(s)"）。tests/migrate.rs 新增回归：第二源目录 0500
-        锁定时命令失败且所有源字节不变（修复前会留下半迁移状态，
-        测试先红后绿），migrate 10 例全绿
+        原子替换；:1702-1748 替换失败按已写序逆序回滚原字节并报错
+        （"rolled back N earlier write(s)"）。tests/migrate.rs:747 起新增
+        回归：第二源目录 0500 锁定时命令失败且所有源字节不变（修复前会
+        留下半迁移状态，测试先红后绿），migrate 10 例全绿
       - [x] 表三评估与分期（只评估不实现，三项均待用户拍板）：
         1) 快照签名与强制验签（报告：高）——现状快照仅同包账本内容一致
         性核对（本轮已定性），验签只覆盖 registry bundle（registry.rs
@@ -1603,14 +1606,18 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
         --require-signature，验签复用 bundle 实现，签名走 registry 现有
         bundle/presign 路径；二期再议密钥分发。
         2) LSP 未保存缓冲诊断（报告：中高）——现状从磁盘校验、零宽位置
-        映射（lsp.rs:14-23）。价值高但真内存化要改校验管线的文件锚定
+        映射（crates/cage-cli/src/lsp.rs:14-23）。价值高但真内存化要改校验管线的文件锚定
         （loaders 全链），改动面广。分期建议：先做 didChange 缓冲落临时
         文件的最简实现（零管线改动，语义等价），再评估是否值得内存化。
-        3) DB 行数/字节预算与 PG 流式（报告：中）——pg.rs:160-190 全量
-        缓冲，设计文档明确维持缓冲。评估：行数+字节 ceiling（超限报错）
+        3) DB 行数/字节预算与 PG 流式（报告：中）——
+        crates/cage-source-db/src/pg.rs:160-190 全量缓冲，docs/design.md:3135-3143
+        明确 PG 维持缓冲。评估：行数+字节 ceiling（超限报错）
         低风险值得做；真流式收益依赖超大表场景，与配置源定位（设计期人
         工维护规模）不符。分期建议：一期 ceiling 复用 web 8 MiB 预算思
         路；流式缓行。
+      验收门禁：`cargo fmt --all -- --check`、`cargo clippy --workspace
+      --all-targets -- -D warnings`、`cargo test --workspace`（933 passed）与
+      `npm run docs:build` 全绿；未 bump 版本。
 - [ ] 文档时效性清理（2026-10-18 用户令：很多文档已过时）：
       在本轮审核整改完成之后执行，避免与整改冲突。
       1) 通读 README / docs，找出与当前代码不符的描述（能力、配置项、命令、路径、版本）

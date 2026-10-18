@@ -1,4 +1,4 @@
-//! Configuration Snapshot（八个概念 #7）: self-verifying build artifact.
+//! Configuration Snapshot（八个概念 #7）: self-contained build artifact.
 //!
 //! A snapshot packages ONE profile view of a build — the build manifest, the
 //! canonical (profile-projected) schema, the generated artifacts partitioned

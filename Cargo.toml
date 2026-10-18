@@ -99,6 +99,9 @@ tokio = { version = "1", features = ["rt", "io-std", "macros"] }
 # Testing
 tempfile = "3.10"
 
+[patch.crates-io]
+tiny_http = { path = "vendor/tiny_http" }
+
 # Lint levels live in each crate root as inner attributes
 # (`#![warn(clippy::all, clippy::pedantic)]` + scoped allows): the
 # `[workspace.lints]` table makes cargo swallow `-- -D warnings` and, on this

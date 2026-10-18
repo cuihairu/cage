@@ -88,10 +88,8 @@ struct Ctx {
 /// onto the single-threaded serve loop (review 2026-10-18 表一#2).
 const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 /// Wall-clock budget for receiving a body: a client dripping bytes forever
-/// must not pin the serve loop. Checked between reads — a fully stalled
-/// connection still parks one blocking `read()` (`tiny_http` owns the
-/// socket, so no read timeout is settable); bytes, not seconds, stay
-/// bounded there.
+/// must not pin the serve loop. Checked between reads; the `tiny_http`
+/// connection-level idle timeout also bounds a single stalled read to 1 second.
 const MAX_BODY_SECS: u64 = 30;
 
 /// Loopback hostnames a legitimate local request may name (unbracketed
@@ -174,7 +172,16 @@ fn read_body_with(
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
-        let n = reader.read(&mut chunk).map_err(|_| BodyRead::Invalid)?;
+        let n = reader.read(&mut chunk).map_err(|e| {
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) {
+                BodyRead::TooSlow
+            } else {
+                BodyRead::Invalid
+            }
+        })?;
         if n == 0 {
             break;
         }
@@ -1933,6 +1940,15 @@ output_dir = "build/server/csv"
             Ok(1)
         }
     }
+    struct TimedOutReader;
+    impl std::io::Read for TimedOutReader {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "read timed out",
+            ))
+        }
+    }
 
     /// The body cap and the read budget are both enforced
     /// (review 2026-10-18 表一#2).
@@ -1971,6 +1987,43 @@ output_dir = "build/server/csv"
             ),
             Err(BodyRead::TooSlow)
         );
+
+        // The socket-level tiny_http read timeout also surfaces as the
+        // bounded-time response rather than a generic malformed-body error.
+        assert_eq!(
+            read_body_with(
+                &mut TimedOutReader,
+                1024,
+                std::time::Instant::now() + std::time::Duration::from_secs(1)
+            ),
+            Err(BodyRead::TooSlow)
+        );
+    }
+
+    /// The connection-level timeout reaches the real request body reader:
+    /// an idle client receives 408 instead of pinning the web handler.
+    #[test]
+    fn stalled_body_socket_timeout_returns_408() {
+        let server = tiny_http::Server::http(("127.0.0.1", 0)).expect("server");
+        let port = server.server_addr().to_ip().expect("addr").port();
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("client read timeout");
+        write!(
+            client,
+            "POST /api/validate HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 1\r\nConnection: close\r\n\r\n"
+        )
+        .expect("send headers without body");
+
+        // tiny_http reads small request bodies while parsing headers, so its
+        // parser itself returns the timeout response before a Request reaches
+        // the application handler.
+        let mut status = [0u8; 12];
+        client
+            .read_exact(&mut status)
+            .expect("read timeout response");
+        assert_eq!(&status, b"HTTP/1.1 408");
     }
 
     /// The loopback boundary: foreign Host, missing Host, and cross-origin
