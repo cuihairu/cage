@@ -35,6 +35,9 @@ use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+/// Maximum accepted LSP message body (bounds per-frame allocation).
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
 /// Read one `\n`-terminated header line; `None` on EOF with nothing read.
 fn read_line(input: &mut impl Read) -> Option<String> {
     let mut line = Vec::new();
@@ -73,7 +76,11 @@ fn read_frame(input: &mut impl Read) -> Option<Vec<u8>> {
         }
         // Other headers (Content-Type, …) are legal and irrelevant here.
     }
-    let mut body = vec![0_u8; content_length?];
+    let content_length = content_length?;
+    if content_length > MAX_FRAME_BYTES {
+        return None;
+    }
+    let mut body = vec![0_u8; content_length];
     input.read_exact(&mut body).ok()?;
     Some(body)
 }
@@ -379,6 +386,13 @@ mod tests {
         write_frame(&mut buffer, "{\"b\":2}").unwrap();
         let mut cursor = Cursor::new(buffer);
         assert_eq!(read_frame(&mut cursor), Some(b"{\"b\":2}".to_vec()));
+    }
+
+    #[test]
+    fn framing_rejects_content_length_over_limit() {
+        let input = format!("Content-Length: {}\r\n\r\n", MAX_FRAME_BYTES + 1);
+        let mut cursor = Cursor::new(input.into_bytes());
+        assert_eq!(read_frame(&mut cursor), None);
     }
 
     #[test]
