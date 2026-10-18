@@ -66,6 +66,12 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 
 - [x] 项目装载复用 CLI 加载链（`load_project_config` / `load_schema`），
       只绑定 `127.0.0.1`，无鉴权（本地工具）
+- [x] 请求边界与资源上限（2026-10-19 补记）：Host 必须指名 loopback
+      主机（`127.0.0.1` / `localhost` / `[::1]`，端口不参与匹配，缺失
+      Host 一律拒），POST 带 `Origin` 时必须是 loopback 源——违者 403
+      （防 DNS rebinding 与跨站写）；请求体上限 8 MiB（413）、30 秒
+      wall-clock 读取预算（408，vendor 版 tiny_http 连接级 1s idle
+      timeout 兜底单次滞留读）、不可读体 400
 - [x] `GET /api/schema`：合并 Schema 的编辑器文档 + 项目事实
       （project / schema_path / profile_names / warnings_as_errors）；
       每请求重载，保存后立即可见

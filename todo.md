@@ -1618,10 +1618,28 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       验收门禁：`cargo fmt --all -- --check`、`cargo clippy --workspace
       --all-targets -- -D warnings`、`cargo test --workspace`（933 passed）与
       `npm run docs:build` 全绿；未 bump 版本。
-- [ ] 文档时效性清理（2026-10-18 用户令：很多文档已过时）：
+- [x] 文档时效性清理（2026-10-18 用户令：很多文档已过时）：
       在本轮审核整改完成之后执行，避免与整改冲突。
       1) 通读 README / docs，找出与当前代码不符的描述（能力、配置项、命令、路径、版本）
       2) 以代码为准修正文档；**禁止为对齐文档去改业务代码**
       3) 已废弃但仍留在文档里的功能，明确标注「已移除」或删除，不要留成"看起来还能用"
       4) 命令行示例逐条跑一遍，跑不通的改掉或删掉
       5) 构建通过后 commit+push，回报改动文件清单
+      完成（2026-10-19，两轮）：
+      - 快速开始示例实跑修复（b9fa27a）：README.md / README.zh.md /
+        docs/index.md / docs/index.en.md / docs/cli.md / docs/cli.en.md——
+        PATH 是 cage.toml 所在项目根而非源目录（`cage check config/` 实跑
+        报 no project config found），全部改 `.` + 补 `cd my-game`；
+        registry publish 示例补 `--registry reg/`（init 新项目裸跑 E1802）；
+        gen 语言清单补 template。全部快速开始命令在新鲜 init 项目逐条
+        实跑通过（web/mcp/diff/migrate-draft 含内），schema-draft 需真实
+        数据库（SPECS 必填已验证）
+      - 命令面/配置键扫描：18 个子命令 + 各 flag 与 clap 定义一致
+        （无幻影引用）；cage.toml 键（warnings_as_errors/[remote.<scheme>]/
+        [registry]/[dependencies]）文档齐备；`generate_combined` CLI 未暴露
+        的声称复核仍准确；source.md 后续扩展节（XML/TOML/SQLite/Binary）
+        与实装一致
+      - 补缺（本轮）：docs/web.md / docs/web.en.md W2 清单补请求边界与
+        资源上限条目（Host/Origin loopback 403、8 MiB/413、30s/408、
+        vendor tiny_http 1s idle timeout）——c024549 与 76514b4 已实装但
+        文档未记

@@ -48,6 +48,14 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
 
 - [x] Project loading reuses the CLI load chain (`load_project_config` / `load_schema`),
   binds `127.0.0.1` only, no authentication (local tool)
+- [x] Request boundary and resource caps (noted 2026-10-19): the Host header
+  must name a loopback host (`127.0.0.1` / `localhost` / `[::1]`; the port does
+  not participate in matching, a missing Host is refused outright), and a POST
+  carrying `Origin` must name a loopback origin — violations get 403 (guards
+  against DNS rebinding and cross-site writes); request bodies are capped at
+  8 MiB (413) with a 30-second wall-clock read budget (408; the vendored
+  tiny_http's connection-level 1s idle timeout bounds a single stalled read),
+  an unreadable body gets 400
 - [x] `GET /api/schema`: the editor document of the merged Schema + project facts (project /
   schema_path / profile_names / warnings_as_errors);
   reloaded per request, so saves are immediately visible
