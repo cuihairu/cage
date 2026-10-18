@@ -35,11 +35,11 @@ Authoring Sources → Source Adapters → Canonical Model
 - Source adapter plugins: Excel / CSV / JSON / YAML, plus the remote sources HTTP API / MySQL / PostgreSQL / Google Sheets (XML, SQLite, … later); they read and parse only, and do no business-rule validation
 - Schema decoupled from Source: one schema serves multiple configuration sources (types / required / defaults / ranges / enums / uniqueness / references)
 - Eight-level validation pipeline: Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule, executable level by level (`cage check --level`)
-- Cross-configuration reference checks: existence plus compatibility (a reference whose target exists but has an invalid type is still an error; semantic predicate checking is reserved)
+- Cross-configuration reference checks: existence plus compatibility (a reference whose target exists but has an invalid type is still an error; reference predicates are evaluated semantically, and an unsatisfied predicate reports E1410)
 - Diagnostics as a first-class concern: error codes + precise locations (file / sheet / cell / field / value) + fix hints
 - Deterministic builds: same input → same artifacts, hashes, and manifest (traceable, revertible, incremental)
 - Profile mechanism: different targets and field visibility for client / server; one configuration serves both ends
-- Configuration Snapshot: `cage snapshot` packs a self-verifying configuration snapshot (manifest + schema + artifacts + a per-file hash ledger); a server verifies it before loading, and tampering or added/removed files are exposed
+- Configuration Snapshot: `cage snapshot` packs a self-verifying configuration snapshot (manifest + schema + artifacts + a per-file hash ledger); a server verifies it before loading — files tampered with, added, or removed relative to the packed ledger are exposed (content consistency; publisher authentication is the registry's signed-bundle path)
 - Configuration Registry: `cage registry` is a multi-version configuration repository (publish / list / audit / GC / remove + bundle export / import / direct push to a remote, including presigned-URL pushes via `--presign-map`); consumers reference `registry:package@version` and pin versions via `[dependencies]`, with remote http(s) root resolution (the consumer-side cache works offline, and `registry push` pushes directly to a remote)
 - Schema draft from a live database: `cage schema-draft` introspects MySQL / PostgreSQL tables (read-only, bound parameters) into a reviewable schema draft — tables, primary keys, `NOT NULL → required`, with inline comments where the server's type carries a decision (DECIMAL / temporal / JSON)
 - Declarative data migration: `cage migrate` applies rule transforms to validated configuration along a version-stepped chain (rename / fill defaults / drop fields / widen types / remap values); it reports a dry-run plan by default, and `--write` writes the sources back in place and re-verifies the full stack
@@ -64,7 +64,7 @@ A scaffolded project runs `cage check .` and `cage build . --env dev` with zero 
 cage check config/                 # validate only, generate nothing
 cage check config/ --env prod        # validate under a schema-declared environment (env_overrides)
 cage build config/ --profile client  # validate and generate the target artifacts
-cage snapshot config/ --profile client  # build + pack a self-verifying snapshot; load a snapshot directory with --verify to check it first
+cage snapshot config/ --profile client  # build + pack a snapshot with a packed hash ledger; --verify checks a snapshot directory against that ledger before loading
 cage gen config/ --profile server    # generate code bindings and definition files only (cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema)
 cage diff build/a build/b          # compare two configuration versions
 cage inspect config/ Item          # inspect the schema and structure (project path required, table name optional)

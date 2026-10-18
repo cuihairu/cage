@@ -2003,7 +2003,32 @@ fn build_project(
     // table was deleted, or an untouched artifact is missing/unreadable.
     let target_records = ManifestGenerator::target_records(&build_profile.targets);
     let prev_manifest = if incremental {
-        load_manifest(&manifest_dir).ok()
+        match load_manifest(&manifest_dir) {
+            Ok(prev) => {
+                // A tampered or corrupted manifest must not steer the
+                // carry/delete paths outside the project root (review
+                // 2026-10-18 表一#1): reject any non-normalized relative
+                // path and fall back to a full build instead.
+                let safe = prev
+                    .artifacts
+                    .keys()
+                    .all(|rel| manifest_rel_path_is_safe(rel))
+                    && prev
+                        .targets
+                        .iter()
+                        .all(|t| manifest_rel_path_is_safe(&t.output_dir));
+                if safe {
+                    Some(prev)
+                } else {
+                    eprintln!(
+                        "warning: previous manifest contains unsafe paths; \
+                         ignoring it and running a full build"
+                    );
+                    None
+                }
+            }
+            Err(_) => None,
+        }
     } else {
         None
     };
@@ -2101,7 +2126,17 @@ fn build_project(
                 {
                     continue;
                 }
-                match std::fs::read(path.join(rel)) {
+                let full = path.join(rel);
+                if !resolved_within_root(&full, path) {
+                    eprintln!(
+                        "warning: carried artifact '{rel}' resolves outside the project root; \
+                         falling back to a full build"
+                    );
+                    carried.clear();
+                    carry_ok = false;
+                    break;
+                }
+                match std::fs::read(&full) {
                     Ok(bytes) => {
                         carried.push((rel.clone(), bytes, info.format.clone(), info.table.clone()));
                     }
@@ -2173,7 +2208,15 @@ fn build_project(
                 if !stale {
                     continue;
                 }
-                match std::fs::remove_file(path.join(rel)) {
+                let full = path.join(rel);
+                if !resolved_within_root(&full, path) {
+                    eprintln!(
+                        "warning: refusing to remove stale artifact '{rel}' \
+                         outside the project root"
+                    );
+                    continue;
+                }
+                match std::fs::remove_file(&full) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => eprintln!("warning: could not remove stale artifact '{rel}' ({e})"),
@@ -4099,9 +4142,71 @@ fn load_manifest(path: &Path) -> Result<BuildManifest, String> {
         .map_err(|e| format!("invalid manifest {}: {e}", manifest_path.display()))
 }
 
+/// A manifest-sourced path may only steer file operations when it is a
+/// normalized project-relative path: non-empty, relative, and every
+/// component normal (no root, no prefix, no `..`). `.` components are
+/// skipped by `Path::components` and join to the same file, so they are
+/// harmless. Guards the incremental carry/delete paths, which join these
+/// strings onto the project root (review 2026-10-18 表一#1).
+fn manifest_rel_path_is_safe(rel: &str) -> bool {
+    use std::path::Component;
+    let p = Path::new(rel);
+    !p.as_os_str().is_empty()
+        && p.is_relative()
+        && p.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// Second line of defense: the canonical path must stay inside the
+/// canonical root (blocks symlink escapes). Unresolvable paths count as
+/// outside — there is nothing to read or delete at them anyway.
+fn resolved_within_root(full: &Path, root: &Path) -> bool {
+    match (full.canonicalize(), root.canonicalize()) {
+        (Ok(p), Ok(r)) => p.starts_with(&r),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Manifest paths are trusted only when normalized and relative
+    /// (review 2026-10-18 表一#1).
+    #[test]
+    fn manifest_rel_path_is_safe_accepts_only_normalized_relative_paths() {
+        assert!(manifest_rel_path_is_safe("build/client/Item.json"));
+        assert!(manifest_rel_path_is_safe("Item.json"));
+        // `.` components join to the same file — harmless by construction
+        assert!(manifest_rel_path_is_safe("build/./Item.json"));
+
+        assert!(!manifest_rel_path_is_safe(""));
+        assert!(!manifest_rel_path_is_safe("/etc/passwd"));
+        assert!(!manifest_rel_path_is_safe("../outside.txt"));
+        assert!(!manifest_rel_path_is_safe("build/../../outside.txt"));
+        assert!(!manifest_rel_path_is_safe("build/.."));
+    }
+
+    /// Resolved containment: a `..`-free join that resolves (via symlink)
+    /// outside the root must be refused; paths inside the root pass.
+    #[test]
+    fn resolved_within_root_blocks_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("real.txt"), b"x").unwrap();
+
+        assert!(resolved_within_root(&root.join("real.txt"), root));
+        // Missing file: canonicalize fails → treated as outside (nothing
+        // to read or delete there)
+        assert!(!resolved_within_root(&root.join("missing.txt"), root));
+        // Symlink pointing outside the root
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("canary.txt"), b"x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path().join("canary.txt"), root.join("link.txt"))
+            .unwrap();
+        #[cfg(unix)]
+        assert!(!resolved_within_root(&root.join("link.txt"), root));
+    }
 
     /// Render a parsed subcommand as a canonical string. Every `Commands`
     /// arm executes when the five `parse_*` tests call it, so the dispatch

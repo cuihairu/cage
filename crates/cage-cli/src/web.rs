@@ -83,6 +83,112 @@ struct Ctx {
     config: ProjectConfig,
 }
 
+/// Request-body cap: the editor API carries schema/row JSON whose real
+/// sizes stay far below this. Bounds the memory one connection can force
+/// onto the single-threaded serve loop (review 2026-10-18 表一#2).
+const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+/// Wall-clock budget for receiving a body: a client dripping bytes forever
+/// must not pin the serve loop. Checked between reads — a fully stalled
+/// connection still parks one blocking `read()` (`tiny_http` owns the
+/// socket, so no read timeout is settable); bytes, not seconds, stay
+/// bounded there.
+const MAX_BODY_SECS: u64 = 30;
+
+/// Loopback hostnames a legitimate local request may name (unbracketed
+/// forms — `host_hostname` strips the brackets). Port is deliberately not
+/// matched: the rebinding attack swaps the hostname, and the client picks
+/// whichever port it knocks on anyway.
+const LOCAL_HOSTNAMES: [&str; 3] = ["127.0.0.1", "localhost", "::1"];
+
+/// Refusal reason for a request that does not name a loopback host:
+/// `Some(message)` → respond 403. GETs carry no `Origin`; writes must
+/// either omit it (curl, same-origin HTML form legacy) or name a loopback
+/// origin. A missing `Host` (HTTP/1.0) is refused outright.
+fn local_boundary_violation(request: &tiny_http::Request) -> Option<&'static str> {
+    let Some(host) = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Host"))
+        .map(|h| h.value.as_str())
+    else {
+        return Some("request has no Host header");
+    };
+    if !LOCAL_HOSTNAMES.contains(&host_hostname(host)) {
+        return Some("request does not name a loopback host");
+    }
+    if matches!(request.method(), tiny_http::Method::Post) {
+        if let Some(origin) = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Origin"))
+            .map(|h| h.value.as_str())
+        {
+            let local = origin
+                .strip_prefix("http://")
+                .or_else(|| origin.strip_prefix("https://"))
+                .is_some_and(|rest| LOCAL_HOSTNAMES.contains(&host_hostname(rest)));
+            if !local {
+                return Some("cross-origin write request");
+            }
+        }
+    }
+    None
+}
+
+/// Hostname part of a `Host`/`Origin` authority: `[::1]:8765` → `[::1]`,
+/// `example.com:80` → `example.com`, bare `localhost` → itself.
+fn host_hostname(authority: &str) -> &str {
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(authority);
+    }
+    match authority.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    }
+}
+
+/// How reading a request body failed; each maps to its own status code.
+#[derive(Debug, PartialEq, Eq)]
+enum BodyRead {
+    TooLarge,
+    TooSlow,
+    Invalid,
+}
+
+/// Bounded body read (`MAX_BODY_BYTES` / `MAX_BODY_SECS`).
+fn read_body_limited(reader: &mut dyn std::io::Read) -> Result<String, BodyRead> {
+    read_body_with(
+        reader,
+        MAX_BODY_BYTES,
+        std::time::Instant::now() + std::time::Duration::from_secs(MAX_BODY_SECS),
+    )
+}
+
+/// The bounded read itself, parameterized for tests: at most `max` bytes,
+/// no later than `deadline` between successful reads.
+fn read_body_with(
+    reader: &mut dyn std::io::Read,
+    max: u64,
+    deadline: std::time::Instant,
+) -> Result<String, BodyRead> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut chunk).map_err(|_| BodyRead::Invalid)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() as u64 > max {
+            return Err(BodyRead::TooLarge);
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(BodyRead::TooSlow);
+        }
+    }
+    String::from_utf8(buf).map_err(|_| BodyRead::Invalid)
+}
+
 fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
     let method = request.method().clone();
     let full_url = request.url().to_string();
@@ -93,14 +199,34 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
         None => (full_url.clone(), String::new()),
     };
 
+    // Loopback boundary (review 2026-10-18 表一#2): the socket binds
+    // 127.0.0.1, but a page in the user's browser can still reach it —
+    // a cross-site POST carries a foreign `Origin`, and DNS rebinding
+    // swaps the `Host`. Both must name a loopback hostname.
+    if let Some(reason) = local_boundary_violation(&request) {
+        let _ = request.respond(json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": reason}),
+        ));
+        return;
+    }
+
     let mut body = String::new();
     if matches!(method, tiny_http::Method::Post) {
-        if let Err(e) = request.as_reader().read_to_string(&mut body) {
-            let _ = request.respond(json_response(
-                400,
-                &serde_json::json!({"ok": false, "error": format!("cannot read request body: {e}")}),
-            ));
-            return;
+        match read_body_limited(request.as_reader()) {
+            Ok(b) => body = b,
+            Err(e) => {
+                let (status, msg) = match e {
+                    BodyRead::TooLarge => (413, "request body too large"),
+                    BodyRead::TooSlow => (408, "request body read timed out"),
+                    BodyRead::Invalid => (400, "cannot read request body"),
+                };
+                let _ = request.respond(json_response(
+                    status,
+                    &serde_json::json!({"ok": false, "error": msg}),
+                ));
+                return;
+            }
         }
     }
 
@@ -1097,6 +1223,7 @@ mod tests {
     use super::*;
     use cage_core::schema::Schema;
     use std::fs;
+    use std::io::{Read as _, Write as _};
     use tempfile::TempDir;
 
     /// Editor document for a schema with one table whose primary key points
@@ -1789,6 +1916,199 @@ output_dir = "build/server/csv"
             serde_json::json!("0.1.0")
         );
     }
+    /// Reader that returns one byte per call, sleeping in between — the
+    /// drip-feed a cross-origin page would use to pin the serve loop.
+    struct DripReader {
+        left: u32,
+        delay: std::time::Duration,
+    }
+    impl std::io::Read for DripReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.left == 0 {
+                return Ok(0);
+            }
+            std::thread::sleep(self.delay);
+            self.left -= 1;
+            buf[0] = b'x';
+            Ok(1)
+        }
+    }
+
+    /// The body cap and the read budget are both enforced
+    /// (review 2026-10-18 表一#2).
+    #[test]
+    fn body_reader_limits_size_and_read_budget() {
+        // Under both limits → fine
+        let mut r = std::io::Cursor::new(b"{}".to_vec());
+        let got = read_body_with(
+            &mut r,
+            16,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(got, Ok("{}".to_string()));
+
+        // Over the byte cap → TooLarge (checked as soon as it overflows)
+        let mut r = std::io::Cursor::new(vec![b'x'; 33]);
+        assert_eq!(
+            read_body_with(
+                &mut r,
+                16,
+                std::time::Instant::now() + std::time::Duration::from_secs(1)
+            ),
+            Err(BodyRead::TooLarge)
+        );
+
+        // Drip-feed past the wall-clock budget → TooSlow even under the cap
+        let mut r = DripReader {
+            left: 64,
+            delay: std::time::Duration::from_millis(10),
+        };
+        assert_eq!(
+            read_body_with(
+                &mut r,
+                1024,
+                std::time::Instant::now() + std::time::Duration::from_millis(50)
+            ),
+            Err(BodyRead::TooSlow)
+        );
+    }
+
+    /// The loopback boundary: foreign Host, missing Host, and cross-origin
+    /// writes are refused; local Host with or without Origin passes
+    /// (review 2026-10-18 表一#2). Drives real requests through `handle`
+    /// over a socket, the same way the unreadable-body test does.
+    #[test]
+    fn local_boundary_checks_host_and_origin() {
+        fn round_trip(
+            server: &tiny_http::Server,
+            ctx: &Ctx,
+            port: u16,
+            method: &str,
+            path: &str,
+            host: Option<&str>,
+            origin: Option<&str>,
+        ) -> String {
+            let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            client
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("read timeout");
+            let mut head = format!("{method} {path} HTTP/1.1\r\n");
+            if let Some(h) = host {
+                head.push_str("Host: ");
+                head.push_str(h);
+                head.push_str("\r\n");
+            }
+            if let Some(o) = origin {
+                head.push_str("Origin: ");
+                head.push_str(o);
+                head.push_str("\r\n");
+            }
+            head.push_str("Content-Length: 0\r\nConnection: close\r\n\r\n");
+            client.write_all(head.as_bytes()).expect("send head");
+            client
+                .shutdown(std::net::Shutdown::Write)
+                .expect("shutdown");
+
+            let request = server.incoming_requests().next().expect("request");
+            handle(request, ctx);
+
+            let mut reply = Vec::new();
+            client.read_to_end(&mut reply).expect("read reply");
+            String::from_utf8(reply).expect("utf8")
+        }
+
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = ctx_in(&dir, None);
+        let server = tiny_http::Server::http(("127.0.0.1", 0)).expect("server");
+        let port = server.server_addr().to_ip().expect("addr").port();
+
+        // Local host, any loopback spelling, GET → past the boundary
+        // (the schema endpoint answers 500 with no schema configured —
+        // anything but 403 means the boundary let it through)
+        for host in ["127.0.0.1", "localhost", "[::1]"] {
+            let out = round_trip(
+                &server,
+                &ctx,
+                port,
+                "GET",
+                "/api/schema",
+                Some(&format!("{host}:{port}")),
+                None,
+            );
+            assert!(!out.contains("403"), "host {host} refused: {out}");
+        }
+
+        // Foreign host (DNS rebinding) and missing host (HTTP/1.0) → 403
+        assert!(round_trip(
+            &server,
+            &ctx,
+            port,
+            "GET",
+            "/api/schema",
+            Some("evil.example"),
+            None
+        )
+        .contains("403"));
+        assert!(round_trip(
+            &server,
+            &ctx,
+            port,
+            "GET",
+            "/api/schema",
+            Some(&format!("evil.example:{port}")),
+            None
+        )
+        .contains("403"));
+        assert!(round_trip(&server, &ctx, port, "GET", "/api/schema", None, None).contains("403"));
+
+        // Writes: no Origin (curl) or loopback Origin → past the boundary
+        // (empty body fails validation with ok:false, status 200)
+        let out = round_trip(
+            &server,
+            &ctx,
+            port,
+            "POST",
+            "/api/validate",
+            Some(&format!("127.0.0.1:{port}")),
+            None,
+        );
+        assert!(!out.contains("403"), "originless POST refused: {out}");
+        for host in ["127.0.0.1", "localhost"] {
+            let out = round_trip(
+                &server,
+                &ctx,
+                port,
+                "POST",
+                "/api/validate",
+                Some(&format!("{host}:{port}")),
+                Some(&format!("http://{host}:{port}")),
+            );
+            assert!(!out.contains("403"), "local origin {host} refused: {out}");
+        }
+
+        // Cross-origin write → 403 (this is the CSRF surface); the
+        // sandboxed/null origin is not a loopback origin either
+        assert!(round_trip(
+            &server,
+            &ctx,
+            port,
+            "POST",
+            "/api/validate",
+            Some(&format!("127.0.0.1:{port}")),
+            Some("https://evil.example")
+        )
+        .contains("403"));
+        assert!(round_trip(
+            &server,
+            &ctx,
+            port,
+            "POST",
+            "/api/validate",
+            Some(&format!("127.0.0.1:{port}")),
+            Some("null")
+        )
+        .contains("403"));
+    }
 }
 
 #[cfg(test)]
@@ -1959,10 +2279,10 @@ file_template = "{table}.json"
         client
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .expect("read timeout");
-        // Invalid UTF-8 bytes: read_to_string rejects them mid-body.
+        // Invalid UTF-8 bytes: the body read rejects them mid-body.
         let body = [0xFFu8, 0xFE, 0x80, 0x81, 0x82];
         let head = format!(
-            "POST /api/validate HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /api/validate HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         client.write_all(head.as_bytes()).expect("send head");

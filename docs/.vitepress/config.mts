@@ -214,8 +214,16 @@ export default defineConfig({
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/cage/favicon.svg' }]
   ],
 
-  // 原始设计稿与需求整理作为底稿保留，不进站点路由
-  srcExclude: ['design.md', 'design.en.md', '需求整理.md', 'requirements.md'],
+  // 原始设计稿与需求整理作为底稿保留，不进站点路由；审核报告
+  // （含原始工具记录与 ANSI 控制字符）同样只作底稿
+  srcExclude: [
+    'design.md',
+    'design.en.md',
+    '需求整理.md',
+    'requirements.md',
+    'review/luna-review-2026-10-18.md',
+    'review/gpt6-luna-review-2026-10-18.md',
+  ],
 
   // 英文源文件保留 <name>.en.md，站点路由归入 /en/ 以启用 locale 主题。
   rewrites: {

@@ -109,7 +109,7 @@ fn request_once(
     let len = body.map(str::len).unwrap_or(0);
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: cage-web-test\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
     )?;
     if let Some(b) = body {
         stream.write_all(b.as_bytes())?;

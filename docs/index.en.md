@@ -27,7 +27,7 @@ features:
   - title: Eight-level validation pipeline
     details: Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule run level by level; cage check --level validates by level.
   - title: Cross-configuration reference validation
-    details: Existence plus compatibility checks — a referenced object that exists but has an invalid type is an error too; semantic predicate validation is reserved.
+    details: Existence plus compatibility checks — a referenced object that exists but has an invalid type is an error too; reference predicates are evaluated semantically (E1410 when unsatisfied).
   - title: Diagnostics as a first-class citizen
     details: Error codes plus precise locations (file / Sheet / cell / field / value) plus fix hints, consumed directly by the CLI, the Web UI and the IDE (`cage lsp`).
   - title: Deterministic builds

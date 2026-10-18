@@ -15,7 +15,7 @@ Status as of the 2026-10 code: the MVP is fully delivered, phase two is fully de
 
 ### Source Adapter (reads and parses only, no business validation)
 - [x] Excel (workbook/sheet/header/cell/row/columns/merged cells (.xlsx only)/cached formula values/hidden sheets skipped (decided 2026-10-12); cell comments explicitly not done (same decision))
-- [x] CSV (header row; Bool/integer/float type inference during parsing, then handed to the Schema for strict calibration at L2)
+- [x] CSV (header row; Bool/integer/float type inference during parsing, then strict type-family matching at L2 (mismatch reports E1101, no automatic conversion))
 - [x] JSON / YAML
 - Unified Canonical Model output: Null/Bool/Int/UInt/Float/String/Bytes/Array/Object + Source Location + metadata
 

@@ -476,7 +476,7 @@ WARNING
 INFO
 ```
 
-CLI 与 Web UI 已直接消费这套诊断；IDE 插件留待后续接入。
+CLI 与 Web UI 已直接消费这套诊断；IDE 侧 `cage lsp`（stdio Language Server，与 check 共用校验管线）与 VSCode 扩展已接入。
 
 ## Warning Policy（已实装）
 

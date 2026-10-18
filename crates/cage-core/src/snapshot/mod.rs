@@ -14,6 +14,12 @@
 //! └── HASHES.json     # per-file blake3 ledger + build_id / content_hash
 //! ```
 //!
+//! Verification semantics (`verify_snapshot`): the packed `HASHES.json`
+//! ledger is the trust root, so the check proves CONTENT CONSISTENCY — a
+//! file that was tampered with, added, or removed relative to the ledger is
+//! exposed. It does NOT authenticate the publisher: an attacker who swaps
+//! files and ledger together passes. Publisher authentication is the
+//! registry's signed-bundle path (design §47), not the snapshot.
 //! The directory name derives from `profile` + `build_id` — a deterministic
 //! fingerprint, deliberately NOT wall-clock (the review's snapshot sketch
 //! suggested a date stamp; that would break the determinism contract: same

@@ -129,8 +129,8 @@ cage build .                    # ④ 生成（含依赖表）
 ### 场景五：历史库迁移 migrate draft → apply
 
 ```bash
-cage schema-draft --db mysql://… --out schemas/legacy.yaml   # 内省起草
-cage migrate-draft . --out migrations/v1.yaml                # 起草迁移链
+cage schema-draft . mysql:legacy_items                      # 内省起草（只读，绑定参数）
+cage migrate-draft schemas/old.yaml schemas/new.yaml --from 1.0.0 --to 2.0.0   # 起草迁移规则稿
 cage migrate .                                               # 预演（不落盘）
 cage migrate . --write                                       # 落盘 + 全栈回验
 ```

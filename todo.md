@@ -1565,3 +1565,31 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
          **禁止为对齐文档去改业务代码**
       3) 表三「值得补的能力」：只做评估与分期建议，**不实现**（需用户拍板）
       每完成一项勾掉并写证据；全部测试通过后 commit+push；不 bump 版本号。
+      进度（2026-10-18 首轮）：
+      - [x] 表一#1 增量删除越界：main.rs 新增 manifest_rel_path_is_safe /
+        resolved_within_root——prev manifest 载入即拒绝非常规相对路径（回退
+        全量构建），carry 读与 stale 删除前再做 canonical 包含性复核；
+        tests/incremental.rs 两个篡改回归（利用先行：artifact 键 `../` 向量
+        修复前实测删除了项目根外文件，测试先红后绿）
+      - [x] 表一#2 Web 边界：web.rs 请求体上限 8 MiB（413）+ 30s 读取预算
+        （408，含滴漏喂入防护，钳在两次 read 之间）+ Host/Origin loopback
+        校验（403，防 DNS rebinding 与跨站写）；web.rs 新增 3 组单测，
+        tests/web.rs 13 例改发 loopback Host 后全绿，cage-cli 25 套件全绿
+      - [x] 表一#3 + 表二#6 快照语义：verify_snapshot 定性为内容一致性校验
+        （信任根=包内 HASHES.json，不认证发布者）写入 snapshot/mod.rs 模块
+        注释；README zh/en 撤回「自校验/篡改即暴露」的过度表述，指向
+        registry 签名 bundle 路径（验签能力列表三，不实装）
+      - [x] 表二#1-#5 文档对齐（以代码为准，未动业务代码）：README/index
+        zh+en 谓词校验已实装（E1410，validation/mod.rs:1195）；lifecycle
+        migrate 示例对齐 CLI 签名（schema-draft <项目> <spec>、migrate-draft
+        <old> <new> --from --to，main.rs:292-328）；architecture zh/en 环境
+        行——坏覆盖 lint 与 snapshot/registry `--env` 出包已实装；
+        validation.md IDE 已接入（cage lsp + VSCode 扩展）；需求整理/
+        requirements CSV 措辞改「L2 类型族严格匹配（E1101，不自动转换）」
+      - [x] 附带修复：luna-review 两报告加入 srcExclude（文件含 ANSI 控制
+        序列与原始工具记录，Vue 编译器报 "Element is missing end tag"，
+        docs:build 自 ff2bdd9 起实际不可构建；本轮修复后 9.15s 绿）
+      - [ ] 表一#4 迁移写回事务性（main.rs:1633-1671，tmp + rename 原子
+        替换 + 失败回滚）——下一轮
+      - [ ] 表三评估与分期建议（快照验签 / LSP 未保存缓冲诊断 / PG 流式
+        读取与资源预算）——下一轮，只评估不实现

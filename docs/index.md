@@ -27,7 +27,7 @@ features:
   - title: 八级验证流水线
     details: Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule 逐级执行，cage check --level 可分级验证。
   - title: 跨配置引用校验
-    details: 存在性 + 兼容性检查，引用对象存在但类型不合法同样报错；语义谓词校验预留。
+    details: 存在性 + 兼容性检查，引用对象存在但类型不合法同样报错；引用谓词按语义求值，不满足即报 E1410。
   - title: Diagnostics 一等公民
     details: 错误码 + 精确定位（文件 / Sheet / 单元格 / 字段 / 值）+ 修复提示，CLI、Web UI 与 IDE（`cage lsp`）直接消费。
   - title: 确定性构建

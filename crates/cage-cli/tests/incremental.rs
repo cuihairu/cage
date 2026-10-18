@@ -630,3 +630,93 @@ fn legacy_manifest_migrates_with_one_full_build() {
         "migrated manifest must carry target records: {migrated}"
     );
 }
+
+/// Tampered manifest artifact paths must not reach outside the project
+/// root: the incremental stale-delete path joins previous-manifest paths
+/// onto the project root, so `..` components in a corrupted manifest must
+/// be rejected (full-build fallback) and files outside the root survive.
+/// (independent review 2026-10-18, 表一#1)
+#[test]
+fn tampered_manifest_cannot_delete_outside_project_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project(root);
+
+    let out = build(root, false);
+    assert!(out.status.success());
+
+    // Canary one level above the project root.
+    let canary = tmp.path().parent().unwrap().join("luna-canary.txt");
+    fs::write(&canary, b"do not delete").unwrap();
+
+    // Corrupt the manifest: shift the target hash so the incremental run
+    // marks the target's output dir for regeneration, and record an
+    // artifact under a `..`-laden path that resolves outside the root.
+    let manifest_path = root.join("build/manifest.json");
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    value["targets"][0]["hash"] = serde_json::json!("tampered");
+    let mut artifacts = value["artifacts"].as_object().unwrap().clone();
+    artifacts.insert(
+        "build/client/../../../luna-canary.txt".to_string(),
+        serde_json::json!({
+            "path": "build/client/../../../luna-canary.txt",
+            "hash": "0".repeat(64),
+            "size": 13,
+            "format": "json",
+            "table": null,
+            "encoding": "utf-8"
+        }),
+    );
+    value["artifacts"] = serde_json::Value::Object(artifacts);
+    fs::write(&manifest_path, serde_json::to_string(&value).unwrap()).unwrap();
+
+    let out = build(root, true);
+    assert!(out.status.success());
+    assert!(
+        canary.exists(),
+        "file outside the project root was deleted via manifest paths"
+    );
+}
+
+/// Same attack surface via a tampered target `output_dir`: the stale-delete
+/// prefix itself must not point outside the project root.
+/// (independent review 2026-10-18, 表一#1)
+#[test]
+fn tampered_manifest_target_output_dir_cannot_escape_project_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project(root);
+
+    let out = build(root, false);
+    assert!(out.status.success());
+
+    let canary = tmp.path().parent().unwrap().join("luna-canary2.txt");
+    fs::write(&canary, b"do not delete").unwrap();
+
+    let manifest_path = root.join("build/manifest.json");
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    value["targets"][0]["output_dir"] = serde_json::json!("../");
+    let mut artifacts = value["artifacts"].as_object().unwrap().clone();
+    artifacts.insert(
+        "../luna-canary2.txt".to_string(),
+        serde_json::json!({
+            "path": "../luna-canary2.txt",
+            "hash": "0".repeat(64),
+            "size": 13,
+            "format": "json",
+            "table": "Item",
+            "encoding": "utf-8"
+        }),
+    );
+    value["artifacts"] = serde_json::Value::Object(artifacts);
+    fs::write(&manifest_path, serde_json::to_string(&value).unwrap()).unwrap();
+
+    let out = build(root, true);
+    assert!(out.status.success());
+    assert!(
+        canary.exists(),
+        "file outside the project root was deleted via a tampered output_dir"
+    );
+}
