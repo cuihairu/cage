@@ -1075,7 +1075,42 @@ fn api_diff(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
             serde_json::json!({"ok": false, "error": "missing from/to parameters (?from=REL&to=REL)"}),
         );
     };
-    let base = match crate::load_manifest(&ctx.root.join(&from)) {
+    let safe_path = |rel: &str| -> Result<std::path::PathBuf, String> {
+        let relative = std::path::Path::new(rel);
+        if relative.is_absolute()
+            || relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err("path must be a normalized project-relative path".to_string());
+        }
+        let root = std::fs::canonicalize(&ctx.root).map_err(|e| format!("project root: {e}"))?;
+        let path = std::fs::canonicalize(root.join(relative)).map_err(|e| e.to_string())?;
+        if !path.starts_with(&root) {
+            return Err("path resolves outside project root".to_string());
+        }
+        Ok(path)
+    };
+    let from_path = match safe_path(&from) {
+        Ok(path) => path,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("baseline '{from}': {e}")}),
+            )
+        }
+    };
+    let to_path = match safe_path(&to) {
+        Ok(path) => path,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("target '{to}': {e}")}),
+            )
+        }
+    };
+    let base = match crate::load_manifest(&from_path) {
         Ok(m) => m,
         Err(e) => {
             return (
@@ -1084,7 +1119,7 @@ fn api_diff(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
             );
         }
     };
-    let new = match crate::load_manifest(&ctx.root.join(&to)) {
+    let new = match crate::load_manifest(&to_path) {
         Ok(m) => m,
         Err(e) => {
             return (
@@ -1881,6 +1916,28 @@ output_dir = "build/server/csv"
         let (status, err) = api_diff(&ctx, "from=ghost/manifest.json&to=build");
         assert_eq!(status, 400);
         assert!(err["error"].as_str().expect("msg").contains("baseline"));
+    }
+
+    #[test]
+    fn api_diff_rejects_absolute_paths_and_parent_traversal() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        api_build(&ctx, r#"{"profile": "client"}"#);
+
+        let absolute = format!("from={}&to=build", dir.path().join("build").display());
+        let (status, err) = api_diff(&ctx, &absolute);
+        assert_eq!(status, 400);
+        assert!(err["error"]
+            .as_str()
+            .unwrap()
+            .contains("normalized project-relative path"));
+
+        let (status, err) = api_diff(&ctx, "from=../build&to=build");
+        assert_eq!(status, 400);
+        assert!(err["error"]
+            .as_str()
+            .unwrap()
+            .contains("normalized project-relative path"));
     }
 
     #[test]
