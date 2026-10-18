@@ -40,6 +40,24 @@ features:
     details: cage migrate steps through a versioned chain applying rule transforms (rename / fill defaults / drop fields / widen types / remap values) to validated configuration; it reports as a dry run by default, --write writes back in place and re-validates the whole stack.
 ---
 
+<script setup lang="ts">
+// Record the manual language choice when leaving via the Chinese link, so the
+// first-visit redirect on the Chinese home does not bounce the user back here.
+const KEY = 'cage-lang-auto-picked'
+const BASE = '/cage/'
+const ROOT_PATH = BASE
+const EN_PATH = BASE + 'en/'
+if (typeof window !== 'undefined') {{
+  window.addEventListener('click', (e) => {{
+    const a = (e.target as HTMLElement)?.closest?.('a') as HTMLAnchorElement | null
+    const href = a?.getAttribute('href') || ''
+    if (href.startsWith(EN_PATH)) localStorage.setItem(KEY, EN_PATH)
+    else if (href === ROOT_PATH || href === ROOT_PATH.slice(0, -1)) localStorage.setItem(KEY, ROOT_PATH)
+  }}, true)
+}}
+</script>
+
+
 [中文](/) | English
 
 

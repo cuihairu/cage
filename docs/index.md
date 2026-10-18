@@ -42,12 +42,12 @@ features:
 
 <script setup lang="ts">
 // 首次访问按浏览器语言选择文档语言（vitepress 无此能力，GitHub Pages 不支持 _redirects）
-// 优先级：localStorage 手动选择 > navigator.language > 保持当前 locale
+// 中文即站点默认 locale（root），仅非中文访客跳 /en/；优先级：localStorage 手动选择 > navigator.language
 import { onBeforeMount } from 'vue'
 const KEY = 'cage-lang-auto-picked'
 const BASE = '/cage/'
 const ROOT_PATH = BASE
-const ZH_PATH = BASE + 'zh/'
+const EN_PATH = BASE + 'en/'
 onBeforeMount(() => {{
   if (typeof window === 'undefined') return
   const p = window.location.pathname
@@ -55,13 +55,13 @@ onBeforeMount(() => {{
   const picked = localStorage.getItem(KEY)
   if (picked) {{ if (picked !== p) window.location.replace(picked); return }}
   const langs = (navigator.languages?.length ? navigator.languages : [navigator.language]).map(l => l.toLowerCase())
-  if (langs.some(l => l.startsWith('zh'))) window.location.replace(ZH_PATH)
+  if (!langs.some(l => l.startsWith('zh'))) window.location.replace(EN_PATH)
 }})
 if (typeof window !== 'undefined') {{
   window.addEventListener('click', (e) => {{
     const a = (e.target as HTMLElement)?.closest?.('a') as HTMLAnchorElement | null
     const href = a?.getAttribute('href') || ''
-    if (href.startsWith(ZH_PATH) || href.startsWith('zh/')) localStorage.setItem(KEY, ZH_PATH)
+    if (href.startsWith(EN_PATH)) localStorage.setItem(KEY, EN_PATH)
     else if (href === ROOT_PATH || href === ROOT_PATH.slice(0, -1)) localStorage.setItem(KEY, ROOT_PATH)
   }}, true)
 }}
