@@ -72,100 +72,149 @@
 
 ### 2.4 文档一致性
 
-- `docs/web.md`/`web.en.md` 与 web.rs:16-38 的 API 端点表一致（7 个端点逐一对上，详见第五节表二）；文档声称「仅绑定 127.0.0.1、无鉴权」，与 web.rs:59-65 一致。
+- `docs/web.md`（W6/W7/W8 节）与 web.rs:16-38 的 API 端点注释一致；已逐个核对 `api_artifacts` / `api_artifact`（安全口径：只认 manifest 键 + 伺服前重算 blake3，`docs/web.md:177-179` vs web.rs:868-913）、`api_diff`（`docs/web.md:214-216` vs web.rs:1063+）、`api_snapshot` / `api_snapshots` / `api_registry`。「仅绑定 127.0.0.1、无鉴权」与 web.rs:59-65 一致（`docs/web.md:68-70`）。`api_diff` 未提路径约束，与实现一致但暴露 W1 的标准不一致（见 2.2、表二）。
+- `docs/cli.md:372` 对 LSP 帧协议的描述（`Content-Length` 头 + 定长体）与 lsp.rs 一致；帧大小上限在文档与实现中均不存在（W2，见表二）。
 
 ## 第三节：cage-core 审核
 
-重点抽查 `manifest`、反序列化配置与快照模块。单元测试覆盖面广，尤其 manifest 哈希/校验、快照完整性；但快照账本路径信任边界有高风险缺口。
+结构：`registry.rs`（4193）/`validation/mod.rs`（3937）/`migrate/mod.rs`（2267）/`schema/mod.rs`（1538）/`manifest/mod.rs`（1499）/`reference/mod.rs`（1239）/`migrate/diff.rs`（1220）/`normalize/mod.rs`（1021）/`diagnostics`（857）/`value`（719）/`remote.rs`（697）/`snapshot`（384）/`edit`（329）/`rules`（294）/`assets`（254+165 测试）。`#[cfg(test)]` 边界：registry.rs:1956、validation:1381、migrate:887、manifest:621、schema:636、remote:495。**cage-core 无 `tests/` 集成测试目录（`ls crates/cage-core/` 只有 `Cargo.toml` 与 `src`），全部 ~275 个用例是 src 内嵌单元测试。**
+
+**修订说明**：本报告路径上早先残留的一版 draft 把「快照账本路径可逃逸出快照根」列为高风险，并已在本节/第五节/结论中据此展开。逐行核实后**该声称不成立**，已全部删除并在 3.5 记录证据。本节其余结论为本次实际审阅结果。
 
 ### 3.1 错误处理与边界条件
 
-- ✅ manifest 生产代码将哈希校验、缺失产物等作为 `Result`/诊断返回；测试有 hash/size 不符、丢失及额外产物路径（`crates/cage-core/src/manifest/mod.rs:382-451,889-936`）。
-- ❌ **缺陷 C1（高）**：`verify_snapshot` 从账本取 `rel` 后直接 `dir.join(rel)` 读取，没校验绝对路径、`..` 或规范化后的根目录包含关系（`crates/cage-core/src/snapshot/mod.rs:119-124`）。`load` 又按目录遍历得到的 `data/` / `generated/` 路径直接 join 读取（`snapshot/mod.rs:173-177`）；在快照内放置指向根外文件的 symlink 时，`files_on_disk` 将该 symlink 作为文件列出，verify 会跟随读取；若它位于 data/ 或 generated/，load 也会把根外内容放入返回的 artifact map。账本中的绝对路径或 `..` 同样会让 verify 读取根外文件（`snapshot/mod.rs:119-124`）。适用条件是攻击者能提供/替换快照及账本；建议拒绝非规范相对路径并拒绝 symlink，且读取前校验 canonical path 在根目录内。
-- ⚠️ **缺陷 C2（可用性）**：递归遍历以 `path.is_dir()` 跟随目录 symlink（`snapshot/mod.rs:192-202`）；快照目录内指向自身/祖先的 symlink 可能递归不终止。没有发现循环检测或 symlink 专项测试（`snapshot/mod.rs:247-386`）。
-- ✅ 生产快照的序列化 `expect` 对 serde_json `Value` 是内存序列化不变量（`snapshot/mod.rs:85-89`）；测试内的 `unwrap` 属于断言路径。
+- ✅ 生产代码无 `panic!`/`unreachable!`/`todo!`；unwrap/expect 全部落在「父目录必然存在」「上游已判空」「内存结构序列化」三类不变量上，逐条核实：
+  - ✅ `crates/cage-core/src/registry.rs:479,482`、`508`、`597,600,961` — `create_dir_all(...).expect("index parent")` 与 `strip_prefix(dir).expect("under dir")`：路径均由 `join` 构造、文件由 `read_dir(dir)` 产生，不变量成立。
+  - ✅ `crates/cage-core/src/registry.rs:1508-1509` `.expect("non-empty entries")` — 函数开头 registry.rs:1459-1461 已对 `index.entries.is_empty()` 返回 E1802，不变量成立。
+  - ✅ `crates/cage-core/src/validation/mod.rs:1192` `target_row_idx.unwrap()` — not-found 分支在 mod.rs:1173-1185 提前 `return`，到 1192 必为 Some。
+  - ✅ `crates/cage-core/src/migrate/mod.rs:225` `raw.into_iter().next().unwrap()` — mod.rs:220-224 已判 `len() != 1` 报错；`migrate/mod.rs:728` `.expect("just inserted")` 为紧接插入后的同位置断言，安全。
+  - ✅ `crates/cage-core/src/migrate/diff.rs:595,599,613,617` `write!(out, ..).unwrap()` — 写入 `String` 的 `fmt::Write` 不会失败。
+  - ✅ `crates/cage-core/src/manifest/mod.rs:246,277` — 序列化自有结构，实践中不会失败。
+- ❌ **缺陷 C1（中）**：`crates/cage-core/src/remote.rs:319-332` `read_response` 用 `read_to_end(&mut bytes)` 读全响应，**无响应体大小上限**。恶意或已被劫持的远程 registry / 远程配置源可流式返回任意大 body → 内存耗尽。同一仓的 HTTP 出口没有字节边界，而 cage-cli 的 Web 入口有 8 MiB 上限（`cage-cli/src/web.rs:87-91`），两处标准不一致。`ureq` 的 30 s timeout（remote.rs:210,235,266）只限时间、不限字节。建议 `into_reader().take(MAX)` 或逐块计数截断并返回 E21xx。
+- ⚠️ **缺陷 C2（低-中）**：`crates/cage-core/src/remote.rs:165-186` `with_retries` 末尾 `Err(last.expect("retry policy with zero attempts"))`。`RetryPolicy` 是 pub struct + pub 字段（remote.rs:105-107，默认 `attempts: 3`），`with_retries` 也是 pub（remote.rs:165）；任何外部调用方构造 `attempts: 0` 即在函数内 panic。remote.rs:183-184 的注释承认了这个假设，却用 `expect` 而非返回 `Err`。建议改为 `None` 分支返回 `FetchFailure::Transport("retry policy has zero attempts")`。
+- ⚠️ **缺陷 C3（中）**：`crates/cage-core/src/registry.rs:596-614` `publish` 逐文件 `fs::copy` 直写 `<root>/<package>/<version>/`，**无临时目录、无失败回滚、非原子**：中途 `fs::copy` 失败（磁盘满、权限）会留下半成品 entry 且无任何清理。`write_index`（registry.rs:474-490）同样是 `fs::write` 直写，崩溃中途可把 `index.json` 写成半截 → 之后 `read_index` 报「corrupt registry index」（registry.rs:460-465），fail-visible 但不可自愈，需人工删除。对「本地发布、不可重写历史」的 registry 语义，建议先写 `.tmp` 再 `rename`，失败时移除半成品。
+- ⚠️ **缺陷 C4（中，正确性）**：`crates/cage-core/src/migrate/mod.rs:434-436` `parse_migration_dir` 用 `entries.filter_map(Result::ok)` **静默丢弃不可读的目录项**。单个迁移文件权限异常会被无声跳过 → **迁移链可能悄悄漏掉一步**；而同类逻辑在 `cage-cli/src/main.rs:1118-1120` `collect_files` 里是逐条 `map_err` 上报。建议统一为报错。
+- ✅ `resolve` / `resolve_pinned`（registry.rs:1518-1543）在返回 entry 前强制 `snapshot::verify_snapshot` 信任门，不通过报 E1803。`read_index`（registry.rs:449-466）区分「不存在 → 空索引」「损坏 → 报错，不静默重写」，边界处理正确。
+- ⚠️ **C5（未核实）**：在 value / normalize / registry / remote 中 grep `recursion|depth|MAX_DEPTH` 均无命中，未见任何嵌套深度限制。JSON 侧 serde_json 自带 128 层递归上限（默认开启）；**YAML 深层嵌套的解析与析构栈深度未核实**，恶意配表理论上可触发栈溢出。建议补一条「深层嵌套 YAML 被拒绝或安全解析」的测试后再定级。
 
 ### 3.2 输入校验与反序列化
 
-- `BuildManifest` 和 `ProjectConfig` 使用 serde 类型反序列化，配置序列化往返及默认/可选字段有测试（`manifest/mod.rs:938-1176`）；超大 JSON/YAML 输入的资源限制未见实现/测试，未核实上游是否限制文件大小。
-- 快照加载解析账本 JSON 并要求 `files` 为 object、hash 为字符串；没有校验 hash 长度/hex 格式，最终只比较字符串（`snapshot/mod.rs:110-131`）。无效 hash 会成为 mismatch；拒绝结果正常，但路径缺少对应约束（同 C1）。
+- ✅ `parse_spec`（registry.rs:429-448）：`registry:` 前缀 + `valid_component` 双字段白名单校验，直接阻断路径穿越；已有测试 `parse_spec_rejects_path_escape_attempts`（registry.rs:2028）。
+- ✅ 迁移 Spec 反序列化严格：Step 用「恰好一个 transform key」的自定义 `Deserialize`（migrate/mod.rs:213-228），多 key / 空 steps 报 E2001（测试 mod.rs:1080-1116）。
+- ✅ `FieldType` / `MapKeyType` 反序列化拒绝未知 kind 与裸标量（schema/mod.rs:979-996,1031-1033）。
+- ✅ 迁移目录条目来自 `read_dir` 的 `file_name`，本身无分隔符 → `dir.join(name)` 无穿越面（migrate/mod.rs:434-440）。
+- ✅ `read_index` 对损坏索引不静默修复（registry.rs:460-465），符合「corrupt 是错误」的约定。
+- ✅ `verify_snapshot` 只把账本当字节哈希清单用，不对其中的路径做任何语义假设之外的读取——见 3.5，所有读取都过 `snapshot_path`。
 
 ### 3.3 测试覆盖
 
-- 有快照打包确定性、篡改/新增/删除检测和 load round-trip 测试（`snapshot/mod.rs:247-386`）；manifest 覆盖哈希、字段和序列化（`manifest/mod.rs:889-1204`）。
-- ❌ **测试缺口 C-T1**：未见账本 `../`、绝对路径、重复/非规范路径、symlink escape 用例（`snapshot/mod.rs:247-386`），没有锁住 C1 的安全边界。
-- ❌ **测试缺口 C-T2**：未见递归 symlink 环与超深目录/超大 ledger 资源边界测试（`snapshot/mod.rs:185-209,247-386`）。
+- 单元测试覆盖面广：validation 56 个（含 E1101 类型不符、E1401 引用缺失、E1403 环检测、E1404 基数、E1410 predicate、E1501/E1601 规则、复合唯一约束），registry 48，migrate 26，schema 18，manifest 16，reference 13，value 14，normalize 23，migrate/diff 12，snapshot 3。
+- ✅ 篡改可恢复性已测：`verify_accepts_clean_and_flags_tamper_growth_and_loss`（snapshot/mod.rs:277）、tar 确定性 header（registry.rs:2122-2130）、路径逃逸三重用例（snapshot/mod.rs:279-312）。
+- ❌ **测试缺口 T3**：`remote.rs` 的 5 个用例（cache_key、重试恢复、预算耗尽、429 协商）全部针对 `with_retries`，**无响应体大小用例**（对应 C1），**无 `attempts: 0` 用例**（对应 C2）。
+- ❌ **测试缺口 T4**：`publish` 的中途失败 / 半成品目录清理无用例（C3）；`index.json` 半截损坏后的行为无用例。
+- ❌ **测试缺口 T5**：`parse_migration_dir` 遇到不可读条目时无用例（C4）。
+- ⚠️ 整个 cage-core 无集成测试目录，跨模块路径（schema 解析 → 校验 → 规范化）目前只由 cage-cli 的 24 个集成测试间接触达，core 侧缺端到端回归网。
 
 ### 3.4 文档一致性
 
-- README 中快照“数据与账本一起替换无法检测”的说明符合 trust-root 设计（`README.md:42`、`README.zh.md:44`；实现说明在 `snapshot/mod.rs:12-19`）。
-- `docs/build.md` 将 HASHES 称为 trust root，概述 verify/load（`docs/build.md:214-234,244`），与代码目标一致；文档未提到账本路径必须限制在快照根内，而代码确实未做限制（`snapshot/mod.rs:119-124,173-177`），属于安全边界描述不完整，列第五节。
+- `docs/build.md:226` 称 `HASHES.json` 为「逐文件 blake3 账本（trust root，不自我哈希）」，与 `snapshot/mod.rs:12-19` 及 `verify_snapshot` 的实现（ledger 自身不参与校验）一致。
+- `docs/build.md:244` 起描述 `verify_snapshot` / `load` 的服务器加载流程，与 registry.rs:1518-1543 的「先验再交」顺序一致。
+- 未见 README / docs 对 registry、migrate、remote 三块功能的描述与实现相矛盾。
+
+### 3.5 已证伪的残留结论（重要）
+
+早先残留在同一文件的一版 draft 声称 `verify_snapshot` / `load` 存在「账本 rel 未限制在快照根内」的高风险缺陷，并据此给出第五节与结论。逐行核实后**不成立**：
+
+- `snapshot_path`（crates/cage-core/src/snapshot/mod.rs:39-55）已实现三重拒绝：空 / 绝对路径 / 非 `Component::Normal`（含 `..`、根、前缀）直接报 `unsafe snapshot-relative path`；再对 root 与 target 分别 `canonicalize`，`!target.starts_with(&root)` 报 `resolves outside snapshot root`。
+- 所有读取都走它：`read_snapshot_file`（mod.rs:57-62）与 `verify_snapshot` 的账本循环（mod.rs:120-131 `snapshot_path(dir, rel).and_then(|p| fs::read(p))`）无例外。
+- symlink 不递归：`files_on_disk` 用 `symlink_metadata`（mod.rs:215-224），`is_symlink()` 判断在 `is_dir()` 之前，目录型 symlink 被当作文件条目列出、不会进入 `walk`。
+- 三重用例都在：`../`（snapshot/mod.rs:288-290）、绝对路径（:298-299）、指向根外的 symlink（:304-312，断言 `resolves outside snapshot root`）。
+
+残留稿另称 `docs/build.md` 与实现不符——同样不成立（见 3.4）。该两节内容已整体删除。
 
 ## 第四节：cage-source-db 审核
 
+结构：`lib.rs`（631）/`pg.rs`（556）/`mysql.rs`（514）/`draft.rs`（345）/`pool.rs`（238）；`#[cfg(test)]` 边界：lib.rs:337、pool.rs:70+120、draft.rs:189、mysql.rs:221+305、pg.rs:241+326。共 36 个 `#[test]`（lib 10 / pool 7 / draft 7 / mysql 6 / pg 6）。
+
 ### 4.1 错误处理与边界条件
 
-- ✅ 查询形状、DSN 缺失、连接/缓存错误以 `Result` 返回；缓存回退仅在 transport fetch 失败时启用，strict 模式拒绝回退（`crates/cage-source-db/src/lib.rs:100-129,163-175,241-310`）。
-- ✅ PostgreSQL idle pool 错误连接不归还；锁只保护 idle 栈，连接交给调用闭包时不持锁（`crates/cage-source-db/src/pool.rs:22-56`）；pool 有上限及并发/失败/重用测试（`pool.rs:137-241`）。MySQL 连接池由驱动管理，数据库集成测试受服务环境条件限制（`mysql.rs:330-432`、`pg.rs:351-553`）。
-- ⚠️ `canonical_json` 将列和值用 `zip` 配对，若 RowSet 内部列数与行宽不匹配会静默截断（`lib.rs:218-228`）；当前后端构造是否永远保证行宽一致未核实，建议在序列化入口显式检查并测试畸形 RowSet。
-- ✅ 测试内的 `unwrap`/`expect` 是断言；唯一生产 `expect` 为 JSON Value 序列化（`lib.rs:237-238`），不会因外部输入触发序列化错误。
+- ✅ 查询形状、DSN 缺失、连接失败均以 `Result` 返回；缓存回退只在 transport fetch 失败时启用，strict 模式拒绝回退（`crates/cage-core/src/remote.rs:53-88` `source_cache_fallback`，db 侧调用点 lib.rs:241-310）。
+- ✅ PostgreSQL 用自研 idle 栈：锁只保护 `idle` Vec，连接交出去执行时不持锁，失败连接直接丢弃不归还（`pool.rs:37-52`）；池有上限（MySQL `PoolConstraints::new(0, 8)` pool.rs:96；PG `max_idle = 4` pool.rs:117），无句柄增长型泄漏。
+- ✅ MySQL `SET SESSION TRANSACTION READ ONLY` 在连接建立时钉住（`mysql.rs:44-45`、`114-115`）；PostgreSQL `SET default_transaction_read_only = on`（`pg.rs:49-50`、`148-149`）。有真数据库用例断言 pin 生效且 INSERT 被拒（`pg.rs:440-465`）。
+- ⚠️ **缺陷 D1（低-中，正确性）**：`crates/cage-source-db/src/lib.rs:218-228` `canonical_json` 用 `row_set.columns.iter().zip(cells)` 配对——**行宽不匹配时静默截断**（多列丢弃尾部列、少列丢弃尾部值），且 `obj.insert` 对重复列名静默覆盖（后者胜）。`RowSet` 是本 crate 内部构造、由驱动结果回填，当前后端实际总能给出一致宽度，所以是潜在不变量而非活缺陷；但序列化入口没有任何形状校验，也没有畸形 RowSet 测试，一旦某个后端漏列就会静默改数据。
+- ⚠️ **缺陷 D3（低）**：`pool.rs:55,62`（另 pool.rs:85,96,104,116）`self.idle.lock().unwrap()` / `map.lock().unwrap()` — Mutex 中毒会把「前一个线程闭包里的 panic」升级成第二次 panic，掩盖原始错误。当前 CLI 单线程，属潜在项；建议 `lock().map_err(...)` 或 `into_inner` 取回连接继续用。
+- ✅ 生产代码无 `panic!`/`unreachable!`；唯一生产 `expect` 为 JSON 序列化不变量（lib.rs:238「serialized map is valid JSON」），其余 `unwrap` 均在 `#[cfg(test)]` 之后。
 
 ### 4.2 输入校验与路径处理
 
-- ✅ `mysql:` / `pg:` spec 拒绝空名（`lib.rs:92-98`）；自动拼表名要求 ASCII 标识符字符（`lib.rs:132-138,143-158`），避免表名直接 SQL 注入。
-- ⚠️ named query 由配置直接取出后才进入 `load` 的静态 SELECT 检查；检查是字符串规则（SELECT 前缀、分号/注释/行锁/INTO），不能替代数据库只读会话边界（`lib.rs:100-129,313-335`）。README/CLI 描述的只读会话保护在实现端存在（MySQL `crates/cage-source-db/src/mysql.rs:49`；PG `crates/cage-source-db/src/pg.rs:49`）。
-- ✅ DSN 从配置指定的环境变量读取，不从 cage.toml 明文读取（`lib.rs:160-175`）。缓存 key 路径由 cache_key 派生，缓存路径细节在 core remote 中；此处未核实额外 symlink 边界。
-- ✅ 草稿生成将不安全 YAML token 加引号并转义单引号（`crates/cage-source-db/src/draft.rs:25-45,143-175`）；测试覆盖空格、引号等名称（`draft.rs:269-347`）。
+- ✅ `parse_spec`（lib.rs:92-98）拒绝空名；`valid_table_name`（lib.rs:134-139）要求纯 ASCII 标识符字符（字母/数字/`_`/`.`/`$`，首字符不得为数字或 `_`），避免表名直接拼进 SQL。
+- ✅ `resolve_query`（lib.rs:143-156）：具名查询优先，否则必须是安全表名，否则 E1905。`resolve_dsn`（lib.rs:163-177）只从 `dsn_env` 指名的环境变量取，cage.toml 不落明文 DSN，未设置/空值报 E1904。
+- ⚠️ **缺陷 D2（低，纵深防御）**：`validate_select`（lib.rs:104-130）是**字符串规则**白名单，`INTO` 用 `upper.contains(" INTO ")` 匹配（lib.rs:118-120）——只按空格界定，制表符/换行分隔的 `SELECT a FROM t\tINTO OUTFILE '/x'` 会绕过该条检查；MySQL 的行注释符 `#` 未纳入拒绝名单（只拒 `--`、`/*`、`*/`，lib.rs:114）。真正的写保护来自会话 pin（mysql.rs:44、pg.rs:49），pin 确实挡住表写入；但 `SELECT … INTO OUTFILE` 属服务器侧文件写，只读事务并不阻止（取决于该账号是否有 `FILE` 权限），此时字符串白名单是第一道也是唯一一道防线。缓解：具名查询只能由配置作者声明、DSN 账号通常无 `FILE` 权限。建议把 `INTO` 检查改成词边界匹配并补 `#` 注释。
+- ✅ 草稿生成对不安全 YAML token 加引号并转义单引号（`draft.rs:25-45` `yaml_token`，渲染点 `draft.rs:143-175`），`tables` 为空时仍输出合法空文档（draft.rs:134-140）；测试覆盖含空格/引号等名称（draft.rs:269-347）。
+- ⚠️ 缓存路径由 `cage_core::remote::cache_key` 派生（remote.rs:28-33），本 crate 未另行约束；缓存目录内的 symlink 边界未在本 crate 核实（core 侧见 3.5，快照路径已约束）。
 
 ### 4.3 测试覆盖
 
-- crate 内共 36 个测试属性：共享逻辑覆盖 spec、SELECT allow/deny、查询名、DSN、类型映射、排序/规范 JSON、缓存成功/离线回退（`lib.rs:353-618`）；draft、pool、MySQL/PostgreSQL 另有单元/集成测试（`draft.rs:194-347`、`pool.rs:137-241`、`mysql.rs:225-432`、`pg.rs:245-553`）。
-- ❌ **测试缺口 DB-T1**：`canonical_json` 没覆盖 cells 少于/多于 columns、重复列名；当前 zip 截断/Map 覆盖语义会改变数据（`lib.rs:218-228,457-519`）。
-- ⚠️ SQL whitelist 测了常见拒绝和 CTE，但未见混淆大小写/关键字作为字符串字面量、数据库特定只读函数、超长 query 的边界测试（`lib.rs:362-390`）。DB 集成路径依赖外部服务；未核实 CI 是否配置 MySQL/PostgreSQL 服务。
+- ✅ 覆盖：spec 拆分、SELECT 白名单 allow/deny（含 `;`、`--`、`/*`、`FOR UPDATE`、`FOR SHARE`、CTE，lib.rs:377-390）、查询名解析、DSN 解析、类型映射（含 DECIMAL 文本保真与 Bytes base64）、排序与 canonical JSON、缓存成功/离线回退（lib.rs:353-618）；pool 上限与重用（pool.rs:137-241）；draft 渲染（draft.rs:269-347）；MySQL/PostgreSQL 真库集成用例受 `live_dsn()` 环境条件门控（mysql.rs:330-432、pg.rs:351-553）。
+- ❌ **测试缺口 DB-T1**：`canonical_json` 无行宽不匹配（cells 少于/多于 columns）与重复列名用例，未锁住 D1 的语义。
+- ❌ **测试缺口 DB-T2**：`validate_select` 无制表符/换行分隔的 `INTO`、无 `#` 注释、无超长 query 用例（对应 D2）。
+- ⚠️ DB 集成路径依赖外部服务；CI 是否配置 MySQL / PostgreSQL 服务未核实（未查看 CI 工作流）。
 
 ### 4.4 文档一致性
 
-- README 中 DB schema-draft、只读内省和 DECIMAL/日期/JSON 的说明与源适配器目标一致（`README.md:44`、`README.zh.md:46`；`draft.rs:132-179`）。
-- CLI 表格描述单条 SELECT 白名单、拒绝注释/分号/CTE/INTO、DSN env 与只读会话（`docs/cli.md:319-320`）；校验器和后端有对应实现（`lib.rs:100-129`，只读会话精确实现行号未核实）。没有核实出行为矛盾。
+- ✅ `docs/cli.md:319-320` 对两个 DB 源的描述与实现**逐条对上**：SELECT 白名单（单条、SELECT 开头、拒分号/注释/行锁/CTE/INTO）、`dsn_env` 解析、错误码（E1905 白名单 / E1904 凭据 / E1901 连接语句）、以及 MySQL `SESSION TRANSACTION READ ONLY` 与 PG `default_transaction_read_only` 两个 pin 的具体名字都与 mysql.rs:44、pg.rs:49 一致。
+- ✅ `README.md:44` / `README.zh.md:46` 的「schema draft from a live database（只读、绑定参数）」与 `draft.rs:132-179` 的渲染产物一致。
+- ✅ 未见行为矛盾；D2 的绕过形态属于文档与实现都未覆盖的边界，不计为文档不符。
 
 ## 第五节：汇总表
 
-### 缺陷
+### 表一：缺陷
 
-| 编号 | 问题 | 影响 | 证据 |
+| 编号 | 问题 | 严重度 | 证据 |
 |---|---|---|---|
-| C1 | 快照账本路径不限制在快照根内；load 可返回根外文件内容 | 高；不可信快照可越界读取宿主文件 | `crates/cage-core/src/snapshot/mod.rs:119-124,173-177` |
-| C2 | 快照目录递归跟随 symlink，可能循环 | 可用性/挂起或栈耗尽 | `crates/cage-core/src/snapshot/mod.rs:192-202` |
-| DB1 | RowSet 列和值 zip 静默截断，畸形行数据丢值 | 数据完整性 | `crates/cage-source-db/src/lib.rs:218-228` |
-| CLI1 | web `api_diff` 查询参数 join 未做路径约束 | 本机 web 服务可能读项目外 manifest 元信息 | `crates/cage-cli/src/web.rs:1078,1087` |
-| CLI2 | LSP Content-Length 无上限分配 | 本地编辑器输入可触发内存耗尽 | `crates/cage-cli/src/lsp.rs:71-76` |
+| C1 | HTTP 响应体读取无字节上限，可内存耗尽 | 中（网络面） | `crates/cage-core/src/remote.rs:319-332` |
+| W1 | web `api_diff` 的 `from`/`to` 直接 `ctx.root.join`，未校验，绝对路径与 `..` 可解析项目外 manifest | 中（本地 Web） | `crates/cage-cli/src/web.rs:1078,1087` |
+| C3 | registry `publish` 与 `write_index` 非原子写，无失败回滚/半成品清理，`index.json` 可被写半截 | 中 | `crates/cage-core/src/registry.rs:474-490,596-614` |
+| C4 | 迁移目录不可读条目被 `filter_map(Result::ok)` 静默丢弃，迁移链可漏步 | 中（正确性） | `crates/cage-core/src/migrate/mod.rs:434-436` |
+| W2 | LSP 帧按对端 `Content-Length` 直接分配，无上限 | 低-中（本地 stdio） | `crates/cage-cli/src/lsp.rs:71-76` |
+| C2 | `with_retries` 在 `attempts: 0` 时 panic，而策略与函数均 pub | 低-中 | `crates/cage-core/src/remote.rs:165-186,105-107` |
+| D1 | `canonical_json` 的 `zip` 静默截断行宽不匹配、重复列名覆盖 | 低-中 | `crates/cage-source-db/src/lib.rs:218-228` |
+| D2 | `validate_select` 的 `INTO` 检查按空格界定，`#` 注释未拒；纵深防御缺口 | 低 | `crates/cage-source-db/src/lib.rs:114,118-120` |
+| D3 | `idle.lock().unwrap()` 等 Mutex 中毒会二次 panic | 低 | `crates/cage-source-db/src/pool.rs:55,62,85,96,104,116` |
+| W3 | `chain.into_iter().next().expect("non-empty chain")` 依赖上游不变量 | 低 | `crates/cage-cli/src/main.rs:1349` |
+| W4 | `collect_files` 跟随目录 symlink，无环路防护 | 低（未核实场景） | `crates/cage-cli/src/main.rs:1110-1134` |
+| C5 | 未见嵌套深度限制，YAML 深层嵌套栈风险 | 未核实 | `crates/cage-core/src/{value,normalize}/mod.rs`（grep 无命中） |
 
-### 文档不符 / 描述不完整
+### 表二：文档不符 / 描述不完整
 
 | 位置 | 发现 | 证据 |
 |---|---|---|
-| docs/build.md | 快照 trust-root / load 说明未说明账本相对路径和 symlink 必须限制在根目录；实现也缺该限制，读者容易误解验证范围 | `docs/build.md:214-244`; `crates/cage-core/src/snapshot/mod.rs:119-124,173-177` |
-| README / docs CLI | 未发现三模块核心能力描述与代码相矛盾；DB 实际只读会话的精确代码位置本次未核实 | `README.md:35-46`; `README.zh.md:37-48`; `docs/cli.md:319-320` |
+| `docs/web.md:177-179` vs `:214-216` | 同页对 `api_artifact` 明确写出「只认 manifest 键（查表，不 join-and-pray）+ 伺服前重算 blake3」的安全口径，`api_diff` 只描述返回形状、未提任何路径约束——文档与代码都一致（确实没有约束），但两条端点的安全标准不自洽，属 W1 的直接旁证 | `docs/web.md:177-179,214-216`; `crates/cage-cli/src/web.rs:868-913,1078,1087` |
+| `docs/cli.md:372` | LSP 帧协议描述为「`Content-Length` 头 + 定长体」，未披露任何帧大小上限；实现也确实无上限（W2）。不属事实错误，属边界未披露 | `docs/cli.md:372`; `crates/cage-cli/src/lsp.rs:71-76` |
+| `docs/build.md:226,244` | HASHES 作为 trust root、先验再交的描述与实现一致 | `docs/build.md:226,244`; `crates/cage-core/src/snapshot/mod.rs:12-19` |
+| `docs/cli.md:319-320` | DB 两个源的白名单、`dsn_env`、只读 pin 名（MySQL `SESSION TRANSACTION READ ONLY` / PG `default_transaction_read_only`）与实现逐条一致 | `crates/cage-source-db/src/mysql.rs:44,114`; `pg.rs:49,148` |
+| 残留 draft（已删除） | 同路径早先未提交的一版 draft 称快照账本可逃逸根目录、`docs/build.md` 与实现不符——均经核实不成立（`snapshot_path` 三重拒绝 + 三重测试），已从本报告删除 | `crates/cage-core/src/snapshot/mod.rs:39-55,279-312` |
+| README / 三模块能力描述 | 未发现行为矛盾 | `README.md:44`; `README.zh.md:46` |
 
-### 值得补的能力
+### 表三：值得补的能力
 
 | 能力 | 理由 | 证据 |
 |---|---|---|
-| 快照 ledger path validator + symlink-safe traversal | 拒绝绝对路径/父目录段，并拒绝 symlink 或验证 canonical path 的根目录包含关系 | `crates/cage-core/src/snapshot/mod.rs:119-124,185-202` |
-| RowSet shape validation | 在生成 JSON 前拒绝行宽不匹配和重复列名 | `crates/cage-source-db/src/lib.rs:218-228` |
-| LSP frame size cap、递归文件遍历 symlink-cycle guard | 给本地输入边界设置明确资源上限 | `crates/cage-cli/src/lsp.rs:71-76`; `crates/cage-cli/src/main.rs:1110-1134` |
-| SQL lexer/parser 或数据库级只读测试矩阵 | 静态字符串拒绝规则可维护性有限，验证每后端只读 pin 的失败语义 | `crates/cage-source-db/src/lib.rs:100-129`; `lib.rs:362-390` |
+| HTTP 响应体字节上限 + 4xx 上报 | 唯一网络出口没有字节边界，与 cage-cli Web 入口的 8 MiB 上限标准不一致 | `crates/cage-core/src/remote.rs:319-332`; `crates/cage-cli/src/web.rs:87-91` |
+| 复用 `manifest_rel_path_is_safe` + `resolved_within_root` 到 `api_diff` | 仓内已有双重防线的现成实现，`api_diff` 是唯一没套上的 Web 端点 | `crates/cage-cli/src/main.rs:4219-4235`; `web.rs:1078,1087` |
+| LSP 帧 `Content-Length` 上限（与 Web 同标准） | 本地 stdio 输入同样应设明确资源上限 | `crates/cage-cli/src/lsp.rs:71-76` |
+| registry 发布改「临时目录 + rename + 失败清理」 | 匹配「本地发布、不可重写历史」语义，避免半成品 entry 与半截 `index.json` | `crates/cage-core/src/registry.rs:474-490,596-614` |
+| `RowSet` 形状校验（列数一致、列名唯一） | 把 D1 的静默数据改写变成显式 E19xx 错误 | `crates/cage-source-db/src/lib.rs:218-228` |
+| 迁移目录条目逐条 `map_err` + 不可读条目测试 | 与 `collect_files` 的错误口径统一，避免漏步 | `crates/cage-core/src/migrate/mod.rs:434-436`; `crates/cage-cli/src/main.rs:1118-1120` |
+| SQL 侧只读 pin 的失败语义测试矩阵（两后端） | 目前只有 PG 一例断言写被拒，MySQL 侧未见等价断言 | `crates/cage-source-db/src/pg.rs:440-465`（MySQL 侧未见） |
+| cage-core 集成测试目录 | 275 个单元测试全是 src 内嵌，跨模块路径缺端到端回归网 | `ls crates/cage-core/` 只有 `Cargo.toml`、`src` |
 
 ## 结论：最需先解决的三件事
 
-1. 修复快照 ledger 的根目录逃逸：验证时拒绝不安全 rel，并在 load 每次读取前做根目录约束；补 `../`、绝对路径和 symlink 测试（`crates/cage-core/src/snapshot/mod.rs:119-124,173-177`）。
-2. 为 LSP 帧设 Content-Length 上限，并测试拒绝超限帧（`crates/cage-cli/src/lsp.rs:71-76`）。
-3. 给 web `api_diff` 的 `from` / `to` 参数做安全路径解析，并测绝对路径和 `..`（`crates/cage-cli/src/web.rs:1078,1087`）。
+1. **给 HTTP 响应体设字节上限**（C1，`crates/cage-core/src/remote.rs:319-332`）：这是三模块里唯一由网络对手直接控制、且没有字节边界的入口。改法很小（`into_reader().take(MAX)` 或逐块计数截断后返回 E21xx），但收益是消除整个远程源/远程 registry 路径上的内存耗尽面。
+2. **把仓内已有的双重路径防线套上 `api_diff`**（W1，`crates/cage-cli/src/web.rs:1078,1087`）：`manifest_rel_path_is_safe`（main.rs:4219-4226）+ `resolved_within_root`（main.rs:4230-4235）在别处已用且已测，唯独 `api_diff` 裸 `join` 查询参数；同时与同页 `api_artifact` 的显式安全口径（`docs/web.md:177-179`）对齐。
+3. **让 `parse_migration_dir` 报错而不是静默丢条目**（C4，`crates/cage-core/src/migrate/mod.rs:434-436`）：这是唯一一条会让用户**静默得到错误结果**的缺陷——迁移链少跑一步、数据看起来一切正常。改一行为 `map_err`，并补一条不可读条目测试。
 
-附注：按要求本次未改代码，未运行测试；本文为静态审阅。所有未能确认的实现细节均标为“未核实”。
+紧随其后（同一轮顺手做）：LSP 帧 `Content-Length` 上限（W2，lsp.rs:71-76）、registry 发布原子化与半成品清理（C3，registry.rs:474-490,596-614）、`canonical_json` 的 RowSet 形状校验（D1，lib.rs:218-228）。
 
-## 修复记录
-
-- 快照 ledger 根目录逃逸：`crates/cage-core/src/snapshot/mod.rs:37-60,144-160,192-204,220-237,283-313`；`docs/build.md:245-247`。拒绝绝对路径和非规范相对路径；每次读取前 canonicalize 并校验根目录前缀；拒绝解析到根外的 symlink。新增 `verify_rejects_parent_directory_ledger_path`、`verify_rejects_absolute_ledger_path`、`verify_rejects_symlink_to_outside_snapshot`。Commit `7ead68c037e7dc5caff4abd982c484df70217270`。
-- LSP Content-Length 上限：`crates/cage-cli/src/lsp.rs:29-31,79-85,391-396`。上限 16 MiB，超限拒绝并结束会话。新增 `framing_rejects_content_length_over_limit`。Commit `f90c968be78d629e7054bbfe6504920a38c5c80d`。
-- web `api_diff` 路径解析：`crates/cage-cli/src/web.rs:1078-1113,1921-1941`。拒绝绝对路径和非规范相对路径，并 canonicalize 后校验项目根目录前缀。新增 `api_diff_rejects_absolute_paths_and_parent_traversal`。Commit `de4b9ddaadd97e8353ef5919fc866b55d80f7f6e`。
+附注：按要求本次未改代码、未 bump 版本号、未 force push；未运行 `cargo test`，故「测试是否存在」已核实、「测试是否通过」未核实。C5 与 CI 的 DB 服务配置为显式「未核实」项。第三节 3.5 记录了同一文件上一版 draft 中被逐行证伪的结论及其证据。
