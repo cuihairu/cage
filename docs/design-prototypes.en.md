@@ -4,6 +4,13 @@
 Two static HTML prototypes, design only, not wired to any code. **Implementation
 starts only after this pending review passes.**
 
+**UI copy decision (2026-10-18, decided under the user's 2026-10-14
+delegation)**: prototype UI copy stays Chinese — the interactive HTML and the
+PNG screenshots form one consistent artifact (the PNGs are design assets and
+will not be re-rendered in English); bilingual coverage lives at the
+documentation layer (this page and `design.en.md`). To overturn this, edit this
+section and reopen `todo.md` D4.
+
 Sources live in `docs/design/` (this directory is committed with the repo; open it
 in a browser directly and they are interactive):
 

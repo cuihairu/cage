@@ -1538,8 +1538,12 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       英文互链与 README 站点链接同步改指 /en/，中文首页保留 English 按钮、
       英文首页保留中文按钮；验收 `npm run docs:build` 绿，构建产物包含
       14 个 /en/ 页面且英文页出现英文 sidebar/outline 文案
-- [ ] D4 docs/design/ 两个 HTML 原型（init-wizard / validation-result）界面文案
-      为中文，是否双语待原型评审拍板后一并处理
+- [x] D4 docs/design/ 两个 HTML 原型（init-wizard / validation-result）界面文案
+      双语（2026-10-18 按用户 2026-10-14 授权代决）：界面文案保持中文——
+      交互 HTML 与 PNG 截图同源一致（PNG 属设计资产不重渲英文版），对外双语由
+      文档层覆盖（design-prototypes.en.md + design.en.md 已交付）；决定已写入
+      docs/design-prototypes.md「界面文案拍板」节（英文版同节对应）；两原型
+      HTML 本体未改动。如需推翻：改该节并将本条改回未决
 - [x] D4b 子目录缺口核查（2026-10-16 实测，非登记待办）：执行单预期
       `docs/design/`、`docs/api/` 等子目录还有待配对的 markdown，实测
       `find docs -mindepth 2 -name '*.md'` = 0——本仓 docs 除根目录 32 个
