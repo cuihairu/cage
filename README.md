@@ -39,7 +39,7 @@ Authoring Sources → Source Adapters → Canonical Model
 - Diagnostics as a first-class concern: error codes + precise locations (file / sheet / cell / field / value) + fix hints
 - Deterministic builds: same input → same artifacts, hashes, and manifest (traceable, revertible, incremental)
 - Profile mechanism: different targets and field visibility for client / server; one configuration serves both ends
-- Configuration Snapshot: `cage snapshot` packs a self-verifying configuration snapshot (manifest + schema + artifacts + a per-file hash ledger); a server verifies it before loading — files tampered with, added, or removed relative to the packed ledger are exposed (content consistency; publisher authentication is the registry's signed-bundle path)
+- Configuration Snapshot: `cage snapshot` packs a configuration snapshot (manifest + schema + artifacts + a per-file hash ledger); before loading, it can check whether files match the in-package ledger. That check cannot detect data and ledger being replaced together. Publisher authentication uses the registry's signed-bundle path.
 - Configuration Registry: `cage registry` is a multi-version configuration repository (publish / list / audit / GC / remove + bundle export / import / direct push to a remote, including presigned-URL pushes via `--presign-map`); consumers reference `registry:package@version` and pin versions via `[dependencies]`, with remote http(s) root resolution (the consumer-side cache works offline, and `registry push` pushes directly to a remote)
 - Schema draft from a live database: `cage schema-draft` introspects MySQL / PostgreSQL tables (read-only, bound parameters) into a reviewable schema draft — tables, primary keys, `NOT NULL → required`, with inline comments where the server's type carries a decision (DECIMAL / temporal / JSON)
 - Declarative data migration: `cage migrate` applies rule transforms to validated configuration along a version-stepped chain (rename / fill defaults / drop fields / widen types / remap values); it reports a dry-run plan by default, and `--write` writes the sources back in place and re-verifies the full stack
@@ -61,18 +61,19 @@ cage init my-game --source csv --envs four --targets json,csv --git   # all flag
 A scaffolded project runs `cage check .` and `cage build . --env dev` with zero edits. More common commands:
 
 ```bash
-cage check config/                 # validate only, generate nothing
-cage check config/ --env prod        # validate under a schema-declared environment (env_overrides)
-cage build config/ --profile client  # validate and generate the target artifacts
-cage snapshot config/ --profile client  # build + pack a snapshot with a packed hash ledger; --verify checks a snapshot directory against that ledger before loading
-cage gen config/ --profile server    # generate code bindings and definition files only (cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema)
+cd my-game                       # run inside the project root (where cage.toml lives)
+cage check .                 # validate only, generate nothing
+cage check . --env prod        # validate under a schema-declared environment (env_overrides)
+cage build . --profile client  # validate and generate the target artifacts
+cage snapshot . --profile client  # build + pack a snapshot with a packed hash ledger; --verify checks a snapshot directory against that ledger before loading
+cage gen . --profile server    # generate code bindings and definition files only (cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template)
 cage diff build/a build/b          # compare two configuration versions
-cage inspect config/ Item          # inspect the schema and structure (project path required, table name optional)
-cage migrate config/               # preview the migration plan (--write persists, --all runs the whole chain)
+cage inspect . Item          # inspect the schema and structure (project path required, table name optional)
+cage migrate .               # preview the migration plan (--write persists, --all runs the whole chain)
 cage web ./                        # start the local Schema editor service (binds 127.0.0.1 only; /status/ shows project status and build freshness)
 cage lsp ./                        # serve the diagnostics-only Language Server over stdio (IDE support)
-cage assets config/ --write assets.json   # inventory rule/source assets with blake3 hashes; --check audits the working tree against the baseline
-cage graph config/ --format dot    # print the table reference dependency graph (text/dot/json, with topo order and cycle list)
+cage assets . --write assets.json   # inventory rule/source assets with blake3 hashes; --check audits the working tree against the baseline
+cage graph . --format dot    # print the table reference dependency graph (text/dot/json, with topo order and cycle list)
 cage verify build/                 # audit generated artifacts against the manifest ledger (re-hash every file)
 cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # draft a migration rule file from two schema versions
 ```

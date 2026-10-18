@@ -112,7 +112,7 @@ cage init my-game --no-examples                     # 只要空骨架（不生�
 > **生命周期**：② · 校验。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
-cage check config/
+cage check .
 ```
 
 只验证，不生成 Runtime Artifact。可以分级执行：
@@ -139,10 +139,10 @@ gen 同）。`--env`（check / build / gen 同）按 Schema `env_overrides`
 > **生命周期**：④⑤ · 目标生成 + 增量。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
-cage build config/ --profile client
-cage build config/ --profile server
-cage build config/ --env prod          # 按环境约束验证并生成
-cage build config/ --incremental       # 哈希与上次 manifest 一致时跳过重新生成
+cage build . --profile client
+cage build . --profile server
+cage build . --env prod          # 按环境约束验证并生成
+cage build . --incremental       # 哈希与上次 manifest 一致时跳过重新生成
 ```
 
 与 check 同口径的 `--level`（默认 semantic）可上调/下调验证层级。
@@ -157,8 +157,8 @@ target，详见[增量构建](/build#增量构建)）。
 > **生命周期**：④ · 代码绑定生成。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
-cage gen config/ --profile server
-cage gen config/ --env prod    # 按环境约束生成
+cage gen . --profile server
+cage gen . --env prod    # 按环境约束生成
 ```
 
 只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf](/target#code-targets-与-data-targets-分离)，
@@ -174,7 +174,7 @@ Target（json/csv/msgpack）会被跳过，需要
 > **生命周期**：横切 · ②（结构查看）。见[游戏配置的生命周期](/lifecycle)。
 
 ```bash
-cage inspect config/ Item     # 项目路径必填；表名可选，省略时列出全部表
+cage inspect . Item     # 项目路径必填；表名可选，省略时列出全部表
 ```
 
 查看 Schema 和配置结构。
@@ -205,7 +205,7 @@ cage assets <project> --check assets.json   # 对基线复核工作树
 ## `--no-cache`：远程源离线回退开关
 
 ```bash
-cage build config/ --no-cache    # check / build / gen / inspect 通用
+cage build . --no-cache    # check / build / gen / inspect 通用
 ```
 
 `check` / `build` / `gen` / `inspect` 四命令都带 `--no-cache`：关闭
@@ -748,18 +748,19 @@ cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0 -o migrations/0001-
 
 ```bash
 cage init my-game                  # 交互式脚手架：cage.toml + schema + 示例数据（零改动即可 check/build）
-cage check config/                 # 只验证，不生成
-cage build config/ --profile client  # 验证并生成目标产物
-cage gen config/ --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema）
-cage inspect config/ Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
-cage assets config/ --write assets.json   # 资产清单基线（blake3 逐文件盘点；--check 复核工作树）
+cd my-game                        # 以下命令在项目根（cage.toml 所在目录）执行
+cage check .                 # 只验证，不生成
+cage build . --profile client  # 验证并生成目标产物
+cage gen . --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template）
+cage inspect . Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
+cage assets . --write assets.json   # 资产清单基线（blake3 逐文件盘点；--check 复核工作树）
 cage diff build/a build/b          # 比较两个配置版本
-cage graph config/ --format dot    # 表引用依赖图（text/dot/json，含拓扑序与环清单）
+cage graph . --format dot    # 表引用依赖图（text/dot/json，含拓扑序与环清单）
 cage verify build/                 # 审计已生成产物（对照 manifest 账本逐文件重算 blake3）
-cage snapshot config/ --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
+cage snapshot . --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
 cage web ./                        # 本地 Schema 编辑器与项目状态页服务（只绑 127.0.0.1）
 cage lsp ./                        # stdio Language Server（IDE 诊断，与 check 同一校验管线）
-cage registry publish config/      # 配置包仓库：发布/列表/审计/GC/移除/导出/导入/直推/keygen（见 registry 节）
+cage registry publish . --registry reg/      # 配置包仓库：发布/列表/审计/GC/移除/导出/导入/直推/keygen（见 registry 节）
 cage migrate .                     # 迁移预演（dry-run；--write 落盘并全栈回验，--all 全链）
 cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
 cage schema-draft . mysql:Items    # 只读内省库表起草 schema（MySQL/PostgreSQL）

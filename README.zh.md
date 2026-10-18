@@ -41,7 +41,7 @@ Authoring Sources → Source Adapters → Canonical Model
 - Diagnostics 一等公民：错误码 + 精确定位（文件/Sheet/单元格/字段/值）+ 修复提示
 - 确定性构建：相同输入 → 相同产物、哈希与 Manifest（可追踪、可回滚、可增量）
 - Profile 机制：client / server 不同 targets 与字段可见性，一份配置两端复用
-- Configuration Snapshot：`cage snapshot` 打包自校验配置快照（manifest + schema + 产物 + 逐文件哈希账本），服务器启动载入前验证——相对包内账本被篡改/增删的文件即暴露（内容一致性校验；发布者认证走 registry 签名 bundle 路径）
+- Configuration Snapshot：`cage snapshot` 打包配置快照（manifest + schema + 产物 + 逐文件哈希账本），加载前可检查文件是否与包内账本一致；若数据与账本被同时替换，该检查无法识别。发布者认证走 registry 签名 bundle 路径
 - Configuration Registry：`cage registry` 多版本配置仓库（发布/列表/审计/GC/移除 + bundle 导出/导入/直推远端，含 `--presign-map` presigned URL 直推），消费方 `registry:包@版本` 引用 + `[dependencies]` 版本 pin，远程 http(s) 根解析（消费侧缓存离线可用，`registry push` 直推远端）
 - 库表内省 Schema 草稿：`cage schema-draft` 只读内省 MySQL / PostgreSQL 表（绑定参数）产出可审阅 schema 草稿——表、主键、`NOT NULL → required`，DECIMAL / 日期时间 / JSON 等需要作者拍板的类型以行内注释标出
 - 声明式数据迁移：`cage migrate` 按版本步进链对已验证配置做规则变换（改名/补默认/删字段/类型加宽/值重映射），默认 dry-run 报告，`--write` 原路写回并全栈回验
@@ -63,17 +63,18 @@ cage init my-game --source csv --envs four --targets json,csv --git   # 全 flag
 `cage init` 生成的项目零改动即可 `cage check .` 与 `cage build . --env dev` 通过。常用命令：
 
 ```bash
-cage check config/                 # 只验证，不生成
-cage build config/ --profile client  # 验证并生成目标产物
-cage snapshot config/ --profile client  # 构建 + 打包带哈希账本的快照；快照目录 --verify 载入前按账本校验
-cage gen config/ --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema）
+cd my-game                       # 在项目根（cage.toml 所在目录）内执行
+cage check .                 # 只验证，不生成
+cage build . --profile client  # 验证并生成目标产物
+cage snapshot . --profile client  # 构建 + 打包带哈希账本的快照；快照目录 --verify 载入前按账本校验
+cage gen . --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template）
 cage diff build/a build/b          # 比较两个配置版本
-cage inspect config/ Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
-cage migrate config/               # 迁移计划预览（--write 落盘，--all 全链）
+cage inspect . Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
+cage migrate .               # 迁移计划预览（--write 落盘，--all 全链）
 cage web ./                        # 启动 Schema 编辑器本地服务（只绑 127.0.0.1；/status/ 项目状态与构建新鲜度）
 cage lsp ./                        # stdio Language Server（IDE 诊断，与 check 同一校验管线）
-cage assets config/ --write assets.json   # 资产清单基线（blake3 逐文件盘点；--check 复核工作树）
-cage graph config/ --format dot    # 表引用依赖图（text/dot/json，含拓扑序与环清单）
+cage assets . --write assets.json   # 资产清单基线（blake3 逐文件盘点；--check 复核工作树）
+cage graph . --format dot    # 表引用依赖图（text/dot/json，含拓扑序与环清单）
 cage verify build/                 # 审计已生成产物（对照 manifest 账本逐文件重算 blake3）
 cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
 ```

@@ -75,17 +75,18 @@ Excel is only one kind of input source for Cage. Every input enters the unified 
 
 ```bash
 cage init my-game                    # 新项目：交互式脚手架（终端问答），零改动即可 check/build
-cage check config/                   # 只验证，不生成
-cage build config/ --profile client  # 验证并生成目标产物
-cage gen config/ --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema）
+cd my-game                          # 以下命令在项目根（cage.toml 所在目录）执行
+cage check .                   # 只验证，不生成
+cage build . --profile client  # 验证并生成目标产物
+cage gen . --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template）
 cage diff build/a build/b            # 比较两个配置版本
-cage graph config/                   # 表引用依赖图（text/dot/json，含拓扑序与环清单）
+cage graph .                   # 表引用依赖图（text/dot/json，含拓扑序与环清单）
 cage verify build/                   # 审计已生成产物（逐文件重算 blake3 对照账本）
-cage inspect config/ Item            # 查看 Schema 与配置结构（项目路径必填，表名可选）
-cage assets config/ --write assets.json   # 资产清单基线（--check 复核缺失/篡改/多余）
-cage snapshot config/ --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
-cage registry publish config/        # 多版本配置仓库（发布/列表/审计/GC/移除/导出/导入/直推）
-cage migrate config/                 # 数据迁移预演（dry-run；--write 落盘并全栈回验，--all 全链）
+cage inspect . Item            # 查看 Schema 与配置结构（项目路径必填，表名可选）
+cage assets . --write assets.json   # 资产清单基线（--check 复核缺失/篡改/多余）
+cage snapshot . --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
+cage registry publish . --registry reg/        # 多版本配置仓库（发布/列表/审计/GC/移除/导出/导入/直推）
+cage migrate .                 # 数据迁移预演（dry-run；--write 落盘并全栈回验，--all 全链）
 cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
 cage schema-draft . mysql:Items      # 只读内省库表起草 schema（MySQL/PostgreSQL）
 cage web ./                          # 本地 Schema 编辑器与项目状态页（只绑 127.0.0.1）
