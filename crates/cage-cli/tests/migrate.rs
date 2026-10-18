@@ -677,3 +677,121 @@ fn migrate_chain_end_outside_dependencies_pin_is_refused() {
         stdout(&out)
     );
 }
+
+/// Two-table schema + one segment renaming a field in both tables, so
+/// both source files would change under --write.
+const TWO_TABLE_SCHEMA: &str = r#"tables:
+  Item:
+    name: Item
+    description: An inventory item
+    primary_key: [id]
+    fields:
+      id:
+        name: id
+        type: { kind: Int32 }
+        required: true
+      title:
+        name: title
+        type: { kind: String }
+        required: true
+      name:
+        name: name
+        type: { kind: String }
+  Monster:
+    name: Monster
+    description: A monster
+    primary_key: [id]
+    fields:
+      id:
+        name: id
+        type: { kind: Int32 }
+        required: true
+      title:
+        name: title
+        type: { kind: String }
+        required: true
+      name:
+        name: name
+        type: { kind: String }
+enums: {}
+"#;
+
+const MONSTER_DATA: &str = r#"{
+  "Monster": [
+    { "id": 1, "name": "Slime" },
+    { "id": 2, "name": "Dragon" }
+  ]
+}
+"#;
+
+const TWO_SOURCE_SEGMENT: &str = r#"from: "1.0.0"
+to: "1.1.0"
+steps:
+  - rename_field:
+      table: Item
+      from: name
+      to: title
+  - rename_field:
+      table: Monster
+      from: name
+      to: title
+"#;
+
+/// --write is all-or-nothing across sources: when the write-back fails
+/// partway through (here: the second file's directory is made read-only
+/// after load), the earlier replacements must be rolled back — a failed
+/// run must not leave a half-migrated project (review 2026-10-18 表一#4).
+/// Skips itself where permission bits do not bite (e.g. running as root).
+#[cfg(unix)]
+#[test]
+fn write_back_failure_leaves_every_source_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("proj");
+    write(&proj.join("cage.toml"), JSON_TOML);
+    write(&proj.join("schema.yaml"), TWO_TABLE_SCHEMA);
+    write(
+        &proj.join("migrations/0001-rename.yaml"),
+        TWO_SOURCE_SEGMENT,
+    );
+    // Two sources in different directories, so the second one's directory
+    // can be locked after load without touching the first. Source paths
+    // sort config/a/… before config/ro/…, so hero is replaced first.
+    write(&proj.join("config/a/hero.json"), OLD_ITEM_DATA);
+    write(&proj.join("config/ro/monster.json"), MONSTER_DATA);
+    let hero = proj.join("config/a/hero.json");
+    let monster = proj.join("config/ro/monster.json");
+    let hero_before = fs::read(&hero).unwrap();
+    let monster_before = fs::read(&monster).unwrap();
+
+    let ro_dir = proj.join("config/ro");
+    fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = ro_dir.join(".probe");
+    if fs::write(&probe, b"probe").is_ok() {
+        // Permission denial is not enforceable here (root) — nothing to test.
+        let _ = fs::remove_file(&probe);
+        fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let out = run_cage(&["migrate", proj.to_str().unwrap(), "--write"]);
+    assert!(!out.status.success(), "the locked write must fail");
+    let err = stderr(&out);
+    assert!(
+        err.contains("monster.json"),
+        "error should name the failing source, got:\n{err}"
+    );
+    assert_eq!(
+        fs::read(&hero).unwrap(),
+        hero_before,
+        "hero.json stayed migrated after a failed run — write-back was not rolled back"
+    );
+    assert_eq!(
+        fs::read(&monster).unwrap(),
+        monster_before,
+        "monster.json bytes changed by a failed run"
+    );
+
+    fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o755)).unwrap();
+}

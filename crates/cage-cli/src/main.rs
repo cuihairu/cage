@@ -1600,6 +1600,17 @@ fn run_schema_draft(path: &Path, specs: &[String], out: Option<&Path>) -> i32 {
 /// the file's original key order, so that would not be stable to re-render
 /// against), which is what makes a second `--write` run byte-identical.
 /// Byte-identical renders are skipped outright.
+/// One source queued for the --write landing phase of
+/// `write_migrated_sources`.
+struct PendingWrite {
+    line: usize,
+    source: String,
+    file: PathBuf,
+    old_bytes: Vec<u8>,
+    new_bytes: Vec<u8>,
+    tables: usize,
+}
+
 fn write_migrated_sources(
     doc: &Document,
     root: &Path,
@@ -1630,6 +1641,14 @@ fn write_migrated_sources(
         }
     }
     let mut lines = Vec::new();
+    // Two phases (review 2026-10-18 表一#4): first render every writable
+    // text source and read back its current bytes, THEN touch the
+    // filesystem. The old loop wrote each file as it went, so a render or
+    // read failure further down the list left the earlier files already
+    // rewritten — a half-migrated project. Placeholders keep the report
+    // in source order; entries are rewritten to "wrote" as replacements
+    // land.
+    let mut pending: Vec<PendingWrite> = Vec::new();
     for (source, tables) in &groups {
         let file = PathBuf::from(source);
         let ext = file
@@ -1666,18 +1685,67 @@ fn write_migrated_sources(
             lines.push(format!("  unchanged {source}"));
             continue;
         }
-        if write {
-            std::fs::write(&file, &new_bytes)
-                .map_err(|e| format!("cannot write source file {source}: {e}"))?;
-            lines.push(format!("  wrote {source} ({} table(s))", tables.len()));
-        } else {
-            lines.push(format!(
-                "  would write {source} ({} table(s))",
-                tables.len()
+        let idx = lines.len();
+        lines.push(format!(
+            "  would write {source} ({} table(s))",
+            tables.len()
+        ));
+        pending.push(PendingWrite {
+            line: idx,
+            source: source.clone(),
+            file,
+            old_bytes,
+            new_bytes,
+            tables: tables.len(),
+        });
+    }
+    if write {
+        // Second phase: replace each source atomically — write a sibling
+        // temp file, rename it over the source. A replacement that fails
+        // (locked directory, full disk, …) rolls back the earlier
+        // replacements from their saved originals, so --write is
+        // all-or-nothing across the whole run.
+        let mut replaced: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        for item in &pending {
+            let (source, file) = (&item.source, &item.file);
+            // Honor the file's own write permission: rename alone would
+            // bypass a read-only target that the old in-place write used
+            // to refuse, so probe first and treat refusal as failure.
+            if let Err(e) = std::fs::OpenOptions::new().write(true).open(file) {
+                return Err(replace_failed(&replaced, source, &e));
+            }
+            let tmp = file.with_file_name(format!(
+                ".{}.migrate-tmp-{}",
+                file.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("source"),
+                std::process::id()
             ));
+            let done =
+                std::fs::write(&tmp, &item.new_bytes).and_then(|()| std::fs::rename(&tmp, file));
+            match done {
+                Ok(()) => {
+                    replaced.push((file.clone(), item.old_bytes.clone()));
+                    lines[item.line] = format!("  wrote {source} ({} table(s))", item.tables);
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(replace_failed(&replaced, source, &e));
+                }
+            }
         }
     }
     Ok(lines)
+}
+
+/// Roll back the replacements landed so far and report the failure that
+/// stopped the --write landing.
+fn replace_failed(replaced: &[(PathBuf, Vec<u8>)], source: &str, e: &std::io::Error) -> String {
+    let rolled = replaced.len();
+    for (file, old_bytes) in replaced.iter().rev() {
+        let _ = std::fs::write(file, old_bytes);
+    }
+    format!("cannot replace source file {source}: {e}; rolled back {rolled} earlier write(s)")
 }
 
 /// Render one source file's tables back into their original format:
