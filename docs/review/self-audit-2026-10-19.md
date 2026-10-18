@@ -163,3 +163,9 @@
 3. 给 web `api_diff` 的 `from` / `to` 参数做安全路径解析，并测绝对路径和 `..`（`crates/cage-cli/src/web.rs:1078,1087`）。
 
 附注：按要求本次未改代码，未运行测试；本文为静态审阅。所有未能确认的实现细节均标为“未核实”。
+
+## 修复记录
+
+- 快照 ledger 根目录逃逸：`crates/cage-core/src/snapshot/mod.rs:37-60,144-160,192-204,220-237,283-313`；`docs/build.md:245-247`。拒绝绝对路径和非规范相对路径；每次读取前 canonicalize 并校验根目录前缀；拒绝解析到根外的 symlink。新增 `verify_rejects_parent_directory_ledger_path`、`verify_rejects_absolute_ledger_path`、`verify_rejects_symlink_to_outside_snapshot`。Commit `7ead68c037e7dc5caff4abd982c484df70217270`。
+- LSP Content-Length 上限：`crates/cage-cli/src/lsp.rs:29-31,79-85,391-396`。上限 16 MiB，超限拒绝并结束会话。新增 `framing_rejects_content_length_over_limit`。Commit `f90c968be78d629e7054bbfe6504920a38c5c80d`。
+- web `api_diff` 路径解析：`crates/cage-cli/src/web.rs:1078-1113,1921-1941`。拒绝绝对路径和非规范相对路径，并 canonicalize 后校验项目根目录前缀。新增 `api_diff_rejects_absolute_paths_and_parent_traversal`。Commit `de4b9ddaadd97e8353ef5919fc866b55d80f7f6e`。
