@@ -30,9 +30,34 @@ use crate::manifest::BuildManifest;
 use crate::schema::Schema;
 use indexmap::IndexMap;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Component, Path};
 
 const LEDGER_FILE: &str = "HASHES.json";
+
+/// Resolve a canonical snapshot-relative path and keep symlink targets inside
+/// the snapshot root.
+fn snapshot_path(dir: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
+    let relative = Path::new(rel);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative.components().any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(format!("unsafe snapshot-relative path '{rel}'"));
+    }
+    let root = std::fs::canonicalize(dir)
+        .map_err(|e| format!("cannot resolve snapshot root {}: {e}", dir.display()))?;
+    let target = std::fs::canonicalize(root.join(relative))
+        .map_err(|e| format!("cannot resolve snapshot path '{rel}': {e}"))?;
+    if !target.starts_with(&root) {
+        return Err(format!("snapshot path '{rel}' resolves outside snapshot root"));
+    }
+    Ok(target)
+}
+
+fn read_snapshot_file(dir: &Path, rel: &str) -> Result<Vec<u8>, String> {
+    let path = snapshot_path(dir, rel)?;
+    std::fs::read(path).map_err(|e| format!("{rel}: unreadable ({e})"))
+}
 
 /// Snapshot-relative path of one artifact record: `output_dir` (the
 /// project-relative build root) is stripped, so the snapshot carries only
@@ -120,8 +145,10 @@ pub fn verify_snapshot(dir: &Path) -> Result<SnapshotReport, String> {
         let want = want
             .as_str()
             .ok_or_else(|| format!("{LEDGER_FILE}: non-string hash for '{rel}'"))?;
-        match std::fs::read(dir.join(rel)) {
-            Err(e) => mismatches.push(format!("{rel}: unreadable ({e})")),
+        match snapshot_path(dir, rel).and_then(|path| {
+            std::fs::read(path).map_err(|e| format!("{rel}: unreadable ({e})"))
+        }) {
+            Err(e) => return Err(e),
             Ok(bytes) => {
                 checked += 1;
                 let got = blake3::hash(&bytes).to_hex().to_string();
@@ -163,17 +190,17 @@ pub fn load(dir: &Path) -> Result<SnapshotData, String> {
         ));
     }
     let manifest: BuildManifest = serde_json::from_slice(
-        &std::fs::read(dir.join("manifest.json")).map_err(|e| format!("manifest read: {e}"))?,
+        &read_snapshot_file(dir, "manifest.json")?,
     )
     .map_err(|e| format!("manifest parse: {e}"))?;
     let schema: Schema = serde_json::from_slice(
-        &std::fs::read(dir.join("schema.json")).map_err(|e| format!("schema read: {e}"))?,
+        &read_snapshot_file(dir, "schema.json")?,
     )
     .map_err(|e| format!("schema parse: {e}"))?;
     let mut artifacts = IndexMap::new();
     for rel in files_on_disk(dir)? {
         if rel.starts_with("data/") || rel.starts_with("generated/") {
-            let bytes = std::fs::read(dir.join(&rel)).map_err(|e| format!("{rel} read: {e}"))?;
+            let bytes = read_snapshot_file(dir, &rel)?;
             artifacts.insert(rel, bytes);
         }
     }
@@ -196,7 +223,11 @@ fn files_on_disk(dir: &Path) -> Result<Vec<String>, String> {
                 .map_err(|_| "path escape".to_string())?
                 .to_string_lossy()
                 .into_owned();
-            if path.is_dir() {
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
+            if metadata.file_type().is_symlink() {
+                out.push(rel);
+            } else if metadata.is_dir() {
                 walk(&path, base, out)?;
             } else if rel != LEDGER_FILE {
                 out.push(rel);
@@ -242,6 +273,43 @@ mod tests {
             "b1d_012",
             "c_h_0123",
         )
+    }
+
+    fn write_ledger(dir: &Path, rel: &str) {
+        let ledger = serde_json::json!({"files": {rel: blake3::hash(b"outside").to_hex().to_string()}});
+        std::fs::write(dir.join(LEDGER_FILE), serde_json::to_vec(&ledger).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn verify_rejects_parent_directory_ledger_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snapshot");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(tmp.path().join("outside"), b"outside").unwrap();
+        write_ledger(&root, "../outside");
+        assert!(verify_snapshot(&root).err().unwrap().contains("unsafe snapshot-relative path"));
+    }
+
+    #[test]
+    fn verify_rejects_absolute_ledger_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snapshot");
+        std::fs::create_dir(&root).unwrap();
+        write_ledger(&root, tmp.path().join("outside").to_str().unwrap());
+        assert!(verify_snapshot(&root).err().unwrap().contains("unsafe snapshot-relative path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_rejects_symlink_to_outside_snapshot() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snapshot");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(tmp.path().join("outside"), b"outside").unwrap();
+        symlink(tmp.path().join("outside"), root.join("data.json")).unwrap();
+        write_ledger(&root, "data.json");
+        assert!(verify_snapshot(&root).err().unwrap().contains("resolves outside snapshot root"));
     }
 
     #[test]
