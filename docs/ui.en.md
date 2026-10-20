@@ -264,3 +264,71 @@ Four UI expressions:
 
 After each item lands, append a landing record to this section (the convention follows
 `docs/design.md`): the implemented surface, policy refinements, and acceptance method.
+
+## Planner Rule Interface (2026-10-20 user directive: design first, then build)
+
+> The directive: planners configuring rules without any interface hurts. Positioning per the
+> "Rule Configuration Interface" block in todo: planners must be able to configure rules, run
+> validation and read results without touching the CLI or files, reusing existing assets
+> (Diagnostics locations → table/row/column anchoring; the error-code table → a readable panel;
+> one parsing convention, never two). This section is the design decision taken before any
+> implementation.
+
+**Entry shape (decided 2026-10-20)**: no new `cage serve` subcommand — everything lands in
+the existing single `cage web` service. Basis: shape decision c (above) already settled
+"enhance the existing cage web", and W5–W8 have already brought project-level validation
+(the validation face of `/api/status` ships code/severity/location/hint diagnostics JSON),
+builds, artifacts, diff and registry to the facade — a separate subcommand would fork the
+security boundary (loopback checks, bounded reads, the 8 MiB cap; the 2026-10-18 表一#2
+hardening) and the docs surface. `cage serve` in the todo was the queuing seat's shorthand,
+not the user's own words.
+
+**P0 delta inventory (against the implemented surface, to avoid rebuilding)**:
+
+| todo wording | Current state | Real delta |
+|---|---|---|
+| One-click validate | `/api/status` already runs full `validate_project` diagnostics | No new validation — presentation-layer work only |
+| Diagnostics panel | The status page panel exists (code/severity/location/hint) | Filter controls (by code/severity) |
+| Click to jump to table row/column | The editor's `focusDiag` only jumps to schema fields | A **data table view** (data rows are not displayed anywhere today) plus mapping diagnostic Source locations (file/Sheet/Row/Col) to highlighted cells |
+| Upload or select files | The server reads only in-repo `source_roots` | **Select** first (an inventory of the repo's source files); **upload** deferred (decided: writing arbitrary files into the repo is the same class as the 2026-10-18 表一#1 path traversal — it needs its own security decision covering where writes land, overwrite/traversal defense, and a size cap; not implemented until decided) |
+
+**Endpoint discipline unchanged**: every new face = one thin JSON endpoint
+(`GET /api/tables` listing + `GET /api/table?name=` with paginated, truncated rows,
+calling the existing load-chain functions directly) + front-end wiring; the server stays
+stateless; vanilla ES module, zero build chain, compiled in at build time; validation stays
+single-entry (`validate_project`, the existing check / lsp / web same-source discipline).
+
+**Phasing**:
+
+- **P0 data panel**: table list → table view (pagination + row/column caps so a large
+  table cannot blow up the browser) → diagnostics filters (code/severity) → click a
+  diagnostic to jump and highlight the cell.
+- **P1 rule forms + one-click export**: rule editing rides the existing W3 editor
+  (form-ization = editor interaction work; saving goes through the existing
+  `POST /api/schema` chain, serialization stays cage's); export reuses the existing
+  `POST /api/build` + `/api/artifacts` downloads (whether to also zip is decided at
+  implementation time; artifact bytes are never recomputed).
+- **P2 version compare + template library**: compare reuses the existing `GET /api/diff`
+  layered JSON; the template library is a front-end static template dictionary generating
+  schema fragments (numeric range / enum / foreign-key reference to start), saved through
+  the same schema save chain — zero new server surface.
+
+**Acceptance**: per endpoint, web.rs unit tests + tests/web.rs integration + a web-smoke
+step (the U-series convention); the table view gets pagination/truncation assertions; the
+diagnostic anchoring gets a bad-data → click → highlighted-coordinate assertion; no upload
+means no upload surface.
+
+**Boundary**: no multi-user/remote (remote access still goes through SSH port forwarding,
+per the decision above); no uploads (separate security decision first); no new rule
+execution logic — validation stays the `validate_project` single entry.
+
+**P0 landing record (2026-10-20)**: the data panel is implemented —
+`GET /api/tables` + `GET /api/table` (web.rs; row window paginated at 200,
+capped at 1000; the primary key taken from the schema definition); the status
+page's "Data" section (table list + sticky-thead table view + pager); the
+diagnostics panel's severity/error-code filters and click-to-jump row highlight
+(jumpToDiag). Tests: +2 web unit tests (32 green total) + 1 integration test
+(14 green) + web-smoke step 5 assertions folded in, full script run passing.
+Recorded in docs/web.md W9. Remaining: uploads deferred (no security decision
+yet, honestly carried as a blocker); P1 rule forms/export and P2
+compare/templates untouched.

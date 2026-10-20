@@ -233,10 +233,34 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       列表 → 跨快照 diff → ghost 400）+ web-smoke 第 5 步（打包 →
       自验 → 零差异 diff → registry 空态）
 
+### W9 已实装：数据面板（策划界面 P0，2026-10-20，路线见 [UI 门面](/ui)）
+
+- [x] `GET /api/tables[?profile=&env=]`：仓内数据表清单（每表
+      rows / source_file / sheet / primary_key；主键取自 schema
+      定义，JSON 加载路径的 `Table.primary_key_fields` 为空不作为
+      数据源）；profile 未指明取第一个已配置项，未配置 500，
+      未知 profile 400
+- [x] `GET /api/table?name=NAME[&profile=&env=&offset=&limit=]`：
+      分页行窗（limit 默认 200、上限 1000、offset 归一），每行
+      index / pk / 按列 cells；总 JSON 映射全值域（bytes 出
+      `{"bytes": n}` 标记对象而非失败整请求）；ghost 表 404，
+      缺 name 400
+- [x] 状态页「数据」区：左侧表清单（行数/来源/sheet），右侧表格
+      视图（粘性表头 + 分页旋钮）；诊断面板新增 severity / 错误码
+      过滤（过滤后计数显示 m/n）；带数据点位的诊断可点击 → 直接
+      跳到对应表行高亮（jumpToDiag：pk 匹配 → 换页 → 滚动高亮）
+- [x] 校验本体零新增：数据面板消费的仍是 `/api/status` 同一份
+      `validate_project` 诊断（check / lsp / web / 状态页同一入口）
+- [x] 测试：web.rs 单测 +2（表清单事实与 ghost 400 / 分页窗口与
+      隐藏表 404）+ 集成 +1（表清单 → 行窗 → ghost 404 → 页面
+      引用断言）+ web-smoke 第 5 步并入数据面板断言（/api/tables
+      → /api/table → ghost 404）
+
 ## 路线图
 
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务
 → W3 编辑器前端 → W4 文档与示例 → W5 项目状态面 → W6 产物浏览 →
-W7 作用域视图 → W8 快照 / 分层 diff / registry 浏览）。
+W7 作用域视图 → W8 快照 / 分层 diff / registry 浏览；策划界面
+增量见 [UI 门面](/ui)（数据面板 W9 已落）。
 示例入口：`examples/web-smoke.sh`（CI 同款）。后续 UI 增量的路线与
 拍板见 [UI 门面](/ui)。

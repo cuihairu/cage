@@ -174,7 +174,19 @@ status, reg = req("GET", "/api/registry")
 assert_true(status == 200 and reg["ok"], f"GET /api/registry: {status} {reg}")
 assert_true(reg["packages"] == [] and "registry" in reg.get("note", ""), f"registry: {reg}")
 
-print("status session ok: page served, client fresh, rebuild up-to-date, artifacts served, snapshot packed+verified+diffed, registry browsed")
+# 7) 数据面板（策划界面 P0）：表清单 + 行分页 + 隐藏表 404
+status, ts = req("GET", "/api/tables?profile=client")
+assert_true(status == 200 and ts["ok"], f"GET /api/tables: {status} {ts}")
+names = [t["name"] for t in ts["tables"]]
+assert_true(len(names) >= 1, f"tables inventory: {ts}")
+status, t = req("GET", f"/api/table?name={urllib.parse.quote(names[0])}")
+assert_true(status == 200 and t["ok"], f"GET /api/table: {status} {t}")
+assert_true(t["total"] == len(t["rows"]), f"single page holds all rows: {t}")
+assert_true(len(t["columns"]) >= 1 and len(t["primary_key"]) >= 1, f"columns/pk: {t}")
+status, t = req("GET", "/api/table?name=Ghost")
+assert_true(status == 404, f"hidden table must 404, got {status}")
+
+print("status session ok: page served, client fresh, rebuild up-to-date, artifacts served, snapshot packed+verified+diffed, registry browsed, data panel listed")
 PY
 }
 
@@ -261,7 +273,7 @@ echo "\$ $CAGE_BIN check $WORK/demo && $CAGE_BIN build $WORK/demo --profile clie
 "$CAGE_BIN" check "$WORK/demo"
 "$CAGE_BIN" build "$WORK/demo" --profile client
 
-step "[5/7] cage web /status —— 状态页（U1/U2/U3）：新鲜度 + 产物 + 快照 + 对比 + registry"
+step "[5/7] cage web /status —— 状态页（U1/U2/U3 + 数据面板）：新鲜度 + 产物 + 快照 + 对比 + registry + 表清单"
 PORT="$(pick_port)"
 echo "\$ $CAGE_BIN web $WORK/demo --port $PORT &"
 "$CAGE_BIN" web "$WORK/demo" --port "$PORT" &

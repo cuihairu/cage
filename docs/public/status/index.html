@@ -40,8 +40,36 @@
     <div class="section-head">
       <h2>校验面板</h2>
       <span id="val-summary" class="muted">–</span>
+      <div class="knob-row" id="diag-filters">
+        <label class="knob">严重级 <select id="diag-sev">
+          <option value="">全部</option>
+          <option value="error">错误</option>
+          <option value="warning">警告</option>
+          <option value="info">信息</option>
+        </select></label>
+        <label class="knob">错误码 <input id="diag-code" type="text" placeholder="如 E1101" size="8"></label>
+      </div>
     </div>
     <ul id="val-diags" class="diag-list"></ul>
+  </section>
+
+  <section id="data">
+    <div class="section-head">
+      <h2>数据面板</h2>
+      <span id="data-summary" class="muted">–</span>
+    </div>
+    <div id="data-layout">
+      <ul id="table-list" class="table-list"></ul>
+      <div id="table-view">
+        <div id="table-meta" class="muted">左侧选择一张表</div>
+        <div id="table-pager" class="knob-row" hidden>
+          <button id="pg-prev" type="button">← 上一页</button>
+          <span id="pg-info" class="muted"></span>
+          <button id="pg-next" type="button">下一页 →</button>
+        </div>
+        <div id="table-scroll"><table id="table-grid"></table></div>
+      </div>
+    </div>
   </section>
 
   <section id="builds">

@@ -271,3 +271,80 @@ details > summary:hover { color: var(--accent); }
 }
 #toast.ok { border-color: rgba(70, 167, 88, 0.6); }
 #toast.err { border-color: rgba(229, 72, 77, 0.6); }
+
+/* ── 数据面板（策划界面 P0）── */
+
+#data-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.table-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.table-item {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  cursor: pointer;
+}
+
+.table-item:hover { background: var(--bg-hover); }
+.table-item.sel { border-color: var(--accent); background: var(--accent-weak); }
+
+.table-item .table-name { font-weight: 600; font-family: var(--mono); font-size: 13px; }
+.table-item .table-facts { color: var(--text-dim); font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+#table-view { min-width: 0; }
+
+#table-scroll {
+  overflow: auto;
+  max-height: 60vh;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+#table-grid { border-collapse: collapse; width: 100%; font-size: 12px; }
+
+#table-grid th, #table-grid td {
+  border-bottom: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+#table-grid thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  z-index: 1;
+}
+
+#table-grid td.row-idx { color: var(--text-dim); }
+#table-grid td.cell-num-null-1 { color: var(--text-dim); font-style: italic; }
+
+#table-grid tbody tr.hl { animation: row-hl 2.4s ease-out; }
+
+@keyframes row-hl {
+  0% { background: var(--accent-weak); box-shadow: inset 2px 0 0 var(--accent); }
+  70% { background: var(--accent-weak); }
+  100% { background: transparent; }
+}
+
+.diag-click { cursor: pointer; }
+.diag-click:hover { background: var(--bg-hover); }
+
+@media (max-width: 900px) {
+  #data-layout { grid-template-columns: 1fr; }
+}

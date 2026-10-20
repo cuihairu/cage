@@ -10,6 +10,8 @@
 const state = {
   meta: null,       // 最近一次 GET /api/status 负荷
   building: null,   // 正在构建的 profile 名（防重入）
+  tables: null,     // 最近一次 GET /api/tables 负荷（数据面板）
+  table: null,      // 当前展示的表：{ name, offset, limit, payload }
 };
 
 // ── 基础工具 ────────────────────────────────────────────────────────
@@ -108,14 +110,35 @@ function renderValidation() {
     list.append(li);
     return;
   }
-  v.diagnostics.forEach((d) => {
-    const li = el("li", `diag-severity-${d.severity || "info"}`);
+  // 过滤（数据面板 P0）：严重级下拉 + 错误码子串，纯前端过滤——
+  // 诊断数据永远整份来自 /api/status，过滤不触发新请求。
+  const sev = document.getElementById("diag-sev").value;
+  const code = document.getElementById("diag-code").value.trim().toUpperCase();
+  const shown = v.diagnostics.filter((d) =>
+    (!sev || (d.severity || "info") === sev)
+    && (!code || (d.code || "").toUpperCase().includes(code)));
+  if (shown.length !== v.diagnostics.length) {
+    summary.append(el("span", "muted", `　显示 ${shown.length}/${v.diagnostics.length}`));
+  }
+  if (shown.length === 0) {
+    const li = el("li", "", "当前过滤条件下无诊断");
+    li.style.cursor = "default";
+    li.style.color = "var(--text-dim)";
+    list.append(li);
+    return;
+  }
+  shown.forEach((d) => {
+    const li = el("li", `diag-severity-${d.severity || "info"} diag-click`);
     const line1 = el("div", "diag-line1");
     line1.append(el("span", "diag-code", d.code || "?"), el("div", "diag-msg", d.message || ""));
     li.append(line1);
     const loc = locText(d);
     if (loc) li.append(el("div", "diag-loc", loc));
     if (d.hint) li.append(el("div", "diag-hint", `hint: ${d.hint}`));
+    if (d.table) {
+      li.title = "点击在数据面板定位该诊断的表";
+      li.addEventListener("click", () => jumpToDiag(d));
+    }
     list.append(li);
   });
 }
@@ -197,6 +220,153 @@ function renderBuilds() {
   });
 }
 
+// ── 数据面板（策划界面 P0）─────────────────────────────────────────
+// 表清单与行数据来自 GET /api/tables 与 GET /api/table（同一装载链，
+// 可见性与 CLI 完全一致）；行分页在服务端截断，前端只渲染返回页。
+
+function panelQuery(extra) {
+  const params = new URLSearchParams();
+  const profile = document.getElementById("profile-sel").value;
+  const env = document.getElementById("env-in").value.trim();
+  if (profile) params.set("profile", profile);
+  if (env) params.set("env", env);
+  for (const [k, v] of Object.entries(extra || {})) params.set(k, v);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+async function loadTables() {
+  const { data } = await api(`/api/tables${panelQuery()}`);
+  state.tables = data && data.ok ? data : null;
+  renderTableList();
+}
+
+function renderTableList() {
+  const list = document.getElementById("table-list");
+  const summary = document.getElementById("data-summary");
+  list.replaceChildren();
+  if (!state.tables) {
+    summary.textContent = "表清单不可用";
+    return;
+  }
+  const tables = state.tables.tables || [];
+  summary.textContent = `${tables.length} 张表 · profile ${state.tables.profile}`;
+  if (!tables.length) {
+    const li = el("li", "", "（该 profile 下无可见表）");
+    li.style.color = "var(--text-dim)";
+    list.append(li);
+    return;
+  }
+  tables.forEach((t) => {
+    const li = el("li", "table-item" + (state.table && state.table.name === t.name ? " sel" : ""));
+    li.append(
+      el("div", "table-name", t.name),
+      el("div", "table-facts", `${t.rows} 行 · ${t.source_file || "?"}${t.sheet ? ` · sheet ${t.sheet}` : ""}`)
+    );
+    li.addEventListener("click", () => showTable(t.name, 0));
+    list.append(li);
+  });
+}
+
+async function showTable(name, offset) {
+  const limit = 200;
+  const { data } = await api(`/api/table${panelQuery({ name, offset, limit })}`);
+  const meta = document.getElementById("table-meta");
+  if (!data || !data.ok) {
+    meta.textContent = `无法读取表 ${name}：${(data && data.error) || "服务错误"}`;
+    document.getElementById("table-grid").replaceChildren();
+    document.getElementById("table-pager").hidden = true;
+    return;
+  }
+  state.table = { name, offset: data.offset, limit: data.limit, payload: data };
+  meta.replaceChildren();
+  meta.append(
+    el("strong", "", name),
+    el("span", "", `　${data.total} 行 · 主键 ${(data.primary_key || []).join(", ") || "–"} · ${data.source_file || "?"}${data.sheet ? ` · sheet ${data.sheet}` : ""}`)
+  );
+  renderGrid(data);
+  renderPager(data);
+  renderTableList();
+}
+
+function cellText(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function renderGrid(data) {
+  const table = document.getElementById("table-grid");
+  table.replaceChildren();
+  const cols = data.columns || [];
+  const thead = el("thead");
+  const hr = el("tr");
+  hr.append(el("th", "", "#"));
+  cols.forEach((c) => hr.append(el("th", "", c)));
+  thead.append(hr);
+  table.append(thead);
+  const tbody = el("tbody");
+  (data.rows || []).forEach((r) => {
+    const tr = el("tr");
+    tr.dataset.index = r.index;
+    tr.append(el("td", "row-idx", String(r.index)));
+    cols.forEach((c) => {
+      const v = (r.cells || {})[c];
+      tr.append(el("td", "cell-num-null-" + (v === null ? "1" : "0"), cellText(v)));
+    });
+    tbody.append(tr);
+  });
+  table.append(tbody);
+}
+
+function renderPager(data) {
+  const pager = document.getElementById("table-pager");
+  const { offset, limit, total } = data;
+  if (total <= limit) { pager.hidden = true; return; }
+  pager.hidden = false;
+  const from = total === 0 ? 0 : offset + 1;
+  const to = Math.min(offset + limit, total);
+  document.getElementById("pg-info").textContent = `第 ${from}–${to} / ${total} 行`;
+  const prev = document.getElementById("pg-prev");
+  const next = document.getElementById("pg-next");
+  prev.disabled = offset === 0;
+  next.disabled = to >= total;
+}
+
+// 诊断点位：跳到诊断所指的表并高亮目标行。d.row 是「主键值或行号」
+// （字符串形态），先取一页大窗口定位，再按定位结果落到常规分页。
+async function jumpToDiag(d) {
+  const want = String(d.row == null ? "" : d.row);
+  const { data } = await api(`/api/table${panelQuery({ name: d.table, offset: 0, limit: 1000 })}`);
+  if (!data || !data.ok) {
+    toast(`无法定位表 ${d.table}：${(data && data.error) || "服务错误"}`, "err");
+    return;
+  }
+  const rows = data.rows || [];
+  const pkCols = data.primary_key || [];
+  const hit = rows.find((r) =>
+    (want !== "" && (r.pk || []).some((v) => cellText(v) === want))
+    || (want !== "" && String(r.index) === want)
+    || (want === "" && pkCols.length === 0 && r.index === 0));
+  const limit = 200;
+  const targetIndex = hit ? hit.index : 0;
+  const offset = Math.floor(targetIndex / limit) * limit;
+  if (offset === 0 && data.total <= limit) {
+    state.table = { name: d.table, offset: 0, limit, payload: data };
+  } else {
+    await showTable(d.table, offset);
+  }
+  document.getElementById("data").scrollIntoView({ behavior: "smooth", block: "start" });
+  requestAnimationFrame(() => {
+    const tr = document.querySelector(`#table-grid tbody tr[data-index="${targetIndex}"]`);
+    if (!tr) return;
+    tr.classList.remove("hl");
+    void tr.offsetWidth;
+    tr.classList.add("hl");
+    tr.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
 // ── 动作 ────────────────────────────────────────────────────────────
 
 async function refresh() {
@@ -235,6 +405,7 @@ async function refresh() {
   }
   renderValidation();
   renderBuilds();
+  await loadTables();
   await loadArtifacts();
   await loadSnapshots();
   await loadRegistry();
@@ -646,6 +817,14 @@ async function init() {
   document.getElementById("profile-sel").addEventListener("change", refresh);
   document.getElementById("level-sel").addEventListener("change", refresh);
   document.getElementById("env-in").addEventListener("change", refresh);
+  document.getElementById("diag-sev").addEventListener("change", () => renderValidation());
+  document.getElementById("diag-code").addEventListener("input", () => renderValidation());
+  document.getElementById("pg-prev").addEventListener("click", () => {
+    if (state.table) showTable(state.table.name, Math.max(0, state.table.offset - state.table.limit));
+  });
+  document.getElementById("pg-next").addEventListener("click", () => {
+    if (state.table) showTable(state.table.name, state.table.offset + state.table.limit);
+  });
   document.getElementById("pack-btn").addEventListener("click", packSnapshot);
   document.getElementById("diff-btn").addEventListener("click", runDiff);
   document.addEventListener("keydown", (e) => {

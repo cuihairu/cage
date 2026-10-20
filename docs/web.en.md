@@ -217,6 +217,36 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   + 1 integration test (registry not configured → pack → list → cross-snapshot diff → ghost 400)
   + web-smoke step 5 (pack → self-verify → a zero-difference diff → the empty registry state)
 
+### W9 implemented: data panel (planner interface P0, 2026-10-20, roadmap in [UI facade](/en/ui))
+
+- [x] `GET /api/tables[?profile=&env=]`: the in-repo data table list
+      (per table rows / source_file / sheet / primary_key; the primary
+      key comes from the schema definition — the JSON load path leaves
+      `Table.primary_key_fields` empty, so it is not used as the data
+      source); an unspecified profile takes the first configured one,
+      nothing configured is 500, an unknown profile is 400
+- [x] `GET /api/table?name=NAME[&profile=&env=&offset=&limit=]`: a
+      paginated row window (limit defaults to 200, capped at 1000,
+      offset normalized), each row carrying index / pk / cells by
+      column; the total JSON mapping covers the whole value domain
+      (bytes become a `{"bytes": n}` marker object instead of failing
+      the whole request); a ghost table is 404, a missing name 400
+- [x] The status page's "Data" section: a table list on the left
+      (rows / source / sheet), a table view on the right (sticky thead
+      + pager knobs); the diagnostics panel gains severity / error-code
+      filters (a filtered m/n count is shown); a diagnostic carrying a
+      data location is clickable → jumps straight to the matching table
+      row with a highlight (jumpToDiag: pk match → page change →
+      scroll highlight)
+- [x] Zero new validation: what the data panel consumes is still the
+      same `/api/status` `validate_project` diagnostics (check / lsp /
+      web / status page share the single entry point)
+- [x] Tests: +2 web.rs unit tests (table list facts and ghost 400 /
+      pagination window and hidden-table 404) + 1 integration test
+      (table list → row window → ghost 404 → page reference assertion)
+      + web-smoke step 5 folds in data panel assertions (/api/tables →
+      /api/table → ghost 404)
+
 ## Roadmap
 
-With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in [UI facade](/en/ui).
+With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in [UI facade](/en/ui) (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in [UI facade](/en/ui).

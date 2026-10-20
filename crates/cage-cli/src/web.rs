@@ -40,7 +40,7 @@ use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_canonical_yaml, to_editor_json};
 use cage_core::error::codes::Severity;
 use cage_core::manifest::ProjectConfig;
-use cage_core::value::Document;
+use cage_core::value::{Document, Value};
 use std::path::{Path, PathBuf};
 
 /// W3 editor page and assets, embedded at compile time from the docs-site
@@ -255,6 +255,14 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
             }
             (tiny_http::Method::Get, "/api/status") => {
                 let (status, value) = api_status(ctx, &query);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Get, "/api/tables") => {
+                let (status, value) = api_tables(ctx, &query);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Get, "/api/table") => {
+                let (status, value) = api_table(ctx, &query);
                 json_response(status, &value)
             }
             (tiny_http::Method::Post, "/api/build") => {
@@ -636,6 +644,222 @@ fn api_status(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
             "profile": profile,
             "validation": validation,
             "builds": build_facts(ctx, env.as_deref()),
+        }),
+    )
+}
+
+/// Shared profile/env resolution for the data-panel endpoints: the same
+/// contract as `/api/status` (query wins, else first configured profile;
+/// unknown profile 400; no profile 500; bad env 400 through the same
+/// load chain).
+fn data_panel_project(
+    ctx: &Ctx,
+    profile: &str,
+    env: Option<&str>,
+) -> Result<(cage_core::schema::Schema, cage_core::value::Document), (u16, serde_json::Value)> {
+    if !ctx.config.profiles.contains_key(profile) {
+        return Err((
+            400,
+            serde_json::json!({"ok": false, "error": format!(
+                "unknown profile '{profile}' (available: {})",
+                ctx.config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+            )}),
+        ));
+    }
+    let project = crate::load_project(&ctx.root, false)
+        .and_then(|p| crate::project_with_env(p, env))
+        .map_err(|e| (400u16, serde_json::json!({"ok": false, "error": e})))?;
+    let (schema, document) = crate::filter_by_profile(&project.schema, &project.document, profile);
+    Ok((schema, document))
+}
+
+/// GET /api/tables[?profile=NAME&env=ENV] — the data panel's table
+/// inventory (planner interface P0). One entry per profile-visible table:
+/// name, row count, source facts, primary key — straight from the same
+/// load chain `check` consumes, so the list can never show a table the
+/// CLI does not see. No validation here: the panel pairs this list with
+/// the `/api/status` diagnostics, and the anchoring data (table / row /
+/// column) already rides each diagnostic.
+fn api_tables(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
+    let params = query_params(query);
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+
+    let profile = match get("profile") {
+        Some(p) => p,
+        None => match ctx.config.profiles.keys().next() {
+            Some(first) => first.clone(),
+            None => {
+                return (
+                    500,
+                    serde_json::json!({"ok": false, "error": "no build profile is configured"}),
+                )
+            }
+        },
+    };
+    let env = get("env");
+    let (schema, document) = match data_panel_project(ctx, &profile, env.as_deref()) {
+        Ok(pair) => pair,
+        Err((status, value)) => return (status, value),
+    };
+
+    // Primary key comes from the schema (authoritative and always
+    // present), not the loaded table — some source readers (JSON) leave
+    // the value-table's own field empty.
+    let mut tables: Vec<serde_json::Value> = document
+        .tables
+        .values()
+        .map(|t| {
+            let pk = schema
+                .tables
+                .get(&t.name)
+                .map(|def| def.primary_key.clone())
+                .unwrap_or_default();
+            serde_json::json!({
+                "name": t.name,
+                "rows": t.rows.len(),
+                "source_file": t.source_file,
+                "sheet": t.sheet,
+                "primary_key": pk,
+            })
+        })
+        .collect();
+    // Name order, not load order: the panel is an inventory, and a
+    // stable list beats "the order the source files happened to mention
+    // tables in" (which changes with every source reorganization).
+    tables.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    (
+        200,
+        serde_json::json!({"ok": true, "profile": profile, "tables": tables}),
+    )
+}
+
+/// GET /api/table?name=NAME[&profile=&env=&offset=&limit=] — one table's
+/// rows for the data panel (planner interface P0). Rows render with the
+/// schema-declared column order (the same `ordered_columns` the migrate
+/// write-back uses), paginated and truncated: default 200 rows, hard cap
+/// 1000, so a huge table cannot blow up either the response or the
+/// browser. Cell values go through a total JSON mapping (bytes, which
+/// have no display form, become a marker object). 404 for a table the
+/// profile projection hid — same visibility rule as the CLI.
+// Total JSON mapping: bytes have no display form, so they become a
+// marker object instead of failing the whole request.
+fn data_cell(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(i) => serde_json::Value::from(*i),
+        Value::UInt(u) => serde_json::Value::from(*u),
+        Value::Float(f) => serde_json::Value::from(*f),
+        Value::String(s) => serde_json::Value::from(s.clone()),
+        Value::Bytes(b) => serde_json::json!({"bytes": b.len()}),
+        Value::Array(items) => serde_json::Value::Array(items.iter().map(data_cell).collect()),
+        Value::Object(map) => {
+            let mut m = serde_json::Map::new();
+            for (k, v) in map {
+                m.insert(k.clone(), data_cell(v));
+            }
+            serde_json::Value::Object(m)
+        }
+    }
+}
+
+fn api_table(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
+    let params = query_params(query);
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+
+    let Some(name) = get("name") else {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": "missing required parameter 'name'"}),
+        );
+    };
+    // Parse failures fall back to the defaults (the panel always sends
+    // well-formed numbers; hand-typed URLs should not error out).
+    let offset = get("offset")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let limit = match get("limit").and_then(|v| v.parse::<usize>().ok()) {
+        Some(n) if n > 0 => n.min(1000),
+        _ => 200,
+    };
+
+    let profile = match get("profile") {
+        Some(p) => p,
+        None => match ctx.config.profiles.keys().next() {
+            Some(first) => first.clone(),
+            None => {
+                return (
+                    500,
+                    serde_json::json!({"ok": false, "error": "no build profile is configured"}),
+                )
+            }
+        },
+    };
+    let env = get("env");
+    let (schema, document) = match data_panel_project(ctx, &profile, env.as_deref()) {
+        Ok(pair) => pair,
+        Err((status, value)) => return (status, value),
+    };
+    let Some(table) = document.tables.values().find(|t| t.name == name) else {
+        return (
+            404,
+            serde_json::json!({
+                "ok": false,
+                "error": format!("no table '{name}' in this profile's view")
+            }),
+        );
+    };
+
+    let columns = crate::ordered_columns(table, &schema);
+    let total = table.rows.len();
+    let start = offset.min(total);
+    let end = (start + limit).min(total);
+    let rows: Vec<serde_json::Value> = table.rows[start..end]
+        .iter()
+        .map(|row| {
+            let mut cells = serde_json::Map::new();
+            for col in &columns {
+                match row.fields.get(col) {
+                    Some(tv) => cells.insert(col.clone(), data_cell(&tv.value)),
+                    None => cells.insert(col.clone(), serde_json::Value::Null),
+                };
+            }
+            serde_json::json!({
+                "index": row.index,
+                "pk": row.primary_key.iter().map(data_cell).collect::<Vec<_>>(),
+                "cells": cells,
+            })
+        })
+        .collect();
+
+    let pk = schema.tables.get(&name).map_or_else(
+        || table.primary_key_fields.clone(),
+        |def| def.primary_key.clone(),
+    );
+    (
+        200,
+        serde_json::json!({
+            "ok": true,
+            "name": name,
+            "profile": profile,
+            "primary_key": pk,
+            "source_file": table.source_file,
+            "sheet": table.sheet,
+            "columns": columns,
+            "total": total,
+            "offset": start,
+            "limit": limit,
+            "rows": rows,
         }),
     )
 }
@@ -1619,6 +1843,85 @@ output_dir = "build/server/csv"
         assert!(payload["error"]
             .as_str()
             .is_some_and(|e| e.contains("unknown profile 'ghost'")));
+    }
+
+    #[test]
+    fn api_tables_lists_visible_tables_with_facts() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        let (status, payload) = api_tables(&ctx, "");
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert_eq!(payload["profile"], serde_json::json!("client"));
+        let tables = payload["tables"].as_array().expect("tables array");
+        assert_eq!(tables.len(), 1, "the demo project has one table");
+        let item = &tables[0];
+        assert_eq!(item["name"], serde_json::json!("Item"));
+        assert_eq!(item["rows"], serde_json::json!(1));
+        assert_eq!(item["primary_key"], serde_json::json!(["id"]));
+        assert!(item["source_file"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("item.json")));
+
+        // Same visibility contract as the CLI: an unknown profile is
+        // rejected, not silently defaulted.
+        let (status, payload) = api_tables(&ctx, "profile=ghost");
+        assert_eq!(status, 400);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn api_table_paginates_rows_and_hides_hidden_tables() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        // Five rows so pagination has something to paginate — the panel
+        // handlers re-read the project from disk, so the source file is
+        // what matters.
+        let data: Vec<String> = (0..5)
+            .map(|i| format!(r#"{{ "id": {i}, "name": "row{i}" }}"#))
+            .collect();
+        fs::write(
+            dir.path().join("config/item.json"),
+            format!("{{\"Item\": [{}]}}", data.join(", ")),
+        )
+        .expect("write source");
+
+        // Missing name is a 400, not a silent empty list.
+        let (status, payload) = api_table(&ctx, "");
+        assert_eq!(status, 400);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+
+        // Ghost table is a 404: hidden by the profile projection or
+        // misspelled — either way the panel must not pretend it exists.
+        let (status, payload) = api_table(&ctx, "name=Ghost");
+        assert_eq!(status, 404);
+        assert!(payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("Ghost")));
+
+        // Default page: all five rows, schema column order.
+        let (status, payload) = api_table(&ctx, "name=Item");
+        assert_eq!(status, 200);
+        assert_eq!(payload["total"], serde_json::json!(5));
+        assert_eq!(payload["offset"], serde_json::json!(0));
+        assert_eq!(payload["columns"], serde_json::json!(["id", "name"]));
+        assert_eq!(payload["rows"].as_array().expect("rows").len(), 5);
+
+        // A window in the middle keeps its absolute indexes.
+        let (status, payload) = api_table(&ctx, "name=Item&offset=2&limit=2");
+        assert_eq!(status, 200);
+        assert_eq!(payload["offset"], serde_json::json!(2));
+        let rows = payload["rows"].as_array().expect("rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["index"], serde_json::json!(2));
+        assert_eq!(rows[0]["cells"]["name"], serde_json::json!("row2"));
+
+        // Offset past the end stays 200 with zero rows (the panel just
+        // shows an empty page; it does not error the user out).
+        let (status, payload) = api_table(&ctx, "name=Item&offset=50");
+        assert_eq!(status, 200);
+        assert_eq!(payload["rows"].as_array().expect("rows").len(), 0);
     }
 
     #[test]

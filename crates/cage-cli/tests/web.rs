@@ -715,6 +715,76 @@ fn web_status_and_build_report_freshness_end_to_end() {
     assert_eq!(json(&body)["up_to_date"], true, "body: {body}");
 }
 
+/// Planner data panel (P0): the table inventory and the paginated row
+/// view run against the same load chain the CLI uses — the panel cannot
+/// show a table `cage check` does not see, and a hidden/misspelled table
+/// is a 404, not an empty page.
+#[test]
+fn web_tables_and_table_rows_serve_the_data_panel() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    // Five rows so a pagination window has something to window.
+    let rows: Vec<String> = (0..5)
+        .map(|i| format!(r#"{{"id": {i}, "name": "row{i}"}}"#))
+        .collect();
+    fs::write(
+        tmp.path().join("config/item.json"),
+        format!("{{\"Item\": [{}]}}", rows.join(", ")),
+    )
+    .unwrap();
+    let server = start_server(tmp.path());
+
+    let (status, body) = request(server.port, "GET", "/api/tables", None);
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["profile"], "client");
+    let tables = v["tables"].as_array().unwrap();
+    assert_eq!(tables.len(), 1);
+    assert_eq!(tables[0]["name"], "Item");
+    assert_eq!(tables[0]["rows"], 5);
+    assert_eq!(tables[0]["primary_key"], serde_json::json!(["id"]));
+
+    // Unknown profile: same 400 contract as /api/status.
+    let (status, _) = request(server.port, "GET", "/api/tables?profile=ghost", None);
+    assert_eq!(status, 400);
+
+    let (status, body) = request(server.port, "GET", "/api/table?name=Item", None);
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["total"], 5);
+    assert_eq!(v["columns"], serde_json::json!(["id", "name"]));
+    assert_eq!(v["rows"].as_array().unwrap().len(), 5);
+
+    // A window keeps absolute row indexes; a ghost table is a 404 and a
+    // missing name a 400.
+    let (status, body) = request(
+        server.port,
+        "GET",
+        "/api/table?name=Item&offset=2&limit=2",
+        None,
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    let rows = v["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["index"], 2);
+    assert_eq!(rows[0]["cells"]["name"], "row2");
+
+    let (status, body) = request(server.port, "GET", "/api/table?name=Ghost", None);
+    assert_eq!(status, 404, "body: {body}");
+    assert!(json(&body)["error"].as_str().unwrap().contains("Ghost"));
+
+    let (status, _) = request(server.port, "GET", "/api/table", None);
+    assert_eq!(status, 400);
+
+    // The status page module knows about the panel (the anchor link is
+    // the planner path from diagnostic to data).
+    let (status, body) = request(server.port, "GET", "/status/app.js", None);
+    assert_eq!(status, 200);
+    assert!(body.contains("/api/table"), "status page must call the API");
+}
+
 #[test]
 fn web_build_refuses_broken_data_with_diagnostics() {
     let tmp = tempfile::tempdir().unwrap();
