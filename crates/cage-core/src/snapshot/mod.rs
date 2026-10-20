@@ -40,7 +40,9 @@ fn snapshot_path(dir: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
     let relative = Path::new(rel);
     if relative.as_os_str().is_empty()
         || relative.is_absolute()
-        || relative.components().any(|part| !matches!(part, Component::Normal(_)))
+        || relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
     {
         return Err(format!("unsafe snapshot-relative path '{rel}'"));
     }
@@ -49,7 +51,9 @@ fn snapshot_path(dir: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
     let target = std::fs::canonicalize(root.join(relative))
         .map_err(|e| format!("cannot resolve snapshot path '{rel}': {e}"))?;
     if !target.starts_with(&root) {
-        return Err(format!("snapshot path '{rel}' resolves outside snapshot root"));
+        return Err(format!(
+            "snapshot path '{rel}' resolves outside snapshot root"
+        ));
     }
     Ok(target)
 }
@@ -145,19 +149,14 @@ pub fn verify_snapshot(dir: &Path) -> Result<SnapshotReport, String> {
         let want = want
             .as_str()
             .ok_or_else(|| format!("{LEDGER_FILE}: non-string hash for '{rel}'"))?;
-        match snapshot_path(dir, rel).and_then(|path| {
-            std::fs::read(path).map_err(|e| format!("{rel}: unreadable ({e})"))
-        }) {
-            Err(e) => return Err(e),
-            Ok(bytes) => {
-                checked += 1;
-                let got = blake3::hash(&bytes).to_hex().to_string();
-                if got != want {
-                    mismatches.push(format!(
-                        "{rel}: hash mismatch (recorded {want}, actual {got})"
-                    ));
-                }
-            }
+        let bytes = snapshot_path(dir, rel)
+            .and_then(|path| std::fs::read(path).map_err(|e| format!("{rel}: unreadable ({e})")))?;
+        checked += 1;
+        let got = blake3::hash(&bytes).to_hex().to_string();
+        if got != want {
+            mismatches.push(format!(
+                "{rel}: hash mismatch (recorded {want}, actual {got})"
+            ));
         }
     }
 
@@ -189,14 +188,11 @@ pub fn load(dir: &Path) -> Result<SnapshotData, String> {
             report.mismatches.join("; ")
         ));
     }
-    let manifest: BuildManifest = serde_json::from_slice(
-        &read_snapshot_file(dir, "manifest.json")?,
-    )
-    .map_err(|e| format!("manifest parse: {e}"))?;
-    let schema: Schema = serde_json::from_slice(
-        &read_snapshot_file(dir, "schema.json")?,
-    )
-    .map_err(|e| format!("schema parse: {e}"))?;
+    let manifest: BuildManifest =
+        serde_json::from_slice(&read_snapshot_file(dir, "manifest.json")?)
+            .map_err(|e| format!("manifest parse: {e}"))?;
+    let schema: Schema = serde_json::from_slice(&read_snapshot_file(dir, "schema.json")?)
+        .map_err(|e| format!("schema parse: {e}"))?;
     let mut artifacts = IndexMap::new();
     for rel in files_on_disk(dir)? {
         if rel.starts_with("data/") || rel.starts_with("generated/") {
@@ -276,7 +272,8 @@ mod tests {
     }
 
     fn write_ledger(dir: &Path, rel: &str) {
-        let ledger = serde_json::json!({"files": {rel: blake3::hash(b"outside").to_hex().to_string()}});
+        let ledger =
+            serde_json::json!({"files": {rel: blake3::hash(b"outside").to_hex().to_string()}});
         std::fs::write(dir.join(LEDGER_FILE), serde_json::to_vec(&ledger).unwrap()).unwrap();
     }
 
@@ -287,7 +284,10 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         std::fs::write(tmp.path().join("outside"), b"outside").unwrap();
         write_ledger(&root, "../outside");
-        assert!(verify_snapshot(&root).err().unwrap().contains("unsafe snapshot-relative path"));
+        assert!(verify_snapshot(&root)
+            .err()
+            .unwrap()
+            .contains("unsafe snapshot-relative path"));
     }
 
     #[test]
@@ -296,7 +296,10 @@ mod tests {
         let root = tmp.path().join("snapshot");
         std::fs::create_dir(&root).unwrap();
         write_ledger(&root, tmp.path().join("outside").to_str().unwrap());
-        assert!(verify_snapshot(&root).err().unwrap().contains("unsafe snapshot-relative path"));
+        assert!(verify_snapshot(&root)
+            .err()
+            .unwrap()
+            .contains("unsafe snapshot-relative path"));
     }
 
     #[cfg(unix)]
@@ -309,7 +312,10 @@ mod tests {
         std::fs::write(tmp.path().join("outside"), b"outside").unwrap();
         symlink(tmp.path().join("outside"), root.join("data.json")).unwrap();
         write_ledger(&root, "data.json");
-        assert!(verify_snapshot(&root).err().unwrap().contains("resolves outside snapshot root"));
+        assert!(verify_snapshot(&root)
+            .err()
+            .unwrap()
+            .contains("resolves outside snapshot root"));
     }
 
     #[test]
