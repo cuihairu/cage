@@ -285,6 +285,29 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       `diag-new`）+ 两页脚本 `node --check`；web 单测 32 绿 / 集成
       14 绿不变
 
+### W12 已实装：表源文件上传替换（策划界面 P0，2026-10-21，路线见 [UI 门面](/ui)）
+
+- [x] `POST /api/upload?name=NAME[&profile=&env=]`：原始字节体 = 该表
+      登记源文件的整文件替换。安全策略已代决（docs/ui.md 上传落地
+      记录）：只写登记源文件——`resolve_upload_target` 在
+      canonicalize 后双守卫（项目根内 + 至少一个 `source_roots` 内，
+      symlink 逃逸同拒）；tmp + rename 原子落盘，原文件先挪旁
+- [x] 校验与回滚：换入后走同一 `validate_project` 全量校验（单一入口
+      纪律不变），有错误或装载失败即恢复原文件再应答——被拒上传
+      磁盘上字节不落地；恢复失败时备份原文件保留并报错点名路径
+      （UploadSwap 守卫 disarm），不静默丢数据
+- [x] 拒绝面：多文件分片表直接 400（单文件替换无法不丢行）；空体
+      400、ghost 404、缺 name 400、未在 source_roots 内 400；大小走
+      既有 8 MiB 请求体上限（非 UTF-8 只允许 upload 路由，其余
+      String 路由保持旧「cannot read request body」拒绝）
+- [x] 状态页「数据」区：「上传替换…」钮（选中表后出现，标题带源
+      文件路径）→ confirm → 选文件 → 原始字节 POST → 成功/被拒
+      toast → 刷新校验面板与表视图
+- [x] 测试：web 单测 +5（接受落盘无残留 / 坏数据拒绝字节原样 / 不可
+      解析拒绝 / ghost 缺参 / 路径双守卫含 symlink 逃逸）+ 集成 +1
+      （替换 → 面板可见 → 拒绝回滚 → 无 temp 残留）+ web-smoke 第 5
+      步并入上传往返（接受 → 面板见新行 → 坏数据拒 → 原文件还原）
+
 ## 路线图
 
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务

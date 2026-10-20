@@ -288,6 +288,38 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       `markDiagDiff` / `diag-new`) + `node --check` on both page scripts;
       web unit 32 green / integration 14 green unchanged
 
+### W12 implemented: table source upload (planner interface P0, 2026-10-21, roadmap in [UI facade](/en/ui))
+
+- [x] `POST /api/upload?name=NAME[&profile=&env=]`: the raw-byte body is
+      a whole-file replacement of the table's registered source file.
+      Security policy delegated (docs/ui.md upload landing record): writes
+      go only to the registered source file — `resolve_upload_target`
+      double-guards after canonicalization (inside the project root AND
+      inside at least one `source_roots`, symlink escapes refused); bytes
+      land via tmp + rename, the original moves aside first
+- [x] Validation and rollback: after the swap the same full
+      `validate_project` runs (the single-entry discipline holds); errors
+      or a load failure restore the original before responding — a refused
+      upload never leaves bytes on disk; if a restore itself fails, the
+      backup original is kept on disk and the error names its path
+      (the UploadSwap guard disarms) instead of silently losing data
+- [x] Refusal surface: tables spanning several files are 400 outright (a
+      single-file replacement cannot avoid orphaning rows); empty body
+      400, ghost 404, missing name 400, outside source_roots 400; size
+      rides the existing 8 MiB body cap (non-UTF-8 bodies are accepted
+      only by the upload route; the string-shaped routes keep their old
+      "cannot read request body" refusal)
+- [x] The status page's data section: an "upload replace…" button (shown
+      once a table is selected, title carries the source path) → confirm
+      → pick a file → raw-byte POST → accept/refused toast → refresh of
+      the validation panel and the table view
+- [x] Tests: +5 web unit tests (accept and land, no litter / bad data
+      refused byte-identical / unparseable refused / ghost and missing
+      name / double path guard incl. symlink escape) + 1 integration end
+      to end (replace → visible in the panel → refusal rollback → no temp
+      litter) + web-smoke step 5 folds in the upload round trip (accepted
+      → new row in the panel → bad data refused → original restored)
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in [UI facade](/en/ui) (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in [UI facade](/en/ui).

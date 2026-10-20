@@ -317,6 +317,9 @@ async function showTable(name, offset) {
     return;
   }
   state.table = { name, offset: data.offset, limit: data.limit, payload: data };
+  const up = document.getElementById("tbl-upload");
+  up.hidden = false;
+  up.title = `用本地文件整文件替换 ${name} 的源文件（${data.source_file || "?"}）：服务端先校验后落盘，不过不写入`;
   meta.replaceChildren();
   meta.append(
     el("strong", "", name),
@@ -630,6 +633,51 @@ async function loadArtifacts() {
   }
 }
 
+// 上传替换（策划界面 P0，安全策略已代决见 docs/ui.md）：确认 → 选本地
+// 文件 → 原始字节 POST /api/upload → 服务端整文件原子替换 + 全量校验，
+// 不过不写入；完成后刷新数据面板与校验面板。
+function uploadSource() {
+  const t = state.table;
+  if (!t) return;
+  const src = t.payload.source_file || "?";
+  if (!confirm(`用本地文件整文件替换 ${t.name} 的源文件（${src}）？\n上传后服务端立即全量校验，校验不过不写入（原文件不动）。`)) return;
+  const inp = document.getElementById("tbl-file");
+  inp.value = "";
+  inp.click();
+}
+
+async function sendUpload(file) {
+  const t = state.table;
+  if (!t) return;
+  const bytes = await file.arrayBuffer();
+  const qs = new URLSearchParams({ name: t.name });
+  const profile = document.getElementById("profile-sel").value;
+  if (profile) qs.set("profile", profile);
+  const env = document.getElementById("env-in").value.trim();
+  if (env) qs.set("env", env);
+  let res;
+  try {
+    res = await fetch(`/api/upload?${qs.toString()}`, { method: "POST", body: bytes });
+  } catch (e) {
+    toast(`上传失败：无法连接（${e}）`, "err", 7000);
+    return;
+  }
+  let data = null;
+  try { data = await res.json(); } catch { /* non-JSON is handled below */ }
+  if (!data) {
+    toast(`上传失败：HTTP ${res.status}`, "err", 7000);
+  } else if (data.ok) {
+    const w = data.warnings ? `（${data.warnings} 警告）` : "";
+    toast(`已替换 ${data.name} 的源文件（${data.bytes} 字节）${w}`, "ok", 7000);
+  } else if (data.diagnostics && data.diagnostics.length) {
+    toast("上传被拒：校验未通过，原文件未动（见诊断面板）", "err", 9000);
+  } else {
+    toast(`上传被拒：${data.error || `HTTP ${res.status}`}`, "err", 9000);
+  }
+  await refresh();
+  await showTable(t.name, t.offset || 0);
+}
+
 // ── 快照（U3 列 / 验 / 打包）────────────────────────────────────────
 
 let snapshotsCache = []; // 最近一次 GET /api/snapshots 负荷（对比下拉也用它）
@@ -883,6 +931,11 @@ async function init() {
   });
   document.getElementById("pg-next").addEventListener("click", () => {
     if (state.table) showTable(state.table.name, state.table.offset + state.table.limit);
+  });
+  document.getElementById("tbl-upload").addEventListener("click", uploadSource);
+  document.getElementById("tbl-file").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) sendUpload(f);
   });
   document.getElementById("pack-btn").addEventListener("click", packSnapshot);
   document.getElementById("diff-btn").addEventListener("click", runDiff);

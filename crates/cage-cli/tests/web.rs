@@ -822,6 +822,69 @@ fn web_tables_and_table_rows_serve_the_data_panel() {
 }
 
 #[test]
+fn web_upload_replaces_table_source_end_to_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    fs::write(
+        tmp.path().join("config/item.json"),
+        r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+    )
+    .unwrap();
+    let server = start_server(tmp.path());
+    let source = tmp.path().join("config/item.json");
+    let original = fs::read(&source).unwrap();
+
+    // Missing name / ghost table: the same 400/404 contract as the read
+    // side, and nothing on disk moves.
+    let (status, body) = request(server.port, "POST", "/api/upload", Some("{}"));
+    assert_eq!(status, 400, "body: {body}");
+    let (status, body) = request(server.port, "POST", "/api/upload?name=Ghost", Some("{}"));
+    assert_eq!(status, 404, "body: {body}");
+    assert_eq!(original, fs::read(&source).unwrap());
+
+    // A valid replacement lands atomically and the panel sees it through
+    // the same load chain.
+    let good = r#"{"Item": [{"id": 2, "name": "Shield"}, {"id": 3, "name": "Bow"}]}"#;
+    let (status, body) = request(server.port, "POST", "/api/upload?name=Item", Some(good));
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "body: {body}");
+    let (_, body) = request(server.port, "GET", "/api/table?name=Item", None);
+    assert_eq!(json(&body)["total"], 2);
+    assert_eq!(json(&body)["rows"][1]["cells"]["name"], "Bow");
+
+    // Invalid data (id is Int32): refused with diagnostics, the source
+    // is byte-identical to what the accepted upload left, and no
+    // temp/backup litter stays behind.
+    let accepted = fs::read(&source).unwrap();
+    let bad = r#"{"Item": [{"id": "not-an-int", "name": "x"}]}"#;
+    let (status, body) = request(server.port, "POST", "/api/upload?name=Item", Some(bad));
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], false, "body: {body}");
+    assert!(!v["diagnostics"].as_array().unwrap().is_empty());
+    assert_eq!(accepted, fs::read(&source).unwrap());
+    let litter: Vec<String> = fs::read_dir(tmp.path().join("config"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("upload"))
+        .collect();
+    assert!(litter.is_empty(), "leftover swap files: {litter:?}");
+
+    // Unparseable bytes: refused on the post-swap load, original restored.
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/upload?name=Item",
+        Some("<binary>"),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(json(&body)["ok"], false);
+    assert_eq!(accepted, fs::read(&source).unwrap());
+}
+
+#[test]
 fn web_build_refuses_broken_data_with_diagnostics() {
     let tmp = tempfile::tempdir().unwrap();
     write_project(tmp.path());

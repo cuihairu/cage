@@ -290,7 +290,7 @@ not the user's own words.
 | One-click validate | `/api/status` already runs full `validate_project` diagnostics | No new validation — presentation-layer work only |
 | Diagnostics panel | The status page panel exists (code/severity/location/hint) | Filter controls (by code/severity) |
 | Click to jump to table row/column | The editor's `focusDiag` only jumps to schema fields | A **data table view** (data rows are not displayed anywhere today) plus mapping diagnostic Source locations (file/Sheet/Row/Col) to highlighted cells |
-| Upload or select files | The server reads only in-repo `source_roots` | **Select** first (an inventory of the repo's source files); **upload** deferred (decided: writing arbitrary files into the repo is the same class as the 2026-10-18 表一#1 path traversal — it needs its own security decision covering where writes land, overwrite/traversal defense, and a size cap; not implemented until decided) |
+| Upload or select files | The server reads only in-repo `source_roots` | **Select** first (an inventory of the repo's source files); **upload** later landed under a delegated security policy (2026-10-21, see the upload landing record below: only the registered source file, atomic replacement, rollback when validation refuses) |
 
 **Endpoint discipline unchanged**: every new face = one thin JSON endpoint
 (`GET /api/tables` listing + `GET /api/table?name=` with paginated, truncated rows,
@@ -315,11 +315,12 @@ single-entry (`validate_project`, the existing check / lsp / web same-source dis
 
 **Acceptance**: per endpoint, web.rs unit tests + tests/web.rs integration + a web-smoke
 step (the U-series convention); the table view gets pagination/truncation assertions; the
-diagnostic anchoring gets a bad-data → click → highlighted-coordinate assertion; no upload
-means no upload surface.
+diagnostic anchoring gets a bad-data → click → highlighted-coordinate assertion; the
+upload lands with refusal-and-rollback assertions.
 
 **Boundary**: no multi-user/remote (remote access still goes through SSH port forwarding,
-per the decision above); no uploads (separate security decision first); no new rule
+per the decision above); uploads only under the delegated policy above (registered
+source file, whole-file replacement with validation rollback); no new rule
 execution logic — validation stays the `validate_project` single entry.
 
 **P0 landing record (2026-10-20)**: the data panel is implemented —
@@ -329,12 +330,37 @@ page's "Data" section (table list + sticky-thead table view + pager); the
 diagnostics panel's severity/error-code filters and click-to-jump row highlight
 (jumpToDiag). Tests: +2 web unit tests (32 green total) + 1 integration test
 (14 green) + web-smoke step 5 assertions folded in, full script run passing.
-Recorded in docs/web.md W9. Remaining: uploads deferred (no security decision
-yet, honestly carried as a blocker — the BLOCKED detail list is in the
-todo "rule configuration interface" P0 item: write-path scope / whether
-overwriting existing sources is allowed / per-file size cap / table and
-column name mapping with type inference / rollback on write failure);
-P1 rule forms/export and P2 compare/templates have since landed (below).
+Recorded in docs/web.md W9.
+
+**Upload landing record (2026-10-21, decided by delegation)**: the earlier
+deferral ("uploads wait for a security decision", 2026-10-20) is lifted
+under the standing delegation — pending decisions adopt the recommended
+option, get recorded, and stay vetoable. Five-point security policy, all
+implemented:
+
+1. **Write-path scope**: only the table's registered `source_file`
+   (`resolve_upload_target` double-guards after canonicalization: inside
+   the project root AND inside at least one `source_roots`; symlink
+   escapes refused too) — no arbitrary paths;
+2. **Overwrite**: whole-file replacement with a front-end confirmation;
+   the server lands bytes via tmp + rename (atomic, never a half-written
+   file);
+3. **Size cap**: the existing 8 MiB request-body cap applies unchanged;
+4. **Mapping and inference**: none — file/table/column names are whatever
+   the repo registered, uploaded bytes must parse under that file's
+   format, and tables spanning several files are refused outright (their
+   rows cannot be replaced by one file without orphaning rows);
+5. **Validation and rollback**: after the swap, the same full
+   `validate_project` runs (check / lsp / web, one entry); errors or a
+   load failure restore the original file before responding — a refused
+   upload never leaves bytes on disk.
+
+Endpoint `POST /api/upload?name=NAME` (raw-byte body), recorded in
+docs/web.md W12. Tests: +5 web unit tests (accept and land / bad data
+refused with byte-identical restore / unparseable refused / ghost and
+missing name / double path guard incl. symlink escape) + 1 integration
+end to end (replace, refusal rollback, no temp litter) + web-smoke block
+8 (a real upload round trip).
 
 **P1 landing record (2026-10-20, decided by delegation)**:
 
@@ -385,5 +411,5 @@ P1 rule forms/export and P2 compare/templates have since landed (below).
   foreign-key template; the status page's `markDiagDiff` and `diag-new`) +
   `node --check` on both page scripts; P2 adds zero server surface.
   Recorded in docs/web.md W11. With this, all five planner-interface
-  items have landed; the only carried debt is upload (security decision
-  not yet made).
+  items have landed; upload followed the next day under the delegated
+  policy (see the upload landing record above).

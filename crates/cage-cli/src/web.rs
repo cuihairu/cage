@@ -19,6 +19,8 @@
 //! GET  /api/artifacts   → the build manifest as the artifact ledger
 //! GET  /api/artifact    → serve one ledgered artifact (hash-verified)
 //! GET  /api/snapshots   → packed snapshots, each freshly verified
+//! POST /api/upload      → replace one table's registered source file
+//!                         (validated post-swap; original restored on refusal)
 //! POST /api/snapshot    → pack one profile (the `cage snapshot` pipeline)
 //! GET  /api/diff        → layered diff between two build manifests
 //! GET  /api/registry    → the local registry index ([registry] in config)
@@ -153,8 +155,10 @@ enum BodyRead {
     Invalid,
 }
 
-/// Bounded body read (`MAX_BODY_BYTES` / `MAX_BODY_SECS`).
-fn read_body_limited(reader: &mut dyn std::io::Read) -> Result<String, BodyRead> {
+/// Bounded body read (`MAX_BODY_BYTES` / `MAX_BODY_SECS`). Raw bytes:
+/// `/api/upload` carries file content that need not be UTF-8; the
+/// string-shaped routes decode in `handle` and keep refusing non-UTF-8.
+fn read_body_limited(reader: &mut dyn std::io::Read) -> Result<Vec<u8>, BodyRead> {
     read_body_with(
         reader,
         MAX_BODY_BYTES,
@@ -168,7 +172,7 @@ fn read_body_with(
     reader: &mut dyn std::io::Read,
     max: u64,
     deadline: std::time::Instant,
-) -> Result<String, BodyRead> {
+) -> Result<Vec<u8>, BodyRead> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
@@ -193,7 +197,7 @@ fn read_body_with(
             return Err(BodyRead::TooSlow);
         }
     }
-    String::from_utf8(buf).map_err(|_| BodyRead::Invalid)
+    Ok(buf)
 }
 
 fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
@@ -218,10 +222,21 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
         return;
     }
 
+    // Raw bytes for the upload route; the string-shaped routes get a
+    // UTF-8 decode and keep the old "cannot read request body" refusal
+    // for non-UTF-8 bodies.
+    let mut raw_body: Vec<u8> = Vec::new();
     let mut body = String::new();
+    let mut body_is_text = true;
     if matches!(method, tiny_http::Method::Post) {
         match read_body_limited(request.as_reader()) {
-            Ok(b) => body = b,
+            Ok(b) => {
+                raw_body = b;
+                match String::from_utf8(raw_body.clone()) {
+                    Ok(s) => body = s,
+                    Err(_) => body_is_text = false,
+                }
+            }
             Err(e) => {
                 let (status, msg) = match e {
                     BodyRead::TooLarge => (413, "request body too large"),
@@ -234,6 +249,13 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
                 ));
                 return;
             }
+        }
+        if !body_is_text && url.trim_end_matches('/') != "/api/upload" {
+            let _ = request.respond(json_response(
+                400,
+                &serde_json::json!({"ok": false, "error": "cannot read request body"}),
+            ));
+            return;
         }
     }
 
@@ -263,6 +285,10 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
             }
             (tiny_http::Method::Get, "/api/table") => {
                 let (status, value) = api_table(ctx, &query);
+                json_response(status, &value)
+            }
+            (tiny_http::Method::Post, "/api/upload") => {
+                let (status, value) = api_upload(ctx, &query, &raw_body);
                 json_response(status, &value)
             }
             (tiny_http::Method::Post, "/api/build") => {
@@ -929,6 +955,278 @@ fn build_facts(ctx: &Ctx, env: Option<&str>) -> serde_json::Value {
         builds.insert(name.clone(), entry);
     }
     serde_json::Value::Object(builds)
+}
+
+/// Resolve a table's registered source file to the one writable upload
+/// target (planner interface P0 upload; decision record in docs/ui.md).
+/// Guards run on the canonicalized path: the file must sit inside the
+/// project root AND inside one of the configured source roots — the same
+/// verify-first posture as the artifact endpoint, so an upload can only
+/// ever touch the files the loader itself reads.
+fn resolve_upload_target(
+    root: &Path,
+    source_file: &str,
+    source_roots: &[PathBuf],
+) -> Result<PathBuf, String> {
+    let root_canon =
+        std::fs::canonicalize(root).map_err(|e| format!("project root unreadable: {e}"))?;
+    let raw = Path::new(source_file);
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root_canon.join(raw)
+    };
+    let target = std::fs::canonicalize(&joined)
+        .map_err(|e| format!("source file '{source_file}' cannot be resolved: {e}"))?;
+    if !target.starts_with(&root_canon) {
+        return Err(format!(
+            "source file '{source_file}' resolves outside the project"
+        ));
+    }
+    if !target.is_file() {
+        return Err(format!("source file '{source_file}' is not a file"));
+    }
+    let inside_a_root = source_roots.iter().any(|sr| {
+        let sr_canon = if sr.is_absolute() {
+            sr.clone()
+        } else {
+            root_canon.join(sr)
+        };
+        target.starts_with(sr_canon)
+    });
+    if !inside_a_root {
+        return Err(format!(
+            "source file '{source_file}' sits outside every configured source root"
+        ));
+    }
+    Ok(target)
+}
+
+/// Best-effort removal of the swap files. `disarm()` is called when the
+/// backup holds the only surviving copy of the original (a failed
+/// restore) — deleting it then would lose the user's data, so it stays
+/// on disk for manual recovery and the error names its path.
+struct UploadSwap {
+    tmp: PathBuf,
+    backup: PathBuf,
+    armed: bool,
+}
+
+impl UploadSwap {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for UploadSwap {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.tmp);
+        if self.armed {
+            let _ = std::fs::remove_file(&self.backup);
+        }
+    }
+}
+
+/// POST /api/upload?name=NAME[&profile=P&env=E] — replace one table's
+/// registered source file with the raw request body (planner interface
+/// P0 upload; policy decision record in docs/ui.md「策划规则界面」).
+/// Contract: `name` must be a profile-visible single-file table; its
+/// registered source file (guarded by `resolve_upload_target`) is the
+/// only write target. Bytes land via tmp + rename (atomic), the original
+/// moves aside, and the project is re-validated through the same
+/// `validate_project` entry the CLI uses — errors or a load failure
+/// restore the original before responding. Size rides the global body
+/// cap; the format is not guessed, the bytes must parse under the
+/// loader chain for that file.
+fn api_upload(ctx: &Ctx, query: &str, body: &[u8]) -> (u16, serde_json::Value) {
+    let params = query_params(query);
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+
+    let Some(name) = get("name") else {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": "missing required parameter 'name'"}),
+        );
+    };
+    if body.is_empty() {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": "empty upload body"}),
+        );
+    }
+    let profile = match get("profile") {
+        Some(p) => p,
+        None => match ctx.config.profiles.keys().next() {
+            Some(first) => first.clone(),
+            None => {
+                return (
+                    500,
+                    serde_json::json!({"ok": false, "error": "no build profile is configured"}),
+                )
+            }
+        },
+    };
+    let env = get("env");
+    let (_, document) = match data_panel_project(ctx, &profile, env.as_deref()) {
+        Ok(pair) => pair,
+        Err((status, value)) => return (status, value),
+    };
+    let Some(table) = document.tables.values().find(|t| t.name == name) else {
+        return (
+            404,
+            serde_json::json!({
+                "ok": false,
+                "error": format!("no table '{name}' in this profile's view")
+            }),
+        );
+    };
+    // A table fed by several files cannot be replaced by one upload
+    // without silently orphaning rows in the other files.
+    let mut files = std::collections::BTreeSet::new();
+    for row in &table.rows {
+        files.insert(row.location.file.clone());
+    }
+    if files.len() > 1 {
+        return (
+            400,
+            serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "table '{name}' spans {} source files ({}); upload replaces single-file tables only",
+                    files.len(),
+                    files.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+            }),
+        );
+    }
+    let source_roots: Vec<PathBuf> = ctx
+        .config
+        .source_roots
+        .values()
+        .map(PathBuf::from)
+        .collect();
+    let target = match resolve_upload_target(&ctx.root, &table.source_file, &source_roots) {
+        Ok(p) => p,
+        Err(e) => return (400, serde_json::json!({"ok": false, "error": e})),
+    };
+
+    let Some(dir) = target.parent().map(Path::to_path_buf) else {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": "source file has no parent directory"}),
+        );
+    };
+    let file_name = target
+        .file_name()
+        .map_or_else(|| "table".to_string(), |n| n.to_string_lossy().into_owned());
+    let pid = std::process::id();
+    let mut swap = UploadSwap {
+        tmp: dir.join(format!(".{file_name}.upload-tmp-{pid}")),
+        backup: dir.join(format!(".{file_name}.upload-bak-{pid}")),
+        armed: true,
+    };
+    if let Err(e) = std::fs::write(&swap.tmp, body) {
+        return (
+            500,
+            serde_json::json!({"ok": false, "error": format!("cannot write upload temp file: {e}")}),
+        );
+    }
+    if let Err(e) = std::fs::rename(&target, &swap.backup) {
+        return (
+            500,
+            serde_json::json!({"ok": false, "error": format!("cannot move original aside: {e}")}),
+        );
+    }
+    if let Err(e) = std::fs::rename(&swap.tmp, &target) {
+        // The original is still intact in the backup; put it back.
+        let _ = std::fs::rename(&swap.backup, &target);
+        return (
+            500,
+            serde_json::json!({"ok": false, "error": format!("cannot move upload into place: {e}")}),
+        );
+    }
+
+    // Post-swap validation through the single CLI entry: whichever way it
+    // goes, the response reflects a repo state the loader accepts.
+    match crate::validate_project(&ctx.root, "semantic", env.as_deref(), &profile, false) {
+        Ok(outcome) if !outcome.diagnostics.has_errors() => {
+            let _ = std::fs::remove_file(&swap.backup);
+            let (errors, warnings) = (
+                outcome.diagnostics.errors().len(),
+                outcome.diagnostics.warnings().len(),
+            );
+            (
+                200,
+                serde_json::json!({
+                    "ok": true,
+                    "profile": profile,
+                    "name": name,
+                    "source_file": table.source_file,
+                    "bytes": body.len(),
+                    "warnings": warnings,
+                    "info": errors,
+                    "diagnostics": diags_json(&outcome.diagnostics),
+                }),
+            )
+        }
+        Ok(outcome) => match restore_original(&target, &swap.backup) {
+            Ok(()) => (
+                200,
+                serde_json::json!({
+                    "ok": false,
+                    "refused": "validation",
+                    "error": "uploaded data failed validation; the original source file was restored",
+                    "diagnostics": diags_json(&outcome.diagnostics),
+                }),
+            ),
+            Err(msg) => {
+                swap.disarm();
+                (500, serde_json::json!({"ok": false, "error": msg}))
+            }
+        },
+        Err(e) => match restore_original(&target, &swap.backup) {
+            Ok(()) => (
+                200,
+                serde_json::json!({
+                    "ok": false,
+                    "refused": "load",
+                    "error": format!("uploaded data cannot be loaded: {e}; the original source file was restored"),
+                }),
+            ),
+            Err(msg) => {
+                swap.disarm();
+                (500, serde_json::json!({"ok": false, "error": msg}))
+            }
+        },
+    }
+}
+
+/// Move the aside original back over the swapped-in upload. `Err` carries
+/// a message that names the surviving backup path so nothing is lost
+/// silently.
+fn restore_original(target: &Path, backup: &Path) -> Result<(), String> {
+    if let Err(e) = std::fs::remove_file(target) {
+        if target.exists() {
+            return Err(format!(
+                "cannot restore {}: removing the uploaded file failed ({e}); the original is kept at {}",
+                target.display(),
+                backup.display()
+            ));
+        }
+    }
+    match std::fs::rename(backup, target) {
+        Ok(()) => Ok(()),
+        Err(e) => Err(format!(
+            "cannot restore {}: rename failed ({e}); the original is kept at {}",
+            target.display(),
+            backup.display()
+        )),
+    }
 }
 
 /// POST /api/build — run the build pipeline for one profile: the same
@@ -1925,6 +2223,142 @@ output_dir = "build/server/csv"
     }
 
     #[test]
+    fn api_upload_replaces_table_source_after_validation() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        let (status, payload) = api_upload(
+            &ctx,
+            "name=Item",
+            br#"{"Item": [{"id": 2, "name": "Shield"}]}"#,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(true));
+
+        // The swap really happened on disk, and the panel sees it through
+        // the same load chain the CLI uses.
+        let on_disk = fs::read_to_string(dir.path().join("config/item.json")).expect("read");
+        assert!(
+            on_disk.contains("Shield"),
+            "source must hold new bytes: {on_disk}"
+        );
+        let (_, page) = api_table(&ctx, "name=Item");
+        assert_eq!(page["total"], serde_json::json!(1));
+        assert_eq!(
+            page["rows"][0]["cells"]["name"],
+            serde_json::json!("Shield")
+        );
+
+        // Atomic swap means no temp/backup litter beside the source.
+        let litter: Vec<String> = fs::read_dir(dir.path().join("config"))
+            .expect("dir")
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("upload"))
+            .collect();
+        assert!(litter.is_empty(), "leftover temp files: {litter:?}");
+    }
+
+    #[test]
+    fn api_upload_refuses_invalid_data_and_restores_original() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        let before = fs::read(dir.path().join("config/item.json")).expect("read");
+
+        // `id` is Int32 and required: string ids must not enter the repo.
+        let (status, payload) = api_upload(
+            &ctx,
+            "name=Item",
+            br#"{"Item": [{"id": "no", "name": "x"}]}"#,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        let diags = payload["diagnostics"].as_array().expect("diagnostics");
+        assert!(!diags.is_empty(), "refusal must carry the diagnostics");
+
+        let after = fs::read(dir.path().join("config/item.json")).expect("read");
+        assert_eq!(
+            before, after,
+            "a refused upload must leave the source byte-identical"
+        );
+        // No half-swapped litter either way.
+        assert!(!dir.path().join("config/item.json.upload-bak").exists());
+    }
+
+    #[test]
+    fn api_upload_refuses_unparseable_body_and_restores_original() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        let before = fs::read(dir.path().join("config/item.json")).expect("read");
+
+        // The post-swap load fails (this is a .json source), the original
+        // is restored, and the error names what was wrong.
+        let (status, payload) = api_upload(&ctx, "name=Item", b"not json at all");
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        assert!(payload["error"].as_str().is_some_and(|e| !e.is_empty()));
+        assert_eq!(
+            before,
+            fs::read(dir.path().join("config/item.json")).expect("read")
+        );
+    }
+
+    #[test]
+    fn api_upload_rejects_missing_name_and_ghost_table() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+
+        let (status, payload) = api_upload(&ctx, "", b"{}");
+        assert_eq!(status, 400);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+
+        let (status, payload) = api_upload(&ctx, "name=Ghost", b"{}");
+        assert_eq!(status, 404);
+        assert!(payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("Ghost")));
+    }
+
+    #[test]
+    fn resolve_upload_target_keeps_paths_inside_source_roots() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir_all(root.join("config")).expect("mkdir");
+        fs::create_dir_all(root.join("config/ro")).expect("mkdir");
+        fs::write(root.join("config/item.json"), "{}").expect("write");
+        fs::write(root.join("outside.json"), "{}").expect("write");
+        fs::write(root.join("config/ro/item.json"), "{}").expect("write");
+
+        let roots = vec![PathBuf::from("config")];
+        // Registered relative path inside a root: fine.
+        assert!(resolve_upload_target(root, "config/item.json", &roots).is_ok());
+        // Outside every configured root is refused even inside the project.
+        assert!(resolve_upload_target(root, "outside.json", &roots)
+            .err()
+            .is_some_and(|e| e.contains("source root")));
+        // A parent escape that does not exist on disk fails at
+        // resolution; one that exists is caught by the root guard (the
+        // symlink case below proves that branch). Either way: refused.
+        assert!(resolve_upload_target(root, "../escape.json", &roots).is_err());
+        // A directory as the target is refused.
+        assert!(resolve_upload_target(root, "config", &roots)
+            .err()
+            .is_some_and(|e| e.contains("not a file")));
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("outside.json"), root.join("config/link.json"))
+                .expect("symlink");
+            assert!(
+                resolve_upload_target(root, "config/link.json", &roots)
+                    .err()
+                    .is_some_and(|e| e.contains("outside")),
+                "symlink escape must be caught by canonicalization"
+            );
+        }
+    }
+
+    #[test]
     fn api_build_then_status_reports_fresh_and_up_to_date() {
         let dir = TempDir::new().expect("tempdir");
         let ctx = demo_ctx(&dir);
@@ -2321,7 +2755,7 @@ output_dir = "build/server/csv"
             16,
             std::time::Instant::now() + std::time::Duration::from_secs(1),
         );
-        assert_eq!(got, Ok("{}".to_string()));
+        assert_eq!(got, Ok(b"{}".to_vec()));
 
         // Over the byte cap → TooLarge (checked as soon as it overflows)
         let mut r = std::io::Cursor::new(vec![b'x'; 33]);

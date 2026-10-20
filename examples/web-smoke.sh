@@ -108,9 +108,23 @@ import json, sys, urllib.parse, urllib.request, urllib.error
 port = sys.argv[1]
 base = f"http://127.0.0.1:{port}"
 
-def req_raw(path):
-    with urllib.request.urlopen(base + path, timeout=5) as resp:
-        return resp.status, resp.read().decode()
+def req_raw(method, path, body=None):
+    # Read-side callers pass only the path; uploads POST raw file bytes.
+    r = urllib.request.Request(base + path, data=body, method=method,
+                               headers={"Content-Type": "application/octet-stream"} if body else {})
+    try:
+        with urllib.request.urlopen(r, timeout=10) as resp:
+            raw = resp.read().decode()
+            try:
+                return resp.status, json.loads(raw)
+            except json.JSONDecodeError:
+                return resp.status, raw
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            return e.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return e.code, raw
 
 def req(method, path, payload=None):
     data = None if payload is None else json.dumps(payload).encode()
@@ -127,7 +141,7 @@ def assert_true(cond, msg):
         sys.exit(f"ASSERT FAIL: {msg}")
 
 # 1) 页面本体（GET /status 会被重定向到 /status/，urlopen 自动跟随）
-status, html = req_raw("/status/")
+status, html = req_raw("GET", "/status/")
 assert_true(status == 200 and "项目状态" in html, f"status page: {status}")
 
 # 2) 状态：校验通过 + client 构建新鲜（上一步刚 cage build 过）
@@ -149,7 +163,7 @@ assert_true(status == 200 and arts["ok"], f"GET /api/artifacts: {status} {arts}"
 assert_true(arts["manifest_profile"] == "client", f"owner: {arts}")
 assert_true(len(arts["artifacts"]) >= 1, f"artifacts: {arts}")
 rel = arts["artifacts"][0]["path"]
-status, raw = req_raw(f"/api/artifact?path={urllib.parse.quote(rel)}")
+status, raw = req_raw("GET", f"/api/artifact?path={urllib.parse.quote(rel)}")
 assert_true(status == 200 and len(raw) > 0, f"artifact serve {rel}: {status}")
 status, raw = req("GET", "/api/artifact?path=schema.yaml")
 assert_true(status == 404, f"non-ledgered path must 404, got {status}")
@@ -185,6 +199,19 @@ assert_true(t["total"] == len(t["rows"]), f"single page holds all rows: {t}")
 assert_true(len(t["columns"]) >= 1 and len(t["primary_key"]) >= 1, f"columns/pk: {t}")
 status, t = req("GET", "/api/table?name=Ghost")
 assert_true(status == 404, f"hidden table must 404, got {status}")
+
+# 8) 上传替换（策划界面 P0）：整文件原子替换 + 校验不过不落盘
+target = urllib.parse.quote(names[0])
+good = json.dumps({names[0]: [{"id": 1, "name": "uploaded"}]}).encode()
+status, t = req_raw("POST", f"/api/upload?name={target}", good)
+assert_true(status == 200 and t["ok"], f"upload accepted: {status} {t}")
+status, t = req("GET", f"/api/table?name={target}")
+assert_true(t["rows"][0]["cells"]["name"] == "uploaded", f"upload visible via panel: {t}")
+bad = json.dumps({names[0]: [{"id": "not-an-int", "name": "x"}]}).encode()
+status, t = req_raw("POST", f"/api/upload?name={target}", bad)
+assert_true(status == 200 and not t["ok"] and t.get("diagnostics"), f"bad upload refused: {status} {t}")
+status, t = req("GET", f"/api/table?name={target}")
+assert_true(t["rows"][0]["cells"]["name"] == "uploaded", f"original restored after refusal: {t}")
 
 print("status session ok: page served, client fresh, rebuild up-to-date, artifacts served, snapshot packed+verified+diffed, registry browsed, data panel listed")
 PY
@@ -288,6 +315,10 @@ wait "$WEB_PID" 2>/dev/null || true
 rm -rf "$WORK/demo/build/snapshot"
 
 step "[6/7] 确定性复现：同一 canonical schema 重建两次，产物树逐字节一致"
+# 两次都从全新构建取哈希：第 5 步的上传替换过源数据，第一颗哈希
+# 不能复用旧构建树（否则比的是「源变了」，不是确定性）。
+rm -rf "$WORK/demo/build"
+"$CAGE_BIN" build "$WORK/demo" --profile client >/dev/null
 hash_tree "$WORK/demo/build" > "$WORK/h1.txt"
 echo "\$ rm -rf build && $CAGE_BIN build ...   # 第二次构建"
 rm -rf "$WORK/demo/build"
