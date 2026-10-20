@@ -348,3 +348,13 @@ details > summary:hover { color: var(--accent); }
 @media (max-width: 900px) {
   #data-layout { grid-template-columns: 1fr; }
 }
+
+/* 诊断对比（P2）：新增/消失徽标 */
+.diag-new {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  background: var(--accent-weak, rgba(96, 165, 250, 0.15));
+  color: var(--accent);
+}

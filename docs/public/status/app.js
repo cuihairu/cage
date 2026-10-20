@@ -10,6 +10,7 @@
 const state = {
   meta: null,       // 最近一次 GET /api/status 负荷
   building: null,   // 正在构建的 profile 名（防重入）
+  prevRun: null,    // 上一次校验运行的诊断键（诊断对比 P2 用）
   tables: null,     // 最近一次 GET /api/tables 负荷（数据面板）
   table: null,      // 当前展示的表：{ name, offset, limit, payload }
 };
@@ -76,6 +77,34 @@ function locText(d) {
 
 // ── 渲染：校验面板 ──────────────────────────────────────────────────
 
+// 诊断对比（策划界面 P2）：会话内两次校验的新增/消失。同一
+// profile+env+level 的两次运行才比对；跨快照的历史诊断不存储（那是
+// 新服务面，无用户令），产物对比走既有 /api/diff。构建失败路径换掉
+// validation 时同样走这里，正好覆盖「改数据 → 构建 → 看新增错误」。
+function diagKey(d) {
+  return [d.code, d.table, d.row, d.column, d.field, d.message].join("|");
+}
+
+function markDiagDiff(v) {
+  if (!v) return;
+  const runKey = [
+    v.profile || (state.meta && state.meta.profile) || "",
+    document.getElementById("env-in").value.trim(),
+    document.getElementById("level-sel").value,
+  ].join("|");
+  const keys = (v.diagnostics || []).map(diagKey);
+  const prev = state.prevRun;
+  if (prev && prev.runKey === runKey && v.diagnostics) {
+    const prevSet = new Set(prev.keys);
+    const curSet = new Set(keys);
+    const added = keys.filter((k) => !prevSet.has(k));
+    const gone = prev.keys.filter((k) => !curSet.has(k));
+    v.diff = { addedSet: new Set(added), addedCount: added.length, goneCount: gone.length };
+  }
+  state.prevRun = { runKey, keys };
+  return v;
+}
+
 function renderValidation() {
   const summary = document.getElementById("val-summary");
   const list = document.getElementById("val-diags");
@@ -102,6 +131,12 @@ function renderValidation() {
   summary.replaceChildren();
   summary.className = v.ok ? "badge ok" : "badge err";
   summary.textContent = v.ok ? `通过 · ${bits.join(" · ")}` : bits.join(" · ");
+  if (v.diff) {
+    const parts = [];
+    if (v.diff.addedCount) parts.push(`新增 ${v.diff.addedCount}`);
+    if (v.diff.goneCount) parts.push(`消失 ${v.diff.goneCount}`);
+    if (parts.length) summary.append(el("span", "diag-new", `较上次 ${parts.join(" / ")}`));
+  }
 
   if (!v.diagnostics || v.diagnostics.length === 0) {
     const li = el("li", "", "无诊断");
@@ -131,6 +166,9 @@ function renderValidation() {
     const li = el("li", `diag-severity-${d.severity || "info"} diag-click`);
     const line1 = el("div", "diag-line1");
     line1.append(el("span", "diag-code", d.code || "?"), el("div", "diag-msg", d.message || ""));
+    if (v.diff && v.diff.addedSet && v.diff.addedSet.has(diagKey(d))) {
+      line1.append(el("span", "diag-new", "新"));
+    }
     li.append(line1);
     const loc = locText(d);
     if (loc) li.append(el("div", "diag-loc", loc));
@@ -388,6 +426,7 @@ async function refresh() {
   document.getElementById("fatal-error").hidden = true;
   const first = !state.meta;
   state.meta = data;
+  markDiagDiff(state.meta.validation);
   document.getElementById("meta-project").textContent = data.project || "?";
   document.getElementById("meta-path").textContent =
     `schema: ${data.schema_path || "未配置"}`;
@@ -430,7 +469,7 @@ async function buildProfile(name) {
   } else if (data && data.diagnostics) {
     // 校验失败：诊断直接进面板（与 /api/validate 同一形状）
     if (state.meta) {
-      state.meta.validation = {
+      state.meta.validation = markDiagDiff({
         ok: false,
         profile: name,
         errors: data.diagnostics.filter((d) => d.severity === "error").length,
@@ -438,7 +477,7 @@ async function buildProfile(name) {
         info: data.diagnostics.filter((d) => d.severity === "info").length,
         visible_tables: (state.meta.validation && state.meta.validation.visible_tables) || 0,
         diagnostics: data.diagnostics,
-      };
+      });
     }
     renderValidation();
     toast(`构建被拒：${name} 未通过校验（见校验面板）`, "err", 7000);

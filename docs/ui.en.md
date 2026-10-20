@@ -358,3 +358,29 @@ compare/templates untouched.
   `/api/artifact`) + `node --check` on both page scripts; web unit 32
   green / integration 14 green unchanged (P1 adds zero server surface).
   Recorded in docs/web.md W10.
+
+**P2 landing record (2026-10-20, decided by delegation)**:
+
+- **Compare — inventory verdict: mostly already implemented**. The
+  product diff is W8's "Compare" section (live ↔ any snapshot, three-level
+  collapsing, an exact-bytes verdict, same `GET /api/diff` source). This
+  round adds the **diagnostics diff**: markers for what a second validation
+  run in the same session added or removed (the summary shows
+  "vs last: +n / -m gone"; new diagnostics carry a "new" badge; runs are
+  compared only at the same profile+env+level, and a refused build
+  swapping diagnostics in is covered too — exactly the "change data →
+  build → what errors appeared" main path). Decided **against** storing
+  historical diagnostics per snapshot (that means writing diagnostics into
+  the snapshot package — new server surface plus a format change, no user
+  directive; the historical product comparison is already W8's).
+- **Template library — landed as a front-end static dictionary**: the
+  editor's field section gains a "add field from template" dropdown
+  (numeric range Int+min/max / enum reference / foreign-key reference);
+  a generated field draft flows through the existing setPathRoot →
+  auto-revalidate → save chain, zero new server surface.
+- Tests: integration assertions (the editor's `FIELD_TEMPLATES` and the
+  foreign-key template; the status page's `markDiagDiff` and `diag-new`) +
+  `node --check` on both page scripts; P2 adds zero server surface.
+  Recorded in docs/web.md W11. With this, all five planner-interface
+  items have landed; the only carried debt is upload (security decision
+  not yet made).

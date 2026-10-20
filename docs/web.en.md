@@ -266,6 +266,28 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       `/api/artifact`) + `node --check` on both page scripts; P1 adds
       zero server surface, web unit/integration counts unchanged
 
+### W11 implemented: diagnostics diff + field template library (planner interface P2, 2026-10-20)
+
+- [x] Zero new endpoints: this whole entry is a front-end increment on
+      existing pages, with unchanged validation/product data sources
+- [x] Diagnostics diff in the validation panel: what two runs in the
+      same session added or removed (summary "vs last: +n / m gone" plus a
+      "new" badge on new diagnostics); runs are compared only at the same
+      profile+env+level, and diagnostics swapped in by a refused build
+      count too — covering the "change data → build → what errors
+      appeared" main path. Historical cross-snapshot diagnostics are not
+      done (they would have to be written into the snapshot package — a new
+      format surface; the product diff already exists as `/api/diff`, see
+      W8)
+- [x] Field template library in the editor: an "add field from template"
+      dropdown (numeric range Int+min/max, enum reference, foreign-key
+      reference); a generated draft flows through the existing
+      save/validate chain (and composes with W10's auto re-validation),
+      zero new server surface
+- [x] Tests: integration assertions (`FIELD_TEMPLATES` / foreign-key,
+      `markDiagDiff` / `diag-new`) + `node --check` on both page scripts;
+      web unit 32 green / integration 14 green unchanged
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in [UI facade](/en/ui) (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in [UI facade](/en/ui).

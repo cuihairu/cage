@@ -302,3 +302,6 @@ input.num-bad, textarea.json-bad { border-color: var(--error); }
 /* 项目状态页入口（U1） */
 #status-link { color: var(--accent); font-size: 12px; text-decoration: none; }
 #status-link:hover { text-decoration: underline; }
+
+/* 模板库（P2）：＋ 字段 与模板下拉同行 */
+.field-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }

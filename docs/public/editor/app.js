@@ -575,11 +575,32 @@ function renderTableForm() {
     state.field = name;
     refreshEntity();
   });
+  const tplSel = el("select");
+  tplSel.className = "tpl-select";
+  tplSel.title = "常用规则模板（数值范围/枚举/外键引用）一键生成字段草稿";
+  tplSel.append(option("从模板加字段…"));
+  FIELD_TEMPLATES.forEach((t) => {
+    const o = option(t.label);
+    o.title = t.hint;
+    tplSel.append(o);
+  });
+  tplSel.addEventListener("change", () => {
+    const tpl = FIELD_TEMPLATES.find((t) => t.label === tplSel.value);
+    if (!tpl) return;
+    const f = tpl.make(fields);
+    setPathRoot(tPath.concat("fields", f.name), f);
+    state.field = f.name;
+    tplSel.value = "从模板加字段…";
+    refreshEntity();
+  });
+  const addRow = el("div", "field-actions");
+  addRow.append(addField, tplSel);
   fsec.append(ftable);
+  fsec.append(addRow);
   // 字段编辑器容器（选中字段时填充）
   const fed = el("div");
   fed.id = "field-editor";
-  fsec.append(addField, fed);
+  fsec.append(fed);
   box.append(fsec);
 
   if (state.field && fields[state.field]) renderFieldForm(fed, fields[state.field], state.field, tPath);
@@ -889,6 +910,36 @@ function refreshEntity() {
   if (state.sel.kind === "table") renderTableForm();
   else renderEnumForm();
 }
+
+// 模板库（策划界面 P2）：前端静态字典，生成 schema 片段后走既有
+// setPathRoot → markDirty → 自动重校验 → 保存链，服务端零新面。
+const FIELD_TEMPLATES = [
+  {
+    id: "num-range", label: "数值范围",
+    hint: "Int + min/max（改数值与说明）",
+    make: (names) => ({
+      name: nextName(names, "num_range"), type: { kind: "Int" },
+      description: "数值范围字段（模板：请改 min/max）", default: null, min: 0, max: 100,
+    }),
+  },
+  {
+    id: "enum-field", label: "枚举",
+    hint: "Enum 引用既有枚举（改目标枚举）",
+    make: (names) => ({
+      name: nextName(names, "enum_field"), type: { kind: "Enum", value: enumNames()[0] || "" },
+      description: "枚举字段（模板：请改目标枚举）", default: null,
+    }),
+  },
+  {
+    id: "foreign-key", label: "外键引用",
+    hint: "reference 引用其他表（改目标表/字段）",
+    make: (names) => ({
+      name: nextName(names, "fk_field"), type: { kind: "String" },
+      description: "外键引用字段（模板：请改目标表/字段）", default: null,
+      reference: { table: Object.keys(state.doc.tables)[0] || "", field: "", cardinality: "one" },
+    }),
+  },
+];
 
 // ── 校验与保存 ──────────────────────────────────────────────────────
 

@@ -379,6 +379,16 @@ fn web_serves_editor_page_and_assets() {
         body.contains("scheduleAutoValidate"),
         "module must re-validate on edit: {body}"
     );
+    // Planner interface P2: the field template library lives in the module
+    // (static dictionary, insertion goes through the normal save/validate chain).
+    assert!(
+        body.contains("FIELD_TEMPLATES"),
+        "module must carry the template library: {body}"
+    );
+    assert!(
+        body.contains("外键引用"),
+        "the template library must cover the foreign-key case: {body}"
+    );
 
     let (status, body) = request(server.port, "GET", "/app.css", None);
     assert_eq!(status, 200, "editor stylesheet must be served");
@@ -657,6 +667,16 @@ fn web_serves_status_page_with_redirect_and_assets() {
     assert!(
         body.contains("/api/artifact"),
         "the export button must ride the verified artifact endpoint: {body}"
+    );
+    // Planner interface P2: the diagnostics panel marks what a second
+    // validation run added or removed (product diff stays with /api/diff).
+    assert!(
+        body.contains("markDiagDiff"),
+        "module must diff two validation runs: {body}"
+    );
+    assert!(
+        body.contains("diag-new"),
+        "module must mark new diagnostics: {body}"
     );
 
     let (status, body) = request(server.port, "GET", "/status/app.css", None);
