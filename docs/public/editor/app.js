@@ -98,6 +98,17 @@ function markDirty() {
   }
   // 作用域投影按「已保存的 schema」计算，未保存改动让它显式说明。
   if (state.scope) updateScopeNote();
+  scheduleAutoValidate();
+}
+
+// 改动即时重校验（策划界面 P1）：700ms 防抖，面板静默更新不打扰；
+// 开关默认开，手动「校验」永远可用。
+let autoValidateTimer = 0;
+function scheduleAutoValidate() {
+  const box = document.getElementById("auto-validate");
+  if (!box || !box.checked) return;
+  clearTimeout(autoValidateTimer);
+  autoValidateTimer = setTimeout(() => { autoValidateTimer = 0; validate(true); }, 700);
 }
 
 function toast(msg, kind, ms) {
@@ -881,12 +892,15 @@ function refreshEntity() {
 
 // ── 校验与保存 ──────────────────────────────────────────────────────
 
-async function validate() {
+async function validate(silent) {
+  clearTimeout(autoValidateTimer);
+  autoValidateTimer = 0;
   const docText = JSON.stringify(state.doc);
   const { status, data } = await api("/api/validate", docText);
   void status;
   state.diags = (data && data.diagnostics) || [];
   renderDiags(false);
+  if (silent) return; // 自动重校验只更新诊断面板，不弹 toast
   const errs = state.diags.filter((d) => d.severity === "error").length;
   const warns = state.diags.filter((d) => d.severity === "warning").length;
   if (data && data.ok) toast("校验通过（L1 无错误）", "ok");

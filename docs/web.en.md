@@ -247,6 +247,25 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       + web-smoke step 5 folds in data panel assertions (/api/tables →
       /api/table → ghost 404)
 
+### W10 implemented: editor immediate re-validation + one-click artifact export (planner interface P1, 2026-10-20)
+
+- [x] An "immediate re-validation" toggle in the editor's top bar
+      (default on): every edit schedules a 700ms debounced silent
+      re-validation (refreshes only the diagnostics panel and counts,
+      no toast); the manual "Validate" / Ctrl+Enter is unchanged and
+      cancels any pending auto run. The rule form itself reuses W3
+      (zero new editing surface)
+- [x] An "Export all" button on the status page's artifact cards (only
+      for multi-file targets): triggers `/api/artifact` downloads one by
+      one, each file hash-verified (blake3) before serving; decided
+      against adding a zip/packaging endpoint (artifact bytes are never
+      recomputed, zero new dependencies; bulk distribution rides the
+      `cage snapshot` package), record in [UI facade](/en/ui)
+- [x] Tests: integration assertions (the editor page carries the toggle
+      and `scheduleAutoValidate`; the status page export rides
+      `/api/artifact`) + `node --check` on both page scripts; P1 adds
+      zero server surface, web unit/integration counts unchanged
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in [UI facade](/en/ui) (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in [UI facade](/en/ui).

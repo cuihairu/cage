@@ -369,6 +369,16 @@ fn web_serves_editor_page_and_assets() {
         "module must call the API: {body}"
     );
     assert!(body.contains("cage"), "module content sanity: {body}");
+    // Planner interface P1: rule form editing rides this editor, and the
+    // immediate re-validation toggle lives in the top bar.
+    assert!(
+        body.contains("auto-validate"),
+        "the top bar must offer immediate re-validation: {body}"
+    );
+    assert!(
+        body.contains("scheduleAutoValidate"),
+        "module must re-validate on edit: {body}"
+    );
 
     let (status, body) = request(server.port, "GET", "/app.css", None);
     assert_eq!(status, 200, "editor stylesheet must be served");
@@ -642,6 +652,12 @@ fn web_serves_status_page_with_redirect_and_assets() {
     assert_eq!(status, 200, "status module must be served");
     assert!(body.contains("/api/status"), "module must call the API");
     assert!(body.contains("/api/build"), "module must trigger builds");
+    // Planner interface P1 export: one click fetches every artifact of a
+    // target through the hash-verified artifact endpoint (no new endpoint).
+    assert!(
+        body.contains("/api/artifact"),
+        "the export button must ride the verified artifact endpoint: {body}"
+    );
 
     let (status, body) = request(server.port, "GET", "/status/app.css", None);
     assert_eq!(status, 200, "status stylesheet must be served");

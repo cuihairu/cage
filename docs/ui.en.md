@@ -332,3 +332,29 @@ diagnostics panel's severity/error-code filters and click-to-jump row highlight
 Recorded in docs/web.md W9. Remaining: uploads deferred (no security decision
 yet, honestly carried as a blocker); P1 rule forms/export and P2
 compare/templates untouched.
+
+**P1 landing record (2026-10-20, decided by delegation)**:
+
+- **Rule form editing — inventory verdict: mostly already implemented**.
+  The W3 editor IS the rule form (19 field types, min/max/pattern/allowlist
+  constraints, references for referential integrity / cross-table,
+  expression rules), saving through the existing `POST /api/schema`
+  canonical YAML chain (serialization stays with cage, the UI never writes
+  files by hand). This round closed the one gap, "re-validate on change":
+  an "immediate re-validation" toggle in the top bar (default on) plus a
+  700ms debounced silent re-validation (only refreshes the diagnostics
+  panel, no toast; the manual "Validate" button is unchanged).
+- **One-click export — decided: no new zip/packaging endpoint**. Rationale:
+  artifact bytes are never recomputed, zero new dependencies (a packager
+  means either a crate or a hand-rolled protocol surface), and
+  `/api/artifact` already serves hash-verified files. The landed form is an
+  "Export all" button on the status page's artifact cards: it triggers the
+  `/api/artifact` downloads one by one (each file hash-checked
+  individually); the browser may ask for "allow multiple downloads".
+  Bulk distribution stays with the `cage snapshot` directory package
+  (self-verifying, independently loadable) — not rebuilt in the web.
+- Tests: integration assertions (editor page carries the re-validation
+  toggle and `scheduleAutoValidate`; the status page export rides
+  `/api/artifact`) + `node --check` on both page scripts; web unit 32
+  green / integration 14 green unchanged (P1 adds zero server surface).
+  Recorded in docs/web.md W10.

@@ -550,6 +550,26 @@ async function loadArtifacts() {
     const head = el("div", "card-head");
     head.append(el("h3", "", `${t.format} → ${t.output_dir}`));
     head.append(el("span", "muted", `${files.length} 个文件`));
+    if (files.length > 1) {
+      // 一键导出（策划界面 P1）：逐个触发 /api/artifact 下载（服务端
+      // 每个文件先验 blake3 再发）；不新增打包端点/依赖，浏览器可能
+      // 请求「允许下载多个文件」。
+      const all = el("button", "mini", "一键导出");
+      all.title = "下载该 target 的全部产物（逐个文件，各自先验哈希）";
+      all.addEventListener("click", () => {
+        files.forEach((a, i) => {
+          setTimeout(() => {
+            const dl = document.createElement("a");
+            dl.href = `/api/artifact?path=${encodeURIComponent(a.path)}`;
+            dl.download = a.path.split("/").pop();
+            document.body.append(dl);
+            dl.click();
+            dl.remove();
+          }, i * 350);
+        });
+      });
+      head.append(all);
+    }
     card.append(head);
     const chips = el("div", "chips");
     files.forEach((a) => {
