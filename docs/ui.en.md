@@ -330,8 +330,11 @@ diagnostics panel's severity/error-code filters and click-to-jump row highlight
 (jumpToDiag). Tests: +2 web unit tests (32 green total) + 1 integration test
 (14 green) + web-smoke step 5 assertions folded in, full script run passing.
 Recorded in docs/web.md W9. Remaining: uploads deferred (no security decision
-yet, honestly carried as a blocker); P1 rule forms/export and P2
-compare/templates untouched.
+yet, honestly carried as a blocker — the BLOCKED detail list is in the
+todo "rule configuration interface" P0 item: write-path scope / whether
+overwriting existing sources is allowed / per-file size cap / table and
+column name mapping with type inference / rollback on write failure);
+P1 rule forms/export and P2 compare/templates have since landed (below).
 
 **P1 landing record (2026-10-20, decided by delegation)**:
 
