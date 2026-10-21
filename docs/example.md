@@ -1,20 +1,20 @@
 
-# 完整示例
+# Complete Example
 
-仓库内常驻一个端到端示例工程 [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config)——「角色成长 + 道具 + 任务 + 商店 + 关卡」五张表、五种源格式（CSV / YAML / JSON / Excel / MsgPack）、一份覆盖常用字段类型与约束用法的 schema、双 profile（client 14 个 target / server 3 个 target）、四套环境的分环境约束覆盖（`--env dev/test/staging/prod`）、快照 / diff / 迁移 / 注册表 / stdio LSP 诊断（`cage lsp`），外加一套触发 L7 Game Rule 与分环境必填的坏数据。
+The repository permanently hosts an end-to-end example project [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config) — five tables ("Character Growth + Item + Quest + Shop + Stage"), five source formats (CSV / YAML / JSON / Excel / MsgPack), one schema covering common field types and constraint usage, dual profiles (client 14 targets / server 3 targets), per-environment constraint overrides across four environments (`--env dev/test/staging/prod`), snapshot / diff / migration / registry / stdio LSP diagnostics (`cage lsp`), plus a set of bad data that triggers L7 Game Rules and per-environment required fields.
 
-本页所有命令与输出都是**真实执行结果**（在仓库根目录运行），不是伪代码。
+All commands and outputs on this page are **real execution results** (run from the repository root), not pseudocode.
 
-## 一键跑通
+## One-Command Run
 
 ```bash
 bash examples/run.sh
 ```
 
-脚本从 `cage check` 到 `cage build` 到 `cage gen` 到 `cage migrate` 到 `cage registry`（含远程分发全链路：push 直推 / presigned 直推 / 消费方远端 resolve 构建，以及坏数据 E1501 / E1601 / E1001 断言、`cage inspect` 与 `cage lsp` stdio 诊断会话）15 步一条命令跑完，每步打印真实命令；任一步失败立即退出，CI 里同款执行（示例烂了 CI 就红）。
+The script goes from `cage check` to `cage build` to `cage gen` to `cage migrate` to `cage registry` (including the full remote distribution chain: direct push / presigned push / consumer remote-resolve build, plus bad-data E1501 / E1601 / E1001 assertions, `cage inspect` and the `cage lsp` stdio diagnostics session) — all 15 steps in one command, printing the real command at each step; any failing step exits immediately, and CI runs it identically (a broken example turns CI red).
 
 <details>
-<summary>examples/run.sh 完整输出（点击展开）</summary>
+<summary>examples/run.sh full output (click to expand)</summary>
 
 ```text
 ==> 构建 cage 可执行文件
@@ -325,7 +325,7 @@ $ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501（与 cage
 
 </details>
 
-## 工程结构
+## Project Structure
 
 ```text
 examples/game-config/
@@ -352,25 +352,25 @@ examples/game-config/
     └── config/
 ```
 
-## 逐条命令
+## Command by Command
 
-### cage check —— 验证不生成
+### cage check — validate without generating
 
 ```console
 $ cage check examples/game-config
 cage check: OK (5 tables, 0 warnings, level <= semantic)
 ```
 
-`--level` 分级执行验证流水线，`gamerule` 加上 L7 业务规则：
+`--level` runs the validation pipeline in tiers, with `gamerule` adding the L7 business rules:
 
 ```console
 $ cage check examples/game-config --level gamerule
 cage check: OK (5 tables, 0 warnings, level <= gamerule)
 ```
 
-### cage check --env —— 分环境约束覆盖
+### cage check --env — per-environment constraint overrides
 
-环境由 schema 的 `env_overrides` 键声明（design §48），本示例声明四套——开发 dev / 测试 test / 灰度 staging / 正式 prod。同一字段四套不同取值：`Character.nickname` 的 `max_length` dev 32 → test 24 → staging 20、prod 改必填；`Shop.discount` 上限 dev 0.9 → test 0.7 → staging 0.6 → prod 0.5（样例数据最大折扣 0.4，四套都放行）。`--env` 在验证前把覆盖解析进 schema，校验/生成/哈希全部走解析后的形态：
+Environments are declared by the schema's `env_overrides` key (design §48); this example declares four — dev for development / test / staging / prod for production. The same field takes four different values: `Character.nickname`'s `max_length` is dev 32 → test 24 → staging 20, with prod switching it to required; `Shop.discount`'s cap is dev 0.9 → test 0.7 → staging 0.6 → prod 0.5 (the sample data's maximum discount is 0.4, so all four pass). `--env` resolves the overrides into the schema before validation; validation, generation, and hashing all operate on the resolved form:
 
 ```console
 $ cage check examples/game-config --env dev
@@ -387,7 +387,7 @@ $ echo $?
 2
 ```
 
-四套各建一次：manifest 的 `environment` 字段点名当前环境，解析后的 schema 进 `schema_hash`、约束进生成的 JSON Schema（`Shop.schema.json` 的 `maximum` 随环境取 0.9/0.7/0.6/0.5），`build_id` / `content_hash` 逐环境不同——换环境即换构建（数据字节不变）：
+Build each of the four once: the manifest's `environment` field names the current environment, the resolved schema feeds `schema_hash`, and the constraints land in the generated JSON Schema (`Shop.schema.json`'s `maximum` takes 0.9/0.7/0.6/0.5 by environment), while `build_id` / `content_hash` differ per environment — switching environments means a different build (data bytes unchanged):
 
 ```console
 $ for env in dev test staging prod; do
@@ -400,16 +400,16 @@ staging|158f898a3913|04a35a5f73f9
 prod|55dae1a8e145|f81e230d62e9
 ```
 
-未知环境是用法错误（exit 2），不新增 E 码；环境名进 manifest 的 `environment` 字段并参与增量指纹。
+An unknown environment is a usage error (exit 2), not a new E-code; the environment name goes into the manifest's `environment` field and participates in the incremental fingerprint.
 
-### cage build —— 验证 + 全量构建
+### cage build — validation + full build
 
 ```console
 $ cage build examples/game-config --profile client
 cage build: OK (profile 'client', 86 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
-86 个产物 = 数据 15 份（5 表 × json/csv/msgpack）+ proto 6 份（5 表 + 共享 `cage_enums.proto`）+ fbs 6 份（5 表 + 共享 `cage_enums.fbs`）+ 代码 54 份（8 种语言 × 各 5 表 + 1 枚举单元，JS 形态额外配对 `.d.ts`）+ JSON Schema 5 份（5 表 × `{table}.schema.json`）；manifest 在 `build/manifest.json`，不在 `client/` 计数内：
+86 artifacts = 15 data files (5 tables × json/csv/msgpack) + 6 proto files (5 tables + shared `cage_enums.proto`) + 6 fbs files (5 tables + shared `cage_enums.fbs`) + 54 code files (8 languages × 5 tables each + 1 enum unit, with the JS form additionally paired with a `.d.ts`) + 5 JSON Schema files (5 tables × `{table}.schema.json`); the manifest lives at `build/manifest.json` and is not counted in the `client/` totals:
 
 ```text
 build/client/
@@ -430,18 +430,18 @@ build/client/
 └── manifest.json
 ```
 
-确定性抽查：全量重建后 msgpack / proto / fbs 逐字节一致（sha256 相同）。
+Determinism spot check: after a full rebuild, msgpack / proto / fbs are byte-identical (same sha256).
 
-### cage build --incremental —— 指纹一致跳过重建
+### cage build --incremental — skip rebuild when fingerprints match
 
 ```console
 $ cage build examples/game-config --profile client --incremental
 cage build: up to date (profile 'client', 86 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
-L1（schema + 源指纹）与 L2（产物指纹）双层守卫；`environment` 参与指纹，换 `--env` 会触发重建。
+Dual-layer guards — L1 (schema + source fingerprints) and L2 (artifact fingerprints); `environment` participates in the fingerprint, so changing `--env` triggers a rebuild.
 
-### cage snapshot —— 自校验快照打包与回验
+### cage snapshot — self-verifying snapshot packaging and re-verification
 
 ```console
 $ cage snapshot examples/game-config --profile client
@@ -452,36 +452,36 @@ $ cage snapshot examples/game-config --profile client --env prod
 cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-prod-55dae1a8e145)
 ```
 
-快照 = profile 投影的规范 schema（`schema.json`）+ 全部产物 + 逐文件哈希账本（`HASHES.json`），自校验、可回滚、可审计。`--env` 出环境化包：`env_overrides` 先解析进 schema 再验证打包，目录名带 env 段（`client-prod-<build_id>`）、包内 `manifest.json` 记 `environment`、`schema.json` 即 prod 规则。
+A snapshot = the profile-projected canonical schema (`schema.json`) + all artifacts + a per-file hash ledger (`HASHES.json`) — self-verifying, rollback-ready, and auditable. `--env` produces an environment-scoped package: `env_overrides` are resolved into the schema before validation and packaging, the directory name carries an env segment (`client-prod-<build_id>`), the `manifest.json` inside records `environment`, and `schema.json` is exactly the prod rules.
 
-### cage gen —— 只生成代码绑定
+### cage gen — generate only code bindings
 
 ```console
 $ cage gen examples/game-config --profile client
 cage gen: OK (profile 'client', 71 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
-跳过 json/csv/msgpack 数据 target，代码类产物（含 proto/fbs 定义）与 JSON Schema 文档与 build 完全一致。
+It skips the json/csv/msgpack data targets; the code artifacts (including proto/fbs definitions) and the JSON Schema documents are exactly the same as with build.
 
-### cage diff —— 确定性比对
+### cage diff — determinism comparison
 
 ```console
 $ cage diff examples/game-config/build examples/game-config/build
 cage diff: 0 added, 0 removed, 0 changed, 65 unchanged
 ```
 
-同一构建前后比对全不变——确定性是资产可信的前提。
+Comparing the same build with itself shows no changes at all — determinism is the precondition for trustworthy artifacts.
 
-### cage build --profile server —— 服务端视图
+### cage build --profile server — server view
 
 ```console
 $ cage build examples/game-config --profile server
 cage build: OK (profile 'server', 16 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
-`Character.internal_note` 声明 `targets: ["server"]`：server 视图 4 行全带该字段，client 视图 0 处出现（字段级可见性，E9006 顺序安全）。
+`Character.internal_note` declares `targets: ["server"]`: all 4 rows in the server view carry the field, while it never appears in the client view (field-level visibility, E9006 ordering-safe).
 
-### cage migrate —— 声明式迁移 dry-run
+### cage migrate — declarative migration dry-run
 
 ```console
 $ cage migrate examples/game-config --to 0.2.0
@@ -495,9 +495,9 @@ cage migrate: segment 0001_rename_desc.yaml (0.1.0 → 0.2.0)
 cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, nothing written
 ```
 
-迁移规则是版本链上的声明式 segment；dry-run 只报告不写盘，Excel 源只报告（二进制源不参与文本迁移）。
+Migration rules are declarative segments on the version chain; dry-run only reports and writes nothing to disk, and Excel sources are report-only (binary sources do not take part in text migrations).
 
-### cage registry —— 版本化自校验资产发布
+### cage registry — versioned publishing of self-verifying artifacts
 
 ```console
 $ cage registry publish examples/game-config --registry /tmp/reg
@@ -513,11 +513,11 @@ rpg-demo
   0.1.0-prod   build 55dae1a8e145  content f81e230d62e9  89 files
 ```
 
-快照打成 `rpg-demo/0.1.0` 条目入册：自校验、可寻址、可滚动回收。`publish --env` 出环境化包：一版本一包——同一版本换环境是不同的包（schema/manifest 都变），E1801 拦下冲突，换个版本号（`0.1.0-prod`）即可入册；条目内的 `manifest.json` 记 `environment`。Schema 作为资产的管理与消费端加载见资产页。
+The snapshot is registered as the `rpg-demo/0.1.0` entry: self-verifying, addressable, and reclaimable by rolling. `publish --env` produces an environment-scoped package: one version, one package — the same version under a different environment is a different package (schema/manifest both change), E1801 blocks the conflict, and switching to a different version number (`0.1.0-prod`) gets it registered; the `manifest.json` inside the entry records `environment`. For managing schemas as artifacts and consumer-side loading, see the Assets page.
 
-### cage registry push —— 远程分发与消费方接入
+### cage registry push — remote distribution and consumer integration
 
-示例工程声明了 `[registry] path = "reg"`（产物目录，不入版本控制），本地注册表既是 publish 目标也是 push 源。把已入册条目直推远端（design §47）：
+The example project declares `[registry] path = "reg"` (the artifact directory, not under version control); the local registry is both the publish target and the push source. Push a registered entry straight to a remote (design §47):
 
 ```console
 $ cage registry publish examples/game-config                       # 发布进示例本地注册表（push 源）
@@ -530,7 +530,7 @@ $ cage registry push examples/game-config --presign-map presign.json          # 
 cage registry: pushed rpg-demo/0.1.0 → presigned targets (presign.json) (89 file(s))
 ```
 
-消费方（另一个工程）不拉源文件，直连远端根构建——`schema_path` 与 `source_roots` 都指向注册表条目，构建期先过账本信任门再跑完整流水线：
+The consumer (another project) pulls no source files and builds directly against the remote root — `schema_path` and `source_roots` both point at registry entries, and at build time it first passes the ledger trust gate, then runs the full pipeline:
 
 ```toml
 # 消费方 cage.toml
@@ -548,11 +548,11 @@ $ cage build ./consumer --profile client
 cage build: OK (profile 'client', 5 artifacts, manifest ./consumer/build/manifest.json)
 ```
 
-远端条目就是发布方构建的同一份字节，消费方产物与发布方**逐字节一致**——`run.sh` 第 12 步对此断言（5 张表 × 直推 / presigned 两条分发路），并用本地 python3 对象库替身把两条路各推一份、各起一个消费方构建。
+The remote entry is the very same bytes the publisher built, and the consumer's artifacts are **byte-identical** to the publisher's — `run.sh` step 12 asserts exactly this (5 tables × direct-push / presigned, two distribution paths), using a local python3 object-store stand-in to push one copy down each path and start one consumer build for each.
 
-### cage check（坏数据）—— E1601 行级诊断 + 分环境 E1001
+### cage check (bad data) — E1601 row-level diagnostics + per-environment E1001
 
-`bad/` 与好数据两处差别：`Character.csv` 首行 `attack` 从 120 改成 500，且全行没有 `nickname` 列。内置 power_curve 规则要求 `attack <= level * 100 + 50`，level=1 时上限 150：
+`bad/` differs from the good data in two ways: the first row of `Character.csv` has `attack` changed from 120 to 500, and no row carries a `nickname` column. The built-in power_curve rule requires `attack <= level * 100 + 50`, a cap of 150 at level=1:
 
 ```console
 $ cage check examples/game-config/bad --level gamerule
@@ -568,7 +568,7 @@ $ echo $?
 1
 ```
 
-同一份坏数据在 prod 环境下换一种烂法——`nickname` 必填后 4 行全缺：
+The same bad data breaks in a different way under the prod environment — once `nickname` is required, all 4 rows are missing it:
 
 ```console
 $ cage check examples/game-config/bad --env prod
@@ -607,9 +607,9 @@ ERROR E1001 — Missing Required Field
 cage check: FAILED (4 errors, 0 warnings)
 ```
 
-诊断带文件/行/表/行号定位，hint 给出计算过程；退出码 1 可直接接入 CI。
+Diagnostics pinpoint file/line/table/row, and the hint shows the computation; exit code 1 plugs straight into CI.
 
-### cage inspect —— 查看表结构
+### cage inspect — view table structure
 
 ```console
 $ cage inspect examples/game-config
@@ -629,29 +629,29 @@ schemas:
   Stage (9 fields, primary key: id)
 ```
 
-## Schema 要点（本示例覆盖的用法）
+## Schema Highlights (usage covered by this example)
 
-| 用法 | 位置 |
+| Usage | Location |
 | --- | --- |
-| 多源异构：csv / yaml / json / xlsx / msgpack 五种源格式 | `config/` |
-| 整型枚举（带整数值） | `CharacterClass`、`ItemType` |
-| 字符串枚举（无值） | `Rarity` |
-| 无值枚举（成员名即回退值） | `Difficulty` |
-| 数值范围 min/max、字符串长度与 pattern | `Character.level/name` |
-| 组合唯一约束 | `Character` 的 `name_unique` |
-| 跨表引用（L5 校验） | `Stage.boss_item_id`、`Quest.reward_item_id`、`Shop.item_id → Item.id` |
-| 可选字段与 Schema 默认值 | `Item.attack_bonus/desc`、`Character.unlocked` |
-| 可选对象组（部分行缺省） | `Stage.boss` |
-| 数组字段 min_items/max_items | `Stage.tags` |
-| Map<K,V>（含嵌套，空 map 合法） | `Stage.drop_table: map<string, Array<Int32>>` |
-| 行排序约束（E1304） | `Quest.order_by: [id]` |
-| 分环境约束覆盖（`--env`，四套环境） | `Character.nickname`（max_length dev 32 → test 24 → staging 20 / prod 必填）、`Shop.discount`（上限 dev 0.9 → test 0.7 → staging 0.6 → prod 0.5） |
-| 环境化出包（snapshot / registry publish `--env`） | 目录名 env 段 `client-prod-*`、条目 `0.1.0-prod`、同版本换环境 E1801 |
-| 字段级可见性（targets + E9006 安全） | `Character.internal_note` 仅 server 视图 |
-| 保留字字段自动转义（`class`） | `Character.class` → cs `@class`、py/java `class_`、go `Class`；lua/ts/js 不转义（消费端按键名取值） |
-| 标准 JSON Schema 文档（draft-07，枚举内联、闭形对象） | `build/client/jsonschema/` |
+| Heterogeneous sources: csv / yaml / json / xlsx / msgpack, five source formats | `config/` |
+| Integer enums (with integer values) | `CharacterClass`, `ItemType` |
+| String enums (no values) | `Rarity` |
+| Valueless enums (member name doubles as the fallback value) | `Difficulty` |
+| Numeric ranges min/max, string length and pattern | `Character.level/name` |
+| Composite unique constraint | `Character`'s `name_unique` |
+| Cross-table references (L5 validation) | `Stage.boss_item_id`, `Quest.reward_item_id`, `Shop.item_id → Item.id` |
+| Optional fields and schema defaults | `Item.attack_bonus/desc`, `Character.unlocked` |
+| Optional object group (absent in some rows) | `Stage.boss` |
+| Array field min_items/max_items | `Stage.tags` |
+| Map<K,V> (nesting included; an empty map is legal) | `Stage.drop_table: map<string, Array<Int32>>` |
+| Row ordering constraint (E1304) | `Quest.order_by: [id]` |
+| Per-environment constraint overrides (`--env`, four environments) | `Character.nickname` (max_length dev 32 → test 24 → staging 20, prod required), `Shop.discount` (cap dev 0.9 → test 0.7 → staging 0.6 → prod 0.5) |
+| Environment-scoped packaging (snapshot / registry publish `--env`) | env segment in the directory name `client-prod-*`, the `0.1.0-prod` entry, E1801 on same version + different environment |
+| Field-level visibility (targets + E9006-safe) | `Character.internal_note`, server view only |
+| Automatic escaping of reserved-word fields (`class`) | `Character.class` → cs `@class`, py/java `class_`, go `Class`; lua/ts/js are not escaped (consumers read values by key name) |
+| Standard JSON Schema document (draft-07, enums inlined, closed objects) | `build/client/jsonschema/` |
 
-Map 字段的 schema 写法（`schemas/stage.yaml`）：
+Schema syntax for Map fields (`schemas/stage.yaml`):
 
 ```yaml
 drop_table:
@@ -666,13 +666,13 @@ drop_table:
   required: true
 ```
 
-对应数据（`config/Stage.json`）：
+Corresponding data (`config/Stage.json`):
 
 ```json
 "drop_table": { "common": [1001, 2001], "rare": [1002], "epic": [1002, 2002] }
 ```
 
-分环境覆盖的 schema 写法（`schemas/character.yaml` / `schemas/shop.yaml`）：
+Schema syntax for per-environment overrides (`schemas/character.yaml` / `schemas/shop.yaml`):
 
 ```yaml
 env_overrides:
@@ -682,9 +682,9 @@ env_overrides:
     nickname: { required: true }    # 收紧成必填
 ```
 
-## 生成物样例
+## Generated Artifact Samples
 
-TypeScript（`build/client/ts/Stage.ts`，节选）：
+TypeScript (`build/client/ts/Stage.ts`, excerpt):
 
 ```ts
 export interface Stage {
@@ -697,7 +697,7 @@ export interface Stage {
 }
 ```
 
-TypeScript（`build/client/ts/Quest.ts`，节选——Excel 源 + 跨表引用 + 行排序）：
+TypeScript (`build/client/ts/Quest.ts`, excerpt — Excel source + cross-table references + row ordering):
 
 ```ts
 export interface Quest {
@@ -712,26 +712,26 @@ export interface Quest {
 }
 ```
 
-Go（`build/client/go/Stage.go`，节选）：
+Go (`build/client/go/Stage.go`, excerpt):
 
 ```go
 DropTable map[string][]int32 `json:"drop_table"`
 ```
 
-C#（`build/client/cs/Stage.cs`，节选）：
+C# (`build/client/cs/Stage.cs`, excerpt):
 
 ```csharp
 public Dictionary<string, IReadOnlyList<int>> drop_table { get; init; } = new();
 ```
 
-Lua（`build/client/lua/Stage.lua`，`M.fields` 元数据节选——Map 与 Array 都是 table，用类型标签区分）：
+Lua (`build/client/lua/Stage.lua`, `M.fields` metadata excerpt — Map and Array are both tables, told apart by type tags):
 
 ```lua
 -- 稀有度 → 掉落道具 id 列表…, required, 键值表（hash part），与 Array 的数组 table（sequence part）不同
 { name = "drop_table", key = "drop_table", type = "map<string, array<integer>>", required = true },
 ```
 
-Python（`build/client/py/Item.py`，节选——可选字段的 `T | None` 与枚举导入）：
+Python (`build/client/py/Item.py`, excerpt — `T | None` for optional fields and enum imports):
 
 ```python
 from cage_enums import ItemType, Rarity
@@ -746,7 +746,7 @@ class Item:
     desc: str | None = None
 ```
 
-数据产物（`build/client/json/Shop.json`，节选——MsgPack 源表，字段按 schema 名序输出）：
+Data artifact (`build/client/json/Shop.json`, excerpt — MsgPack source table, fields output in schema name order):
 
 ```json
 [
@@ -756,7 +756,7 @@ class Item:
 ]
 ```
 
-标准 JSON Schema（`build/client/jsonschema/Item.schema.json`，节选——枚举内联成员名、约束映射 `minimum`/`maxLength`，非 cage 工具链直接消费）：
+Standard JSON Schema (`build/client/jsonschema/Item.schema.json`, excerpt — enum member names inlined, constraints mapped to `minimum`/`maxLength`, consumed directly by non-cage toolchains):
 
 ```json
 {
@@ -803,9 +803,9 @@ class Item:
 }
 ```
 
-## 19 种字段类型 × 8 语言映射总表
+## 19 Field Types × 8 Languages: Full Mapping Table
 
-代码 target 的字段类型映射（Map 为 v0.2 新增的第 19 种类型）：
+Field type mapping for code targets (Map is the 19th type, added in v0.2):
 
 | FieldType | C# | Python | Lua | TS / JS | C++ | Go | Java |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -825,37 +825,37 @@ class Item:
 | Bytes | `byte[]` | `bytes` | `bytes` | `Uint8Array` | `std::vector<std::uint8_t>` | `[]byte` | `byte[]` |
 | Array\<T\> | `IReadOnlyList<T>` | `list[T]` | `array<T>` | `T[]` | `std::vector<T>` | `[]T` | `List<T>` |
 | Object | `IReadOnlyDictionary<string, object?>` | `dict[str, Any]` | `table` | `Record<string, unknown>` | `std::map<std::string, std::any>` | `map[string]any` | `Map<String, Object>` |
-| **Map\<K,V\>** | `Dictionary<K, V>` | `dict[K, V]` | `table`（类型标签 `map<K, V>`） | `Map<K, V>` | `std::unordered_map<K, V>` | `map[K]V` | `HashMap<K, V>` |
-| Enum | 枚举名（未解析回退 `string`） | 枚举名 | 枚举名 | 枚举名 | 枚举名（字符串桶 `std::string_view`） | 枚举名 | 枚举名 |
+| **Map\<K,V\>** | `Dictionary<K, V>` | `dict[K, V]` | `table` (type tag `map<K, V>`) | `Map<K, V>` | `std::unordered_map<K, V>` | `map[K]V` | `HashMap<K, V>` |
+| Enum | enum name (falls back to `string` when unresolved) | enum name | enum name | enum name | enum name (string bucket `std::string_view`) | enum name | enum name |
 | Any | `object?` | `Any` | `any` | `unknown` | `std::any` | `any` | `Object` |
 
-Map 的键类型 K 映射：
+Mapping for Map key types K:
 
 | key_type | C# | Python | Lua | TS / JS | C++ | Go | Java |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `string` | `string` | `str` | `string` | `string` | `std::string` | `string` | `String` |
 | `int` | `long` | `int` | `int` | `number` | `std::int64_t` | `int64` | `Long` |
 
-Java 列的 `primitive / wrapper` 取值取决于字段可空性（必填用 primitive，非必填升包装）；C++ 的 `Map` 走 `std::unordered_map`（与 Object 的 `std::map` 区分），需要时由生成器自动注入 `#include <unordered_map>`；Lua 中 Map 与 Array 都是 `table`，生成物的类型标签与字段注释写明 hash part / sequence part 之别。
+The Java column's `primitive / wrapper` choice depends on field nullability (primitive for required fields, promoted to the wrapper for non-required); C++'s `Map` goes through `std::unordered_map` (distinguished from Object's `std::map`), with `#include <unordered_map>` auto-injected by the generator when needed; in Lua both Map and Array are `table`, and the generated type tags and field comments spell out the hash part / sequence part distinction.
 
-## CI 防烂
+## CI Rot Prevention
 
-`.github/workflows/ci.yml` 有独立的 `example` job：检出后执行 `bash examples/run.sh`。示例工程的数据、schema、run.sh 任何一处烂掉，CI 直接红。
+`.github/workflows/ci.yml` has a dedicated `example` job: after checkout it runs `bash examples/run.sh`. If any part of the example project breaks — data, schema, or run.sh — CI goes red immediately.
 
-`examples/game-config/ci/` 是三份可直接落地的 CI 参考片段，都是「装 Rust → `bash examples/run.sh` → 归档产物」：
+`examples/game-config/ci/` holds three drop-in CI reference snippets, all following "install Rust → `bash examples/run.sh` → archive artifacts":
 
-| 文件 | 平台 | 要点 |
+| File | Platform | Highlights |
 | --- | --- | --- |
-| `github-actions.yml` | GitHub Actions | `dtolnay/rust-toolchain` 装链，`upload-artifact` 归档 `build/` |
-| `Jenkinsfile` | Jenkins（声明式） | `rustup` 引导工具链，`archiveArtifacts` 归档 |
-| `gitlab-ci.yml` | GitLab CI | `rust:1-bookworm` 镜像，`artifacts` 上报 |
+| `github-actions.yml` | GitHub Actions | `dtolnay/rust-toolchain` installs the toolchain, `upload-artifact` archives `build/` |
+| `Jenkinsfile` | Jenkins (declarative) | `rustup` bootstraps the toolchain, `archiveArtifacts` archives |
+| `gitlab-ci.yml` | GitLab CI | `rust:1-bookworm` image, `artifacts` for upload |
 
-三份片段与 `run.sh` 的 15 步一一对应：check（含 `--env` 与坏数据断言）→ 双 profile 构建 → 增量 → 快照回验 → gen → diff → migrate → registry → 远程分发全链路（直推 / presigned / 消费方 resolve），任何一步红都是真烂。
+The three snippets map one-to-one onto `run.sh`'s 15 steps: check (including `--env` and bad-data assertions) → dual-profile builds → incremental → snapshot re-verification → gen → diff → migrate → registry → the full remote distribution chain (direct push / presigned / consumer resolve); a red step anywhere means real rot.
 
-## 资产：Schema 的管理与加载
+## Assets: Schema Management and Loading
 
-示例的终点不是产物目录，而是**可分发、可回验的资产**：`cage snapshot` 冻结一次构建（schema + 产物 + 哈希账本），`cage registry publish` 把它打成 `rpg-demo/0.1.0` 版本化条目。Schema 本身也是资产——源码评审管 schema，快照哈希管构建，注册表目录管分发。
+The example's endpoint is not the artifact directory but **distributable, re-verifiable assets**: `cage snapshot` freezes a build (schema + artifacts + hash ledger), and `cage registry publish` packages it into the versioned `rpg-demo/0.1.0` entry. The schema itself is an asset too — source review governs the schema, snapshot hashes govern the build, and the registry catalog governs distribution.
 
-消费端（另一个仓库的构建 / 工具链 / CI）不拉源文件，拉注册表条目：`schema_path = "game:0.1.0/schema.json"` + `[source_roots] game = "registry:0.1.0"` + `[dependencies]` 版本 pin，构建期先过信任门再跑完整流水线。标准 JSON Schema 形态由 `format = "jsonschema"` target 产出（`build/client/jsonschema/`），给非 cage 工具链消费。
+The consumer side (another repository's builds / toolchain / CI) pulls registry entries, not source files: `schema_path = "game:0.1.0/schema.json"` + `[source_roots] game = "registry:0.1.0"` + `[dependencies]` version pins, passing the trust gate at build time before running the full pipeline. The standard JSON Schema form is produced by the `format = "jsonschema"` target (`build/client/jsonschema/`), for consumption by non-cage toolchains.
 
-详见资产页。
+See the Assets page for details.

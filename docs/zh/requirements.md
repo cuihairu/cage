@@ -1,4 +1,4 @@
-[English](requirements.md) | 中文
+[English](/requirements.md) | 中文
 
 # Cage 需求整理（依据 docs/design.md，Rust 实现）
 
@@ -109,6 +109,6 @@ Authoring Sources → Source Adapters → Canonical Model → Validation Pipelin
 
 ## Rust 落地口径
 - Cargo workspace：`cage-core`（value/document/schema/diagnostics/validation/reference/normalize/manifest/snapshot/edit/registry/remote）、`cage-source-{excel,csv,json,yaml,http,db,sheets,msgpack}`、`cage-target-{json,csv,msgpack,cs,py,lua,ts,cpp,go,java,proto,jsonschema,template}`、`cage-cli`
-- 错误码表进 `cage-core`（E0001/E1001/E1101/E1201/E1301/E1401/E1410 …每码一 doc；预留码在 [validation.md](validation.md) 标注）
+- 错误码表进 `cage-core`（E0001/E1001/E1101/E1201/E1301/E1401/E1410 …每码一 doc；预留码在 [validation.md](/zh/validation.md) 标注）
 - 确定性：BTreeMap/稳定排序、输出字节级可复现（golden 测试）
 - 测试门禁：全测试绿才 commit/push（禁 force push、禁版本 tag/release）

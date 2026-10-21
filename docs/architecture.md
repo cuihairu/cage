@@ -1,9 +1,9 @@
 
-# 架构
+# Architecture
 
-Cage 解决的问题不是「Excel 转 JSON」，而是：**如何将游戏开发过程中分散、异构、面向人的配置数据，可靠地编译成经过验证、确定性构建、可供不同运行时直接消费的配置资产。**
+The problem Cage solves is not "converting Excel to JSON", but: **how to reliably compile the scattered, heterogeneous, human-oriented configuration data produced during game development into configuration assets that are validated, deterministically built, and ready for direct consumption by different runtimes.**
 
-核心流程：
+Core flow:
 
 ```mermaid
 flowchart TD
@@ -13,10 +13,10 @@ flowchart TD
     D["Validation Pipeline<br/>L0 Syntax · L1 Schema · L2 Type · L3 Value<br/>L4 Table · L5 Reference · L6 Semantic · L7 Game Rules"]
     E[Normalize / IR]
     F[Target Generators]
-    G1["数据产物<br/>JSON · CSV · MsgPack"]
-    G2["代码绑定<br/>C# · Python · Lua · TS · JS"]
-    G3["代码绑定<br/>C++ · Go · Java"]
-    G4["契约与模板<br/>Protobuf / JSON Schema<br/>Template"]
+    G1["Data Artifacts<br/>JSON · CSV · MsgPack"]
+    G2["Code Bindings<br/>C# · Python · Lua · TS · JS"]
+    G3["Code Bindings<br/>C++ · Go · Java"]
+    G4["Contracts & Templates<br/>Protobuf / JSON Schema<br/>Template"]
     A --> B --> C --> D --> E --> F
     F --> G1
     F --> G2
@@ -24,35 +24,35 @@ flowchart TD
     F --> G4
 ```
 
-全部 14 类 target 已实装：JSON / CSV / MsgPack 数据产物、C# / Python /
-Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定、Protobuf
-Schema 定义生成（`.proto`，不做 wire 编码）、FlatBuffers 定义生成
-（`.fbs`，不做 wire 编码）与 JSON Schema、Template Target（Tera 用户
-自定义模板）。
+All 14 target kinds are implemented: JSON / CSV / MsgPack data artifacts; C# / Python /
+Lua / TypeScript / JavaScript / C++ / Go / Java code bindings; Protobuf
+Schema definition generation (`.proto`, no wire encoding); FlatBuffers definition
+generation (`.fbs`, no wire encoding) and JSON Schema; and the Template target
+(user-defined Tera templates).
 
-## 为什么需要 Cage
+## Why Cage Is Needed
 
-游戏项目中的配置通常同时服务于：
+In a game project, configuration typically serves all of the following at once:
 
-- 策划
-- 程序
-- 客户端
-- 服务端
-- 工具链
+- Designers
+- Programmers
+- Client
+- Server
+- Toolchain
 - CI/CD
-- 测试环境
-- 运营
+- Test environments
+- Operations
 
-不同角色需要不同的表达形式。例如同一份 Item 配置：
+Different roles need different representations. For example, the same Item configuration:
 
-| 角色 | 需要的表达形式 |
-| ---- | -------------- |
-| 策划 | Excel |
-| 客户端 | JSON / CSV / C# |
-| 服务端 | JSON / CSV / Lua / Python |
-| 工具 | JSON / SQLite / Binary |
+| Role | Representation Needed |
+| ---- | -------------------- |
+| Designers | Excel |
+| Client | JSON / CSV / C# |
+| Server | JSON / CSV / Lua / Python |
+| Tools | JSON / SQLite / Binary |
 
-如果没有统一的配置构建系统，项目很容易演变成：
+Without a unified configuration build system, a project easily degenerates into:
 
 ```mermaid
 flowchart LR
@@ -63,30 +63,30 @@ flowchart LR
     E --> S5[CSV Script]
 ```
 
-然后每个脚本：
+Then each script:
 
-- 自己解析
-- 自己转换
-- 自己校验
-- 自己处理默认值
-- 自己处理引用
-- 自己报错
+- Parses on its own
+- Converts on its own
+- Validates on its own
+- Handles default values on its own
+- Handles references on its own
+- Reports errors on its own
 
-最终产生多个问题：
+This eventually produces several problems:
 
-1. 不同输出可能产生不同结果。
-2. 校验逻辑散落在不同脚本中。
-3. 跨表引用无法统一验证。
-4. 配置错误直到游戏运行时才暴露。
-5. 修改一个字段需要修改多个转换器。
-6. CI 无法得到统一的配置质量门禁。
-7. 配置无法形成可追踪、可复现的构建产物。
+1. Different outputs may produce different results.
+2. Validation logic is scattered across different scripts.
+3. Cross-table references cannot be validated in one place.
+4. Configuration errors only surface when the game actually runs.
+5. Changing one field requires changing multiple converters.
+6. CI gets no unified configuration quality gate.
+7. Configuration never forms traceable, reproducible build artifacts.
 
-Cage 的目标就是把这条链统一起来。
+Cage's goal is to unify this chain.
 
-## 六个核心概念
+## Six Core Concepts
 
-Cage 将配置系统划分为六个核心概念：
+Cage divides the configuration system into six core concepts:
 
 ```mermaid
 flowchart LR
@@ -95,17 +95,17 @@ flowchart LR
 
 ### Source
 
-配置的输入来源，例如 Excel、CSV、JSON、YAML，已扩展 MySQL / PostgreSQL、HTTP API、Google Sheets 远程源与 `registry:` 源根，后续扩展 XML、TOML、SQLite 等。
+Where configuration enters from, for example Excel, CSV, JSON, YAML; already extended with the MySQL / PostgreSQL, HTTP API, and Google Sheets remote sources and the `registry:` source root, with XML, TOML, SQLite, and more to follow.
 
-Source 只负责：
+A Source is only responsible for:
 
-> **把外部数据读取进 Cage。**
+> **Reading external data into Cage.**
 
-它不应该负责业务验证。详见 Source 栏目。
+It should not be responsible for business validation. See the Source section.
 
 ### Schema
 
-定义配置的结构和约束，例如：
+Defines the structure and constraints of configuration, for example:
 
 ```yaml
 tables:
@@ -127,11 +127,11 @@ enums:
       - { name: Consumable, value: 3 }
 ```
 
-Schema 定义：字段、类型、必填、默认值、范围、枚举、数组、对象、唯一性、引用、输出信息（此为实际 wire 格式；完整 DSL 见 Schema 栏目）。
+Schema defines: fields, types, required fields, default values, ranges, enums, arrays, objects, uniqueness, references, output information (this is the actual wire format; for the full DSL see the Schema section).
 
 ### Canonical Model
 
-所有 Source 都应该进入统一的中间模型：
+Every Source should flow into one unified intermediate model:
 
 ```mermaid
 flowchart TD
@@ -142,14 +142,15 @@ flowchart TD
     X5[SQLite] --> M
 ```
 
-Canonical Model 不应该直接等同于 JSON。推荐基本类型：
+The Canonical Model should not simply be equated with JSON. Recommended basic types:
 `Null` / `Bool` / `Int` / `UInt` / `Float` / `String` / `Bytes` /
-`Array` / `Object`。
+`Array` / `Object`.
 
-并携带四类标注信息：Source Location（源定位）、Schema Information
-（结构信息）、Type Information（类型信息）、Metadata（元数据）。
+It also carries four kinds of annotation information: Source Location (source
+position), Schema Information (structure), Type Information (typing), and
+Metadata.
 
-这样可以做到：
+This makes it possible to:
 
 ```text
 monster.xlsx
@@ -158,76 +159,71 @@ Row: 27
 Column: DropItemID
 ```
 
-在错误信息中精确定位。
+pinpoint the exact location inside error messages.
 
-## 编译器核心：八个概念的边界（v0.3 定稿）
+## Compiler Core: The Boundaries of Eight Concepts (Finalized in v0.3)
 
-共识：Cage 最大的风险不是功能不够，而是编译器核心模型的边界模糊——
-`Schema / Canonical Model / IR / Validation Context / Dependency Graph /
-Profile / Snapshot / Manifest` 八个概念一旦稳定，Excel/CSV/JSON/YAML 与
-C#/Lua/C++/Python/Protobuf 都只是插件。本章把每个概念的归属与死线写死，
-下面的插件模型与全部 Target 都在这张表之上工作。
+Consensus: Cage's biggest risk is not a lack of features but blurry boundaries in the compiler's core model — once the eight concepts `Schema / Canonical Model / IR / Validation Context / Dependency Graph / Profile / Snapshot / Manifest` are stable, Excel/CSV/JSON/YAML and C#/Lua/C++/Python/Protobuf are all just plugins. This chapter locks down where each concept belongs and its hard deadline; the plugin model below and all Targets work on top of this table.
 
-### 概念边界表
+### Concept Boundary Table
 
-| 概念 | 定义 | 承载类型 | 生产 → 消费 | 边界禁令 |
+| Concept | Definition | Backing Types | Production → Consumption | Boundary Prohibitions |
 | --- | --- | --- | --- | --- |
-| Schema | 配置的结构与约束定义（编译期输入） | `Schema` / `ValidatedSchema`（cage-core::schema） | 用户书写 → Validation、Target 消费 | 不读数据文件；不携带运行时值 |
-| Canonical Model | 数据在 Cage 世界的语义模型 | `Value` / `TypedValue` / `Document`（cage-core::value，含 SourceLocation） | Source 生产 → Validation / Normalize / Target 消费 | 不直接等同任何文件格式；Source 只把它读懂，Target 只读它 |
-| IR | 归一化后的 Canonical。v0.3 定界：与 Canonical 同构，不设独立类型 | 即 Canonical（归一化 `Document` + `Schema`） | Normalize 生产 → Target 消费 | Target 不得回读 Source 文件；IR 阶段不重新验证 |
-| Validation Context | 验证执行期的游标与现场 | `ValidationContext`（current_table / current_row / current_field / schema…） | Validation 生产 → Diagnostics 消费 | 验证不产出产物、不修改数据；Target 不重复验证 |
-| Dependency Graph | 表间引用的拓扑与增量规划 | `DependencyGraph` / `IncrementalPlanner`（cage-core::reference） | schema 引用声明建图（`from_schema`）→ L5 校验与增量构建共同消费 | 图是编译结果不是运行时数据 |
-| Profile | 面向消费端的裁剪视图 | `BuildProfile`（cage-core::manifest）+ profile 过滤 | 用户配置 → 裁剪 Schema + Document → Validation / Target | 过滤是起点不是终点：语义落地面见差距表 |
-| Manifest | 构建产物的账本与输入指纹 | `BuildManifest` / `ArtifactInfo`（cage-core::manifest） | ManifestGenerator 生产 → verify / 增量 / 部署 / 回滚消费 | 只记账不生成；与产物一同落盘、随产物验证 |
-| Snapshot | 可独立加载的配置快照（D5 已实装） | `snapshot_files` / `verify_snapshot` / `load`（cage-core::snapshot） | 构建生产 → 服务器 / 客户端启动加载校验 | 快照自带校验信息，不依赖构建机现场 |
+| Schema | The structural and constraint definition of configuration (compile-time input) | `Schema` / `ValidatedSchema` (cage-core::schema) | Written by users → consumed by Validation and Targets | Never reads data files; never carries runtime values |
+| Canonical Model | The semantic model of data in Cage's world | `Value` / `TypedValue` / `Document` (cage-core::value, including SourceLocation) | Produced by Sources → consumed by Validation / Normalize / Targets | Not identified with any file format; Sources only read the data in, Targets only read it |
+| IR | The normalized Canonical. v0.3 boundary decision: isomorphic to Canonical, no separate type | Just the Canonical (normalized `Document` + `Schema`) | Produced by Normalize → consumed by Targets | Targets must not read Source files back; no re-validation at the IR stage |
+| Validation Context | The cursor and live state while validation executes | `ValidationContext` (current_table / current_row / current_field / schema…) | Produced by Validation → consumed by Diagnostics | Validation produces no artifacts and modifies no data; Targets do not re-validate |
+| Dependency Graph | The topology of cross-table references and incremental planning | `DependencyGraph` / `IncrementalPlanner` (cage-core::reference) | Graph built from schema reference declarations (`from_schema`) → consumed jointly by L5 validation and incremental builds | The graph is a compilation result, not runtime data |
+| Profile | A trimmed view aimed at consumers | `BuildProfile` (cage-core::manifest) + profile filtering | Configured by users → trims Schema + Document → Validation / Target | Filtering is a starting point, not the destination: for where the semantics land, see the gap table |
+| Manifest | The ledger and input fingerprints of build artifacts | `BuildManifest` / `ArtifactInfo` (cage-core::manifest) | Produced by ManifestGenerator → consumed by verify / incremental builds / deployment / rollback | Only records, never generates; written to disk together with artifacts and verified together with them |
+| Snapshot | An independently loadable configuration snapshot (implemented in D5) | `snapshot_files` / `verify_snapshot` / `load` (cage-core::snapshot) | Produced by builds → loaded and verified at server / client startup | Snapshots carry their own verification information and do not depend on the build machine |
 
-### 为什么 IR 不拆独立类型（v0.3 决策）
+### Why IR Does Not Get a Separate Type (v0.3 Decision)
 
-评审原型设想 IR ≈ `CompiledItemTable { schema_id, table_id, fields, values,
-references, normalized_types, visibility, dependencies }`。对照现状：
+The reviewed prototype imagined IR ≈ `CompiledItemTable { schema_id, table_id, fields, values,
+references, normalized_types, visibility, dependencies }`. Compared with the current state:
 
-- normalize（cage-core/src/normalize/mod.rs：`normalize_document` /
-  `normalize_typed_value` / `normalize_value`）是 Canonical → Canonical 的纯
-  变换，产出仍是 Document / TypedValue / Value 类型；
-- 全部 14 个 target 的入口要么是 `(Schema, Document)`（数据 target），要么是
-  `(Schema, schema_hash)`（代码 target——类型与元数据全来自 Schema，数据不参与
-  代码生成）。target 面已经按 IR 视角消费，且结构性满足「不得读 Source」。
+- normalize (cage-core/src/normalize/mod.rs: `normalize_document` /
+  `normalize_typed_value` / `normalize_value`) is a pure Canonical → Canonical
+  transformation, and its output is still the Document / TypedValue / Value types;
+- the entry point of all 14 targets is either `(Schema, Document)` (data targets) or
+  `(Schema, schema_hash)` (code targets — types and metadata all come from the
+  Schema, and data takes no part in code generation). The target side already
+  consumes from an IR perspective and structurally satisfies the "must not read
+  Source" rule.
 
-现阶段拆独立 IR 类型只会引入双份形状与无谓的转换/测试面。定界：IR 与
-Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**：当校验面与
-产物面形状开始分歧（per-profile 裁剪固化、visibility 折叠、产物需要编译期
-预计算的派生形状）时，再以 Compiled IR 收敛——拆分点已预留，不做先行设计。
+Splitting out a separate IR type at this stage would only introduce duplicate shapes and a needless extra conversion/testing surface. Boundary decision: IR is isomorphic to Canonical and is expressed as (normalized Document, Schema). **When to split it out later**: once the shapes of the validation side and the artifact side start to diverge (per-profile trimming becomes baked in, visibility gets folded, artifacts need derived shapes precomputed at compile time), converge on a Compiled IR — the split point is already reserved, and no up-front design is being done.
 
-### 现状与差距（逐概念核对，2026-10）
+### Current Status and Gaps (Concept-by-Concept Review, 2026-10)
 
-| 概念 | 现状 | 差距 / 下一步 |
+| Concept | Current Status | Gap / Next Step |
 | --- | --- | --- |
-| Schema | 已实装：19 种字段类型（含 Map）、引用、唯一约束、字段级 `targets` 可见性 | — |
-| Canonical Model | 已实装：value.rs 全类型 + SourceLocation | — |
-| IR | 定界完成（见上） | 派生形状需求出现时拆 Compiled IR |
-| Validation Context | 已实装：validation/mod.rs（schema / document / diagnostics / max_level / profile / reference_cache / warnings_as_errors） | — |
-| Dependency Graph | 已实装并接线：reference/mod.rs `DependencyGraph`（环检测 / 拓扑）+ `IncrementalPlanner`；cli 构建真实接线，增量第二层按表哈希 + 依赖传播只重建受影响表，manifest 落 `dependencies`/`table_hashes` 账（D2） | 增量删除表回退全量（不沿边传播删除语义） |
-| Profile | 已实装（D3 语义化）：表 + 字段双层面板过滤裁剪 Schema 与 Document 产物视图；校验在**完整** schema/document 上执行（profile 只裁剪产物视图、不豁免数据校验）；ValidationContext 携带 profile，结构不可缺字段（required 无默认 / 主键 / 唯一约束 / 引用目标）被 profile 隐藏报 E9006 冲突而非静默过滤 | 可选字段裁剪保持合法视图语义；整表剔除是表级可见性语义 |
-| Environment | 已实装（§48 分环境验证）：Schema 表级 `env_overrides` 声明「环境名 → 字段 → 约束补丁」（部分补丁、整值替换、类型不可覆盖），`--env` 在校验/生成前解析为一份普通 Schema（校验器与代码生成零改动）；环境名 Schema 自声明（declared_envs 并集），manifest 记 `environment`、schema_hash/build_id 随环境轮换，增量守卫按环境失配 | 坏覆盖 lint 已按条目输出（基线环境）；snapshot / registry publish `--env` 环境化出包已实装（§48） |
-| Manifest | 已实装（D4 + 增量第三层 + 环境 §48）：13 顶层字段（project / profile / environment / cage_version / generator_version / build_id / schema_hash / source_hash / content_hash / dependencies / table_hashes / targets / artifacts；`environment` 基线构建缺省） | — |
-| Snapshot | 已实装（D5）：`cage snapshot` 打包 profile 视图 + `--verify` 校验（`--env` 环境化出包：目录名 `<profile>-<env>-<build_id[..12]>`、包内 manifest 记 environment）；`snapshot/<profile>[-<env>]-<build_id[..12]>` 确定性目录（manifest / schema.json / data / generated / HASHES 逐文件账本），core 提供 verify/load 服务器入口 | 删除/回滚策略（多快照共存管理）见 Registry 阶段——R1–R4 已实装（`cage registry` 本地发布/列表 + `registry:` 源与 schema_path 解析 + `[dependencies]` 版本 pin + 远程 http(s) 只读解析，条目即自校验快照 + verify 全册审计 / gc 滚动窗口 / remove 显式移除与重发）；§47 A 系列分发已实装（export 确定性 tar bundle / import 信任门入册 / push 直推 http(s) 远端根，E21xx 五码接线） |
+| Schema | Implemented: 19 field types (including Map), references, uniqueness constraints, field-level `targets` visibility | — |
+| Canonical Model | Implemented: the full type set in value.rs + SourceLocation | — |
+| IR | Boundary decided (see above) | Split out a Compiled IR once a need for derived shapes appears |
+| Validation Context | Implemented: validation/mod.rs (schema / document / diagnostics / max_level / profile / reference_cache / warnings_as_errors) | — |
+| Dependency Graph | Implemented and wired in: reference/mod.rs `DependencyGraph` (cycle detection / topology) + `IncrementalPlanner`; the CLI build path is wired for real, the second incremental layer uses table hashes + dependency propagation to rebuild only affected tables, and the manifest keeps a `dependencies` / `table_hashes` ledger (D2) | Incrementally deleting a table falls back to a full build (deletion semantics do not propagate along edges) |
+| Profile | Implemented (D3 semantics): panel filtering at both the table and field levels trims the Schema and the Document artifact view; validation runs against the **full** schema/document (a profile only trims the artifact view and grants no exemption from data validation); ValidationContext carries the profile, and structurally indispensable fields (required with no default / primary keys / uniqueness constraints / reference targets) that a profile hides raise an E9006 conflict instead of being silently filtered out | Trimming of optional fields preserves legal-view semantics; dropping a whole table is table-level visibility semantics |
+| Environment | Implemented (§48 per-environment validation): the table-level Schema `env_overrides` declares "environment name → field → constraint patch" (partial patches, whole-value replacement, types cannot be overridden); `--env` is resolved into one ordinary Schema before validation/generation (zero changes to validators and code generation); environment names are self-declared by the Schema (the union of declared_envs), the manifest records `environment`, schema_hash/build_id rotate with the environment, and the incremental guard fails on environment mismatch | Bad-override lints are emitted per entry for the baseline environment; environment-aware snapshot / registry publish packaging via `--env` is implemented (§48) |
+| Manifest | Implemented (D4 + third incremental layer + environments §48): 13 top-level fields (project / profile / environment / cage_version / generator_version / build_id / schema_hash / source_hash / content_hash / dependencies / table_hashes / targets / artifacts; `environment` takes its default on baseline builds) | — |
+| Snapshot | Implemented (D5): `cage snapshot` packages the profile view + `--verify` validation (`--env` for environment-aware packaging: directory name `<profile>-<env>-<build_id[..12]>`, and the in-package manifest records the environment); the deterministic `snapshot/<profile>[-<env>]-<build_id[..12]>` directory (a per-file ledger of manifest / schema.json / data / generated / HASHES); core provides the verify/load server entry points | The deletion/rollback policy (managing multiple coexisting snapshots) belongs to the Registry phase — R1–R4 are implemented (`cage registry` local publish/list + the `registry:` source with schema_path resolution + `[dependencies]` version pins + read-only remote http(s) resolution, where each entry is a self-verifying snapshot + verify audits the whole registry / gc with a rolling window / remove for explicit removal and republication); §47 A-series distribution is implemented (export of deterministic tar bundles / import into the registry through a trust gate / push straight to an http(s) remote root, with five E21xx codes wired in) |
 
-### 评审对照修正（2026-10 外部评审）
+### Review Comparison Corrections (External Review, 2026-10)
 
-| 评审项 | 评审评级（5 分制） | 代码核对结论 |
+| Review Item | Review Rating (out of 5) | Code Verification Conclusion |
 | --- | --- | --- |
-| IR | 3 | 定界后归入 Canonical，见「为什么 IR 不拆独立类型」 |
-| Dependency Graph | 2 | 已闭合（D2）：核心 + 构建接线 + 增量第二层 + manifest 账本（依赖/表哈希） |
-| Incremental Build | 2 | 已闭合（D2）：第一层整轮跳过 + 第二层依赖传播只重建受影响表（携带字节与全量一致、manifest 收敛）；删除表回退全量 |
-| Snapshot | 2 | 已闭合（D5）：`cage snapshot` 打包 + `--verify` 校验 + core verify/load 服务器入口；确定性目录名（build_id 指纹，弃日期命名） |
-| Profile | 4 | 已闭合（D3）：过滤 + E9006 冲突语义 + profile 感知校验上下文；校验全库、profile 只裁剪产物视图 |
-| Manifest | — | 建议评级（D4）：build_id / generator_version / dependencies / table_hashes 已落，前 24 位 blake3 确定性指纹替代时间戳 |
-| Diagnostics | 5 | 确认：L0-L7 全错误码族、行级定位 + hint、E1601 端到端 |
-| Deterministic Build | 5 | 确认：同输入字节一致由 golden 测试锁定 |
+| IR | 3 | Folded into Canonical by the boundary decision; see "Why IR Does Not Get a Separate Type" |
+| Dependency Graph | 2 | Closed (D2): core + build wiring + the second incremental layer + the manifest ledger (dependencies / table hashes) |
+| Incremental Build | 2 | Closed (D2): layer 1 skips whole rounds + layer 2 uses dependency propagation to rebuild only affected tables (bytes identical to a full build, manifest converges); deleting a table falls back to a full build |
+| Snapshot | 2 | Closed (D5): `cage snapshot` packaging + `--verify` validation + core verify/load server entry points; deterministic directory names (build_id fingerprint, date-based naming abandoned) |
+| Profile | 4 | Closed (D3): filtering + E9006 conflict semantics + a profile-aware validation context; validation covers the full data set, and a profile only trims the artifact view |
+| Manifest | — | Suggested rating (D4): build_id / generator_version / dependencies / table_hashes are in place, and a deterministic 24-character blake3 fingerprint prefix replaces timestamps |
+| Diagnostics | 5 | Confirmed: the full L0-L7 error-code families, row-level locations + hints, E1601 end to end |
+| Deterministic Build | 5 | Confirmed: byte-identical output for the same inputs is locked in by golden tests |
 
-## 插件模型
+## Plugin Model
 
-Cage 的核心应该尽量稳定：
+Cage's core should stay as stable as possible:
 
 ```mermaid
 flowchart TB
@@ -258,11 +254,11 @@ flowchart TB
     end
 ```
 
-这样第三方可以扩展 Cage，而无需修改 Core。
+This way, third parties can extend Cage without modifying the Core.
 
-## 工程结构（Rust 落地）
+## Project Structure (Rust Implementation)
 
-Cage 使用 Rust 实现，按 Cargo workspace 组织为多个 crate；核心与各输入/输出插件彼此独立，依赖单向指向 `cage-core`：
+Cage is implemented in Rust and organized as a Cargo workspace of multiple crates; the core and each input/output plugin are independent of one another, with dependencies pointing one way toward `cage-core`:
 
 ```text
 cage/
@@ -312,57 +308,56 @@ cage/
 └── .github/workflows/       # CI / 每日构建 / 文档部署
 ```
 
-## 安全与隔离
+## Security and Isolation
 
-如果允许项目编写业务 Validator，需要注意：Validator 是插件代码，
-意味着**可能执行任意代码**。因此：
+If projects are allowed to write their own business Validators, keep in mind: a Validator is plugin code, which means it **may execute arbitrary code**. Therefore:
 
-- 本地开发可以使用 Native Plugin
-- CI 可以考虑 Sandbox
-- 不应默认执行不可信项目代码
-- Remote Registry 不应该直接执行上传的 Validator
+- Native Plugins can be used in local development
+- A Sandbox is worth considering for CI
+- Untrusted project code should not be executed by default
+- A Remote Registry should not directly execute uploaded Validators
 
-这是后期需要重点考虑的问题。
+This is an issue that deserves serious attention later on.
 
-## 不应该做的事情
+## What Cage Should Not Do
 
-Cage 不应该变成：
+Cage should not become:
 
-### Excel 编辑器
+### An Excel Editor
 
-Excel 本身已经是成熟的 Authoring Tool。
+Excel is already a mature authoring tool.
 
-### 游戏数据库
+### A Game Database
 
-Cage 构建配置，不负责成为游戏运行时数据库。
+Cage builds configuration; it is not responsible for being the game's runtime database.
 
 ### Secret Manager
 
-密码、Token、Key 不属于普通游戏配置。
+Passwords, tokens, and keys do not belong in ordinary game configuration.
 
-### 游戏逻辑框架
+### A Game Logic Framework
 
-Cage 可以验证业务规则，但不应该成为游戏服务器逻辑框架。
+Cage can validate business rules, but it should not become the game server's logic framework.
 
-### 强绑定某一个游戏引擎
+### Hard Binding to One Game Engine
 
-不绑定 Unity、Unreal、Godot、Cocos。它应该服务于所有游戏客户端和服务器。
+No binding to Unity, Unreal, Godot, or Cocos. It should serve every game client and server.
 
-## 与普通配置转换器的区别
+## Differences from an Ordinary Configuration Converter
 
-普通 Converter：
+An ordinary converter:
 
 ```mermaid
 flowchart LR
     A[Source A] --> B[Output B]
 ```
 
-Cage：
+Cage:
 
 ```mermaid
 flowchart TD
     S[Source] --> P[Parse] --> M[Canonical Model]
-    M --> V["校验层<br/>Schema · Type · Constraint · Reference<br/>Semantic · Game Rules"]
+    M --> V["Validation Layers<br/>Schema · Type · Constraint · Reference<br/>Semantic · Game Rules"]
     V --> VM[Validated Model]
     VM --> O1[JSON]
     VM --> O2[CSV]
@@ -370,13 +365,13 @@ flowchart TD
     VM --> O4["Protobuf Schema / ..."]
 ```
 
-转换之外，Cage 建立的是一条配置编译链：校验、跨配置引用、规范化与确定性构建都在这条链上完成。
+Beyond conversion, what Cage establishes is a configuration compilation chain: validation, cross-configuration references, normalization, and deterministic builds are all completed along this chain.
 
-## 命名：Casino Cage 隐喻
+## Naming: The Casino Cage Metaphor
 
-Cage 的命名来自赌场中的 **Cage / Cashier's Cage**。
+Cage is named after the **Cage / Cashier's Cage** in a casino.
 
-赌场中的 Cage 是：
+In a casino, the Cage is:
 
 ```mermaid
 flowchart TD
@@ -387,7 +382,7 @@ flowchart TD
     G --> H[Chips]
 ```
 
-Cage：
+Cage:
 
 ```mermaid
 flowchart TD
@@ -399,41 +394,41 @@ flowchart TD
     C --> R[Runtime Assets]
 ```
 
-所以它更像配置进入运行时世界之前的兑换与清算边界：
+So it is more like the exchange-and-settlement boundary that configuration passes through before entering the runtime world:
 
-赌场里的 Cage 不关心你最后玩 Poker、Blackjack 还是 Baccarat；同样，Cage 不应该关心配置最终服务 Unity、Cocos、Unreal、Game Server 还是工具。它只负责：
+The cage in a casino does not care whether you end up playing Poker, Blackjack, or Baccarat; likewise, Cage should not care whether the configuration ultimately serves Unity, Cocos, Unreal, a game server, or tools. It is only responsible for:
 
-> **输入的数据必须合法、完整、可验证，然后才能兑换成运行时资产。**
+> **Input data must be valid, complete, and verifiable before it can be exchanged for runtime assets.**
 
-## 一句话定义
+## One-Sentence Definition
 
-英文：
+In English:
 
 > **Cage is a configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.**
 
-中文：
+In Chinese:
 
 > **Cage 是一个面向游戏研发的配置编译与验证框架，将异构的配置源转换为经过验证、确定性构建的运行时配置资产。**
 
-## 核心设计原则
+## Core Design Principles
 
-1. 不绑定 Excel
-2. Source 与 Target 解耦
-3. 所有输入进入统一 Canonical Model
-4. Validation 与 Transformation 分离
-5. Schema 负责结构
-6. Reference 负责跨配置关系
-7. Semantic Rule 负责组合逻辑
-8. Plugin Validator 负责复杂游戏业务
-9. Target Generator 负责输出
-10. Build 必须可重复
-11. Artifact 必须可追踪
-12. Diagnostics 必须精确到 Source Location
-13. Client / Server 使用 Profile，而不是硬编码
-14. Core 不绑定具体游戏引擎
-15. Excel 只是第一种 Source
+1. Do not bind to Excel
+2. Decouple Source and Target
+3. All input enters one unified Canonical Model
+4. Separate Validation and Transformation
+5. Schema owns structure
+6. Reference owns cross-configuration relationships
+7. Semantic Rules own composition logic
+8. Plugin Validators own complex game business rules
+9. Target Generators own output
+10. Builds must be reproducible
+11. Artifacts must be traceable
+12. Diagnostics must be precise down to the Source Location
+13. Client / Server use Profiles, not hardcoding
+14. The Core binds to no specific game engine
+15. Excel is just the first Source
 
-## 最终架构
+## Final Architecture
 
 ```mermaid
 flowchart TD
@@ -446,28 +441,24 @@ flowchart TD
     S1 & S2 & S3 & S4 & SR & P1 & P2 --> IR
     IR[Canonical IR] --> VP["Validation Pipeline<br/>Parse · Schema · Type · Value · Table<br/>Reference · Semantic · Game Rules"]
     VP --> VM[Validated Model]
-    VM --> O1[JSON] & O2[CSV] & O3["代码绑定<br/>C# / Python / Lua / ..."] & O4[MsgPack] & O5["Proto / FlatBuffers 定义"]
+    VM --> O1[JSON] & O2[CSV] & O3["Code Bindings<br/>C# / Python / Lua / ..."] & O4[MsgPack] & O5["Proto / FlatBuffers Definitions"]
     O1 & O2 & O3 & O4 & O5 --> RA[Runtime Artifacts]
     RA --> MH["Manifest / Hash / CI"]
 ```
 
-二进制通用格式（`Binary`）仍为规划项，不在当前 `format =` 支持范围内
-（构建会以 `unsupported target format` 退出码 2 拒绝）；MsgPack 数据
-产物与 Protobuf（`.proto`）/ FlatBuffers（`.fbs`）定义生成已实装。
+The general-purpose binary format (`Binary`) is still a planned item and is not within the currently supported `format =` range (the build rejects it with `unsupported target format` and exit code 2); the MsgPack data artifact and Protobuf (`.proto`) / FlatBuffers (`.fbs`) definition generation are implemented.
 
-## Source 与 Target 之外的 Core
+## The Core Beyond Source and Target
 
-Cage 的核心抽象不是某一对格式之间的转换（`Excel → JSON`），而是中间这条链：
+Cage's core abstraction is not the conversion between one pair of formats (`Excel → JSON`) but the chain in the middle:
 
 ```mermaid
 flowchart TD
     A[Any Source] --> M[Canonical Model] --> V[Validate Everything] --> VM[Validated Model] --> T[Any Target]
 ```
 
-Excel、CSV、YAML、JSON、MySQL / PostgreSQL、HTTP API、Google Sheets
-只是 Source；JSON、CSV、MsgPack、C#、Python、Lua、C++、Go、Java、
-Protobuf Schema、JSON Schema、Template 只是已实装的 Target。
+Excel, CSV, YAML, JSON, MySQL / PostgreSQL, HTTP API, and Google Sheets are just Sources; JSON, CSV, MsgPack, C#, Python, Lua, C++, Go, Java, Protobuf Schema, JSON Schema, and Template are just the already-implemented Targets.
 
-真正属于 Cage Core 的，是中间这部分：
+What truly belongs to the Cage Core is this middle part:
 
 > **Schema + Canonical Model + Reference Graph + Validation Pipeline + Semantic Rules + Deterministic Build**

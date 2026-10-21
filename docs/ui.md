@@ -1,117 +1,134 @@
 
-# UI 门面：Web 增强（设计拍板与路线）
+# UI Facade: Web Enhancement (Decisions and Roadmap)
 
-用户反馈：cage 用起来体感不好，想要界面。本篇拍板四件事：形态选型、
-界面覆盖面、变更可视化口径、双端差异表达。定位不变（web.md）：Web UI
-是**同一核心的另一个门面**，前端不复制任何规则语义；零新依赖、单二进制、
-无 node 编辑器链路三条纪律全部延续。
+User feedback: cage does not feel good to use, and people want a UI. This document settles
+four things: the form-factor choice, interface coverage, the change-visualization policy,
+and how dual-end differences are expressed. The positioning is unchanged (`web.md`): the
+Web UI is **another facade over the same core**, and the frontend duplicates no rule
+semantics; the three disciplines — zero new dependencies, single binary, no node editor
+toolchain — all carry forward.
 
-## 实测基线（2026-10-12 拍板时点）
+## Measured Baseline (at the 2026-10-12 Decision)
 
-- release exe **10.6 MiB**（lto + strip + opt-level=z）。
-- 编辑器页 48 KB（index.html 2.0 / app.js 37.6 / app.css 8.4 KB），
-  `include_str!` 编译期嵌入（web.rs），单二进制自带界面。
-- 现有 HTTP 面共 6 条：`GET /`、`/app.js`、`/app.css`、
-  `GET /api/schema`、`POST /api/validate`、`POST /api/schema`；
-  仅绑 `127.0.0.1`，无鉴权（本地工具定位）。
-- manifest 哈希双层：`table_hashes` 逐表 blake3 行指纹 → 逐目标规范
-  指纹（按 `(format, output_dir)` 排序）→ 逐文件 hash → 根
-  `content_hash`；`build_id = blake3(profile + schema_hash +
-  source_hash + content_hash)`（输入含 profile）。
-- 增量构建已经消费这层哈希：`prev/cur table_hashes` 逐表比对 +
-  依赖图传播决定跳过集（main.rs）。
-- `cage diff` 现状：两份 manifest 的 `artifacts` 平面对比
-  （`+/-/~` + 计数 + `content_hash` 行）；schema 级 diff 另有
-  `migrate::diff_schemas`。
+- release exe **10.6 MiB** (lto + strip + opt-level=z).
+- editor page 48 KB (index.html 2.0 / app.js 37.6 / app.css 8.4 KB), embedded at compile
+  time via `include_str!` (web.rs), so the single binary carries its own UI.
+- the existing HTTP surface has 6 routes: `GET /`, `/app.js`, `/app.css`,
+  `GET /api/schema`, `POST /api/validate`, `POST /api/schema`; bound to `127.0.0.1`
+  only, no authentication (positioned as a local tool).
+- manifest hashing is two-tier: `table_hashes` as a per-table blake3 row fingerprint → a
+  per-target canonical fingerprint (sorted by `(format, output_dir)`) → a per-file hash →
+  the root `content_hash`; `build_id = blake3(profile + schema_hash + source_hash +
+  content_hash)` (profile is part of the input).
+- incremental builds already consume this hash layer: `prev/cur table_hashes` compared
+  table by table + dependency-graph propagation decides the skip set (main.rs).
+- `cage diff` today: a flat comparison of the `artifacts` from two manifests
+  (`+/-/~` + counts + a `content_hash` line); schema-level diff is handled separately
+  by `migrate::diff_schemas`.
 
-## 形态拍板：c（现有 web 增强）并吸收 d，a / b 转备选
+## Form Factor: Decision c (Enhance the Existing Web), Absorbing d, a / b Demoted to Alternatives
 
-| 维度 | a) Tauri 桌面壳 | b) 纯 Rust GUI（egui/iced） | c) cage web 增强 | d) 纯 CLI 打磨 |
+| Dimension | a) Tauri desktop shell | b) pure Rust GUI (egui/iced) | c) enhance cage web | d) polish the CLI only |
 |---|---|---|---|---|
-| 包体 | 壳再增 ~8–15 MB（估，系统 WebView） | 增 ~10–20 MB（估，GUI 栈进 exe） | 嵌入字符串 + 薄 JSON API，约 ±0.3 MB，整体仍 ~11 MiB | 不变 |
-| 发布渠道 / 打包 | NSIS/MSI 或便携 exe；Linux 无法交叉产出 Tauri exe，**必须上 Windows runner 打包**，nightly zip 结构要改 | Linux 交叉出 MSVC exe 需新工具链（cargo-xwin 一类），CI 新增面大 | **完全不变**：同一 exe、同一 nightly zip + SHA256SUMS、install.sh/ps1 原样 | 不变 |
-| cage-core 复用 | 进程内直连 | 进程内直连 | 进程内直连（W2 交换模型已通） | 直连 |
-| 脱离终端 | 桌面窗口 | 可以 | 浏览器——且天然跨机器：Linux 服务器跑 `cage web`，Windows 浏览器打开 | 不能 |
-| 维护成本 | 高：巨型依赖树（破零新依赖）+ WebView2/webkit2gtk 双端怪癖 + 打包流水线 | 高：富数据视图（表格 / 树 / diff）在 immediate-mode 全是手写 | **最低**：vanilla JS 无构建链，全部复用 W1–W4 存量 | 最低，但不解决「要界面」 |
+| Size | shell adds ~8–15 MB more (estimated, system WebView) | adds ~10–20 MB (estimated, GUI stack goes into the exe) | embedded strings + a thin JSON API, about ±0.3 MB, still ~11 MiB overall | unchanged |
+| Distribution / packaging | NSIS/MSI or a portable exe; Linux cannot cross-build a Tauri exe, so **packaging must move to a Windows runner**, and the nightly zip layout would have to change | cross-building an MSVC exe on Linux needs a new toolchain (something like cargo-xwin), a large new CI surface | **completely unchanged**: same exe, same nightly zip + SHA256SUMS, install.sh/ps1 as-is | unchanged |
+| cage-core reuse | in-process direct calls | in-process direct calls | in-process direct calls (the W2 exchange model already works) | direct calls |
+| Escaping the terminal | desktop window | possible | the browser — and naturally cross-machine: `cage web` runs on a Linux server, opened from a Windows browser | not possible |
+| Maintenance cost | high: a giant dependency tree (breaks zero new dependencies) + WebView2/webkit2gtk quirks on both ends + a packaging pipeline | high: rich data views (tables / trees / diffs) are all hand-rolled in immediate mode | **lowest**: vanilla JS with no build chain, reusing all of the existing W1–W4 assets | lowest, but it does not address the "want a UI" request |
 
-**定了什么**：界面形态 = 方向 c——增强现有 `cage web`（W2 本地服务 +
-W3 编辑器页的直接延伸），把 manifest / 产物 / snapshot / registry /
-diff 这些**既有数据**接上门面；方向 d 不单独立项，作为纪律吸收（见
-「d 的吸收口径」）。主要使用拓扑是 Linux 服务器（跑构建）+ Windows
-客户端（看结果、改数据），产物必须能出 exe。
+**What was decided**: the UI form factor is direction c — enhance the existing `cage web`
+(a direct extension of the W2 local server + W3 editor page), plugging the
+**already-existing data** — manifest / artifacts / snapshot / registry / diff — into the
+facade; direction d is not a separate project but is absorbed as a discipline (see
+"Absorbing d"). The primary usage topology is a Linux server (running builds) + a Windows
+client (viewing results, editing data), and the artifact must still ship as an exe.
 
-**为什么**：① 拓扑匹配——浏览器是唯一零打包成本横跨「无头服务器 +
-Windows 桌面」的面，桌面壳在服务器上开不了窗口；② 可发版——产物仍
-是那一个 exe，nightly 滚动通道照常带出去（每日构建属正常交付面），
-不触碰版本发布红线，CI 不加 Windows 打包面；③ 存量最高——W1 交换
-模型、W2 本地服务、W3 编辑器、`/api/schema`、`POST /api/validate`、
-E1701/E1004 全部已在，缺的只是门面面积，不是地基。
+**Why**: ① topology fit — the browser is the only surface that spans "headless server +
+Windows desktop" at zero packaging cost, and a desktop shell cannot open a window on a
+server; ② releaseable — the artifact is still that one exe, and the nightly rolling channel
+carries it out as before (a daily build is a normal delivery surface), without touching the
+version-release red line and without adding a Windows packaging surface to CI; ③ highest
+reuse — the W1 exchange model, W2 local server, W3 editor, `/api/schema`,
+`POST /api/validate`, E1701/E1004 are all already in place; what is missing is only facade
+area, not foundations.
 
-**备选**：a) Tauri 壳（复用最多 UI 资产但代价是整条打包流水线 +
-依赖树爆炸，且服务器场景无效）；b) egui/iced 单二进制 GUI（依赖树
-可控些但富数据视图全手写、工作最大，同样在无头服务器上是死路）——
-两者转备选不实现。
+**Alternatives**: a) a Tauri shell (reuses the most UI assets, but at the cost of an entire
+packaging pipeline + a dependency-tree explosion, and it is useless in the server
+scenario); b) an egui/iced single-binary GUI (the dependency tree is somewhat more
+controllable, but all rich data views are hand-rolled — the largest amount of work — and
+it is equally a dead end on a headless server) — both are demoted to alternatives and are
+not implemented.
 
-**边界**：不做游戏逻辑框架（红线不变）；不做多用户 / 远程团队协作
-（web 是单机本地工具）；不做编辑器之外的独立前端构建链（vanilla
-ES module 纪律不变，仍编译期嵌入）。
+**Boundaries**: no game-logic framework (the red line is unchanged); no multi-user /
+remote-team collaboration (the web UI is a single-machine local tool); no standalone
+frontend build chain beyond the editor (the vanilla ES module discipline is unchanged,
+still embedded at compile time).
 
-**卡点条件（a/b 重议的唯一理由）**：出现「必须脱离浏览器」的真实
-使用场景（完全离线桌面环境、无浏览器可用），或界面面积大到嵌入
-字符串不可维护时，重启形态评估。
+**Sticking-point condition (the only reason to reopen a/b)**: a real usage scenario arises
+where you "must escape the browser" (a fully offline desktop environment, no browser
+available), or the UI grows so large that embedded strings become unmaintainable — then
+restart the form-factor evaluation.
 
-**远程访问口径（拍板）**：保持仅绑 `127.0.0.1`、无鉴权**不动**；
-服务器 → Windows 客户端的远程场景走 SSH 端口转发（文档写清用法即
-可）。`--bind` / 局域网暴露必须先有鉴权（registry 已有 `--auth-env`
-先例可循），登记为卡点条件，本期不做——本地无鉴权服务暴露到局域网
-是安全倒退，不为便利破例。
+**Remote access policy (decided)**: keep binding to `127.0.0.1` only with no
+authentication — **untouched**. The server → Windows client remote scenario uses SSH port
+forwarding (documenting the usage is enough). `--bind` / LAN exposure must have
+authentication first (the registry already has the `--auth-env` precedent to follow); it is
+registered as a sticking-point condition and is not done this phase — exposing an
+unauthenticated local service onto a LAN is a security regression, and no exception is made
+for convenience.
 
-**d 的吸收口径（不单独立项）**：CLI 可读性本就是一等公民（E 码 +
-定位 + hint），吸收为两条纪律：① 新界面端点落地时，同参数语义同步
-CLI 输出（文本面与界面共用同一核心函数，单一入口纪律，同
-`validate_project` 先例）；② 任何增量触碰到的 CLI 输出，按
-「错误可读 + 汇总可读」标准过一遍。唯一显式交付：U3 落地时
-`cage diff` 文本输出同步获得分层摘要（见变更可视化节）。
+**How d is absorbed (not a separate project)**: CLI readability was already a first-class
+citizen (E codes + location + hints), and it is absorbed as two disciplines: ① when a new
+UI endpoint lands, the same parameter semantics are reflected in the CLI output (the text
+surface and the UI share the same core function — the single-entry discipline, same as the
+`validate_project` precedent); ② any CLI output an increment touches is re-reviewed
+against the "errors are readable + summary is readable" standard. The one explicit
+deliverable: when U3 lands, the `cage diff` text output also gets the layered summary
+(see the change-visualization section).
 
-## 界面覆盖面（P0 → P1 → P2）
+## Interface Coverage (P0 → P1 → P2)
 
-端点纪律：每个新面 = 一个薄 JSON 端点 + 前端接线。端点全部是对
-cage-core 既有函数的直调，延续 W2 交换模型；服务端不持状态，每请求
-重载落盘现状（与 `/api/schema` 一致）。前端不新增构建链，仍是
-`docs/public/editor/` 单页扩展或平级静态页，编译期嵌入。
+Endpoint discipline: every new surface = one thin JSON endpoint + frontend wiring. Every
+endpoint is a direct call into an existing cage-core function, continuing the W2 exchange
+model; the server holds no state and reloads the on-disk state on every request (same as
+`/api/schema`). The frontend adds no build chain — it remains an extension of the
+`docs/public/editor/` single page or a sibling static page, embedded at compile time.
 
-### P0（第一批，全是现成数据接线）
+### P0 (First Batch, All Wiring of Existing Data)
 
-- **项目与构建状态**：profile 列表、校验状态（与 `check` 共用
-  `validate_project` 单一入口，界面诊断与 CI 诊断永不分歧）、构建
-  新鲜度（当前源 `table_hashes` vs 上次 manifest 里的旧值——增量
-  构建本来就在比对的数字，直接告诉用户「哪几张表改过还没重建」）、
-  最近一次构建事实（profile、build_id、content_hash、target 数）。
-- **校验面板**：诊断表（code / 严重级 / 文件-Sheet-单元格定位 /
-  hint），数据源 `POST /api/validate`，与 LSP / CLI 三处消费同一份
-  `Diagnostics`。
+- **Project and build status**: profile list, validation status (shares the
+  `validate_project` single entry with `check`, so UI diagnostics and CI diagnostics never
+  diverge), build freshness (current source `table_hashes` vs the old values in the last
+  manifest — the very numbers incremental builds already compare, telling the user directly
+  "which tables changed and have not been rebuilt yet"), and the last build facts (profile,
+  build_id, content_hash, target count).
+- **Validation panel**: a diagnostics table (code / severity / file-Sheet-cell location /
+  hint), sourced from `POST /api/validate`, and consumed in three places — LSP, CLI, and
+  here — from the same `Diagnostics`.
 
-### P1（第二批）
+### P1 (Second Batch)
 
-- **profile × target 产物浏览**：profile 选择器 → target 列表 →
-  `manifest.artifacts` 树（每文件 hash / 大小 / 在线预览 / 下载）；
-  按 `output_dir` 分组即天然按 profile 分层（build/client/*、
-  build/server/*）。
-- **schema 编辑器补齐**：现有 W3 编辑器挂载 E1701/E1004 诊断已通，
-  补字段级 `targets` 徽标等双端可见性表达（见下文专节）。
+- **profile × target artifact browsing**: a profile selector → target list → the
+  `manifest.artifacts` tree (per-file hash / size / online preview / download); grouping by
+  `output_dir` naturally layers by profile (build/client/*, build/server/*).
+- **schema editor completion**: the existing W3 editor already mounts E1701/E1004
+  diagnostics; add the field-level `targets` badge and the rest of the dual-end visibility
+  expressions (see the dedicated section below).
 
-### P2（第三批，口径先行、随增量落地）
+### P2 (Third Batch, Policy First, Landing with Each Increment)
 
-- **快照**：列（历史 snapshot 目录）/ 验（`snapshot --verify` 同款
-  核心调用）/ 打包三动作。（U3 已实装）
-- **registry 条目浏览**：本地与远程条目列表（远程 list 已落地），
-  版本、依赖 pin、哈希可见。（U3 已实装）
-- **diff 与变更可视化**：语义分层 diff（下文专节）。（U3 已实装）
+- **Snapshots**: three actions — list (the historical snapshot directory), verify (the
+  same core call as `snapshot --verify`), and package. (implemented in U3)
+- **registry entry browsing**: lists of local and remote entries (the remote list has
+  already landed), with version, dependency pin, and hash visible. (implemented in U3)
+- **diff and change visualization**: the semantic layered diff (dedicated section below).
+  (implemented in U3)
 
-## 变更可视化：不做 Merkle，做语义分层 diff
+## Change Visualization: No Merkle, a Semantic Layered Diff
 
-**定了什么**：diff 的语义呈现分三层，数据全部来自现有 manifest，
-**零格式变更、零哈希重定义**。diff API 返回：
+**What was decided**: the semantic presentation of a diff has three layers, all data
+coming from the existing manifest, with **zero format changes and zero hash
+redefinitions**. The diff API returns:
 
 ```json
 {
@@ -122,231 +139,277 @@ cage-core 既有函数的直调，延续 W2 交换模型；服务端不持状态
 }
 ```
 
-界面按 **表 → target → 文件** 三层折叠：改了哪些表 → 波及哪些
-target → 落到哪些文件。`changed_tables` = 两份 manifest 的
-`table_hashes` 逐表比对；`affected_targets` = 变更表过依赖图传播
-（增量构建同款逻辑）；`files` = 现有 run_diff 的平面结果挂在对应
-子树下。文本面同步：`cage diff` 获得分层摘要输出（表 / target 行
-+ 文件清单），与界面共用同一语义 diff 函数（单一入口）。
+The UI collapses along three layers of **table → target → file**: which tables changed →
+which targets are affected → which files are touched. `changed_tables` = a table-by-table
+comparison of the two manifests' `table_hashes`; `affected_targets` = changed tables
+propagated through the dependency graph (the same logic as incremental builds); `files` =
+the existing run_diff's flat result hung under the corresponding subtree. The text surface
+is in sync: `cage diff` gains a layered summary output (table / target lines + a file
+list), sharing the same semantic diff function as the UI (single entry).
 
-**为什么**：现状 `cage diff` 是平面文件清单，「哪一部分变了」要
-用户自己从路径里读。但 `table_hashes` **已经逐表在手**，语义分层
-只差一次比对 + 一次依赖图传播 + 一次 join——全部是展示层工作，
-不碰任何承重结构。
+**Why**: today's `cage diff` is a flat file list, so "which part changed" has to be read
+out of the paths by the user. But `table_hashes` **are already in hand per table**, so
+semantic layering only needs one comparison + one dependency-graph propagation + one join —
+all display-layer work, touching no load-bearing structure.
 
-**备选（否决）：Merkle 化**——补内部节点摘要，让 diff 走不同根的
-最小子树。否决理由：① manifest 根（`content_hash` / `build_id`）
-是**承重墙**——确定性构建、registry 版本 pin、snapshot verify、
-增量缓存全部挂在上面，重定义 = 全量缓存失效 + 旧 pin 断裂；② 本地
-diff 两份 manifest 都在盘上，本来就要 O(manifest) 全扫，Merkle
-剪枝**不省本地任何工作**——它的收益只在「远程只拉变化子树」的增量
-同步场景，本仓没有这个场景。
+**Alternative (rejected): Merkle-ization** — add interior node digests so diff walks the
+minimal subtrees that differ. Rejection reasons: ① the manifest root
+(`content_hash` / `build_id`) is a **load-bearing wall** — deterministic builds, registry
+version pins, snapshot verification, and incremental caching all hang on it, so redefining
+it = total cache invalidation + old pins breaking; ② in a local diff both manifests are
+already on disk and must be scanned O(manifest) anyway, so Merkle pruning **saves no local
+work at all** — its benefit only exists in a "pull only the changed subtree from a remote"
+incremental-sync scenario, which this repository does not have.
 
-**边界**：不做 manifest 格式版本化迁移（不改格式就没有迁移）；
-diff 语义层只回答「哪里变了」，不回答「内容怎么变了」（逐字段值级
-diff 是新能力面，留待需要时单独立项，schema 级已有
-`diff_schemas` 可循）。
+**Boundaries**: no versioned manifest format migration (no format change, so no migration);
+the semantic layer of diff answers only "where it changed", not "how the content changed"
+(a per-field value-level diff is a new capability surface, to be a separate project when
+needed — the schema level already has `diff_schemas` to follow).
 
-**卡点条件（重议 Merkle 的唯一理由）**：出现「消费者只向远程
-registry / snapshot 拉取变化子树」的增量同步需求时重议。
+**Sticking-point condition (the only reason to reopen Merkle)**: reopen it if an
+incremental-sync need emerges where "a consumer pulls only the changed subtree from a
+remote registry / snapshot".
 
-## 双端差异的表达（profile × target × 字段可见性）
+## Expressing Dual-End Differences (profile × target × Field Visibility)
 
-事实基础：profile 决定 target 列表与 `output_dir`（build/client/*、
-build/server/*）；表级与字段级 `targets`（schema）经
-`filter_by_profile` 把字段从该 profile 的 schema 与**全部产物**里
-剔除（示例工程 server-only 字段 `internal_note` 即是）；`build_id`
-输入含 profile。
+Factual basis: a profile determines the target list and `output_dir` (build/client/*,
+build/server/*); table-level and field-level `targets` (in the schema) cause
+`filter_by_profile` to strip fields from that profile's schema and from **all artifacts**
+(the example project's server-only field `internal_note` is exactly this); `build_id`
+inputs include profile.
 
-界面表达四条：
+Four UI expressions:
 
-- **产物归属**：manifest 自带 profile 与 build_id，产物浏览器按
-  `output_dir` 分组 + 全局 profile 徽标——任何视图都标着「这是
-  哪一端的产物」。
-- **字段可见性徽标**：`field.targets` / `table.targets` 非空即在
-  编辑器与浏览视图渲染徽标（`internal_note` → 「server only」），
-  数据源就是 schema 本身，无新状态。（U2b 已实装）
-- **profile 作用域视图**：`GET /api/schema?profile=` 出投影版
-  schema（`filter_by_profile` 现成函数直调）；被剔除字段显示
-  「本 profile 不可见」而非消失——藏起来的东西要看得见被藏了。
-  （U2b 已实装）
-- **跨端对照（P2）**：选一张表 → client / server 两列矩阵，字段行
-  「仅 server」「仅 client」「两端可见」三态；产物侧同表并排，
-  server 多出的字段就是可见性剔除的镜像。
+- **Artifact ownership**: the manifest carries profile and build_id, and the artifact
+  browser groups by `output_dir` + a global profile badge — every view is labeled as
+  "which end's artifact this is".
+- **Field-visibility badges**: whenever `field.targets` / `table.targets` is non-empty,
+  render a badge in the editor and browsing views (`internal_note` → "server only"); the
+  data source is the schema itself, with no new state. (implemented in U2b)
+- **profile-scoped view**: `GET /api/schema?profile=` returns a projected schema (a direct
+  call to the off-the-shelf `filter_by_profile` function); stripped fields show "not
+  visible in this profile" instead of disappearing — things that are hidden must be
+  visibly hidden. (implemented in U2b)
+- **Cross-end comparison (P2)**: pick a table → a client / server two-column matrix, with
+  field rows in three states: "server only", "client only", "visible on both ends"; the
+  artifacts side shows the same table side by side, and the extra fields on the server are
+  the mirror image of the visibility stripping.
 
-## 路线图
+## Roadmap
 
-- [x] **U1（P0）**：项目与构建状态 + 校验面板（状态端点 + 前端接线）
-      —— **2026-10-12 已实装**，落地记录：
-      `GET /api/status`（三块一文档：项目事实 / 校验面板 / 每 profile
-      构建事实）+ `POST /api/build`（与 `cage build` 同一
-      `build_project` 入口）+ `/status/` 状态页（校验面板 + 构建卡片，
-      编译期嵌入，vanilla ES module 零依赖）。**口径精化两处**：
-      ① freshness = `build_project` 第一层比对的「报告版」——同
-      profile、同环境、同 schema/source/target 指纹、产物完整，外加
-      `changed_tables`（第二层逐表 `table_hashes` 比对）告诉用户哪几张
-      表改了还没重建；manifest 单槽（`<output_dir>/manifest.json` 一次
-      记一个 profile），`last_build_profile` 标明归属，跨 profile 的
-      fresh 直接为 false。② 校验面板经 `validate_project` 单一入口
-      （check / lsp 同源），页面带 `?profile=&env=&level=` 三个旋钮，
-      默认值与 `cage check` 一致（首个 profile、semantic、无环境）。
-      裸 `/status` 301 到 `/status/`——相对资源引用不会撞编辑器的
-      /app.js。验收：web.rs 单测 6 项 + tests/web.rs 集成 3 项 +
-      web-smoke 第 5 步（真实服务：页面 → fresh → up-to-date）。
-- [x] **U2a（P1）产物浏览**：`/api/artifacts`（manifest 账本，单槽跨
-      profile 返回空清单 + `manifest_profile`，stale 复用第一层判语）+
-      `/api/artifact`（只认 manifest 键 + 伺服前重算 blake3，篡改 409、
-      非账本 404）+ 状态页「产物」区（按 output_dir 分组、预览/下载）。
-      验收：web.rs 单测 3 项 + tests/web.rs 集成 1 项（列表 → 逐字节
-      伺服 → 404 → 409）+ web-smoke 第 5 步产物断言
-- [x] **U2b（P1）编辑器 targets 徽标 + profile 作用域视图**：
-      `GET /api/schema?profile=` 附 `filter_by_profile` 投影（未知
-      profile 400）；前端只做集合差，可见性语义零复制进 JS；targets
-      非空即渲染徽标（左栏 / 字段行 / 表标题），被剔除项灰显 +
-      「本 profile 不可见」而非消失；未保存改动时投影提示语标注
-      「按已保存 schema 投影」。验收：web.rs 单测 +2 + 集成 1 项 +
-      web-smoke 第 7 步（game-config `internal_note` 三态断言）
-- [x] **U3（P2）快照列/验/打包 + registry 条目浏览 + 分层 diff**：
-      —— **2026-10-12 已实装**，落地记录：
-      ① `GET /api/snapshots`（列 `<output_dir>/snapshot/` 全部包，
-      每包**现场** `verify_snapshot`——列表绝不宣称它没刚验过的包是
-      完好的；附 manifest 事实：profile / env / build_id /
-      content_hash / 产物数）+ `POST /api/snapshot`（与 `cage snapshot`
-      同一管线：完整 build → pack_snapshot；校验失败 200 + 诊断，
-      Io 400）+ 状态页「快照」区（verified 徽标 + 事实 chips + 打包钮）。
-      ② `GET /api/diff?from=&to=`（两个 manifest 的语义分层 diff，
-      形态即拍板原文：`changed_tables` / `affected_targets` /
-      `files:{added,removed,changed:[path,table,target,from_hash,to_hash]}`
-      / `roots:{content_hash,build_id}`；table/target 元数据随文件条目
-      走，界面三层折叠就是纯分组，无新计算）+ 状态页「对比」区
-      （基线/目标旋钮含 live 构建与各快照，表 → target → 文件三层
-      折叠，逐字节一致出「两次构建逐字节一致」）。
-      ③ `GET /api/registry`（读 `[registry] path`，未配置出 ok + 说明
-      而非报错；每版本 build_id / content_hash / files chips）+ 状态页
-      「Registry」区。④ CLI：`cage snapshot --list`（列包 + 每包自验
-      判语；与 `--verify`/`--env` clap 冲突）、`cage diff` 增
-      「tables changed / targets affected」分层摘要两行。**Merkle 化
-      卡点维持原判**：出现「只拉变化子树」的增量同步需求前不做。
-      验收：web.rs 单测 +3（快照打包/列表/坏体、diff 分层与 400、
-      registry 浏览与未配置）+ `cage snapshot` CLI 测试 5 项（含
-      --list 列包与篡改判语、describe 冲突断言）+ 集成 1 项
-      （registry 未配置 → 打包 → 列表自验 → 跨快照 diff → ghost 400
-      端到端）+ web-smoke 第 5 步（真实服务：打包 → 自验 → 零差异
-      diff → registry 空态）
+- [x] **U1 (P0)**: project and build status + validation panel (status endpoint + frontend
+      wiring) — **implemented 2026-10-12**, landing record:
+      `GET /api/status` (three blocks in one document: project facts / validation panel /
+      per-profile build facts) + `POST /api/build` (the same `build_project` entry as
+      `cage build`) + the `/status/` status page (validation panel + build cards, embedded
+      at compile time, vanilla ES module with zero dependencies). **Two policy refinements**:
+      ① freshness = the "reported version" of `build_project`'s first-layer comparison —
+      same profile, same environment, same schema/source/target fingerprints, complete
+      artifacts — plus `changed_tables` (the second layer's table-by-table `table_hashes`
+      comparison) telling the user which tables changed and have not been rebuilt yet; the
+      manifest is single-slot (`<output_dir>/manifest.json` records one profile at a time),
+      `last_build_profile` marks ownership, and freshness across profiles is false outright.
+      ② The validation panel goes through the `validate_project` single entry (same source
+      as check / lsp), and the page has three knobs, `?profile=&env=&level=`, with defaults
+      matching `cage check` (first profile, semantic, no environment). Bare `/status`
+      301-redirects to `/status/` — so relative resource references do not collide with the
+      editor's /app.js. Acceptance: 6 unit tests in web.rs + 3 integration tests in
+      tests/web.rs + step 5 of web-smoke (real server: page → fresh → up-to-date).
+- [x] **U2a (P1) artifact browsing**: `/api/artifacts` (the manifest ledger; across
+      profiles the single slot returns an empty list + `manifest_profile`, and staleness
+      reuses the first-layer verdict) + `/api/artifact` (accepts only manifest keys +
+      recomputes blake3 before serving; tampering gives 409, a non-ledger path gives 404) +
+      an "artifacts" area on the status page (grouped by output_dir, preview/download).
+      Acceptance: 3 unit tests in web.rs + 1 integration test in tests/web.rs (list →
+      byte-exact serving → 404 → 409) + the artifact assertions in step 5 of web-smoke
+- [x] **U2b (P1) editor targets badges + profile-scoped view**:
+      `GET /api/schema?profile=` returns a `filter_by_profile` projection (an unknown
+      profile gives 400); the frontend only takes set differences, with zero visibility
+      semantics copied into JS; non-empty targets always render a badge (left column /
+      field row / table title), stripped entries are grayed out with "not visible in this
+      profile" instead of disappearing; when there are unsaved edits the projection hint
+      says "projected from the saved schema". Acceptance: +2 unit tests in web.rs + 1
+      integration test + step 7 of web-smoke (the three-state assertion for game-config's
+      `internal_note`)
+- [x] **U3 (P2) snapshot list/verify/package + registry entry browsing + layered diff** —
+      **implemented 2026-10-12**, landing record:
+      ① `GET /api/snapshots` (lists every package under `<output_dir>/snapshot/`, each
+      package **live-verified** by `verify_snapshot` — the list never claims a package it
+      has not just verified is intact; plus manifest facts: profile / env / build_id /
+      content_hash / artifact count) + `POST /api/snapshot` (the same pipeline as
+      `cage snapshot`: full build → pack_snapshot; validation failure gives 200 +
+      diagnostics, Io gives 400) + a "snapshots" area on the status page (verified badge +
+      fact chips + a package button).
+      ② `GET /api/diff?from=&to=` (the semantic layered diff of two manifests, in exactly
+      the shape decided above: `changed_tables` / `affected_targets` /
+      `files:{added,removed,changed:[path,table,target,from_hash,to_hash]}` /
+      `roots:{content_hash,build_id}`; table/target metadata travels with each file entry,
+      so the UI's three-layer collapse is pure grouping with no new computation) + a
+      "compare" area on the status page (baseline/target knobs covering the live build and
+      each snapshot, a three-layer table → target → file collapse, and a "the two builds
+      are byte-identical" message when hashes match).
+      ③ `GET /api/registry` (reads the `[registry] path`; when unconfigured it returns ok +
+      an explanation rather than an error; per-version build_id / content_hash / files
+      chips) + a "Registry" area on the status page.
+      ④ CLI: `cage snapshot --list` (lists packages + a self-verification verdict for each;
+      clap-conflicts with `--verify`/`--env`), and `cage diff` gains two layered-summary
+      lines, "tables changed / targets affected". **The Merkle sticking point stands**:
+      not done until a "pull only the changed subtree" incremental-sync need appears.
+      Acceptance: +3 unit tests in web.rs (snapshot packaging/listing/bad body, diff
+      layering and 400, registry browsing and unconfigured) + 5 CLI tests for
+      `cage snapshot` (including --list package listing and a tampering verdict, plus
+      describe-conflict assertions) + 1 integration test (registry unconfigured → package
+      → list self-verify → cross-snapshot diff → ghost 400 end to end) + step 5 of
+      web-smoke (real server: package → self-verify → zero-diff → registry empty state)
 
-每项落地后在本节追加落地记录（惯例同 design.md）：实装面、口径
-精化、验收方式。
+After each item lands, append a landing record to this section (the convention follows
+`docs/design.md`): the implemented surface, policy refinements, and acceptance method.
 
-## 策划规则界面（2026-10-20 用户令：先设计后推进）
+## Planner Rule Interface (2026-10-20 user directive: design first, then build)
 
-> 令：策划配置规则没有界面很痛苦。定位见 todo「规则配置界面」块：
-> 策划不碰 CLI/文件也能配规则、跑校验、看结果，复用既有资产
-> （Diagnostics 定位 → 表/行/列点位；错误码表 → 可读面板；单一解析
-> 口径不写两套）。本节是开工前的设计拍板。
+> The directive: planners configuring rules without any interface hurts. Positioning per the
+> "Rule Configuration Interface" block in todo: planners must be able to configure rules, run
+> validation and read results without touching the CLI or files, reusing existing assets
+> (Diagnostics locations → table/row/column anchoring; the error-code table → a readable panel;
+> one parsing convention, never two). This section is the design decision taken before any
+> implementation.
 
-**入口形态（已代决，2026-10-20）**：不做新的 `cage serve` 子命令，
-全部落 `cage web` 既有单服务。依据：形态拍板 c（上文）已定「增强
-现有 cage web」，且 W5–W8 已把项目级校验（`/api/status` 的
-validation 面自带 code/severity/定位/hint 诊断 JSON）、构建、产物、
-diff、registry 接上门面——另起子命令会分叉安全边界（loopback 校验、
-限长读、8 MiB 上限，2026-10-18 表一#2 硬化）与文档面。todo 里的
-`cage serve` 是排队时的示意命名，非用户原话。
+**Entry shape (decided 2026-10-20)**: no new `cage serve` subcommand — everything lands in
+the existing single `cage web` service. Basis: shape decision c (above) already settled
+"enhance the existing cage web", and W5–W8 have already brought project-level validation
+(the validation face of `/api/status` ships code/severity/location/hint diagnostics JSON),
+builds, artifacts, diff and registry to the facade — a separate subcommand would fork the
+security boundary (loopback checks, bounded reads, the 8 MiB cap; the 2026-10-18 表一#2
+hardening) and the docs surface. `cage serve` in the todo was the queuing seat's shorthand,
+not the user's own words.
 
-**P0 增量盘点（对照已实装面，防重复造）**：
+**P0 delta inventory (against the implemented surface, to avoid rebuilding)**:
 
-| todo 所述 | 现状 | 真实增量 |
+| todo wording | Current state | Real delta |
 |---|---|---|
-| 一键 validate | `/api/status` 已跑 `validate_project` 全量诊断 | 无新校验——呈现层改造 |
-| 诊断面板 | 状态页校验面板已有（code/严重级/定位/hint） | 过滤控件（错误码/严重级筛选） |
-| 点击跳表格行列 | 编辑器 `focusDiag` 只跳 schema 字段 | **数据表格视图**（现不显示数据行）+ 诊断 Source 定位（file/Sheet/Row/Col）→ 单元格映射高亮 |
-| 上传或选择文件 | 服务端只读仓内 `source_roots` | **选择**先做（仓内源文件清单）；**上传**后按已代决安全策略落地（2026-10-21，见下文上传落地记录：只写登记源文件、原子替换、校验不过即回滚） |
+| One-click validate | `/api/status` already runs full `validate_project` diagnostics | No new validation — presentation-layer work only |
+| Diagnostics panel | The status page panel exists (code/severity/location/hint) | Filter controls (by code/severity) |
+| Click to jump to table row/column | The editor's `focusDiag` only jumps to schema fields | A **data table view** (data rows are not displayed anywhere today) plus mapping diagnostic Source locations (file/Sheet/Row/Col) to highlighted cells |
+| Upload or select files | The server reads only in-repo `source_roots` | **Select** first (an inventory of the repo's source files); **upload** later landed under a delegated security policy (2026-10-21, see the upload landing record below: only the registered source file, atomic replacement, rollback when validation refuses) |
 
-**端点纪律不变**：新增面 = 薄 JSON 端点（`GET /api/tables` 列表 +
-`GET /api/table?name=` 行分页截断，直调 load 链既有函数）+ 前端
-接线；服务端不持状态；vanilla ES module 零构建链，编译期嵌入；
-诊断/校验单一入口（`validate_project`，check / lsp / web 三处同源
-的既有纪律）。
+**Endpoint discipline unchanged**: every new face = one thin JSON endpoint
+(`GET /api/tables` listing + `GET /api/table?name=` with paginated, truncated rows,
+calling the existing load-chain functions directly) + front-end wiring; the server stays
+stateless; vanilla ES module, zero build chain, compiled in at build time; validation stays
+single-entry (`validate_project`, the existing check / lsp / web same-source discipline).
 
-**分期**：
+**Phasing**:
 
-- **P0 数据面板**：表列表 → 表格视图（分页 + 行列上限，防大表撑爆
-  浏览器）→ 诊断过滤（错误码/严重级）→ 点击诊断跳表高亮单元格。
-- **P1 规则表单 + 一键导出**：规则编辑挂现有 W3 编辑器（表单化 =
-  编辑器交互增强，保存走既有 `POST /api/schema` 链，序列化由 cage
-  统一）；导出复用既有 `POST /api/build` + `/api/artifacts` 下载
-  （打包 zip 与否随实现拍，产物字节不重算）。
-- **P2 版本对比 + 模板库**：对比复用既有 `GET /api/diff` 分层
-  JSON；模板库 = 前端静态模板字典生成 schema 片段（数值范围/枚举/
-  外键引用起步），落库仍走 schema 保存链，服务端零新面。
+- **P0 data panel**: table list → table view (pagination + row/column caps so a large
+  table cannot blow up the browser) → diagnostics filters (code/severity) → click a
+  diagnostic to jump and highlight the cell.
+- **P1 rule forms + one-click export**: rule editing rides the existing W3 editor
+  (form-ization = editor interaction work; saving goes through the existing
+  `POST /api/schema` chain, serialization stays cage's); export reuses the existing
+  `POST /api/build` + `/api/artifacts` downloads (whether to also zip is decided at
+  implementation time; artifact bytes are never recomputed).
+- **P2 version compare + template library**: compare reuses the existing `GET /api/diff`
+  layered JSON; the template library is a front-end static template dictionary generating
+  schema fragments (numeric range / enum / foreign-key reference to start), saved through
+  the same schema save chain — zero new server surface.
 
-**验收口径**：每端点 web.rs 单测 + tests/web.rs 集成 + web-smoke
-增步（同 U 系列惯例）；表格视图有分页截断断言；诊断点位断言
-（坏数据 → 点击 → 高亮坐标）；上传按已代决策略实现，验收含拒绝回滚断言。
+**Acceptance**: per endpoint, web.rs unit tests + tests/web.rs integration + a web-smoke
+step (the U-series convention); the table view gets pagination/truncation assertions; the
+diagnostic anchoring gets a bad-data → click → highlighted-coordinate assertion; the
+upload lands with refusal-and-rollback assertions.
 
-**边界**：不做多用户/远程（远程仍走 SSH 端口转发，上文拍板）；
-上传仅按上文已代决策略（登记源文件整文件替换 + 校验回滚）；不做
-规则执行逻辑的新增——校验永远 `validate_project` 单一入口。
+**Boundary**: no multi-user/remote (remote access still goes through SSH port forwarding,
+per the decision above); uploads only under the delegated policy above (registered
+source file, whole-file replacement with validation rollback); no new rule
+execution logic — validation stays the `validate_project` single entry.
 
-**P0 落地记录（2026-10-20）**：数据面板已实装——`GET /api/tables` +
-`GET /api/table`（web.rs，行窗分页 200/上限 1000，主键取 schema 定义）；
-状态页「数据」区（表清单 + 粘性表头表格视图 + 分页）；诊断面板
-severity/错误码过滤与点击跳行高亮（jumpToDiag）。测试：web 单测
-+2（共 32 绿）+ 集成 +1（共 14 绿）+ web-smoke 第 5 步并入断言，
-全脚本实跑通过。记录面：docs/web.md W9。
+**P0 landing record (2026-10-20)**: the data panel is implemented —
+`GET /api/tables` + `GET /api/table` (web.rs; row window paginated at 200,
+capped at 1000; the primary key taken from the schema definition); the status
+page's "Data" section (table list + sticky-thead table view + pager); the
+diagnostics panel's severity/error-code filters and click-to-jump row highlight
+(jumpToDiag). Tests: +2 web unit tests (32 green total) + 1 integration test
+(14 green) + web-smoke step 5 assertions folded in, full script run passing.
+Recorded in docs/web.md W9.
 
-**上传落地记录（2026-10-21，已代决）**：原「上传暂缓待安全拍板」
-（2026-10-20）按常设授权解除——待拍板项采纳推荐方案执行并记录，
-用户可否决回退。五点安全策略，全部落地：
+**Upload landing record (2026-10-21, decided by delegation)**: the earlier
+deferral ("uploads wait for a security decision", 2026-10-20) is lifted
+under the standing delegation — pending decisions adopt the recommended
+option, get recorded, and stay vetoable. Five-point security policy, all
+implemented:
 
-1. **写路径范围**：只写该表登记的 `source_file`（`resolve_upload_target`
-   在 canonicalize 后双守卫：项目根内 + 至少一个 `source_roots` 内，
-   symlink 逃逸同拒）——不开任意路径；
-2. **覆盖**：整文件替换，前端二次确认；服务端 tmp + rename 原子落盘，
-   不落半文件；
-3. **大小上限**：沿用服务端既有 8 MiB 请求体上限，零新增；
-4. **映射与推断**：不做——文件名/表名/列名以仓内登记为准，上传字节
-   必须按该文件格式解析，多文件分片表直接拒绝（一行数据跨文件没法被
-   单文件替换不丢行）；
-5. **校验与回滚**：换入后走同一 `validate_project` 全量校验（check /
-   lsp / web 同源），有错误或装载失败即恢复原文件再应答——拒绝的
-   上传在磁盘上字节不落地。
+1. **Write-path scope**: only the table's registered `source_file`
+   (`resolve_upload_target` double-guards after canonicalization: inside
+   the project root AND inside at least one `source_roots`; symlink
+   escapes refused too) — no arbitrary paths;
+2. **Overwrite**: whole-file replacement with a front-end confirmation;
+   the server lands bytes via tmp + rename (atomic, never a half-written
+   file);
+3. **Size cap**: the existing 8 MiB request-body cap applies unchanged;
+4. **Mapping and inference**: none — file/table/column names are whatever
+   the repo registered, uploaded bytes must parse under that file's
+   format, and tables spanning several files are refused outright (their
+   rows cannot be replaced by one file without orphaning rows);
+5. **Validation and rollback**: after the swap, the same full
+   `validate_project` runs (check / lsp / web, one entry); errors or a
+   load failure restore the original file before responding — a refused
+   upload never leaves bytes on disk.
 
-端点 `POST /api/upload?name=NAME`（原始字节体），记录面 docs/web.md
-W12。测试：web 单测 +5（接受并落盘 / 坏数据拒绝原样恢复 / 不可解析
-拒绝 / ghost 与缺参 / 路径双守卫含 symlink 逃逸）+ 集成 +1（端到端
-替换、拒绝回滚、无 temp 残留）+ web-smoke 增第 8 块（真实上传往返）。
+Endpoint `POST /api/upload?name=NAME` (raw-byte body), recorded in
+docs/web.md W12. Tests: +5 web unit tests (accept and land / bad data
+refused with byte-identical restore / unparseable refused / ghost and
+missing name / double path guard incl. symlink escape) + 1 integration
+end to end (replace, refusal rollback, no temp litter) + web-smoke block
+8 (a real upload round trip).
 
-**P1 落地记录（2026-10-20，已代决）**：
+**P1 landing record (2026-10-20, decided by delegation)**:
 
-- **规则表单化编辑——盘点后判定大半已实装**：W3 编辑器本就是规则
-  表单（19 字段类型、min/max/pattern/allowlist 约束、references
-  引用完整性/跨表、expression 规则），保存走既有 `POST /api/schema`
-  canonical YAML 链（序列化由 cage 统一，界面不手写文件）。本轮补上
-  缺口「改动即时重校验」：顶栏「即时重校验」开关（默认开）+ 700ms
-  防抖静默重校验（只更新诊断面板不弹 toast，手动「校验」照旧）。
-- **一键导出——已代决「不新增 zip/打包端点」**：依据：产物字节
-  不重算 + 零新依赖（打包器要么引入 crate 要么手造协议面）+
-  `/api/artifact` 已有先验哈希后发的纪律。落地形态 = 状态页产物卡
-  「一键导出」钮：逐个触发 `/api/artifact` 下载（每文件各自验哈希）；
-  浏览器可能请求「允许下载多个文件」权限。批量分发需求由
-  `cage snapshot` 目录包承担（自校验、可独立载入），不在 web 重造。
-- 测试：集成断言（编辑器页含即时重校验开关与 `scheduleAutoValidate`、
-  状态页导出走 `/api/artifact`）+ `node --check` 两页脚本；web 单测
-  32 绿 / 集成 14 绿不变（P1 零服务端新面）。记录面：docs/web.md W10。
+- **Rule form editing — inventory verdict: mostly already implemented**.
+  The W3 editor IS the rule form (19 field types, min/max/pattern/allowlist
+  constraints, references for referential integrity / cross-table,
+  expression rules), saving through the existing `POST /api/schema`
+  canonical YAML chain (serialization stays with cage, the UI never writes
+  files by hand). This round closed the one gap, "re-validate on change":
+  an "immediate re-validation" toggle in the top bar (default on) plus a
+  700ms debounced silent re-validation (only refreshes the diagnostics
+  panel, no toast; the manual "Validate" button is unchanged).
+- **One-click export — decided: no new zip/packaging endpoint**. Rationale:
+  artifact bytes are never recomputed, zero new dependencies (a packager
+  means either a crate or a hand-rolled protocol surface), and
+  `/api/artifact` already serves hash-verified files. The landed form is an
+  "Export all" button on the status page's artifact cards: it triggers the
+  `/api/artifact` downloads one by one (each file hash-checked
+  individually); the browser may ask for "allow multiple downloads".
+  Bulk distribution stays with the `cage snapshot` directory package
+  (self-verifying, independently loadable) — not rebuilt in the web.
+- Tests: integration assertions (editor page carries the re-validation
+  toggle and `scheduleAutoValidate`; the status page export rides
+  `/api/artifact`) + `node --check` on both page scripts; web unit 32
+  green / integration 14 green unchanged (P1 adds zero server surface).
+  Recorded in docs/web.md W10.
 
-**P2 落地记录（2026-10-20，已代决）**：
+**P2 landing record (2026-10-20, decided by delegation)**:
 
-- **版本对比——盘点后大半已实装**：产物对比 = W8「对比」区（live ↔
-  任意快照，三层折叠，逐字节一致出判语，`GET /api/diff` 同源）。本轮
-  补「诊断对比」：**会话内**两次校验运行的新增/消失标记（摘要出
-  「较上次 新增 n / 消失 m」，新诊断带「新」徽标；同 profile+env+
-  level 才比对，构建失败换诊断也覆盖——正是「改数据 → 构建 → 看多了
-  什么错」主路径）。已代决**不做**跨快照历史诊断存储（需把诊断写进
-  快照包 = 新服务面+格式变更，无用户令；历史产物对比已由 W8 覆盖）。
-- **模板库——前端静态字典落地**：编辑器字段区「从模板加字段」下拉
-  （数值范围 Int+min/max / 枚举 Enum 引用 / 外键引用 reference），生成
-  字段草稿走既有 setPathRoot → 自动重校验 → 保存链，服务端零新面。
-- 测试：集成断言（编辑器 `FIELD_TEMPLATES` 与外键引用模板、状态页
-  `markDiagDiff` 与 `diag-new`）+ 两页脚本 `node --check`；P2 零服务端
-  新面。记录面：docs/web.md W11。至此策划界面五项全落地；
-  上传已于次日按已代决策略落地（见上文上传落地记录）。
+- **Compare — inventory verdict: mostly already implemented**. The
+  product diff is W8's "Compare" section (live ↔ any snapshot, three-level
+  collapsing, an exact-bytes verdict, same `GET /api/diff` source). This
+  round adds the **diagnostics diff**: markers for what a second validation
+  run in the same session added or removed (the summary shows
+  "vs last: +n / -m gone"; new diagnostics carry a "new" badge; runs are
+  compared only at the same profile+env+level, and a refused build
+  swapping diagnostics in is covered too — exactly the "change data →
+  build → what errors appeared" main path). Decided **against** storing
+  historical diagnostics per snapshot (that means writing diagnostics into
+  the snapshot package — new server surface plus a format change, no user
+  directive; the historical product comparison is already W8's).
+- **Template library — landed as a front-end static dictionary**: the
+  editor's field section gains a "add field from template" dropdown
+  (numeric range Int+min/max / enum reference / foreign-key reference);
+  a generated field draft flows through the existing setPathRoot →
+  auto-revalidate → save chain, zero new server surface.
+- Tests: integration assertions (the editor's `FIELD_TEMPLATES` and the
+  foreign-key template; the status page's `markDiagDiff` and `diag-new`) +
+  `node --check` on both page scripts; P2 adds zero server surface.
+  Recorded in docs/web.md W11. With this, all five planner-interface
+  items have landed; upload followed the next day under the delegated
+  policy (see the upload landing record above).

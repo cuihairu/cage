@@ -1,82 +1,92 @@
 
-# 游戏配置的生命周期
+# The Lifecycle of Game Configuration
 
-一条配置从策划改表到进游戏，中间只经过 **cage 的六个阶段**。每个阶段都有
-明确的状态流转，失败分支带着错误码回到上一个阶段——不存在"改完不知道
-对不对"的中间态。
+A piece of configuration passes through only **cage's six stages** on its way
+from a designer editing a table to the data entering the game. Every stage
+has explicit state transitions, and failure branches return to the previous
+stage carrying an error code — there is no in-between state of "edited, but
+no idea whether it is right".
 
-## 主流程图
+## Main Flow Diagram
 
 ```mermaid
 flowchart TD
-    S0["① 需求改表<br/>Excel / CSV / JSON / YAML"] --> S1["② cage check<br/>L0-L7 验证"]
-    S1 -->|通过| S2["③ 依赖 / registry 解析"]
-    S1 -->|"失败 E10xx–E16xx"| F1["诊断：错误码 + file:line + 建议"]
-    F1 -->|按建议修| S0
-    S2 --> S3["④ cage build / gen<br/>目标生成"]
-    S3 --> S4["⑤ 增量构建<br/>三层指纹"]
-    S4 --> S5["⑥ 进入游戏 / 服务"]
-    S5 --> S6["cage verify / snapshot<br/>产物校验"]
-    S6 -->|篡改 / 缺失| F2["拒绝加载，报账本差异"]
-    S6 -->|通过| S7["运行时消费"]
+    S0["① Edit tables<br/>Excel / CSV / JSON / YAML"] --> S1["② cage check<br/>L0-L7 validation"]
+    S1 -->|pass| S2["③ Dependency / registry resolution"]
+    S1 -->|"fail E10xx–E16xx"| F1["Diagnostics: error code + file:line + fix suggestion"]
+    F1 -->|fix per suggestion| S0
+    S2 --> S3["④ cage build / gen<br/>Target generation"]
+    S3 --> S4["⑤ Incremental build<br/>three-layer fingerprints"]
+    S4 --> S5["⑥ Enter game / service"]
+    S5 --> S6["cage verify / snapshot<br/>Artifact validation"]
+    S6 -->|tampered / missing| F2["Refuse to load, report ledger mismatch"]
+    S6 -->|pass| S7["Runtime consumption"]
 ```
 
-## 状态流转
+## State Transitions
 
 ```mermaid
 stateDiagram-v2
-    [*] --> 草稿
-    草稿 --> 校验失败: E10xx–E16xx
-    校验失败 --> 草稿: 按建议修
-    草稿 --> 就绪: check 通过
-    就绪 --> 已生成产物: build
-    已生成产物 --> 增量命中: 哈希一致
-    已生成产物 --> 已生成产物: 重生对应 target
-    增量命中 --> 运行时
-    已生成产物 --> 运行时
+    [*] --> Draft
+    Draft --> ValidationFailed: E10xx–E16xx
+    ValidationFailed --> Draft: fix per suggestion
+    Draft --> Ready: check passes
+    Ready --> ArtifactsGenerated: build
+    ArtifactsGenerated --> IncrementalHit: hashes match
+    ArtifactsGenerated --> ArtifactsGenerated: regenerate corresponding target
+    IncrementalHit --> Runtime
+    ArtifactsGenerated --> Runtime
 ```
 
-## 文字版要点
+## Key Points in Text Form
 
-1. **需求改表**：策划在 Excel / CSV / JSON / YAML 里改数据，或在
-   `schemas/*.yaml` 里改结构。这一步不经过 cage，是纯人工。
-2. **校验**：`cage check` 跑 L0 Parse → L7 Game Rule 八级流水线。失败
-   返回错误码（E10xx Schema / E11xx 类型 / E12xx 取值 / E13xx 表 /
-   E14xx 引用 / E15xx 语义 / E16xx 业务规则）+ 精确定位（文件 / Sheet /
-   单元格 / 字段 / 值）+ 修复建议。**改完先跑这一步**，不要直接构建。
-3. **依赖 / registry 解析**：`[dependencies]` 声明的 `registry:包@版本`
-   在此解析；远程 http(s) 根拉取并缓存，离线可用。
-4. **目标生成**：`cage build` / `cage gen` 按 profile 生成 JSON / CSV /
-   MessagePack / 代码绑定等产物，同时写 Build Manifest（schema_hash /
-   source_hash / content_hash / artifacts）。
-5. **增量构建**：`cage build --incremental` 按 manifest 三层指纹判断——
-   schema 变化回退全量，source 变化重生受影响产物，target 配置变化只
-   重生对应 target。校验仍全量执行。
-6. **进入游戏 / 服务**：`cage verify` 校验已生成产物（或
-   `cage snapshot` 打包的自校验快照），服务器启动前验证，篡改 / 增删
-   文件即暴露。
+1. **Edit tables**: designers change data in Excel / CSV / JSON / YAML, or
+   change the structure in `schemas/*.yaml`. This step does not go through
+   cage; it is purely manual.
+2. **Validation**: `cage check` runs the eight-level pipeline from L0 Parse →
+   L7 Game Rule. Failures return an error code (E10xx schema / E11xx types /
+   E12xx values / E13xx tables / E14xx references / E15xx semantics / E16xx
+   business rules) + a precise location (file / Sheet / cell / field / value)
+   + a fix suggestion. **Run this step first after editing**; do not build
+   directly.
+3. **Dependency / registry resolution**: the `registry:<package>@<version>` entries
+   declared under `[dependencies]` are resolved here; remote http(s) roots are
+   fetched and cached, and remain usable offline.
+4. **Target generation**: `cage build` / `cage gen` generate artifacts per
+   profile — JSON / CSV / MessagePack / code bindings and more — while
+   writing the Build Manifest (schema_hash / source_hash / content_hash /
+   artifacts).
+5. **Incremental build**: `cage build --incremental` decides from the
+   manifest's three fingerprint layers — a schema change falls back to a full
+   build, a source change regenerates the affected artifacts, and a target
+   configuration change regenerates only the corresponding target. Validation
+   still runs in full.
+6. **Enter game / service**: `cage verify` validates the generated artifacts
+   (or the self-verifying snapshot packaged by `cage snapshot`); verification
+   happens before the server starts, and tampering / added-or-removed files
+   are exposed immediately.
 
-## 子命令在生命周期中的位置
+## Where Subcommands Sit in the Lifecycle
 
-| 阶段 | 子命令 | 作用 |
+| Stage | Subcommand | Purpose |
 | --- | --- | --- |
-| ① 之前 | `cage init` | 起工程骨架（cage.toml + schema + 样例数据） |
-| ① 之前 | `cage schema-draft` | 从历史库内省起草 schema（只读 MySQL / PostgreSQL） |
-| ① → ② | `cage migrate` / `cage migrate-draft` | 按版本步进链迁移旧数据到当前 schema |
-| ② | `cage check` | 八级验证，结构化诊断 |
-| ③ | `cage registry` | 发布 / 列表 / 校验 / 清理 / 分发配置包 |
-| ④ | `cage build` / `cage gen` | 生成产物 / 代码绑定 |
-| ⑤ | `cage build --incremental` | 三层增量 |
-| ⑥ | `cage verify` / `cage snapshot` | 产物校验 / 自校验快照 |
-| 横切 | `cage mcp` | AI 助手：把 ②④⑤ 包成 MCP 工具 |
-| 横切 | `cage lsp` | IDE 诊断（stdio Language Server） |
-| 横切 | `cage inspect` / `cage diff` / `cage graph` | 结构查看 / 版本对比 / 依赖图 |
-| 横切 | `cage assets` | 资产清单与基线校验 |
-| 横切 | `cage web` | Schema 编辑器本地服务 |
+| Before ① | `cage init` | Scaffold a project skeleton (cage.toml + schema + sample data) |
+| Before ① | `cage schema-draft` | Draft a schema by introspecting a legacy database (read-only MySQL / PostgreSQL) |
+| ① → ② | `cage migrate` / `cage migrate-draft` | Migrate legacy data onto the current schema along the stepwise version chain |
+| ② | `cage check` | Eight-level validation with structured diagnostics |
+| ③ | `cage registry` | Publish / list / verify / clean up / distribute configuration packages |
+| ④ | `cage build` / `cage gen` | Generate artifacts / code bindings |
+| ⑤ | `cage build --incremental` | Three-layer incremental build |
+| ⑥ | `cage verify` / `cage snapshot` | Artifact validation / self-verifying snapshot |
+| Cross-cutting | `cage mcp` | AI assistant: wraps ② ④ ⑤ as MCP tools |
+| Cross-cutting | `cage lsp` | IDE diagnostics (stdio Language Server) |
+| Cross-cutting | `cage inspect` / `cage diff` / `cage graph` | Inspect structure / compare versions / dependency graph |
+| Cross-cutting | `cage assets` | Asset inventory and baseline validation |
+| Cross-cutting | `cage web` | Local service for the Schema editor |
 
-## 场景
+## Scenarios
 
-### 场景一：日常改表迭代
+### Scenario 1: Day-to-day table iteration
 
 ```bash
 cd examples/game-config
@@ -85,10 +95,10 @@ cage check . --env dev         # ② 校验
 cage build . --env dev         # ④ 生成
 ```
 
-预期：`cage check` 通过（或返回带 `file:row:col` 的诊断）；`cage build`
-输出 `OK (profile 'client', N artifacts, manifest …/manifest.json)`。
+Expected: `cage check` passes (or returns diagnostics carrying `file:row:col`);
+`cage build` outputs `OK (profile 'client', N artifacts, manifest …/manifest.json)`.
 
-### 场景二：新增环境四套
+### Scenario 2: Adding four environment sets
 
 ```bash
 # schemas/shop.yaml 的 env_overrides 里声明 dev/test/staging/prod
@@ -97,11 +107,11 @@ cage build . --env prod       # 按 prod 约束生成
 cage mcp                       # 或让 AI 用 list_envs 看四套差异
 ```
 
-预期：`--env prod` 应用 `env_overrides.prod` 的字段约束（如
-`Shop.discount.max` 从 dev 的 0.9 收到 prod 的 0.5）；未声明的环境名是
-用法错误（exit 2）。
+Expected: `--env prod` applies the field constraints from `env_overrides.prod`
+(e.g. `Shop.discount.max` tightens from 0.9 under dev to 0.5 under prod); an
+undeclared environment name is a usage error (exit 2).
 
-### 场景三：CI 集成
+### Scenario 3: CI integration
 
 ```yaml
 - run: cage check . --level semantic --env prod
@@ -109,10 +119,11 @@ cage mcp                       # 或让 AI 用 list_envs 看四套差异
 - run: cage verify build/ --profile client
 ```
 
-预期：CI 里三步串行——校验、增量构建、产物校验。任一步失败即中断，
-诊断带错误码可直接贴进 issue。
+Expected: three sequential steps in CI — validation, incremental build,
+artifact validation. Any failing step halts the run, and the diagnostics carry
+error codes that can be pasted straight into an issue.
 
-### 场景四：远程 registry 依赖
+### Scenario 4: Remote registry dependency
 
 ```bash
 # 消费方 cage.toml
@@ -123,18 +134,20 @@ cage check .                    # ③ 解析并拉取 shop@1.2.0
 cage build .                    # ④ 生成（含依赖表）
 ```
 
-预期：`[dependencies]` 声明的包从 registry 拉取并缓存；离线时用缓存，
-`--no-cache` 可强制拒绝回退。
+Expected: packages declared under `[dependencies]` are pulled from the
+registry and cached; when offline, the cache is used, and `--no-cache` forces
+the fallback to be refused.
 
-### 场景五：历史库迁移 migrate draft → apply
+### Scenario 5: Legacy-database migration, migrate draft → apply
 
 ```bash
-cage schema-draft . mysql:legacy_items                      # 内省起草（只读，绑定参数）
-cage migrate-draft schemas/old.yaml schemas/new.yaml --from 1.0.0 --to 2.0.0   # 起草迁移规则稿
+cage schema-draft --db mysql://… --out schemas/legacy.yaml   # 内省起草
+cage migrate-draft . --out migrations/v1.yaml                # 起草迁移链
 cage migrate .                                               # 预演（不落盘）
 cage migrate . --write                                       # 落盘 + 全栈回验
 ```
 
-预期：`migrate` 默认 dry-run 报告每一步变换；`--write` 只写本地文本源
-（JSON / YAML / CSV），Excel 与远程源保持只读报告，写后跑 L0–L6 全栈
-回验。
+Expected: `migrate` reports each transformation step as a dry run by default;
+`--write` writes only local text sources (JSON / YAML / CSV), Excel and
+remote sources stay read-only reports, and after writing it runs the
+full-stack L0–L6 re-verification.

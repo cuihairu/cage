@@ -3,51 +3,52 @@ layout: home
 
 hero:
   name: Cage
-  text: 游戏配置编译与验证框架
-  tagline: 把分散、异构、面向人的配置数据，可靠地编译成经过验证、确定性构建的运行时配置资产
+  text: A configuration compiler and validator for games
+  tagline: Reliably compile scattered, heterogeneous, human-authored configuration data into validated, deterministically built runtime configuration assets
   actions:
     - theme: brand
-      text: 从架构开始
+      text: Start with the architecture
       link: /architecture
     - theme: alt
-      text: English
-      link: /en/
+      text: 中文
+      link: /zh/
     - theme: alt
-      text: CLI 速览
+      text: CLI at a glance
       link: /cli
     - theme: alt
       text: GitHub
       link: https://github.com/cuihairu/cage
 
 features:
-  - title: Source Adapter 插件
-    details: Excel / CSV / JSON / YAML 与 HTTP API / MySQL / PostgreSQL / Google Sheets 远程源，只负责读取解析，不做业务校验；后续扩展 XML、SQLite。
-  - title: Schema 与 Source 解耦
-    details: 同一份 Schema 可用于多个配置源：类型、必填、默认值、范围、枚举、唯一、引用独立定义。
-  - title: 八级验证流水线
-    details: Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule 逐级执行，cage check --level 可分级验证。
-  - title: 跨配置引用校验
-    details: 存在性 + 兼容性检查，引用对象存在但类型不合法同样报错；引用谓词按语义求值，不满足即报 E1410。
-  - title: Diagnostics 一等公民
-    details: 错误码 + 精确定位（文件 / Sheet / 单元格 / 字段 / 值）+ 修复提示，CLI、Web UI 与 IDE（`cage lsp`）直接消费。
-  - title: 确定性构建
-    details: 相同输入 → 相同产物、哈希与 Manifest，可追踪、可回滚、可增量。
-  - title: Profile 机制
-    details: client / server 配置不同 targets 与字段可见性，一份配置两端复用，不维护两套表。
-  - title: Target 插件
-    details: JSON / CSV 数据产物起步，已扩展 MessagePack（确定性二进制）、Protobuf `.proto` 与 FlatBuffers `.fbs` 定义文件，以及 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（Tera 自定义模板）（Binary / SQLite 等留待后续）；数据序列化与代码生成分离。
-  - title: 声明式数据迁移
-    details: cage migrate 按版本步进链对已验证配置做规则变换（改名 / 补默认 / 删字段 / 类型加宽 / 值重映射），默认 dry-run 报告，--write 原路写回并全栈回验。
+  - title: Source Adapter plugins
+    details: Excel / CSV / JSON / YAML plus HTTP API / MySQL / PostgreSQL / Google Sheets remote sources. They only read and parse, and never perform business validation; XML and SQLite come later.
+  - title: Schema decoupled from Source
+    details: One Schema serves many configuration sources — types, required fields, defaults, ranges, enums, uniqueness and references are each defined independently.
+  - title: Eight-level validation pipeline
+    details: Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule run level by level; cage check --level validates by level.
+  - title: Cross-configuration reference validation
+    details: Existence plus compatibility checks — a referenced object that exists but has an invalid type is an error too; reference predicates are evaluated semantically (E1410 when unsatisfied).
+  - title: Diagnostics as a first-class citizen
+    details: Error codes plus precise locations (file / Sheet / cell / field / value) plus fix hints, consumed directly by the CLI, the Web UI and the IDE (`cage lsp`).
+  - title: Deterministic builds
+    details: Same input → same artifacts, hashes and Manifest. Traceable, rollback-friendly and incremental.
+  - title: Profile mechanism
+    details: client / server profiles configure different targets and field visibility, so one configuration is reused on both ends instead of maintaining two sets of tables.
+  - title: Target plugins
+    details: Starting from JSON / CSV data artifacts, extended to MessagePack (deterministic binary), Protobuf `.proto` and FlatBuffers `.fbs` definition files, plus C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java code bindings and a Template Target (custom Tera templates); Binary / SQLite and the rest come later. Data serialization and code generation are kept separate.
+  - title: Declarative data migration
+    details: cage migrate steps through a versioned chain applying rule transforms (rename / fill defaults / drop fields / widen types / remap values) to validated configuration; it reports as a dry run by default, --write writes back in place and re-validates the whole stack.
 ---
 
 <script setup lang="ts">
 // 首次访问按浏览器语言选择文档语言（vitepress 无此能力，GitHub Pages 不支持 _redirects）
-// 中文即站点默认 locale（root），仅非中文访客跳 /en/；优先级：localStorage 手动选择 > navigator.language
+// English is the site default locale (root); Chinese-speaking visitors are redirected to /zh/;
+// priority: manual localStorage choice > navigator.language
 import { onBeforeMount } from 'vue'
 const KEY = 'cage-lang-auto-picked'
 const BASE = '/cage/'
 const ROOT_PATH = BASE
-const EN_PATH = BASE + 'en/'
+const ZH_PATH = BASE + 'zh/'
 onBeforeMount(() => {{
   if (typeof window === 'undefined') return
   const p = window.location.pathname
@@ -55,23 +56,23 @@ onBeforeMount(() => {{
   const picked = localStorage.getItem(KEY)
   if (picked) {{ if (picked !== p) window.location.replace(picked); return }}
   const langs = (navigator.languages?.length ? navigator.languages : [navigator.language]).map(l => l.toLowerCase())
-  if (!langs.some(l => l.startsWith('zh'))) window.location.replace(EN_PATH)
+  if (langs.some(l => l.startsWith('zh'))) window.location.replace(ZH_PATH)
 }})
 if (typeof window !== 'undefined') {{
   window.addEventListener('click', (e) => {{
     const a = (e.target as HTMLElement)?.closest?.('a') as HTMLAnchorElement | null
     const href = a?.getAttribute('href') || ''
-    if (href.startsWith(EN_PATH)) localStorage.setItem(KEY, EN_PATH)
+    if (href.startsWith(ZH_PATH)) localStorage.setItem(KEY, ZH_PATH)
     else if (href === ROOT_PATH || href === ROOT_PATH.slice(0, -1)) localStorage.setItem(KEY, ROOT_PATH)
   }}, true)
 }}
 </script>
 
 
-English | 中文
+[中文](/zh/) | English
 
 
-## 核心链路
+## Core flow
 
 ```text
 Authoring Sources → Source Adapters → Canonical Model
@@ -79,9 +80,9 @@ Authoring Sources → Source Adapters → Canonical Model
       → Normalize / IR → Target Generators → Manifest / Hash
 ```
 
-Excel 只是 Cage 的一种输入源。所有输入进入统一 Canonical Model，验证通过后按目标平台产出确定性资产，转换之外校验、引用、规范化都在同一条链上完成。
+Excel is only one kind of input source for Cage. Every input enters the unified Canonical Model, and once validation passes, deterministic assets are produced for the target platform — beyond the conversion itself, validation, references and normalization all happen on this same chain.
 
-## 快速开始
+## Quick start
 
 ```bash
 cage init my-game                    # 新项目：交互式脚手架（终端问答），零改动即可 check/build
@@ -104,6 +105,6 @@ cage lsp ./                          # stdio Language Server（IDE 诊断，与 
 cage mcp --stdio                     # AI 助手 MCP server（校验/结构/构建预演做成只读 tools）
 ```
 
-## 文档栏目
+## Documentation sections
 
-- 资产：Schema/源数据/构建规则三类输入资产 + 产物追溯的资产管理（design §50：`cage assets` 资产清单与基线复核、备份四层防线、快照与注册表的版本化能力；[`examples/asset-workspace`](https://github.com/cuihairu/cage/tree/main/examples/asset-workspace) 全生命周期示范）
+- Assets: three kinds of input assets — Schema / source data / build rules — plus asset management with artifact traceability (`docs/design.md §50`: the `cage assets` asset manifest and baseline re-check, four layers of backup defense, snapshot and registry versioning capabilities; [`examples/asset-workspace`](https://github.com/cuihairu/cage/tree/main/examples/asset-workspace) demonstrates the full lifecycle)

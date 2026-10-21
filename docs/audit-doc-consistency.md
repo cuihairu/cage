@@ -1,4 +1,4 @@
-[中文](审计-文档一致性.md) | English
+[中文](/zh/audit-doc-consistency.md) | English
 
 # Documentation/Source Consistency Audit (2026-10-08)
 

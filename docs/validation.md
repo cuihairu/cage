@@ -1,9 +1,9 @@
 
-# Validation：验证流水线
+# Validation: Validation Pipeline
 
-Cage 的核心不是 Transform，而是 **Validation**。
+The core of Cage is not Transform, but **Validation**.
 
-验证拆成多个阶段，逐级执行：
+Validation is split into stages and executed level by level:
 
 ```text
 Parse
@@ -30,22 +30,22 @@ Semantic
 Game Rules
 ```
 
-每一级对应一个验证层级与一族错误码：
+Each level corresponds to a validation level and a family of error codes:
 
-| 层级 | 名称 | 检查内容 | 错误码族 |
+| Level | Name | What Is Checked | Error Code Family |
 | --- | --- | --- | --- |
-| L0 | Parse | 输入是否可以正确解析 | `E0001` 族 |
-| L1 | Schema | 结构是否符合 Schema | `E1001` 族 |
-| L2 | Type | 类型是否匹配 | `E1101` 族 |
-| L3 | Value | 值是否在约束内 | `E1201` 族 |
-| L4 | Table | 单表内部一致性 | `E1301` 族 |
-| L5 | Reference | 跨配置引用 | `E1401` 族 |
-| L6 | Semantic | 表达式/组合逻辑 | `E1501` 族 |
-| L7 | Game Rule | 业务插件校验 | `E1601` 族 |
+| L0 | Parse | whether the input can be parsed correctly | `E0001` family |
+| L1 | Schema | whether the structure conforms to the Schema | `E1001` family |
+| L2 | Type | whether types match | `E1101` family |
+| L3 | Value | whether values are within constraints | `E1201` family |
+| L4 | Table | internal consistency of a single table | `E1301` family |
+| L5 | Reference | cross-configuration references | `E1401` family |
+| L6 | Semantic | expressions / combinatorial logic | `E1501` family |
+| L7 | Game Rule | business plugin validation | `E1601` family |
 
-## L0 Syntax（语法）
+## L0 Syntax
 
-首先检查输入是否可以被正确解析。例如：
+First, check whether the input can be parsed correctly. For example:
 
 ```yaml
 foo:
@@ -53,7 +53,7 @@ foo:
       - b
 ```
 
-YAML 本身非法。Cage：
+The YAML itself is invalid. Cage:
 
 ```text
 ERROR E0001
@@ -67,13 +67,13 @@ Location:
 Invalid YAML syntax.
 ```
 
-文本类 Source（JSON/YAML/CSV）的语法错误精确到行号。
+For text-based Sources (JSON/YAML/CSV), syntax errors are pinpointed down to the line number.
 
-## L1 Schema（结构）
+## L1 Schema
 
-检查配置结构是否符合 Schema。
+Checks that the configuration structure conforms to the Schema.
 
-缺少字段：
+A missing field:
 
 ```text
 ERROR E1001
@@ -84,7 +84,7 @@ Missing required field:
     price
 ```
 
-未知字段（默认告警，`warnings_as_errors = true` 时升级为错误）：
+Unknown fields (warning by default, escalated to an error when `warnings_as_errors = true`):
 
 ```text
 WARNING E1002
@@ -95,23 +95,24 @@ Unknown field:
     pric
 ```
 
-### E9006 字段可见性冲突（Profile 语义化）
+### E9006 Field Visibility Conflict (Profile Semantics)
 
-`targets` 决定字段/表在哪些 profile 的视图里可见（空 = 全 profile；`"*"` 通配等价空）。
-裁剪对视图是常规操作，但**结构上不可缺的字段被 profile 隐藏就是冲突**，
-报 `E9006` 而不是静默过滤：
+`targets` decides which profile views a field/table is visible in (empty = all profiles; the `"*"` wildcard is equivalent to empty).
+Trimming views is a routine operation, but **when a field that is structurally indispensable gets hidden by a profile, that is a conflict** —
+it reports `E9006` instead of silently filtering it out:
 
-- `required` 且无 `default` 的字段被当前 profile 隐藏；
-- 主键字段被隐藏；
-- 唯一约束成员被隐藏；
-- 可见表的引用字段，其目标表或目标字段被隐藏（投影后悬空引用）。
+- a `required` field without a `default` is hidden by the current profile;
+- a primary key field is hidden;
+- a unique-constraint member is hidden;
+- for a reference field in a visible table, its target table or target field is hidden (a dangling reference after projection).
 
-有 `default` 的 required 字段、非必需字段、整表被 `targets` 剔除，都是
-合法视图，不报错。检查对完整 schema 执行（`profile` 只裁剪产物视图、不
-豁免数据校验），`cage check/build --profile <p>` 与 `cage gen` 均按此
-语义运行。`--env`（分环境约束覆盖，设计 §48）与 profile 正交且先于
-profile 生效：环境补丁先抹到基线字段上（`required` 随之变化），E9006
-按解析后的 `required` 判定——环境收紧后被子 profile 隐藏即冲突。示例：
+A required field that has a `default`, a non-required field, or a whole table dropped by `targets` are all
+legitimate views and raise no error. The check runs against the complete schema (`profile` only trims the
+artifact view and does not exempt data validation), and both `cage check/build --profile <p>` and `cage gen`
+run with this semantics. `--env` (per-environment constraint overrides, design §48) is orthogonal to
+profiles and takes effect before them: environment patches are applied onto the baseline fields first
+(`required` changes accordingly), and E9006 is judged by the resolved `required` — once the environment
+tightens things, being hidden by the sub-profile is a conflict. Example:
 
 ```text
 ERROR E9006
@@ -121,15 +122,15 @@ Account.secret
 Required field hidden by profile (targets: ["server"], profile: "client")
 ```
 
-## L2 Type（类型）
+## L2 Type
 
-例如：
+For example:
 
 ```text
 Level = "abc"
 ```
 
-Schema：
+Schema:
 
 ```yaml
       level:
@@ -137,7 +138,7 @@ Schema：
         type: { kind: UInt32 }
 ```
 
-错误：
+The error:
 
 ```text
 ERROR E1101
@@ -154,14 +155,14 @@ Value:
     "abc"
 ```
 
-Map 字段的键值逐项校验：键按 `key_type` 门控（string 键恒合法；int 键
-必须是可 `parse::<i64>` 的数字字符串），值按 `value_type` 递归校验，
-不匹配同样走 `E1101`（提示带 `map<key, value>` 拼写的期望类型）；空 map
-恒合法。
+Map fields are validated key by key and value by value: keys are gated by `key_type` (string keys are
+always valid; int keys must be numeric strings parseable via `parse::<i64>`), values are recursively
+validated against `value_type`, and mismatches likewise go through `E1101` (the hint shows the expected
+type spelled as `map<key, value>`); an empty map is always valid.
 
-## L3 Value（值）
+## L3 Value
 
-类型正确也不代表值合理。Schema：
+A correct type does not mean a reasonable value. Schema:
 
 ```yaml
       level:
@@ -171,13 +172,13 @@ Map 字段的键值逐项校验：键按 `key_type` 门控（string 键恒合法
         max: 100
 ```
 
-数据：
+Data:
 
 ```text
 level = 999
 ```
 
-结果：
+Result:
 
 ```text
 ERROR E1201
@@ -188,7 +189,7 @@ Allowed range:
     1..100
 ```
 
-支持的值约束：
+Supported value constraints:
 
 ```text
 min / max               数值范围（E1201）
@@ -201,11 +202,11 @@ enum_values             枚举取值域（E1204）。命名枚举（type: {kind:
 min_items / max_items   数组元素个数（E1205）
 ```
 
-`unique` 属 L4（E1301/E1302）、`required` 属 L1（E1001），不在本层。
+`unique` belongs to L4 (E1301/E1302) and `required` to L1 (E1001); neither is checked at this level.
 
-## L4 Table（表级）
+## L4 Table
 
-检查单张表内部的一致性。例如 ID 必须唯一，数据：
+Checks the internal consistency of a single table. For example, IDs must be unique. The data:
 
 ```text
 10001
@@ -213,7 +214,7 @@ min_items / max_items   数组元素个数（E1205）
 10001
 ```
 
-结果：
+Result:
 
 ```text
 ERROR E1301
@@ -227,16 +228,16 @@ Rows:
     4
 ```
 
-还可以检查：
+It can also check:
 
 ```text
 组合唯一（unique_constraints，E1302）
 排序要求（order_by，E1304）
 ```
 
-## L5 Reference（引用）
+## L5 Reference
 
-游戏配置中最重要的能力之一。例如：
+One of the most important capabilities in game configuration. For example:
 
 **Item**
 
@@ -256,7 +257,7 @@ ID       DropItemID
 20003    99999
 ```
 
-Schema：
+Schema:
 
 ```yaml
       drop_item_id:
@@ -267,7 +268,7 @@ Schema：
           field: id
 ```
 
-Cage：
+Cage:
 
 ```text
 ERROR E1401
@@ -283,7 +284,7 @@ Reference:
 Target does not exist.
 ```
 
-### 引用不应只验证「存在」
+### References Should Not Only Validate Existence
 
 ```text
 Monster.DropItemID
@@ -292,7 +293,7 @@ Monster.DropItemID
 Item.ID
 ```
 
-Item 存在（`Item[10001]`），但 `Item[10001].Type = QuestItem`，而 Monster 掉落只允许 `Weapon / Armor / Consumable`。用 `compatible_with` 声明目标字段须兼容的取值，违反报 `E1411`：
+The Item exists (`Item[10001]`), but `Item[10001].Type = QuestItem`, while Monster drops only allow `Weapon / Armor / Consumable`. Use `compatible_with` to declare the values the target field must be compatible with; violations report `E1411`:
 
 ```text
 ERROR E1411
@@ -311,7 +312,7 @@ Allowed:
     Consumable
 ```
 
-Reference 的检查面分五类，实装状态：
+The reference check surface breaks into five categories; implementation status:
 
 ```text
 Existence        存在性          已实装（E1401）
@@ -321,11 +322,12 @@ Cardinality      基数            已实装（E1404，源侧口径：one/option
 Compatibility    兼容性          已实装（E1411，字段级约束）
 ```
 
-### 表级引用环（E1403，已实装）
+### Table-Level Reference Cycles (E1403, Implemented)
 
-L5 在逐行引用检查之后做 schema 级循环检测：引用图
-（`DependencyGraph::from_schema`）含环时每环报一条 `E1403` WARNING，
-环路径写进诊断消息（最小表名起头、跨起点去重——两表互引只报一条）：
+After the row-by-row reference checks, L5 performs schema-level cycle detection: when the reference
+graph (`DependencyGraph::from_schema`) contains cycles, each cycle reports one `E1403` WARNING,
+with the cycle path written into the diagnostic message (starting from the smallest table name,
+deduplicated across starting points — two tables referencing each other report only one):
 
 ```text
 WARNING E1403 — Circular Reference
@@ -334,17 +336,18 @@ WARNING E1403 — Circular Reference
 Circular reference: Item → Kit → Item
 ```
 
-自引用（如解锁链 `Stage.next → Stage.id`）按引用图自身契约计环，同样
-提示。环不阻断构建——生成是单遍的、增量传播对环安全——但会让库 API
-的 `topological_sort` / `build_order` 失败，故以 WARNING 提示作者而
-非报错（ERROR 会误杀合法互引 schema）；`warnings_as_errors = true`
-时升级为错误（退出码 1）。
+Self-references (such as an unlock chain `Stage.next → Stage.id`) count as cycles under the reference
+graph's own contract and are flagged the same way. Cycles do not block the build — generation is
+single-pass and incremental propagation is safe for cycles — but they make the library API's
+`topological_sort` / `build_order` fail, so the author is warned with a WARNING rather than an
+error (an ERROR would wrongly reject legitimate mutually-referencing schemas);
+with `warnings_as_errors = true` it escalates to an error (exit code 1).
 
-## L6 Semantic（语义）
+## L6 Semantic
 
-Schema 解决的是结构问题；Semantic Validation 解决：**数据组合起来有没有意义。**
+Schema solves the structural problem; Semantic Validation solves: **whether the data makes sense when combined.**
 
-例如：
+For example:
 
 ```text
 MinLevel <= MaxLevel
@@ -353,7 +356,7 @@ Skill.Cost >= 0
 Monster.DropTableID 必须存在
 ```
 
-可以定义表达式规则：
+Expression rules can be defined:
 
 ```yaml
       level:
@@ -364,28 +367,28 @@ Monster.DropTableID 必须存在
             assert: min_level <= max_level
 ```
 
-规则声明随 Schema 解析（`name`/`assert`/`message`/`warning_only`
-齐全），求值器按**单比较断言** `operand OP operand` 实装（操作数为
-字段引用——裸名或反引号名——与数字/字符串/布尔字面量；运算符
-`== != <= >= < >`）。求值口径：
+Rule declarations are parsed along with the Schema (`name`/`assert`/`message`/`warning_only`
+are all present); the evaluator is implemented around **single comparison assertions**
+`operand OP operand` (operands are field references — bare names or backtick-quoted names —
+and numeric/string/boolean literals; operators
+`== != <= >= < >`). Evaluation semantics:
 
-- 数值族（Int/UInt/Float）按数值比较，Int/UInt 走 i128 精确、混入
-  Float 走 f64；字符串按字典序；布尔 false < true。
-- 引用的字段在该行缺失或为 null（可选字段缺省）→ 规则对此行不表态，
-  视为通过。
-- 两侧类型不可比（如 string vs int、数组/对象/bytes）→ 记 `E1501`
-  违例并在提示里点名两侧类型，绝不静默放过。
-- 断言为假 → `E1501`（`message` 优先为提示，缺省渲染
-  `Assertion '<assert>' failed`）；`warning_only: true` 降为 WARNING。
-- **规则缺陷是 schema 错误**：断言解析失败或引用了表内未声明字段，
-  以 `E1004` 每规则报一次（与行数无关，空表也报），该规则不对任何
-  行求值。引用谓词（L5）的同类缺陷同码在 L5 报出。
+- The numeric family (Int/UInt/Float) is compared numerically: Int/UInt use exact i128
+  arithmetic, and once Float is involved f64 is used; strings compare lexicographically; booleans order false < true.
+- If a referenced field is missing on that row or is null (an optional field left at its default) → the rule takes no stance on that row, treated as passing.
+- If the two sides are not comparable in type (e.g. string vs int, arrays/objects/bytes) → an `E1501` violation is recorded and the hint names the types on both sides; never silently passed.
+- If the assertion is false → `E1501` (`message` is preferred as the hint; the default renders
+  `Assertion '<assert>' failed`); `warning_only: true` downgrades to WARNING.
+- **A defective rule is a schema error**: if the assertion fails to parse or references a field not
+  declared in the table, `E1004` is reported once per rule (independent of row count, reported even
+  for empty tables), and that rule is not evaluated against any row. The same defect in a reference
+  predicate (L5) is reported at L5 under the same code.
 
-更复杂的业务判定（跨行、算术、多条件组合）仍归 L7 业务规则插件。
+More complex business judgments (cross-row, arithmetic, multi-condition combinations) still belong to the L7 game-rule plugins.
 
-## L7 Game Rule（业务插件，已实装）
+## L7 Game Rule (Business Plugins, Implemented)
 
-复杂的游戏业务逻辑不应该全部塞进 Schema DSL。层次应该是：
+Complex game business logic should not all be crammed into the Schema DSL. The layering should be:
 
 ```text
 Schema
@@ -393,7 +396,7 @@ Expression
 Code Validator
 ```
 
-业务校验做成插件（Rust trait，进程内注册）：
+Business validation is built as plugins (Rust traits, registered in-process):
 
 ```rust
 pub trait GameRuleValidator: Send + Sync {
@@ -407,9 +410,9 @@ registry.register(Box::new(DropTableValidator));
 let diagnostics = registry.run(&schema, &document);
 ```
 
-内建样例规则 `power_curve` 端到端可用：任一表同时含 `level`/`attack`
-字段时校验 `attack <= level * 100 + 50`，违者报 `E1601`（行级定位，
-hint 带计算过程）：
+The built-in sample rule `power_curve` works end to end: when any table contains both `level`/`attack`
+fields, it validates `attack <= level * 100 + 50`, and violations report `E1601` (row-level location,
+hint includes the computation):
 
 ```text
 ERROR E1601 — Game Rule Validation Failed
@@ -419,14 +422,14 @@ ERROR E1601 — Game Rule Validation Failed
   Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 ```
 
-这样 Cage Core 不需要理解具体游戏业务。执行模型的选型（进程内
-trait → 动态库 → 沙箱）与信任边界见
-架构：安全与隔离；完整对比表与分层决策
-见仓库设计稿 `docs/design.md` §17.1「插件沙箱方案定稿」。
+This way Cage Core does not need to understand specific game business. For the execution model
+choice (in-process trait → dynamic library → sandbox) and the trust boundary, see
+Architecture: Security and Isolation; for the full comparison table and the layered decision,
+see the repository design draft `docs/design.md` §17.1 "Finalized Plugin Sandbox Plan".
 
-## 分级执行
+## Level-by-Level Execution
 
-这些层级不是必须全部执行：
+These levels do not all have to be executed:
 
 ```bash
 cage check                      # 执行 L0–L6（默认 --level semantic）
@@ -435,11 +438,11 @@ cage check --level reference    # 只做到引用层
 cage check --level gamerule     # 加上 L7 业务规则插件
 ```
 
-详见 CLI。
+See CLI for details.
 
-## Diagnostics：一等公民
+## Diagnostics: First-Class Citizens
 
-每个错误至少包含：
+Each error carries at least:
 
 ```text
 Code
@@ -455,7 +458,7 @@ Message
 Hint
 ```
 
-完整示例（实际渲染形态）：
+A full example (as it actually renders):
 
 ```text
 ERROR E1401 — Reference Target Missing
@@ -468,7 +471,7 @@ ERROR E1401 — Reference Target Missing
   Hint: Add Item[99999] or change DropItemID.
 ```
 
-严重级别支持：
+Supported severity levels:
 
 ```text
 ERROR
@@ -476,11 +479,11 @@ WARNING
 INFO
 ```
 
-CLI 与 Web UI 已直接消费这套诊断；IDE 侧 `cage lsp`（stdio Language Server，与 check 共用校验管线）与 VSCode 扩展已接入。
+The CLI and Web UI already consume these diagnostics directly; IDE plugin integration is left for later.
 
-## Warning Policy（已实装）
+## Warning Policy (Implemented)
 
-warning → error 升级策略是 `cage.toml` 的顶层开关（默认 `false`）：
+The warning → error escalation policy is a top-level switch in `cage.toml` (default `false`):
 
 ```toml
 # 日常开发：警告只提示，不阻断构建
@@ -490,157 +493,159 @@ warnings_as_errors = false
 warnings_as_errors = true
 ```
 
-开启后同一处 warning 在 `cage build` 中按错误处理（退出码 1、不产
-产物）；关闭时 `cage build` 对仅含 warning 的配置照常成功。CI 侧的
-`warnings_as_errors` 门禁指 GitHub Actions 的 `-D warnings`（rustc
-lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）。
+When enabled, the same warning is treated as an error in `cage build` (exit code 1, no
+artifacts produced); when disabled, `cage build` succeeds as usual for configurations that
+contain only warnings. The `warnings_as_errors` gate on the CI side refers to GitHub Actions'
+`-D warnings` (the rustc lint layer), a different layer from this configuration option;
+both are running (see the repository's ci.yml).
 
-## 错误码表
+## Error Code Table
 
-错误码格式 `E{类别}{编号}`，类别对应验证层级；每码一文档说明，定义于
-`cage-core::error::codes`。表为**全量定义注册表**；标注「预留」的码已
-定义（常量 + 标题齐全）但当前代码路径尚未抛出——能力状态如实标注，
-接线后去标。
+Error codes have the format `E{category}{number}`, where the category corresponds to the validation
+level; each code has its own documentation entry and is defined in
+`cage-core::error::codes`. The table is the **full registry of definitions**; codes marked
+"reserved" are defined (constant + title complete) but not yet thrown by any current code path —
+capability status is marked as it truly is, and the marker is removed once wired up.
 
 ### L0 Parse
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E0001` | 语法错误（另：L1 对「schema 有 required 字段但文档缺整表」复用本码发 Warning） |
-| `E0002` | 输入意外结束（预留） |
-| `E0003` | 字符编码非法（预留） |
-| `E0004` | 结构畸形（如 YAML 映射错误） |
+| `E0001` | Syntax error (also: L1 reuses this code to emit a Warning when "the schema has a required field but the document is missing the entire table") |
+| `E0002` | Unexpected end of input (reserved) |
+| `E0003` | Invalid character encoding (reserved) |
+| `E0004` | Malformed structure (e.g. a bad YAML mapping) |
 
 ### L1 Schema
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1001` | 缺少必填字段 |
-| `E1002` | Schema 未定义的未知字段 |
-| `E1003` | Schema 字段重复定义（预留） |
-| `E1004` | Schema 自身引用悬空（pk/unique/枚举/引用指向不存在的字段、枚举或表；仅 Web API 装载路径执行，表间循环依赖在构建排序期以无码错误报告）；语义规则/引用谓词的断言畸形或引用未声明字段（L5/L6 求值期每规则报一次） |
-| `E1005` | Schema 文件缺失或不可读（预留） |
+| `E1001` | Missing required field |
+| `E1002` | Unknown field not defined in the Schema |
+| `E1003` | Duplicate field definition in the Schema (reserved) |
+| `E1004` | Dangling references within the Schema itself (pk/unique/enum/reference pointing to a nonexistent field, enum, or table; executed only on the Web API loading path, while cross-table circular dependencies are reported during build ordering as a code-less error); malformed assertions in semantic rules / reference predicates, or assertions referencing undeclared fields (reported once per rule during L5/L6 evaluation) |
+| `E1005` | Schema file missing or unreadable (reserved) |
 
 ### L2 Type
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1101` | 类型不匹配 |
-| `E1102` | 无法强制转换到目标类型（预留） |
-| `E1103` | 数值溢出 / 下溢（预留） |
-| `E1104` | 枚举变体非法（预留） |
+| `E1101` | Type mismatch |
+| `E1102` | Cannot coerce to the target type (reserved) |
+| `E1103` | Numeric overflow / underflow (reserved) |
+| `E1104` | Invalid enum variant (reserved) |
 
 ### L3 Value
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1201` | 数值超出范围（min/max） |
-| `E1202` | 字符串长度越界 |
-| `E1203` | 正则不匹配 |
-| `E1204` | 枚举值不允许 |
-| `E1205` | 数组长度越界 |
+| `E1201` | Numeric value out of range (min/max) |
+| `E1202` | String length out of bounds |
+| `E1203` | Regex does not match |
+| `E1204` | Enum value not allowed |
+| `E1205` | Array length out of bounds |
 
 ### L4 Table
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1301` | 主键重复 |
-| `E1302` | 组合唯一键重复 |
-| `E1303` | 缺少必需行（预留） |
-| `E1304` | 行序违规 |
-| `E1305` | 必填表为空（预留） |
+| `E1301` | Duplicate primary key |
+| `E1302` | Duplicate composite unique key |
+| `E1303` | Missing required row (reserved) |
+| `E1304` | Row order violation |
+| `E1305` | Required table is empty (reserved) |
 
 ### L5 Reference
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1401` | 引用目标不存在 |
-| `E1402` | 引用已删除实体（预留） |
-| `E1403` | 循环引用（已实装：表级引用环 WARNING，warnings_as_errors 升级） |
-| `E1404` | 基数违规（已实装，**源侧语义**，2026-10-10 拍板：`cardinality` 声明本字段如何引用目标——`one`（默认）与 `optional` 取单值，`optional` 容忍 null 而 `one` 下 null 违例；`many` 要求数组并逐元素走 E1401/E1410 校验；形状不符（数组配 `one`、标量配 `many`、null 配 `many`）报本码并点名改法；未知拼写报 `E1004`。目标侧 1:1 读法被否决——作默认 `one` 会误杀全部合法 many-to-one 配置） |
-| `E1410` | 引用对象存在但语义谓词不满足（谓词在目标行上求值；目标行可选字段缺失视为不表态；两侧类型不可比同样报本码） |
-| `E1411` | 引用对象字段约束违规 |
+| `E1401` | Reference target does not exist |
+| `E1402` | Reference to a deleted entity (reserved) |
+| `E1403` | Circular reference (implemented: table-level reference cycle WARNING, escalated by warnings_as_errors) |
+| `E1404` | Cardinality violation (implemented, **source-side semantics**, settled on 2026-10-10: `cardinality` declares how this field references its target — `one` (default) and `optional` take a single value, where `optional` tolerates null while null is a violation under `one`; `many` requires an array and validates each element through E1401/E1410; shape mismatches (array with `one`, scalar with `many`, null with `many`) report this code and name the fix; unknown spellings report `E1004`. The target-side 1:1 reading was rejected — as the default `one`, it would wrongly reject all legitimate many-to-one configurations) |
+| `E1410` | Referenced target exists but the semantic predicate is not satisfied (the predicate is evaluated on the target row; a missing optional field on the target row is treated as taking no stance; incomparable types on the two sides also report this code) |
+| `E1411` | Referenced target violates a field constraint |
 
 ### L6 Semantic
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1501` | 断言表达式为假（或两侧类型不可比；可选字段缺失不表态；`warning_only` 降 WARNING） |
-| `E1502` | 跨字段约束违规（预留） |
-| `E1503` | 表达式求值错误（如除零）（预留） |
+| `E1501` | Assertion expression is false (or the two sides are incomparable in type; missing optional fields take no stance; `warning_only` downgrades to WARNING) |
+| `E1502` | Cross-field constraint violation (reserved) |
+| `E1503` | Expression evaluation error (e.g. division by zero) (reserved) |
 
 ### L7 Game Rule
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1601` | 插件校验器报告错误 |
-| `E1602` | 插件未找到（预留） |
-| `E1603` | 插件执行失败（panic、超时等）（预留） |
+| `E1601` | Plugin validator reported an error |
+| `E1602` | Plugin not found (reserved) |
+| `E1603` | Plugin execution failed (panic, timeout, etc.) (reserved) |
 
-### Build / Target（生成期）
+### Build / Target (Generation Time)
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E9001` | 找不到目标格式的生成器（预留） |
-| `E9002` | 目标生成失败 |
-| `E9003` | 确定性构建被破坏（输出不可复现） |
-| `E9004` | Manifest 生成失败（预留） |
-| `E9005` | Profile 不存在（预留） |
-| `E9006` | 字段可见性冲突 |
+| `E9001` | No generator found for the target format (reserved) |
+| `E9002` | Target generation failed |
+| `E9003` | Deterministic build broken (output not reproducible) |
+| `E9004` | Manifest generation failed (reserved) |
+| `E9005` | Profile does not exist (reserved) |
+| `E9006` | Field visibility conflict |
 
-### Editor（编辑器交换，第三阶段）
+### Editor (Editor Interchange, Phase Three)
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1701` | 编辑态文档无法解析为 Schema（语法/形状/未知 kind），JSON 路径定位 |
+| `E1701` | Editor-state document cannot be parsed into a Schema (syntax/shape/unknown kind), located by JSON path |
 
-### Registry（配置仓库，第三阶段 R 系列）
+### Registry (Configuration Registry, Phase Three R Series)
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1801` | 发布冲突：同版本重发但整包指纹不同（`build_id`/`content_hash` 任一不同——数据、schema、`--env` 环境变化都算；注册表不改写历史）、非法包/版本名、索引写入失败 |
-| `E1802` | 注册表引用无法解析：`registry:` 规范非法、包/版本不存在、版本需求非法、显式版本不满足 `[dependencies]` pin、迁移链终点版本落在 pin 外（联动门，design §46）、区间内无满足版本、未接 `[registry].path`、索引损坏、远程根不可达（无缓存兜底） |
-| `E1803` | 注册表条目账本校验失败（本地篡改/增删文件，或远程下载字节与账本不符、远程账本损坏）——发布与解析两侧都拒收；`registry verify` 全册审计同码报告条目损坏、index 记录与账本漂移、无 index 记录的孤儿目录 |
+| `E1801` | Publish conflict: republishing the same version with a different whole-package fingerprint (any difference in `build_id`/`content_hash` — data, schema, and `--env` environment changes all count; the registry does not rewrite history), illegal package/version names, index write failure |
+| `E1802` | Registry reference cannot be resolved: illegal `registry:` spec, package/version does not exist, illegal version requirement, explicit version not satisfying the `[dependencies]` pin, the migration chain's terminal version falling outside the pin (linked gate, design §46), no version in the range satisfies the requirement, `[registry].path` not configured, corrupted index, unreachable remote root (no cache fallback) |
+| `E1803` | Registry entry ledger verification failed (local tampering / added or removed files, or downloaded remote bytes not matching the ledger, or a corrupted remote ledger) — rejected on both the publish and the resolve sides; the `registry verify` full-ledger audit reports under the same code: corrupted entries, index records drifting from the ledger, and orphan directories with no index record |
 
-### Remote Source（远程数据源，S 系列）
+### Remote Source (Remote Data Sources, S Series)
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E1901` | 远端取数失败：网络 / DNS / 超时（有界重试用尽）、404 或其他非认证错误状态、429 无 `Retry-After` / 不可解析 / 超过 30s 上限或限流重试用尽、分页契约违规（非数组页 / 回环 / 超 1000 页 / 坏 next 链接）、非规范 gsheet spec / 非法 spreadsheet id（HTTP / Sheets 源已接线）；DB 连接 / DSN 非法 / 会话只读 pin 失败 / 语句执行失败（DB 源已接线） |
-| `E1902` | 远端认证 / 授权被拒（HTTP 401 / 403）（HTTP / Sheets 源已接线） |
-| `E1903` | 远端响应形状不合法：Sheets 响应非行集 / 空表头 / majorDimension 非 ROWS（Sheets 源形状门已接线） |
-| `E1904` | 凭据缺失：`[remote.<scheme>].dsn_env` / `[remote.gsheets].credential_env` 未声明，或声明的 env 未设置 / 为空（DB / Sheets 源已接线） |
-| `E1905` | 远端查询非法：非 SELECT 开头、多语句（分号）、注释、行锁子句、`INTO`、具名查询外的非安全表名（DB 源已接线） |
-| `E1906` | 远端不可达但已回退上一份缓存副本（离线回退 WARNING——非致命，stderr 提示；只对传输类失败发生，404 / 401/403 永不回退；`--no-cache` 关闭回退还原硬 `E1901`） |
+| `E1901` | Remote fetch failure: network / DNS / timeout (bounded retries exhausted), 404 or other non-auth error status, 429 without `Retry-After` / unparseable / above the 30s cap or rate-limit retries exhausted, pagination contract violations (non-array page / cycles / over 1000 pages / broken next links), non-canonical gsheet spec / illegal spreadsheet id (HTTP / Sheets sources wired up); DB connection failure / illegal DSN / session read-only pin failure / statement execution failure (DB source wired up) |
+| `E1902` | Remote authentication / authorization rejected (HTTP 401 / 403) (HTTP / Sheets sources wired up) |
+| `E1903` | Remote response shape invalid: Sheets response is not a row set / empty header row / majorDimension not ROWS (Sheets source shape gate wired up) |
+| `E1904` | Missing credentials: `[remote.<scheme>].dsn_env` / `[remote.gsheets].credential_env` not declared, or the declared env unset / empty (DB / Sheets sources wired up) |
+| `E1905` | Illegal remote query: not starting with SELECT, multiple statements (semicolons), comments, row-lock clauses, `INTO`, non-safe table names outside named queries (DB source wired up) |
+| `E1906` | Remote unreachable but fell back to the previous cached copy (offline-fallback WARNING — non-fatal, noted on stderr; happens only for transport-class failures, 404 / 401/403 never fall back; `--no-cache` disables the fallback and restores a hard `E1901`) |
 
-HTTP 源（`cage-source-http`，design §45 S1）的坏 JSON 不走 E1903——它走与本地文件同一条 Parse 诊断（`E0001` 带行列定位）。DB 源（`cage-source-db`，§45 S2）的行集由适配器自产 canonical JSON，形状不可能非法，同样不经 E1903。DB 源装载顺序：解析 spec → 具名查询 / 表名解析（E1905）→ SELECT 白名单（E1905）→ DSN env 解析（E1904）→ 连接（E1901）——白名单与凭据校验都在任何网络触达之前。Sheets 源（`cage-source-sheets`，§45 S3）装载顺序：解析 spec 与 spreadsheet id（E1901）→ credential env 解析（E1904）→ 取数（401/403 → E1902，其余 → E1901）→ 形状门（E1903）——spec 与凭据校验同样都在网络触达之前，错误诊断只引 `gsheet:<id>/<tab>` spec，API key 不落日志。三源的传输类取数失败（连接 / DNS / 超时）在缓存副本存在时回退并发 `E1906` WARNING（`--no-cache` 关闭回退），404 与 401/403 永不回退——旧字节不得掩盖远端已删除或访问被吊销。
+Bad JSON from the HTTP source (`cage-source-http`, design §45 S1) does not go through E1903 — it goes through the same Parse diagnostic as local files (`E0001` with line/column location). The DB source's (`cage-source-db`, §45 S2) row set is canonical JSON produced by the adapter itself, so its shape cannot be invalid, and it likewise bypasses E1903. DB source loading order: parse spec → named query / table name resolution (E1905) → SELECT whitelist (E1905) → DSN env resolution (E1904) → connect (E1901) — the whitelist and credential checks both happen before any network contact. Sheets source (`cage-source-sheets`, §45 S3) loading order: parse spec and spreadsheet id (E1901) → credential env resolution (E1904) → fetch (401/403 → E1902, everything else → E1901) → shape gate (E1903) — spec and credential checks likewise happen before any network contact, error diagnostics only cite the `gsheet:<id>/<tab>` spec, and the API key never lands in logs. For all three sources, transport-class fetch failures (connection / DNS / timeout) fall back to the cached copy when one exists and emit an `E1906` WARNING (`--no-cache` disables the fallback); 404 and 401/403 never fall back — stale bytes must not mask a remote deletion or a revoked access.
 
-### Artifact Distribution（分发，A 系列）
+### Artifact Distribution (Distribution, A Series)
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E2101` | 分发传输失败：bundle 导出读不到条目（包 / 版本不存在、条目目录或账本缺失、非法包名 / 版本名）、写不出 bundle 文件；push 的传输失败（重试用尽）、状态探针不可读、远端 index 不可读；presigned push 的 map 畸形 / URL 非绝对 http(s) / 缺 `index.put` / 覆盖缺口（任何 PUT 之前失败关闭）（已接线） |
-| `E2102` | 分发目标拒绝凭据：push 的状态探针或任一 PUT 收到 HTTP 401 / 403；token 只出现在请求头，错误文本与日志永不携带（已接线） |
-| `E2103` | bundle 账本校验失败：导入侧在 `verify_snapshot` 信任门拒收未过验字节——结构问题（成员路径逃逸、index 畸形、缺账本）、信任门拒绝、index 摘录与账本漂移都在落册前拒绝（已接线） |
-| `E2104` | 分发目标拒绝写入：push 的 PUT 收到 405 / 409 或其他明确 4xx——服务端无写通道，回退「本地 publish + 静态托管」（已接线） |
-| `E2105` | 分发凭据缺失：`--auth-env` / `[registry].auth_env` 未声明或声明的 env 未设置——任何网络触达之前失败（已接线） |
-| `E2106` | 签名密钥不可用：`--key-env` 命名的环境变量未设置 / 空 / 非 base64 / 非 32 字节 Ed25519 密钥，或库拒绝密钥材料、keygen 落盘与 sidecar 写出失败（已接线） |
-| `E2107` | bundle 签名校验失败：`.sig` sidecar 缺失或畸形、算法名不认、或分离式 ed25519 签名在可信公钥下验不过——bundle 由别的密钥签署或字节被改动（已接线） |
+| `E2101` | Distribution transport failure: bundle export could not read an entry (package / version missing, entry directory or ledger missing, illegal package / version name), could not write the bundle file; push transport failure (retries exhausted), status probe unreadable, remote index unreadable; presigned push with a malformed map / non-absolute http(s) URL / missing `index.put` / coverage gap (a failure before any PUT closes it) (wired up) |
+| `E2102` | Distribution target rejected credentials: the push status probe or any PUT received HTTP 401 / 403; the token only ever appears in request headers, never in error text or logs (wired up) |
+| `E2103` | Bundle ledger verification failed: the import side rejects unverified bytes at the `verify_snapshot` trust gate — structural problems (member path escapes, malformed index, missing ledger), trust-gate rejection, and index excerpts drifting from the ledger are all rejected before the ledger is written (wired up) |
+| `E2104` | Distribution target refused writes: a push PUT received 405 / 409 or another explicit 4xx — the server has no write channel; fall back to "local publish + static hosting" (wired up) |
+| `E2105` | Distribution credentials missing: `--auth-env` / `[registry].auth_env` not declared, or the declared env unset — fails before any network contact (wired up) |
+| `E2106` | Signing key unavailable: the environment variable named by `--key-env` is unset / empty / not base64 / not a 32-byte Ed25519 key, or the library rejected the key material, or keygen persistence and sidecar writing failed (wired up) |
+| `E2107` | Bundle signature verification failed: the `.sig` sidecar is missing or malformed, the algorithm name is unrecognized, or the detached ed25519 signature fails to verify under the trusted public key — the bundle was signed by a different key or its bytes were altered (wired up) |
 
-### Migration（迁移，M 系列）
+### Migration (Migration, M Series)
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E2001` | 迁移规则文件非法：读不到、非合法 YAML、缺 `from` / `to` / `steps`、`from` 等于 `to`、steps 为空、未知变换名、payload 畸形（已接线） |
-| `E2002` | 迁移规则引用不合法：step 引用的表 / 字段在 from-schema 不存在、rename 目标与现有表 / 字段撞名（已接线） |
-| `E2003` | 迁移步骤对数据不满足：加宽方向不安全（收窄 / 跨族 / Int64·UInt64→Float64 精度丢失）、行值超出加宽目标值域、step 引用的表或行字段文档中不存在——整段失败不静默丢数据（已接线） |
-| `E2004` | 迁移后回验失败：迁移产物在新 schema 下 L0–L6 全栈校验不通过，错误清单随 E2004 一并输出（已接线） |
+| `E2001` | Migration rule file invalid: unreadable, not valid YAML, missing `from` / `to` / `steps`, `from` equal to `to`, empty steps, unknown transform name, malformed payload (wired up) |
+| `E2002` | Migration rule references invalid: a table / field referenced by a step does not exist in the from-schema, or the rename target collides with an existing table / field name (wired up) |
+| `E2003` | Migration step not satisfied by the data: the widening direction is unsafe (narrowing / cross-family / Int64·UInt64→Float64 precision loss), a row value exceeds the widened target's value domain, or a table or row field referenced by a step does not exist in the document — the whole run fails rather than silently dropping data (wired up) |
+| `E2004` | Post-migration revalidation failed: the migration artifacts do not pass the full L0–L6 stack under the new schema, and the error list is emitted alongside E2004 (wired up) |
 
-### Internal（系统级）
+### Internal (System Level)
 
-| 代码 | 含义 |
+| Code | Meaning |
 | --- | --- |
-| `E9901` | 内部不变量破坏（bug）（预留） |
-| `E9902` | 源读取 I/O 错误 |
-| `E9903` | 配置错误（CLI 参数、文件缺失）（预留） |
-| `E9904` | 插件加载失败（预留） |
+| `E9901` | Internal invariant broken (bug) (reserved) |
+| `E9902` | Source read I/O error |
+| `E9903` | Configuration error (CLI arguments, missing file) (reserved) |
+| `E9904` | Plugin loading failed (reserved) |

@@ -1,4 +1,4 @@
-[English](audit-doc-consistency.md) | 中文
+[English](/audit-doc-consistency.md) | 中文
 
 # 文档与源码一致性审计（2026-10-08）
 

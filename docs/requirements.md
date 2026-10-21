@@ -1,4 +1,4 @@
-[中文](需求整理.md) | English
+[中文](/zh/requirements.md) | English
 
 # Cage Requirements Digest (based on `docs/design.md`, Rust implementation)
 

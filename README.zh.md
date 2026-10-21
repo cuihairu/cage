@@ -211,7 +211,7 @@ irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 -Ou
 
 完整设计与使用文档：**https://cuihairu.github.io/cage/**
 
-- [设计文档](docs/design.md) · [需求整理](docs/需求整理.md) · [生命周期](https://cuihairu.github.io/cage/lifecycle) · [UI 原型](https://cuihairu.github.io/cage/design-prototypes) · [Roadmap](todo.md)
+- [设计文档](docs/zh/design.md) · [需求整理](docs/zh/requirements.md) · [生命周期](https://cuihairu.github.io/cage/zh/lifecycle) · [UI 原型](https://cuihairu.github.io/cage/zh/design-prototypes) · [Roadmap](todo.md)
 
 ## 底座
 
