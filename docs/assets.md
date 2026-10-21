@@ -108,12 +108,12 @@ cage assets <project> --check assets.json  # 复核：缺失 / 篡改 / 多余�
 
 ## JSON Schema（标准）形态
 
-cage 的 schema 是自有 DSL（YAML，见 [Schema 文档](/schema)）——它是
+cage 的 schema 是自有 DSL（YAML，见 Schema 文档）——它是
 规则事实源，不是 JSON Schema 标准文档。给非 cage 工具链（编辑器、ajv、
 前端表单等）消费的标准 JSON Schema 形态由 **`format = "jsonschema"`
 target** 产出：每表一个自包含 `{table}.schema.json`（draft-07 默认、
 2020-12 可选，枚举内联、闭形对象），schema 驱动、确定性字节，随源
-schema 演进——详见 [Target · JSON Schema](/target#json-schema-target-已实装)。
+schema 演进——详见 Target · JSON Schema。
 快照里的 `schema.json`（profile 投影的规范结构）是 cage 自有形态，
 编辑器 / 前端同形消费；两者各司其职：自有形态管编译链内消费，标准
 形态管链外工具。

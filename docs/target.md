@@ -26,7 +26,7 @@ Normalize 的目标：
 > **相同语义的数据应该产生相同的 Canonical Representation**（同表示层
 > 内成立：trim 后相同的字符串、排序后相同的对象键，规范形式一致）。
 
-归一化使用确定性规则（`BTreeMap`、稳定排序），相同输入必然得到相同输出，为[确定性构建](/build)打底。
+归一化使用确定性规则（`BTreeMap`、稳定排序），相同输入必然得到相同输出，为确定性构建打底。
 
 ## Transform
 
@@ -34,7 +34,7 @@ Transform 负责：
 
 > Canonical Model → Target Artifact
 
-而不是重新验证数据。验证在 [Validation 流水线](/validation)已完成，Transform 只做转换：
+而不是重新验证数据。验证在 Validation 流水线已完成，Transform 只做转换：
 
 ```text
                   Valid Model
@@ -143,7 +143,7 @@ Template        ← 已实装（用户自定义模板）
 
 该线格式同时是源格式：`cage-source-msgpack` 重消费自己写的
 `.msgpack` 文件（registry 条目 `data/**` 即以此格式打包，见
-[CLI · registry](/cli#registry) 的保真度选择），浮点/Bytes/超 i64
+CLI · registry 的保真度选择），浮点/Bytes/超 i64
 整数往返无损。
 
 ```toml
@@ -679,7 +679,7 @@ table={{ table.name }} pk-snake={{ table.name | snake_case }}
 ## Profile：前端 / 后端
 
 不要把「客户端」和「服务端」写死在 Core。可以定义 Build Profile（真实
-句法见 [CLI: build](/cli#build)，工程配置 `cage.toml`）：
+句法见 CLI: build，工程配置 `cage.toml`）：
 
 ```toml
 [profiles.client]

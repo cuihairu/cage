@@ -36,7 +36,7 @@ schema，design §45 / S9）已实装，`cage graph`（读依赖图）已实装�
 
 ## mcp
 
-> **生命周期**：横切 · ②④⑤（AI 驱动校验/生成/预演）。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：横切 · ②④⑤（AI 驱动校验/生成/预演）。见游戏配置的生命周期。
 
 ```bash
 cage mcp            # 打印工具清单（人看的）
@@ -72,7 +72,7 @@ initialize → tools/list → 六个 tools/call（含一条故意写错的配置
 
 ## init
 
-> **生命周期**：① 之前 · 起工程骨架。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：① 之前 · 起工程骨架。见游戏配置的生命周期。
 
 ```bash
 cage init my-game                                   # 终端里交互式问答生成项目骨架
@@ -109,7 +109,7 @@ cage init my-game --no-examples                     # 只要空骨架（不生�
 
 ## check
 
-> **生命周期**：② · 校验。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：② · 校验。见游戏配置的生命周期。
 
 ```bash
 cage check .
@@ -129,14 +129,14 @@ semantic / gamerule（默认 `semantic`，即默认执行到 L6，含 L7 业务�
 需显式 `--level gamerule`）。`--profile` 默认 `client`（check / build /
 gen 同）。`--env`（check / build / gen 同）按 Schema `env_overrides`
 声明的环境抹约束后验证——未声明的环境名是用法错误（exit 2），详见
-[Schema 分环境约束覆盖](/schema#分环境约束覆盖env_overrides设计-48)。
+Schema 分环境约束覆盖。
 不带 `--env` 时坏覆盖也有守卫：任一已声明环境的结构性坏覆盖（指向
 不存在字段 / 空补丁）在装载期逐条 `warning:` 提示（不阻断）；带上
 `--env` 时同一缺陷是硬错误（exit 2）。
 
 ## build
 
-> **生命周期**：④⑤ · 目标生成 + 增量。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：④⑤ · 目标生成 + 增量。见游戏配置的生命周期。
 
 ```bash
 cage build . --profile client
@@ -147,21 +147,21 @@ cage build . --incremental       # 哈希与上次 manifest 一致时跳过重�
 
 与 check 同口径的 `--level`（默认 semantic）可上调/下调验证层级。
 
-验证并生成目标产物，同时输出 [Build Manifest](/build#build-manifest)。
+验证并生成目标产物，同时输出 Build Manifest。
 `--incremental` 依据 manifest 里的 schema/source/target 指纹做三层增量
 （校验仍全量执行；schema 变化回退全量，target 配置变更只重生对应
-target，详见[增量构建](/build#增量构建)）。
+target，详见增量构建）。
 
 ## gen
 
-> **生命周期**：④ · 代码绑定生成。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：④ · 代码绑定生成。见游戏配置的生命周期。
 
 ```bash
 cage gen . --profile server
 cage gen . --env prod    # 按环境约束生成
 ```
 
-只生成代码类产物（[C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf](/target#code-targets-与-data-targets-分离)，
+只生成代码类产物（C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf，
 另支持 `template` 用户自定义 Tera 模板 target），
 不跑数据校验：代码生成是 Schema 驱动的，类型与元数据全部来自 Schema，
 不消费配置行数据（源文件仍需可正常加载解析）。Profile 里的数据类
@@ -171,7 +171,7 @@ Target（json/csv/msgpack）会被跳过，需要
 
 ## inspect
 
-> **生命周期**：横切 · ②（结构查看）。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：横切 · ②（结构查看）。见游戏配置的生命周期。
 
 ```bash
 cage inspect . Item     # 项目路径必填；表名可选，省略时列出全部表
@@ -181,7 +181,7 @@ cage inspect . Item     # 项目路径必填；表名可选，省略时列出全
 
 ## assets
 
-> **生命周期**：横切 · 资产基线。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：横切 · 资产基线。见游戏配置的生命周期。
 
 ```bash
 cage assets <project>                       # 文本清单：路径 / 类别 / blake3 / 大小
@@ -190,7 +190,7 @@ cage assets <project> --write assets.json   # 基线落盘（随仓入库）
 cage assets <project> --check assets.json   # 对基线复核工作树
 ```
 
-资产清单（design §50，详见 [资产 · 分类与备份策略](/assets#资产分类与备份策略-design-50)）：
+资产清单（design §50，详见 资产 · 分类与备份策略）：
 把工程的构建规则（`cage.toml`）、规则资产（`schema_path` 文件集 +
 `migrations/`）、源数据资产（`[source_roots]` 文件集）逐文件 blake3 +
 大小盘点，按路径确定性排序——同一棵树必出同一份清单。远程 spec
@@ -210,17 +210,17 @@ cage build . --no-cache    # check / build / gen / inspect 通用
 
 `check` / `build` / `gen` / `inspect` 四命令都带 `--no-cache`：关闭
 远程源（HTTP / MySQL / PostgreSQL / Google Sheets，见
-[source](/source#离线回退与-no-cache远程源通用s4)）的离线回退——
+source）的离线回退——
 默认传输类取数失败会回退上一份缓存副本并发 `E1906` WARNING，
 `--no-cache` 下取不到远端即失败（`E1901`，退出码 2），即使有缓存
 副本。适合发布前「必须以远端最新字节构建」的核对。strict 不等于
 完全不缓存：HTTP 源默认走条件 GET（ETag/Last-Modified，见
-[source](/source#http-api远程源s1)），`--no-cache` 下依然发条件
+source），`--no-cache` 下依然发条件
 请求——304 是服务器确认缓存，不算缓存自答。
 
 ## schema-draft
 
-> **生命周期**：① 之前 · 库表内省起草 schema。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：① 之前 · 库表内省起草 schema。见游戏配置的生命周期。
 
 ```bash
 cage schema-draft . mysql:Items pg:public.Monsters   # 内省库表 → stdout
@@ -240,7 +240,7 @@ JSON 的实际形态）。凭据纪律同远程源：DSN 只从
 
 ## diff
 
-> **生命周期**：横切 · 版本对比。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：横切 · 版本对比。见游戏配置的生命周期。
 
 ```bash
 cage diff build/a build/b
@@ -253,7 +253,7 @@ cage diff build/a build/b
 
 ## snapshot
 
-> **生命周期**：⑥ · 自校验快照。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：⑥ · 自校验快照。见游戏配置的生命周期。
 
 ```bash
 cage snapshot <project> --profile client    # 构建 + 打包自校验快照
@@ -262,7 +262,7 @@ cage snapshot <snapshot-dir> --verify       # 载入前校验（服务器入口�
 cage snapshot <project> --list              # 列已打包快照并逐包自验
 ```
 
-打包[Configuration Snapshot](/build#configuration-snapshot)：把 profile
+打包Configuration Snapshot：把 profile
 构建产物打成可独立加载、自带 blake3 账本的目录
 `<output_dir>/snapshot/<profile>[-<env>]-<build_id[..12]>`（manifest.json /
 schema.json / data/ / generated/ / HASHES.json），构建后自校验。`--verify` 对既有快照
@@ -277,7 +277,7 @@ schema.json / data/ / generated/ / HASHES.json），构建后自校验。`--veri
 
 ## verify
 
-> **生命周期**：⑥ · 产物校验。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：⑥ · 产物校验。见游戏配置的生命周期。
 
 ```bash
 cage verify <project-root>         # 审计 output_dir 的构建产物
@@ -294,7 +294,7 @@ cage verify build/manifest.json    # 或 manifest 文件本身
 
 ## graph
 
-> **生命周期**：横切 · ③（依赖图）。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：横切 · ③（依赖图）。见游戏配置的生命周期。
 
 ```bash
 cage graph <project>               # 文本视图（默认）
@@ -302,7 +302,7 @@ cage graph <project> --format dot  # Graphviz DOT
 cage graph <project> --format json # 机器可读
 ```
 
-输出[配置依赖图](/build#配置依赖图)：schema 引用声明经
+输出配置依赖图：schema 引用声明经
 `DependencyGraph::from_schema` 成图——与引用检查（L5）和增量规划
 （`build --incremental` 第二层）同一入口。边带引用字段标签（schema
 顺序），文本视图附拓扑构建序与环清单；**环只报告不致命**——报错的
@@ -320,7 +320,7 @@ Cage 支持四种远程输入源，全部在 `cage.toml` 的 `[source_roots]` �
 | `pg:<表|具名查询>` | `cage-source-db` | 同上；PG 侧只读用 `default_transaction_read_only` |
 | `gsheet:<spreadsheet_id>/<tab>` | `cage-source-sheets` | Sheets API v4 `values` + `UNFORMATTED_VALUE`；首行表头、空行跳过、短行补 null；形状门 `E1903`（非行集/空表头/majorDimension 非 ROWS） |
 
-三源共享缓存布局 `.cage-cache/source/<指纹>/`：远端字节先落盘，再走标准 JSON 解析与 L0-L7 全量校验，**无旁路**。详见 [Source](/source)。
+三源共享缓存布局 `.cage-cache/source/<指纹>/`：远端字节先落盘，再走标准 JSON 解析与 L0-L7 全量校验，**无旁路**。详见 Source。
 
 ### 离线回退与 `--no-cache`
 
@@ -328,7 +328,7 @@ Cage 支持四种远程输入源，全部在 `cage.toml` 的 `[source_roots]` �
 
 ## web
 
-> **生命周期**：⑥ · Schema 编辑器服务。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：⑥ · Schema 编辑器服务。见游戏配置的生命周期。
 
 ```bash
 cage web ./ --port 8765
@@ -339,7 +339,7 @@ U1..U3），只绑定 `127.0.0.1`、无需鉴权。浏览器打开打印的地�
 编辑器单页，
 `/status/` 是项目状态页（校验面板 + 每 profile 构建新鲜度 + 构建
 按钮，编译期嵌入二进制），与 HTTP API 共用一份交换文档，API 契约见
-[Web UI](/web)：
+Web UI：
 
 ```text
 GET  /api/schema      → 合并 Schema 的编辑器文档（每请求重载，保存后立即可见；
@@ -362,7 +362,7 @@ GET  /api/registry    → registry 条目浏览（读 [registry] path；未配�
 
 ## lsp
 
-> **生命周期**：横切 · ②（IDE 诊断）。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：横切 · ②（IDE 诊断）。见游戏配置的生命周期。
 
 ```bash
 cage lsp <project>
@@ -408,7 +408,7 @@ VSIX 随 nightly Release 附件分发（同二进制口径，非正式版本）�
 
 ## registry
 
-> **生命周期**：③ · 配置包仓库。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：③ · 配置包仓库。见游戏配置的生命周期。
 
 ```bash
 cage registry publish <project> [--registry <dir>] [--package name] [--version 1.0.0] [--profile client] [--env prod]
@@ -424,7 +424,7 @@ cage registry push    <project> [package[@version]] (--registry <remote-url> | -
 ```
 
 本地 Configuration Registry（第三阶段 R 系列，[design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry)）。
-`publish` 全量构建 → 打包[自校验快照](/build#configuration-snapshot) → 账本
+`publish` 全量构建 → 打包自校验快照 → 账本
 校验通过后入册 `<registry>/<包>/<版本>/`（包默认 `project.name`、版本默认
 `project.version`）；同一版本只装一包——重发按整包指纹（`build_id` +
 `content_hash`）判幂等，指纹一致是 no-op，任何不同（数据、schema、
@@ -665,7 +665,7 @@ presigned PUT URL；`index.get` 可省（远端尚无此包），`index.put`
 
 ## migrate（M 系列）
 
-> **生命周期**：①→② · 数据迁移执行。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：①→② · 数据迁移执行。见游戏配置的生命周期。
 
 ```bash
 # 先改 schema.yaml 到新版，再写 migrations/0001-xxx.yaml（from/to/steps）
@@ -712,7 +712,7 @@ cage migrate . --to latest --write # 整链（latest 解析为链终点，与 --
 
 ## migrate-draft（M 系列）
 
-> **生命周期**：①→② · 迁移链起草。见[游戏配置的生命周期](/lifecycle)。
+> **生命周期**：①→② · 迁移链起草。见游戏配置的生命周期。
 
 ```bash
 # 对比两份 schema 版本，起草一份迁移规则稿（write 到 stdout 或 -o 落盘）

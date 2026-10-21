@@ -136,7 +136,7 @@ schema 引用声明经 `DependencyGraph::from_schema` 构建（先于且独立�
 tests/incremental.rs（含第二/三层端到端：变更传播 + 携带 + target 配置
 增删改 + manifest 收敛 + 旧版 manifest 迁移）。`cage graph`（2026-10-12
 实装）把同一张图渲染给人看：边带引用字段标签，文本 / Graphviz dot /
-json 三形态，附拓扑构建序与环清单（见 [CLI](/cli#graph)）。
+json 三形态，附拓扑构建序与环清单（见 CLI）。
 
 ## 增量构建
 
@@ -268,7 +268,7 @@ load configuration
 ## Configuration Registry（R1–R4 已实装，design §29）
 
 注册表把上面的可独立加载快照升级为**多版本配置仓库**：同一包可共存多
-个版本的[自校验快照](/cli#registry)（`<registry>/<包>/<版本>/` 即一枚
+个版本的自校验快照（`<registry>/<包>/<版本>/` 即一枚
 Snapshot，逐文件 blake3 账本），包目录附确定性 `index.json`（版本序 / 
 build_id / content_hash / 文件数），消费方经 `registry:<包>[@<版本>]`
 载入条目——「未经校验不入册、未经校验不载入」。
@@ -283,9 +283,9 @@ build_id / content_hash / 文件数），消费方经 `registry:<包>[@<版本>]
   （幂等判定按整包指纹 `build_id + content_hash`——schema/环境变了
   就是不同的包，同版本重发报 E1801）。
 
-命令、配置句法与回滚纪律见 [CLI：registry](/cli#registry)；
+命令、配置句法与回滚纪律见 CLI：registry；
 协议与错误码见 [design §29](https://github.com/cuihairu/cage/blob/main/docs/design.md#29-configuration-registry) 与
-[validation.md E180x](/validation#registry配置仓库第三阶段-r-系列)。
+validation.md E180x。
 
 ## CI/CD
 
@@ -322,4 +322,4 @@ cage build --profile client
 cage build --profile server
 ```
 
-配置错误在 CI 里先失败，不带进游戏。本仓库自身由 CI 门禁（全测试绿）与每日构建守护，`warnings_as_errors` 策略见 [Validation：Warning Policy](/validation#warning-policy)。
+配置错误在 CI 里先失败，不带进游戏。本仓库自身由 CI 门禁（全测试绿）与每日构建守护，`warnings_as_errors` 策略见 Validation：Warning Policy。

@@ -85,7 +85,7 @@ Fields can declare reference relationships to one another:
 `reference` has three further optional sub-keys: `predicate` (the semantic
 predicate the referenced object must satisfy; L5 evaluates it on the target
 row and yields `E1410` — see
-[Validation](/en/validation) for the exact semantics), `cardinality`
+Validation for the exact semantics), `cardinality`
 (`one`/`many`/`optional`, default `one`; **source-side semantics** are
 implemented — `one`/`optional` require a single-value reference (`optional`
 tolerates null, while under `one` a null reports `E1404`), and `many` requires
@@ -130,7 +130,7 @@ types pass their parameter in `value`); the lower-case scalar form
 | `properties` / `additional_properties` | Object property schema and unknown-key switch |
 | `reference` | Cross-table reference (`table` + `field`, `E1401`; see the sub-key description above) |
 | `targets` | Which profiles the field is visible to (empty = all; `"*"` is equivalent to empty; a hidden structurally required field reports `E9006`) |
-| `rules` | Field-level semantic rules (`name`/`assert`/`message`/`warning_only`; L6 evaluates single-comparison assertions, a false assertion or an incomparable type reports `E1501`, a malformed assertion or undeclared field reports `E1004` — see [Semantic](/en/validation)) |
+| `rules` | Field-level semantic rules (`name`/`assert`/`message`/`warning_only`; L6 evaluates single-comparison assertions, a false assertion or an incomparable type reports `E1501`, a malformed assertion or undeclared field reports `E1004` — see Semantic) |
 
 ## Table-Level Constraints
 
@@ -148,7 +148,7 @@ field-level `unique`) is therefore **silently ineffective**, and at validation
 time the constraint is as if it never existed.
 
 Schema validation is executed in tiers by the
-[Validation pipeline](/en/validation): required at L1, types at L2, value
+Validation pipeline: required at L1, types at L2, value
 domains (min/max/length/pattern/enum/items) at L3, uniqueness and primary keys
 at L4, and cross-table references at L5.
 
@@ -195,4 +195,4 @@ bad override does not stay latent until someone actually selects an
 environment); with `--env`, it is a hard error (exit 2). `cage snapshot` /
 `registry publish` also support `--env` to produce environment-specific
 packages (see
-[build](/en/build) and [cli](/en/cli)).
+build and cli).

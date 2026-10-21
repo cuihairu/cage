@@ -119,6 +119,5 @@ Status as of the 2026-10 code: the MVP is fully delivered, phase two is fully de
 
 ## Rust implementation baseline
 - Cargo workspace: `cage-core` (value/document/schema/diagnostics/validation/reference/normalize/manifest/snapshot/edit/registry/remote), `cage-source-{excel,csv,json,yaml,http,db,sheets,msgpack}`, `cage-target-{json,csv,msgpack,cs,py,lua,ts,cpp,go,java,proto,jsonschema,template}`, `cage-cli`
-- The error-code table lives in `cage-core` (one doc per code for E0001/E1001/E1101/E1201/E1301/E1401/E1410 …; reserved codes are noted in [validation.md](/en/validation))
 - Determinism: BTreeMap/stable sorting, byte-for-byte reproducible output (golden tests)
 - Test gating: all tests must be green before commit/push (no force push, no version tags/releases)

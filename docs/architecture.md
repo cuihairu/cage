@@ -101,7 +101,7 @@ Source 只负责：
 
 > **把外部数据读取进 Cage。**
 
-它不应该负责业务验证。详见 [Source 栏目](/source)。
+它不应该负责业务验证。详见 Source 栏目。
 
 ### Schema
 
@@ -127,7 +127,7 @@ enums:
       - { name: Consumable, value: 3 }
 ```
 
-Schema 定义：字段、类型、必填、默认值、范围、枚举、数组、对象、唯一性、引用、输出信息（此为实际 wire 格式；完整 DSL 见 [Schema 栏目](/schema)）。
+Schema 定义：字段、类型、必填、默认值、范围、枚举、数组、对象、唯一性、引用、输出信息（此为实际 wire 格式；完整 DSL 见 Schema 栏目）。
 
 ### Canonical Model
 

@@ -71,7 +71,7 @@ Invalid YAML syntax.
 
 ## L1 Schema（结构）
 
-检查配置结构是否符合 [Schema](/schema)。
+检查配置结构是否符合 Schema。
 
 缺少字段：
 
@@ -421,7 +421,7 @@ ERROR E1601 — Game Rule Validation Failed
 
 这样 Cage Core 不需要理解具体游戏业务。执行模型的选型（进程内
 trait → 动态库 → 沙箱）与信任边界见
-[架构：安全与隔离](/architecture#安全与隔离)；完整对比表与分层决策
+架构：安全与隔离；完整对比表与分层决策
 见仓库设计稿 `docs/design.md` §17.1「插件沙箱方案定稿」。
 
 ## 分级执行
@@ -435,7 +435,7 @@ cage check --level reference    # 只做到引用层
 cage check --level gamerule     # 加上 L7 业务规则插件
 ```
 
-详见 [CLI](/cli)。
+详见 CLI。
 
 ## Diagnostics：一等公民
 

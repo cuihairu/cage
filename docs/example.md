@@ -513,7 +513,7 @@ rpg-demo
   0.1.0-prod   build 55dae1a8e145  content f81e230d62e9  89 files
 ```
 
-快照打成 `rpg-demo/0.1.0` 条目入册：自校验、可寻址、可滚动回收。`publish --env` 出环境化包：一版本一包——同一版本换环境是不同的包（schema/manifest 都变），E1801 拦下冲突，换个版本号（`0.1.0-prod`）即可入册；条目内的 `manifest.json` 记 `environment`。Schema 作为资产的管理与消费端加载见[资产页](/assets)。
+快照打成 `rpg-demo/0.1.0` 条目入册：自校验、可寻址、可滚动回收。`publish --env` 出环境化包：一版本一包——同一版本换环境是不同的包（schema/manifest 都变），E1801 拦下冲突，换个版本号（`0.1.0-prod`）即可入册；条目内的 `manifest.json` 记 `environment`。Schema 作为资产的管理与消费端加载见资产页。
 
 ### cage registry push —— 远程分发与消费方接入
 
@@ -858,4 +858,4 @@ Java 列的 `primitive / wrapper` 取值取决于字段可空性（必填用 pri
 
 消费端（另一个仓库的构建 / 工具链 / CI）不拉源文件，拉注册表条目：`schema_path = "game:0.1.0/schema.json"` + `[source_roots] game = "registry:0.1.0"` + `[dependencies]` 版本 pin，构建期先过信任门再跑完整流水线。标准 JSON Schema 形态由 `format = "jsonschema"` target 产出（`build/client/jsonschema/`），给非 cage 工具链消费。
 
-详见[资产页](/assets)。
+详见资产页。

@@ -513,7 +513,7 @@ rpg-demo
   0.1.0-prod   build 55dae1a8e145  content f81e230d62e9  89 files
 ```
 
-The snapshot is registered as the `rpg-demo/0.1.0` entry: self-verifying, addressable, and reclaimable by rolling. `publish --env` produces an environment-scoped package: one version, one package — the same version under a different environment is a different package (schema/manifest both change), E1801 blocks the conflict, and switching to a different version number (`0.1.0-prod`) gets it registered; the `manifest.json` inside the entry records `environment`. For managing schemas as artifacts and consumer-side loading, see the [Assets page](/en/assets).
+The snapshot is registered as the `rpg-demo/0.1.0` entry: self-verifying, addressable, and reclaimable by rolling. `publish --env` produces an environment-scoped package: one version, one package — the same version under a different environment is a different package (schema/manifest both change), E1801 blocks the conflict, and switching to a different version number (`0.1.0-prod`) gets it registered; the `manifest.json` inside the entry records `environment`. For managing schemas as artifacts and consumer-side loading, see the Assets page.
 
 ### cage registry push — remote distribution and consumer integration
 
@@ -858,4 +858,4 @@ The example's endpoint is not the artifact directory but **distributable, re-ver
 
 The consumer side (another repository's builds / toolchain / CI) pulls registry entries, not source files: `schema_path = "game:0.1.0/schema.json"` + `[source_roots] game = "registry:0.1.0"` + `[dependencies]` version pins, passing the trust gate at build time before running the full pipeline. The standard JSON Schema form is produced by the `format = "jsonschema"` target (`build/client/jsonschema/`), for consumption by non-cage toolchains.
 
-See the [Assets page](/en/assets) for details.
+See the Assets page for details.

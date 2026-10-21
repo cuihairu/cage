@@ -75,7 +75,7 @@ enums:
 
 `reference` 还有三个可选子键：`predicate`（引用对象须满足的语义谓词，
 L5 在目标行上求值，产出 `E1410`，口径见
-[validation](/validation#l6-semantic语义)）、`cardinality`
+validation）、`cardinality`
 （`one`/`many`/`optional`，默认 `one`；**源侧语义**已实装——`one`/
 `optional` 要求单值引用（`optional` 容忍 null，`one` 下 null 报
 `E1404`），`many` 要求数组并逐元素校验存在性与谓词；未知拼写报
@@ -117,7 +117,7 @@ L5 在目标行上求值，产出 `E1410`，口径见
 | `properties` / `additional_properties` | 对象属性 schema 与未知键开关 |
 | `reference` | 跨表引用（`table` + `field`，`E1401`；见上文子键说明） |
 | `targets` | 字段对哪些 profile 可见（空 = 全部；`"*"` 等价空；被隐藏的结构必需字段报 `E9006`） |
-| `rules` | 字段级语义规则（`name`/`assert`/`message`/`warning_only`；L6 按单比较断言求值，断言为假或类型不可比报 E1501，畸形断言/未声明字段 E1004，见 [Semantic](/validation#l6-semantic语义)） |
+| `rules` | 字段级语义规则（`name`/`assert`/`message`/`warning_only`；L6 按单比较断言求值，断言为假或类型不可比报 E1501，畸形断言/未声明字段 E1004，见 Semantic） |
 
 ## 表级约束
 
@@ -133,7 +133,7 @@ L5 在目标行上求值，产出 `E1410`，口径见
 名（如 `regex`、`values`、字段级 `unique`）因此**静默无效**，校验时
 该约束形同不存在。
 
-Schema 校验由 [Validation 流水线](/validation) 分级执行：required 在
+Schema 校验由 Validation 流水线 分级执行：required 在
 L1、类型在 L2、值域（min/max/length/pattern/enum/items）在 L3、唯一性
 与主键在 L4、跨表引用在 L5。
 
@@ -170,4 +170,4 @@ cage.toml 登记）。`cage check` / `build` / `gen` 以 `--env <名>` 选
 时装载期逐条 `warning:` 提示（不阻断，坏覆盖不会潜伏到有人选环境才
 暴露）；带 `--env` 时硬错误（exit 2）。`cage snapshot` /
 `registry publish` 同样支持 `--env` 出环境化包（见
-[build](/build#configuration-snapshot) 与 [cli](/cli#snapshot)）。
+build 与 cli）。

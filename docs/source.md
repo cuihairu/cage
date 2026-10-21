@@ -1,7 +1,7 @@
 
 # Source：输入源
 
-Source Adapter 是 Cage 的输入插件。每种输入格式一个 Adapter，统一产出 [Canonical Model](/architecture#canonical-model)。
+Source Adapter 是 Cage 的输入插件。每种输入格式一个 Adapter，统一产出 Canonical Model。
 
 ```text
                   Cage Core
@@ -109,7 +109,7 @@ Document
 `xlsx` / `xls` / `msgpack` 扩展名；其中 `.xls` 旧格式被收集后按 `E0001` 拒绝，
 `.xlsm`/`.ods` 不在目录收集清单内（目录模式下被静默忽略——单文件
 `schema_path`/`source` 显式指定时适配器本身支持 `.xlsx`/`.xlsm`/`.ods`）。
-远程源根（`registry:`，见 [CLI · registry](/cli#registry)）同样可作
+远程源根（`registry:`，见 CLI · registry）同样可作
 `[source_roots]` 取值。
 
 ### HTTP API（远程源，S1）
@@ -164,7 +164,7 @@ revalidation——缺一半即按无缓存走普通 GET 重建。只有首页 GE
 ### 库表内省 Schema 草稿（S9，design §45）
 
 `cage schema-draft <工程> <spec>... [-o <文件>]` 把库表的**形状**
-落成一份可审阅的 schema 草稿（见 [cli](/cli#schema-draft)）：每个
+落成一份可审阅的 schema 草稿（见 cli）：每个
 `mysql:<表>` / `pg:<表>` spec 经只读会话内省
 `information_schema`（表名绑定为参数、永不拼接进 SQL），渲染出表、
 主键与 `NOT NULL → required: true`；DECIMAL / 日期时间 / JSON /

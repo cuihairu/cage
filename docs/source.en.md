@@ -1,7 +1,7 @@
 
 # Source: Input Sources
 
-A Source Adapter is Cage's input plugin. One Adapter per input format, and all of them produce the [Canonical Model](/en/architecture) uniformly.
+A Source Adapter is Cage's input plugin. One Adapter per input format, and all of them produce the Canonical Model uniformly.
 
 ```text
                   Cage Core
@@ -118,7 +118,7 @@ collected and then rejected with `E0001`, while `.xlsm`/`.ods` are not in the
 directory collection list (silently ignored in directory mode — the adapter
 itself supports `.xlsx`/`.xlsm`/`.ods` when a single file is explicitly
 specified via `schema_path`/`source`). A remote source root (`registry:`, see
-[CLI · registry](/en/cli)) can likewise be a `[source_roots]` value.
+CLI · registry) can likewise be a `[source_roots]` value.
 
 ### HTTP API (Remote Source, S1)
 
@@ -187,7 +187,7 @@ report `E1901`.
 ### Database Table Introspection Schema Draft (S9, design §45)
 
 `cage schema-draft <project> <spec>... [-o <file>]` turns the **shape** of
-database tables into a reviewable schema draft (see [cli](/en/cli)): each
+database tables into a reviewable schema draft (see cli): each
 `mysql:<table>` / `pg:<table>` spec introspects `information_schema` through a
 read-only session (the table name is bound as a parameter, never concatenated
 into SQL), rendering the table, its primary key, and

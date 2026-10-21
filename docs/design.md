@@ -1,6 +1,6 @@
 # Cage
 
-> 语言：**中文** | [English](design.en.md)（完整英文译版；对外发布的栏目页精简版见 [architecture](/en/architecture) / [cli](/en/cli)）
+> 语言：**中文** | [English](design.en.md)（完整英文译版；对外发布的栏目页精简版见 architecture / cli）
 
 > Game Configuration Compiler, Validation & Transformation Framework
 

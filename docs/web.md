@@ -137,7 +137,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 - [x] CI 集成：`web-smoke` job 镜像 example job（checkout + toolchain +
       rust-cache + `bash examples/web-smoke.sh`）
 
-### W5 已实装：项目状态面（U1，路线见 [UI 门面](/ui)）
+### W5 已实装：项目状态面（U1，路线见 UI 门面）
 
 - [x] `GET /api/status[?profile=&env=&level=]`：一份文档三块——项目
       事实（name / schema_path / output_dir / profile 列表）、校验面板
@@ -165,7 +165,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       （状态页路由与 301 / 状态-构建端到端 / 坏数据端到端）+
       web-smoke 第 5 步（真实服务上状态页 → fresh → up-to-date）
 
-### W6 已实装：产物浏览（U2a，路线见 [UI 门面](/ui)）
+### W6 已实装：产物浏览（U2a，路线见 UI 门面）
 
 - [x] `GET /api/artifacts[?profile=&env=]`：产物账本 = build manifest。
       manifest 单槽，**跨 profile 不读遗留**——manifest 属于别的
@@ -186,7 +186,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       404 + 篡改 409 / stale 标注）+ 集成 1 项（列表 → 逐字节伺服 →
       404 → 409 端到端）+ web-smoke 第 5 步补产物断言
 
-### W7 已实装：targets 徽标 + profile 作用域视图（U2b，路线见 [UI 门面](/ui)）
+### W7 已实装：targets 徽标 + profile 作用域视图（U2b，路线见 UI 门面）
 
 - [x] `GET /api/schema?profile=NAME`：附 `projection`（`filter_by_profile`
       直调——构建管线同一投影函数，未知 profile 400）。前端语义零复制：
@@ -202,7 +202,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       → server 保留 → ghost 400）+ web-smoke 第 7 步（game-config 的
       `internal_note`：client 投影剔除、server 保留、ghost 400）
 
-### W8 已实装：快照 / 分层 diff / registry 浏览（U3，路线见 [UI 门面](/ui)）
+### W8 已实装：快照 / 分层 diff / registry 浏览（U3，路线见 UI 门面）
 
 - [x] `GET /api/snapshots`：列 `<output_dir>/snapshot/` 下全部包，
       每包**现场** `verify_snapshot`——列表绝不宣称它没刚验过的包是
@@ -216,7 +216,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       changed}`（每条带 table 与 target 归属）/ `roots`（content_hash
       与 build_id 的 from→to）。table/target 元数据随文件条目走，
       界面三层折叠（表 → target → 文件）就是纯分组；不做 Merkle 化，
-      卡点（出现「只拉变化子树」的增量同步需求）见 [UI 门面](/ui)
+      卡点（出现「只拉变化子树」的增量同步需求）见 UI 门面
 - [x] `GET /api/registry`：浏览 `[registry] path` 下的包与版本
       （cage_core registry 同一入口）；未配置出 ok + 说明而非报错
 - [x] 状态页：新增「快照」（自验徽标 + 打包钮）、「对比」（基线/
@@ -233,7 +233,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       列表 → 跨快照 diff → ghost 400）+ web-smoke 第 5 步（打包 →
       自验 → 零差异 diff → registry 空态）
 
-### W9 已实装：数据面板（策划界面 P0，2026-10-20，路线见 [UI 门面](/ui)）
+### W9 已实装：数据面板（策划界面 P0，2026-10-20，路线见 UI 门面）
 
 - [x] `GET /api/tables[?profile=&env=]`：仓内数据表清单（每表
       rows / source_file / sheet / primary_key；主键取自 schema
@@ -265,7 +265,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 - [x] 状态页产物卡「一键导出」钮（多文件 target 才出现）：逐个触发
       `/api/artifact` 下载，每文件各自先验 blake3 再发；已代决不新增
       zip/打包端点（产物字节不重算、零新依赖，批量分发走
-      `cage snapshot` 包），拍板记录见 [UI 门面](/ui)
+      `cage snapshot` 包），拍板记录见 UI 门面
 - [x] 测试：集成断言（编辑器页含开关与 `scheduleAutoValidate`、状态
       页导出走 `/api/artifact`）+ 两页脚本 `node --check`；P1 零服务端
       新面，web 单测/集成数量不变
@@ -285,7 +285,7 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       `diag-new`）+ 两页脚本 `node --check`；web 单测 32 绿 / 集成
       14 绿不变
 
-### W12 已实装：表源文件上传替换（策划界面 P0，2026-10-21，路线见 [UI 门面](/ui)）
+### W12 已实装：表源文件上传替换（策划界面 P0，2026-10-21，路线见 UI 门面）
 
 - [x] `POST /api/upload?name=NAME[&profile=&env=]`：原始字节体 = 该表
       登记源文件的整文件替换。安全策略已代决（docs/ui.md 上传落地
@@ -313,6 +313,6 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务
 → W3 编辑器前端 → W4 文档与示例 → W5 项目状态面 → W6 产物浏览 →
 W7 作用域视图 → W8 快照 / 分层 diff / registry 浏览；策划界面
-增量见 [UI 门面](/ui)（数据面板 W9 已落）。
+增量见 UI 门面（数据面板 W9 已落）。
 示例入口：`examples/web-smoke.sh`（CI 同款）。后续 UI 增量的路线与
-拍板见 [UI 门面](/ui)。
+拍板见 UI 门面。

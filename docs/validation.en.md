@@ -71,7 +71,7 @@ For text-based Sources (JSON/YAML/CSV), syntax errors are pinpointed down to the
 
 ## L1 Schema
 
-Checks that the configuration structure conforms to the [Schema](/en/schema).
+Checks that the configuration structure conforms to the Schema.
 
 A missing field:
 
@@ -424,7 +424,7 @@ ERROR E1601 — Game Rule Validation Failed
 
 This way Cage Core does not need to understand specific game business. For the execution model
 choice (in-process trait → dynamic library → sandbox) and the trust boundary, see
-[Architecture: Security and Isolation](/en/architecture); for the full comparison table and the layered decision,
+Architecture: Security and Isolation; for the full comparison table and the layered decision,
 see the repository design draft `docs/design.md` §17.1 "Finalized Plugin Sandbox Plan".
 
 ## Level-by-Level Execution
@@ -438,7 +438,7 @@ cage check --level reference    # 只做到引用层
 cage check --level gamerule     # 加上 L7 业务规则插件
 ```
 
-See [CLI](/en/cli) for details.
+See CLI for details.
 
 ## Diagnostics: First-Class Citizens
 
