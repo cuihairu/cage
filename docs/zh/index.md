@@ -70,6 +70,24 @@ Authoring Sources → Source Adapters → Canonical Model
 
 Excel 只是 Cage 的一种输入源。所有输入进入统一 Canonical Model，验证通过后按目标平台产出确定性资产，转换之外校验、引用、规范化都在同一条链上完成。
 
+## 界面原型
+
+`cage init` —— 新项目脚手架的终端问答向导（9 题，逐题单行输入，可回退、留空取默认值）：
+
+![cage init 交互式问答向导](/design/init-wizard.png)
+
+`cage check` —— 校验结果视图：错误列表，含错误码、源文件定位与修复建议：
+
+![cage check 校验结果（错误列表）](/design/validation-result.png)
+
+`cage check` —— 环境差异视图：dev/test/staging/prod 四套 `env_overrides` 的字段级约束对比：
+
+![cage check 校验结果（环境差异）](/design/validation-result-env.png)
+
+`cage check` —— 结构树视图：schema 与字段的层级、类型、约束与 profile 可见性：
+
+![cage check 校验结果（结构树）](/design/validation-result-tree.png)
+
 ## 快速开始
 
 ```bash

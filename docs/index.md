@@ -82,6 +82,24 @@ Authoring Sources → Source Adapters → Canonical Model
 
 Excel is only one kind of input source for Cage. Every input enters the unified Canonical Model, and once validation passes, deterministic assets are produced for the target platform — beyond the conversion itself, validation, references and normalization all happen on this same chain.
 
+## Interface previews
+
+`cage init` — terminal question-and-answer wizard for new-project scaffolding (9 questions, one answer per line, back/defaults supported):
+
+![cage init interactive wizard](/design/init-wizard.png)
+
+`cage check` — validation result view: error list with error code, source location and fix suggestion:
+
+![cage check validation result (error list)](/design/validation-result.png)
+
+`cage check` — environment view: field-level constraint comparison across the dev/test/staging/prod `env_overrides` sets:
+
+![cage check validation result (environment overrides)](/design/validation-result-env.png)
+
+`cage check` — structure tree view: schema and field hierarchy with types, constraints and profile visibility:
+
+![cage check validation result (structure tree)](/design/validation-result-tree.png)
+
 ## Quick start
 
 ```bash

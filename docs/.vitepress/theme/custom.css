@@ -111,6 +111,27 @@ code {
 }
 
 
+/* 正文列宽：默认主题 .VPDoc.has-aside .content-container 上限 43rem（688px），
+   宽表格与 /example 的完整示例展示不全；放宽到 1100px。
+   页面总宽沿用 --vp-layout-max-width（90rem），只动正文列这一处上限。 */
+.VPDoc.has-aside .content-container {
+  max-width: 1100px;
+}
+
+/* 宽表格在窄视口横向滚动，避免内容被裁切 */
+.vp-doc table {
+  display: block;
+  overflow-x: auto;
+}
+
+/* 首页 UI 原型图廊：等宽缩放、圆角、细边框（首页正文里的插图只有这四张原型图） */
+.VPHome .vp-doc p > img {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--vp-c-divider);
+}
+
 /* Mermaid 图表：居中、按宽度缩放；渲染失败回退块沿用普通代码块观感 */
 .mermaid-diagram {
   display: flex;
