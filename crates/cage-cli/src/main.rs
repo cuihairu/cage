@@ -59,6 +59,7 @@ mod init;
 mod lsp;
 mod mcp;
 mod remote;
+mod schema_save;
 mod web;
 
 /// Game configuration compilation and validation framework

@@ -19,9 +19,9 @@ snapshot/schema.json  ≡  cage-core::edit::to_editor_json  ≡  HTTP GET /api/s
 
 Editor JSON preserves insertion order (tables/fields in document order), omits the optional fields covered by `skip_serializing_if`, and emits `default` explicitly as `null` because it has no skip attribute (the front end can edit either).
 
-### Save = write back to a single canonical YAML file
+### Save = canonical YAML write-back (whole-file / per-source incremental)
 
-The editor works on the **merged canonical Schema** (the cli merges the multiple files under schemas/ into one `Schema` at load time, and the editor builds on that form). Save writes back to a single canonical YAML file (`to_canonical_yaml`): the same Schema → the same bytes (including a single trailing newline), and the round trip through `from_canonical_yaml` is idempotent. Splitting into multiple files is the author's persistence choice; the editor produces no split artifacts. Determinism contract: artifacts produced by `cage build` from editor-saved YAML are byte-identical to those built from the same hand-written Schema. The generator only ever sees `Schema` values, so any value-preserving edit round-trip is sufficient.
+The editor works on the **merged canonical Schema** (the CLI merges the multiple files under schemas/ into one `Schema` at load time, and the editor builds on that shape). Write-back is canonical YAML (`to_canonical_yaml`): the same Schema → the same bytes (including a single trailing newline), and the round trip through `from_canonical_yaml` is idempotent. A single-file `schema_path` is overwritten whole (atomic replace: sibling temp file + rename). A multi-file (directory) `schema_path` saves incrementally: `GET /api/schema` carries a `sources` index (per-file sha256 revision + table/enum ownership), the save envelope `{"schema": …, "sources": …}` echoes it back — the index is conflict-checked (any file whose on-disk sha256 no longer matches its load-time revision → 409 refused, nothing written), only the files owning a changed table/enum/metadata are rewritten (each atomically), and the response returns the post-save index for the client's next save. Determinism contract: artifacts produced by `cage build` from editor-saved YAML are byte-identical to those built from the same hand-written Schema. The generator only ever sees `Schema` values, so any value-preserving edit round-trip is sufficient.
 
 ### The E1701 editing-state error family
 
@@ -63,8 +63,14 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   located by JSON path) → L1 consistency (the E1004 family);
   diagnostics are emitted as a bare array (the `Diagnostics` serde `{"items": [...]}` envelope is flattened at the API layer)
 - [x] `POST /api/schema`: canonical YAML write-back. A single-file `schema_path`
-  is overwritten in place; a directory (multi-file schema) → 409 refused (the editor
-  does not rewrite the author's split); a `schema_path` starting with `registry:`
+  is overwritten in place (atomic temp-file + rename). A directory (multi-file
+  schema) is saved incrementally against the `sources` index `GET /api/schema`
+  delivers: the envelope `{"schema": …, "sources": …}` echoes the index back,
+  every listed file's sha256 must still match its load-time revision (a stale
+  editor → 409 refused, nothing written), only the files owning a changed
+  table/enum/metadata are rewritten, and the response carries the post-save
+  index so the client's next save does not conflict with itself; a raw document
+  without the index is still 409. A `schema_path` starting with `registry:`
   is likewise 409 (the schema of a published entry is not edited here—the publishing
   project must republish); nothing configured → writes `schema.yaml` plus a note
   reminding to wire up cage.toml (the server never modifies configuration files)
@@ -91,8 +97,10 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
 - [x] An E-code diagnostics panel: the Validate button / Ctrl+Enter → `POST /api/validate`;
   counted and color-coded by severity; clicking a diagnostic → locates the field (`data-path` exact anchor + scroll highlight);
   diagnostics from a refused save (E1701) also go into the panel
-- [x] Save: Ctrl/Cmd+S or the Save button → `POST /api/schema`;
-  an unsaved marker + beforeunload interception; 409 (a directory or `registry:` schema_path)
+- [x] Save: Ctrl/Cmd+S or the Save button → `POST /api/schema` (the sources index
+  rides along when `GET /api/schema` delivered one, enabling the multi-file
+  incremental save); an unsaved marker + beforeunload interception; 409 (a stale
+  index or a `registry:` schema_path)
   / an unwired-up note / 500 all surface as error toasts
 - [x] Surgical document editing: unknown/legacy keys are preserved as-is and only controllable keys are changed,
   consistent with the "editor JSON ≡ canonical shape" swap contract;
@@ -116,8 +124,10 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   the `/status/` page → `/api/status` asserting client fresh → `POST /api/build` asserting up-to-date);
   two rebuilds of the same schema produce byte-identical artifact-tree hashes (determinism contract);
   against `examples/game-config` (the schemas/ directory),
-  assert that `POST /api/schema` yields a 409 refusal (multiple files are an author-side organization,
-  and the editor does not rewrite them)
+  assert that the save envelope round-trips the `sources` index: a stale
+  revision is 409-refused naming the changed file, a field edit rewrites
+  exactly `schemas/item.yaml` (the other four files stay byte-identical),
+  and the raw document without an index is still refused
 - [x] CI integration: the `web-smoke` job mirrors the example job
   (checkout + toolchain + rust-cache + `bash examples/web-smoke.sh`)
 

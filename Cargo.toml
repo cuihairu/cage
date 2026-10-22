@@ -63,6 +63,9 @@ toml = "0.8"
 
 # Hashing & deterministic
 blake3 = "1.5"
+# Web editor save-back: per-source-file sha256 revision for the conflict
+# check on multi-file (directory) schema_path projects
+sha2 = "0.10"
 base64 = "0.22"
 # §47 A6 signed bundles: ed25519 over bundle file bytes; rand_core+getrandom
 # feeds SigningKey::generate for `cage registry keygen`

@@ -219,10 +219,11 @@ PY
 
 # 目录 schema 409：多文件工程（schemas/）编辑器拒写 + U2b profile 投影
 dir_refuse() {
-  python3 - "$1" <<'PY'
-import json, sys, urllib.request, urllib.error
+  python3 - "$1" "$2" <<'PY'
+import json, sys, urllib.request, urllib.error, pathlib
 
 port = sys.argv[1]
+root = pathlib.Path(sys.argv[2])
 base = f"http://127.0.0.1:{port}"
 
 def req(method, path, payload=None):
@@ -239,13 +240,52 @@ def assert_true(cond, msg):
     if not cond:
         sys.exit(f"ASSERT FAIL: {msg}")
 
-# 1) 目录 schema 仍是 409 拒写
+# 1) 目录 schema 裸文档仍 409 拒写（无来源索引不放行）
 body = json.dumps({"tables": {}, "enums": {}, "metadata": None})
 status, payload = req("POST", "/api/schema", json.loads(body))
 assert_true(status == 409 and "directory" in payload["error"],
             f"directory must 409: {status} {payload}")
 
-# 2) U2b 投影：internal_note 是 server-only 字段
+# 2) 多文件增量保存：GET 附带 sources 索引 → 改一字段 → 只写目标文件
+status, doc = req("GET", "/api/schema")
+assert_true(status == 200 and doc["ok"] and "sources" in doc, f"GET /api/schema: {status}")
+src = doc["sources"]
+assert_true(len(src["files"]) == 5 and src["metadata"] == "schemas/character.yaml",
+            f"sources index: {src['files']} / {src['metadata']}")
+def disk(f):
+    return (root / f).read_bytes()
+before = {f["file"]: disk(f["file"]) for f in src["files"]}
+
+# 过期索引（先改 shop.yaml 再用旧 revision 保存）→ 409 拒写且一字节不动
+shop_path = root / "schemas/shop.yaml"
+pristine = shop_path.read_bytes()
+shop_path.write_bytes(pristine + b"\n# concurrent edit\n")
+stale = {"schema": doc["schema"], "sources": src}
+status, payload = req("POST", "/api/schema", stale)
+assert_true(status == 409 and "shop.yaml" in payload.get("error", ""),
+            f"stale index must 409 naming shop.yaml: {status} {payload}")
+assert_true(shop_path.read_bytes() == pristine + b"\n# concurrent edit\n",
+            "a refused save must not write anything")
+shop_path.write_bytes(pristine)
+
+# 改 Item.price.max（归属 schemas/item.yaml）→ 保存只重写该文件
+schema = doc["schema"]
+schema["tables"]["Item"]["fields"]["price"]["max"] = 123456
+status, payload = req("POST", "/api/schema",
+                      {"schema": schema, "sources": src})
+assert_true(status == 200 and payload["ok"], f"incremental save: {status} {payload}")
+assert_true(payload["written"] == ["schemas/item.yaml"] and payload["unchanged"] == 4,
+            f"only the owner file is rewritten: {payload}")
+for f, b in before.items():
+    now = disk(f)
+    if f == "schemas/item.yaml":
+        assert_true(now != b, f"{f} must be rewritten")
+    else:
+        assert_true(now == b, f"{f} must stay byte-identical")
+assert_true(b"max: 123456.0" in shop_path.parent.joinpath("item.yaml").read_bytes(),
+            "the edited field landed in the owner file")
+
+# 3) U2b 投影：internal_note 是 server-only 字段
 status, doc = req("GET", "/api/schema?profile=client")
 assert_true(status == 200 and doc["ok"], f"GET /api/schema?profile=client: {status}")
 assert_true(doc["projection"]["profile"] == "client", f"projection owner: {doc.get('projection')}")
@@ -261,7 +301,8 @@ assert_true("internal_note" in fields, "server projection must keep internal_not
 
 status, doc = req("GET", "/api/schema?profile=ghost")
 assert_true(status == 400 and not doc["ok"], f"unknown profile must 400: {status} {doc}")
-print("directory refuse + profile projection ok: 409, client hides internal_note, server keeps it, ghost 400")
+print("directory refuse + incremental multi-file save + profile projection ok: "
+      "stale index 409, only schemas/item.yaml rewritten, others byte-identical, ghost 400")
 PY
 }
 
@@ -327,16 +368,16 @@ hash_tree "$WORK/demo/build" > "$WORK/h2.txt"
 cmp "$WORK/h1.txt" "$WORK/h2.txt" || { echo "两次构建产物哈希不一致"; exit 1; }
 echo "==> 两次构建 $(wc -l < "$WORK/h1.txt") 个文件哈希逐字节一致"
 
-step "[7/7] 多文件 schema 409 拒写 + U2b profile 投影（internal_note 仅 server 可见）"
+step "[7/7] 多文件 schema 增量保存（冲突 409 / 只写目标文件）+ U2b profile 投影（internal_note 仅 server 可见）"
 echo "\$ $CAGE_BIN web $WORK/multi --port $PORT &   # 另一个服务"
 PORT2="$(pick_port)"
 "$CAGE_BIN" web "$MULTI_WORK" --port "$PORT2" &
 MULTI_PID=$!
 wait_ready "$PORT2"
-dir_refuse "$PORT2"
+dir_refuse "$PORT2" "$MULTI_WORK"
 kill "$MULTI_PID"
 wait "$MULTI_PID" 2>/dev/null || true
 
 echo
 echo
-echo "✔ web 冒烟全部通过：编辑 → 校验 → 保存 → build 复现（确定性字节）→ 状态页（新鲜度 + up-to-date + 产物 + 快照 + 分层 diff + registry）→ 目录 409 + profile 投影"
+echo "✔ web 冒烟全部通过：编辑 → 校验 → 保存 → build 复现（确定性字节）→ 状态页（新鲜度 + up-to-date + 产物 + 快照 + 分层 diff + registry）→ 多文件增量保存（冲突 409 + 只写目标文件）+ profile 投影"

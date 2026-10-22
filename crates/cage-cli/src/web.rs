@@ -38,6 +38,7 @@
 
 use crate::load_project_config;
 use crate::load_schema_for_config;
+use crate::schema_save::{SaveError, SchemaSourceIndex};
 use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_canonical_yaml, to_editor_json};
 use cage_core::error::codes::Severity;
@@ -449,6 +450,21 @@ fn api_schema(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
         "warnings_as_errors": ctx.config.warnings_as_errors,
         "schema": to_editor_json(&schema),
     });
+    // The per-source-file index (file + sha256 revision, table/enum →
+    // owner): the save envelope echoes it back so `POST /api/schema` can
+    // conflict-check and rewrite only the involved source files.
+    if let Some(rel) = ctx.config.schema_path.as_deref() {
+        if !rel.starts_with("registry:") {
+            match crate::schema_save::load_schema_indexed(&ctx.root, &ctx.root.join(rel)) {
+                Ok((_, index)) => {
+                    payload["sources"] = index.to_json();
+                }
+                Err(e) => {
+                    return (200, serde_json::json!({"ok": false, "error": e}));
+                }
+            }
+        }
+    }
     if let Some(p) = projection {
         payload["projection"] = p;
     }
@@ -480,16 +496,43 @@ fn diags_json(diags: &Diagnostics) -> serde_json::Value {
 
 /// POST /api/schema — save the given editor document as canonical YAML.
 ///
+/// Two body shapes are accepted:
+///
+/// - the raw editor document (single-file compatibility, unchanged), and
+/// - the save envelope `{"schema": <editor doc>, "sources": <index>}` —
+///   the index `GET /api/schema` delivered with the document.
+///
 /// The write-back target is the single schema file the project config
-/// names. Two targets are refused with a 409: multi-file schemas (a
-/// `schema_path` pointing at a directory) are an author-side organization
-/// the editor does not rewrite, and a `registry:` `schema_path` (R2) is
-/// owned by the published entry — edits belong in the publisher project.
+/// names, or — with the envelope's `sources` index — the multi-file
+/// `schema_path` directory: the index is conflict-checked (every file's
+/// sha256 must still match its load-time revision, 409 otherwise), only
+/// the files owning a changed table/enum/metadata are rewritten, and each
+/// rewrite is an atomic temp-file+rename. A registry `schema_path` (R2)
+/// is refused with 409: the published entry is owned by the publisher —
+/// edits belong in the publisher project.
 /// With no `schema_path` configured the document is written to
 /// `schema.yaml` and the response reminds the user to wire it into the
 /// config; the server never rewrites `cage.toml`.
 fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
-    let schema = match from_editor_json(body) {
+    // The envelope is detected by its `schema` member — a raw editor
+    // document can never carry one (the Schema shape has no such key).
+    let (document, client_index) = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) if v.get("schema").is_some() => {
+            let index = v.get("sources").and_then(SchemaSourceIndex::from_json);
+            match serde_json::to_string(&v["schema"]) {
+                Ok(doc) => (doc, index),
+                Err(e) => {
+                    return (
+                        400,
+                        serde_json::json!({"ok": false, "error": format!("bad save envelope: {e}")}),
+                    );
+                }
+            }
+        }
+        _ => (body.to_string(), None),
+    };
+
+    let schema = match from_editor_json(&document) {
         Ok(schema) => schema,
         Err(diags) => {
             return (
@@ -520,31 +563,79 @@ fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
         Some(rel) => ctx.root.join(rel),
         None => ctx.root.join("schema.yaml"),
     };
+
+    // ── multi-file schema_path: incremental save over the sources index ──
     if target.is_dir() {
-        return (
-            409,
-            serde_json::json!({
-                "ok": false,
-                "save_target": target.display().to_string(),
-                "error": format!(
-                    "schema_path '{}' is a directory; the editor writes the canonical \
-                     single-file schema — point schema_path at one YAML file (or remove it \
-                     to enable defaults to schema.yaml)",
-                    ctx.config.schema_path.as_deref().unwrap_or("schema.yaml")
-                ),
-            }),
-        );
+        let Some(index) = client_index else {
+            return (
+                409,
+                serde_json::json!({
+                    "ok": false,
+                    "save_target": target.display().to_string(),
+                    "error": format!(
+                        "schema_path '{}' is a directory; saving it needs the sources index \
+                         from GET /api/schema (reload the schema and save through the editor, \
+                         which echoes the index back)",
+                        ctx.config.schema_path.as_deref().unwrap_or("schemas")
+                    ),
+                }),
+            );
+        };
+        return match crate::schema_save::save_schema_incremental(
+            &ctx.root, &target, &schema, &index,
+        ) {
+            Ok(out) => (
+                200,
+                serde_json::json!({
+                    "ok": true,
+                    "save_target": target.display().to_string(),
+                    "written": out.written,
+                    "unchanged": out.untouched,
+                    "bytes": out.bytes,
+                    "sources": out.sources.to_json(),
+                }),
+            ),
+            Err(SaveError::Conflict(error)) => (
+                409,
+                serde_json::json!({
+                    "ok": false,
+                    "save_target": target.display().to_string(),
+                    "error": error,
+                }),
+            ),
+            Err(SaveError::Io(error)) => (500, serde_json::json!({"ok": false, "error": error})),
+        };
+    }
+
+    // ── single-file schema_path: whole-document save-back ──
+    // An echoed one-file index enables the same conflict check.
+    if let Some(index) = &client_index {
+        let target_rel = rel_of_root(&ctx.root, &target);
+        if let Some(f) = index.files.iter().find(|f| f.file == target_rel) {
+            let current = std::fs::read(&target)
+                .ok()
+                .map(|b| crate::schema_save::sha256_hex(&b));
+            if current.as_deref() != Some(f.sha256.as_str()) {
+                return (
+                    409,
+                    serde_json::json!({
+                        "ok": false,
+                        "save_target": target.display().to_string(),
+                        "error": format!(
+                            "conflict: schema source '{}' changed on disk since it was \
+                             loaded — reload the schema and re-apply the edit",
+                            target_rel
+                        ),
+                    }),
+                );
+            }
+        }
     }
 
     let yaml = to_canonical_yaml(&schema);
     let bytes = yaml.len();
-    if let Err(e) = std::fs::write(&target, &yaml) {
-        return (
-            500,
-            serde_json::json!({"ok": false, "error": format!(
-                "cannot write {}: {e}", target.display()
-            )}),
-        );
+    if let Err(e) = crate::schema_save::atomic_write(&target, yaml.as_bytes()) {
+        return (500, serde_json::json!({"ok": false, "error": e}));
     }
     let mut payload = serde_json::json!({
         "ok": true,
@@ -558,6 +649,15 @@ fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
         );
     }
     (200, payload)
+}
+
+/// Project-relative rendering of a save target (mirror of the index's
+/// `file` names, so the echoed index can name it).
+fn rel_of_root(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// 301 to a canonical path — used to send bare `/status` to `/status/` so
@@ -2095,6 +2195,303 @@ output_dir = "build/server/csv"
         );
     }
 
+    // ── multi-file (directory) schema_path: incremental save-back ──
+
+    /// A three-fragment schema directory: `a.yaml` owns the metadata plus
+    /// the Item/Weapon tables, `b.yaml` Quest, `c.yaml` Shop (the file the
+    /// tests never touch). Returns the file bytes at load time.
+    fn multi_file_project(dir: &TempDir) -> std::collections::BTreeMap<String, Vec<u8>> {
+        let schemas = dir.path().join("schemas");
+        fs::create_dir(&schemas).expect("mkdir");
+        fs::write(
+            schemas.join("a.yaml"),
+            "metadata:\n  version: \"1.0\"\nenums: {}\ntables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: UInt32 }\n        required: true\n  Weapon:\n    name: Weapon\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: UInt32 }\n        required: true\n",
+        )
+        .expect("write a.yaml");
+        fs::write(
+            schemas.join("b.yaml"),
+            "enums: {}\ntables:\n  Quest:\n    name: Quest\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: UInt32 }\n        required: true\n",
+        )
+        .expect("write b.yaml");
+        fs::write(
+            schemas.join("c.yaml"),
+            "enums: {}\ntables:\n  Shop:\n    name: Shop\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: UInt32 }\n        required: true\n",
+        )
+        .expect("write c.yaml");
+        ["schemas/a.yaml", "schemas/b.yaml", "schemas/c.yaml"]
+            .into_iter()
+            .map(|f| {
+                (
+                    f.to_string(),
+                    fs::read(dir.path().join(f)).expect("read fragment"),
+                )
+            })
+            .collect()
+    }
+
+    /// Load the merged schema + index the way GET /api/schema does, edit a
+    /// member through the editor JSON (so equality goes through the wire
+    /// shape), and serialize the save envelope.
+    fn edited_envelope(
+        dir: &TempDir,
+        edit: impl FnOnce(&mut serde_json::Value),
+    ) -> (String, Schema, crate::schema_save::SchemaSourceIndex) {
+        let (merged, index) =
+            crate::schema_save::load_schema_indexed(dir.path(), &dir.path().join("schemas"))
+                .expect("schema loads");
+        let mut doc = to_editor_json(&merged);
+        edit(&mut doc);
+        let schema = from_editor_json(&doc.to_string()).expect("edited doc parses");
+        let envelope = serde_json::json!({
+            "schema": doc,
+            "sources": index.to_json(),
+        });
+        (
+            serde_json::to_string(&envelope).expect("envelope serializes"),
+            schema,
+            index,
+        )
+    }
+
+    #[test]
+    fn api_save_multi_file_rewrites_only_the_changed_source_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let before = multi_file_project(&dir);
+        let ctx = ctx_in(&dir, Some("schemas"));
+
+        // Touch exactly one member of a.yaml: Item.id gains a `min` bound.
+        let (envelope, edited, index) = edited_envelope(&dir, |doc| {
+            doc["tables"]["Item"]["fields"]["id"]["min"] = serde_json::json!(1);
+        });
+
+        let (status, payload) = api_save(&ctx, &envelope);
+        assert_eq!(status, 200, "{payload}");
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert_eq!(
+            payload["written"],
+            serde_json::json!(["schemas/a.yaml"]),
+            "only the owner of the changed table is rewritten"
+        );
+        assert_eq!(payload["unchanged"], serde_json::json!(2));
+
+        // Untouched files are byte-identical — never even rewritten.
+        for f in ["schemas/b.yaml", "schemas/c.yaml"] {
+            let after = fs::read(dir.path().join(f)).expect("file");
+            assert_eq!(after, before[f], "{f} must stay byte-identical");
+        }
+        assert_eq!(
+            payload["bytes"],
+            serde_json::json!(fs::read(dir.path().join("schemas/a.yaml"))
+                .expect("a")
+                .len())
+        );
+
+        // The saved-back merged schema is exactly the edited one, and the
+        // response's index carries the new revisions (next save conflicts
+        // with itself no more).
+        let (reloaded, reloaded_index) =
+            crate::schema_save::load_schema_indexed(dir.path(), &dir.path().join("schemas"))
+                .expect("reload");
+        assert_eq!(to_editor_json(&reloaded), to_editor_json(&edited));
+        assert_eq!(reloaded_index.to_json(), payload["sources"]);
+        assert_ne!(reloaded_index.to_json(), index.to_json());
+
+        // No temp siblings left behind by the atomic writes.
+        let leftovers: Vec<_> = fs::read_dir(dir.path().join("schemas"))
+            .expect("dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files: {leftovers:?}");
+    }
+
+    #[test]
+    fn api_save_multi_file_routes_added_and_removed_tables_to_their_owners() {
+        let dir = TempDir::new().expect("tempdir");
+        let before = multi_file_project(&dir);
+        let ctx = ctx_in(&dir, Some("schemas"));
+
+        // Add a Buff table (lands in the metadata owner, a.yaml) and drop
+        // Quest (owned by b.yaml). c.yaml keeps its Shop.
+        let (envelope, edited, _) = edited_envelope(&dir, |doc| {
+            doc["tables"]["Buff"] = serde_json::json!({
+                "name": "Buff",
+                "primary_key": ["id"],
+                "fields": {
+                    "id": { "name": "id", "type": { "kind": "UInt32" }, "required": true }
+                }
+            });
+            doc["tables"]["Quest"] = serde_json::Value::Null;
+            let obj = doc["tables"].as_object_mut().expect("tables object");
+            obj.remove("Quest");
+        });
+
+        let (status, payload) = api_save(&ctx, &envelope);
+        assert_eq!(status, 200, "{payload}");
+        assert_eq!(
+            payload["written"],
+            serde_json::json!(["schemas/a.yaml", "schemas/b.yaml"])
+        );
+        let c = fs::read(dir.path().join("schemas/c.yaml")).expect("c");
+        assert_eq!(c, before["schemas/c.yaml"], "c.yaml byte-identical");
+
+        let b = fs::read_to_string(dir.path().join("schemas/b.yaml")).expect("b");
+        assert!(!b.contains("Quest"), "Quest removed: {b}");
+        let a = fs::read_to_string(dir.path().join("schemas/a.yaml")).expect("a");
+        assert!(a.contains("Buff"), "Buff added to the metadata owner: {a}");
+        assert!(a.contains("version:"), "metadata stays with its owner");
+
+        let (reloaded, _) =
+            crate::schema_save::load_schema_indexed(dir.path(), &dir.path().join("schemas"))
+                .expect("reload");
+        assert_eq!(to_editor_json(&reloaded), to_editor_json(&edited));
+    }
+
+    #[test]
+    fn api_save_multi_file_rejects_a_stale_sources_index_without_writing() {
+        let dir = TempDir::new().expect("tempdir");
+        let before = multi_file_project(&dir);
+        let ctx = ctx_in(&dir, Some("schemas"));
+
+        // The editor loads and edits (index captured here) …
+        let (envelope, _, _) = edited_envelope(&dir, |doc| {
+            doc["tables"]["Item"]["fields"]["id"]["min"] = serde_json::json!(1);
+        });
+        // … and only afterwards does a concurrent edit land on b.yaml.
+        fs::write(
+            dir.path().join("schemas/b.yaml"),
+            "enums: {}\ntables:\n  Quest:\n    name: Quest\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: UInt32 }\n        required: true\n      reward:\n        name: reward\n        type: { kind: String }\n",
+        )
+        .expect("concurrent edit");
+        let (status, payload) = api_save(&ctx, &envelope);
+        assert_eq!(status, 409);
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        let err = payload["error"].as_str().expect("error");
+        assert!(err.contains("schemas/b.yaml"), "names the file: {err}");
+        assert!(err.contains("conflict"), "{err}");
+
+        // Nothing written: a.yaml/c.yaml are byte-identical to load time
+        // (a.yaml does NOT receive the edited Item) and b.yaml still holds
+        // exactly the concurrent edit.
+        for f in ["schemas/a.yaml", "schemas/c.yaml"] {
+            let now = fs::read(dir.path().join(f)).expect("file");
+            assert_eq!(now, before[f], "{f} untouched by a refused save");
+        }
+    }
+
+    #[test]
+    fn api_save_multi_file_still_needs_the_sources_index_envelope() {
+        let dir = TempDir::new().expect("tempdir");
+        multi_file_project(&dir);
+        let ctx = ctx_in(&dir, Some("schemas"));
+
+        // Raw editor document (no envelope): refused, nothing written.
+        let (status, payload) = api_save(&ctx, &good_doc());
+        assert_eq!(status, 409);
+        assert!(payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("is a directory")));
+    }
+
+    #[test]
+    fn api_save_single_file_keeps_the_raw_contract_and_honors_an_echoed_index() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = ctx_in(&dir, Some("schema.yaml"));
+        fs::write(
+            dir.path().join("schema.yaml"),
+            "enums: {}\ntables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: UInt32 }\n        required: true\n",
+        )
+        .expect("write schema");
+
+        // Raw document, no envelope: the pre-existing contract (200).
+        let (status, payload) = api_save(&ctx, &good_doc());
+        assert_eq!(status, 200);
+        assert_eq!(payload["ok"], serde_json::json!(true));
+
+        // Envelope with the current revision: accepted.
+        let (envelope, _) = {
+            let (_, index) = crate::schema_save::load_schema_indexed(
+                dir.path(),
+                &dir.path().join("schema.yaml"),
+            )
+            .expect("indexed load");
+            let mut doc = to_editor_json(&from_editor_json(&good_doc()).expect("parses"));
+            doc["tables"]["Item"] = serde_json::json!({
+                "name": "Item",
+                "primary_key": ["id"],
+                "fields": {
+                    "id": { "name": "id", "type": { "kind": "UInt32" }, "required": true }
+                }
+            });
+            let envelope = serde_json::json!({ "schema": doc, "sources": index.to_json() });
+            (serde_json::to_string(&envelope).expect("json"), index)
+        };
+        let (status, payload) = api_save(&ctx, &envelope);
+        assert_eq!(status, 200, "{payload}");
+
+        // A stale revision (file changed on disk after load): 409.
+        fs::write(dir.path().join("schema.yaml"), "tables: {}\nenums: {}\n")
+            .expect("concurrent edit");
+        let (status, payload) = api_save(&ctx, &envelope);
+        assert_eq!(status, 409);
+        let err = payload["error"].as_str().expect("error");
+        assert!(
+            err.contains("schema.yaml") && err.contains("conflict"),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("schema.yaml")).expect("file"),
+            "tables: {}\nenums: {}\n",
+            "a refused save never writes"
+        );
+    }
+
+    #[test]
+    fn sources_index_round_trips_through_json_and_hashes_file_bytes() {
+        let dir = TempDir::new().expect("tempdir");
+        multi_file_project(&dir);
+        let (_, index) =
+            crate::schema_save::load_schema_indexed(dir.path(), &dir.path().join("schemas"))
+                .expect("indexed load");
+
+        // Wire shape → parse back → identical index.
+        let json = index.to_json();
+        assert_eq!(
+            crate::schema_save::SchemaSourceIndex::from_json(&json).expect("sources parse"),
+            index
+        );
+
+        // Revisions are the real sha256 of the file bytes; ownership and
+        // the metadata owner follow the sorted merge order.
+        let a_bytes = fs::read(dir.path().join("schemas/a.yaml")).expect("a");
+        assert_eq!(
+            index
+                .files
+                .iter()
+                .find(|f| f.file == "schemas/a.yaml")
+                .expect("a listed")
+                .sha256,
+            crate::schema_save::sha256_hex(&a_bytes)
+        );
+        assert_eq!(
+            index.tables.get("Item").map(String::as_str),
+            Some("schemas/a.yaml")
+        );
+        assert_eq!(
+            index.tables.get("Quest").map(String::as_str),
+            Some("schemas/b.yaml")
+        );
+        assert_eq!(index.metadata.as_deref(), Some("schemas/a.yaml"));
+        assert!(
+            index
+                .files
+                .windows(2)
+                .all(|w| w[0].file.as_str() < w[1].file.as_str()),
+            "files sorted: {:?}",
+            index.files
+        );
+    }
+
     #[test]
     fn api_status_reports_validation_and_untouched_build_facts() {
         let dir = TempDir::new().expect("tempdir");
@@ -3102,15 +3499,20 @@ file_template = "{table}.json"
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new().expect("tempdir");
         fs::write(dir.path().join("schema.yaml"), "tables: {}\nenums: {}\n").expect("write schema");
+        // Atomic save-back replaces the file via rename, which needs write
+        // permission on the *directory*, not the file — so an unwritable
+        // target is modeled at the directory level (the temp file the
+        // atomic write needs cannot be created there).
         let file = dir.path().join("schema.yaml");
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).expect("chmod");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).expect("chmod");
         let ctx = ctx_in(&dir, Some("schema.yaml"));
 
         let (status, payload) = api_save(&ctx, &good_doc());
         assert_eq!(status, 500, "{payload}");
         assert_eq!(payload["ok"], serde_json::json!(false));
         assert!(payload["error"].as_str().unwrap().contains("cannot write"));
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("chmod back");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).expect("chmod back");
+        drop(file);
     }
 
     /// POST body that is not valid UTF-8: the body read fails and the

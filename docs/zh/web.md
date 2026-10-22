@@ -26,15 +26,21 @@ snapshot/schema.json  ≡  cage-core::edit::to_editor_json  ≡  HTTP GET /api/s
 编辑器 JSON 保持插入序（表/字段按文档顺序），省略 `skip_serializing_if`
 覆盖的可选字段，`default` 无 skip 属性故显式为 `null`（前端两者皆可编辑）。
 
-### 保存 = 规范化 YAML 单文件写回
+### 保存 = 规范化 YAML 写回（单文件整写 / 多文件增量）
 
 编辑器面向**合并后的规范 Schema**（cli 装载时把 schemas/ 下多文件合并
-成一张 `Schema`，编辑器即增值这一形态），保存写回为单文件 canonical
-YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行），
-经 `from_canonical_yaml` 回环幂等。多文件拆分是作者侧的持久化选择，
-编辑器不产生拆分产物。确定性契约：编辑器保存的 YAML 经 `cage build`
-得到的产物，与手写同一 Schema 构建的产物逐字节一致。生成器只见过
-`Schema` 值，编辑回环只要保值的即满足。
+成一张 `Schema`，编辑器即增值这一形态），写回统一走 canonical YAML
+（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行），经
+`from_canonical_yaml` 回环幂等。单文件 `schema_path` 整份覆盖（原子
+替换：兄弟临时文件 + rename）。多文件（目录）`schema_path` 走增量写
+回：`GET /api/schema` 附带 `sources` 来源索引（每份源文件的 sha256
+revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 把索
+引交回——冲突检查（任一文件磁盘 sha256 与装载时不符 → 409 拒写、
+一字节不动）→ 只改写涉及变更表/枚举/元数据的源文件 → 原子替换，响
+应回传保存后的新索引供客户端下一次保存复用。`registry:` 拆分仍不在
+编辑器侧改。确定性契约：编辑器保存的 YAML 经 `cage build` 得到的产
+物，与手写同一 Schema 构建的产物逐字节一致。生成器只见过 `Schema`
+值，编辑回环只要保值的即满足。
 
 ### E1701 编辑态错误族
 
@@ -79,8 +85,10 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
       JSON 路径定位）→ L1 一致性（E1004 族）；诊断以裸数组输出
       （`Diagnostics` serde 的 `{"items": [...]}` 壳在 API 层摊平）
 - [x] `POST /api/schema`：canonical YAML 写回。单文件 `schema_path`
-      直接覆盖；目录（多文件 schema）→ 409 拒写（编辑器不重写
-      作者侧拆分）；`registry:` 开头的 `schema_path` 同样 409（已发布
+      直接覆盖（原子替换）；目录（多文件 schema）凭 `sources` 索引
+      增量写回：sha256 冲突检查（过期索引 → 409 拒写）、只改涉及
+      变更的源文件、响应回传新索引；裸文档（无索引）仍 409；
+      `registry:` 开头的 `schema_path` 同样 409（已发布
       entry 的 schema 不在编辑器改，须回发布方工程重发布）；未配置 →
       写 `schema.yaml` + note 提醒接线
       cage.toml（服务器绝不改配置文件）
@@ -107,8 +115,9 @@ YAML（`to_canonical_yaml`）：同 Schema → 同字节（含唯一结尾换行
 - [x] E 码诊断面板：校验按钮 / Ctrl+Enter → `POST /api/validate`；按
       严重级配色计数；点诊断 → 定位字段（`data-path` 精确锚点 +
       滚动高亮）；保存被拒（E1701）诊断同样入面板
-- [x] 保存：Ctrl/Cmd+S 或保存按钮 → `POST /api/schema`；未保存标记 +
-      beforeunload 拦截；409（目录或 `registry:` schema_path）/ 未接线
+- [x] 保存：Ctrl/Cmd+S 或保存按钮 → `POST /api/schema`（GET 交付过
+      `sources` 索引时随信封交回，启用多文件增量保存）；未保存标记 +
+      beforeunload 拦截；409（过期索引或 `registry:` schema_path）/ 未接线
       note / 500 均以错误 toast 呈现
 - [x] 外科手术式文档编辑：未知/遗留键原样保留，只改可控键，与
       「编辑器 JSON ≡ canonical 形状」的交换契约一致；保存全程不经

@@ -959,9 +959,17 @@ async function validate(silent) {
 }
 
 async function save() {
-  const docText = JSON.stringify(state.doc);
+  // 多文件 schema（schema_path 指目录）走保存信封：把 GET 返回的
+  // sources 索引（每份源文件的 sha256 revision + 表/枚举归属）一并交回，
+  // 服务端做冲突检查后只改写涉及变更的源文件；单文件 schema 沿用
+  // 原样提交整份编辑文档。保存成功后采纳服务端回传的新索引。
+  const payload = state.meta && state.meta.sources
+    ? { schema: state.doc, sources: state.meta.sources }
+    : state.doc;
+  const docText = JSON.stringify(payload);
   const { status, data } = await api("/api/schema", docText);
   if (data && data.ok) {
+    if (data.sources && state.meta) state.meta.sources = data.sources;
     state.dirty = false;
     document.getElementById("dirty-flag").hidden = true;
     toast(`已保存 → ${data.save_target}（${data.bytes} 字节）`, "ok", 6000);
