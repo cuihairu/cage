@@ -48,9 +48,9 @@ jobs:
             artifact: cage-nightly-windows-x86_64
             experimental: true
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2.9.3
       - name: Build (release)
         run: cargo build --release --locked -p cage-cli
       - name: Smoke
@@ -72,7 +72,7 @@ jobs:
             cp target/release/cage stage/cage
             (cd stage && tar czf "../${artifact}.tar.gz" cage)
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.*
@@ -91,8 +91,8 @@ jobs:
       run:
         working-directory: editors/vscode
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -103,7 +103,7 @@ jobs:
         run: npm run compile
       - name: Package
         run: npm run package
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: cage-nightly-vsix
           path: editors/vscode/*.vsix
@@ -117,8 +117,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
         with:
           path: dist
           pattern: cage-nightly-*
