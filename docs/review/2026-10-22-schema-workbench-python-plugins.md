@@ -591,7 +591,6 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 
 策划应该看到这样的规则配置：
 
-<box border radius=\\
 
 
 
@@ -600,11 +599,7 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 
 ## （续）
 
->规则包版本化、跨项目复用、规则模板参数编辑、插件能力声明、升级兼容性检查，再按真实需求扩展数据源和产物生成插件。</text>
-      <caption>目标：规则可分享、可维护、可测试，而不只是可以安装。</caption>
-    </box>
-  </row>
-</box>
+>规则包版本化、跨项目复用、规则模板参数编辑、插件能力声明、升级兼容性检查，再按真实需求扩展数据源和产物生成插件。
 
 ### 什么才算 P0 完成？
 
@@ -635,7 +630,7 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 
 对于前端是否升级到 React、Vue、Svelte，我不会现在就强制做技术迁移。现有纯 JavaScript 编辑器如果继续快速膨胀，组件状态、规则 AST 编辑和复杂表单确实会逐渐难维护；到规则设计器正式开发时，可以依据实际维护成本评估 Svelte 或 Vue。但这应该是 UI 工程选型，而不是为了“做得现代”去推翻已经能工作的后端。
 
-还有一个边界需要明确：Cage 当前的 `cage web` 是本地优先、面向可信环境的工具，尚非具有完整认证、权限和多人协作机制的服务器产品。<Cite ref=\\
+还有一个边界需要明确：Cage 当前的 `cage web` 是本地优先、面向可信环境的工具，尚非具有完整认证、权限和多人协作机制的服务器产品。
 
 
 
@@ -668,7 +663,7 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 | Python 代码生成 | 已有 Python Target | **与 Python 插件是两回事** |
 | 配置版本管理 | 已有 Snapshot、Registry、Diff | 可以支撑审核与发布工作流 |
 
-仓库的 [Web 编辑器设计](https://github.com/cuihairu/cage/blob/main/docs/web.md) 明确采用 Rust Core 负责 Schema 语义、前端负责编辑交互的设计，也已实现 Schema JSON 交换、YAML 保存及校验接口。<Cite ref=\\
+仓库的 [Web 编辑器设计](https://github.com/cuihairu/cage/blob/main/docs/web.md) 明确采用 Rust Core 负责 Schema 语义、前端负责编辑交互的设计，也已实现 Schema JSON 交换、YAML 保存及校验接口。
 
 
 
@@ -699,7 +694,7 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 
 这些不是凭空设想。
 
-例如，现有 `rules` 的编辑方式仍主要是填写断言表达式，而 `validation/expr.rs` 的规则语言主要支持两个操作数之间的比较，并不具备完整的逻辑运算、算术表达式和聚合规则能力。<Cite ref=\\
+例如，现有 `rules` 的编辑方式仍主要是填写断言表达式，而 `validation/expr.rs` 的规则语言主要支持两个操作数之间的比较，并不具备完整的逻辑运算、算术表达式和聚合规则能力。
 
 
 
@@ -765,7 +760,7 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 | 插件参数变化 | 影响验证结果记录 |
 | 插件报告错误 | 自动定位到表、行、字段 |
 
-`Manifest` 已经记录构建标识和若干输入/产物信息，但未来如果校验插件会影响某个版本能否发布，就需要把插件标识、版本、配置摘要、依赖锁定信息或验证环境指纹记录到可审计的验证结果中。<Cite ref=\\
+`Manifest` 已经记录构建标识和若干输入/产物信息，但未来如果校验插件会影响某个版本能否发布，就需要把插件标识、版本、配置摘要、依赖锁定信息或验证环境指纹记录到可审计的验证结果中。
 
 
 
@@ -774,10 +769,7 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 
 ## （续）
 
->基础消耗 × 等级倍率 ^ (等级 − 1)</text>
-  </box>
-  <caption>这是拟议规则模板的交互示意，与现有 Python 插件无关。</caption>
-</box>
+>基础消耗 × 等级倍率 ^ (等级 − 1)
 
 策划只需要配置参数、选择对应字段，并通过实例测试验证。
 
@@ -795,7 +787,7 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 
 ### 1. L7 游戏规则可能被绕过
 
-当前 CLI 的 `check` 和 `build` 默认校验级别为 `semantic`，而不是 `gamerule`。这意味着 L7 规则并非默认执行。<Cite ref=\\
+当前 CLI 的 `check` 和 `build` 默认校验级别为 `semantic`，而不是 `gamerule`。这意味着 L7 规则并非默认执行。
 
 ## 落地跟踪（勾一项补 commit hash+证据）
 
