@@ -85,7 +85,7 @@ jobs:
   # 的扩展门禁（测试 + 打包）判定，红了那里就红。
   vsix:
     name: VSCode extension (vsix)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     continue-on-error: true
     defaults:
       run:
@@ -113,7 +113,7 @@ jobs:
   publish:
     name: Publish nightly release
     needs: [build, vsix]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: write
     steps:

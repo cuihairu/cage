@@ -16,7 +16,7 @@ jobs:
   # 探测是否包含 Rust 工作区（hashFiles 仅 step 级可用）
   detect:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     outputs:
       rust: ${{ steps.detect.outputs.rust }}
     steps:
@@ -28,7 +28,7 @@ jobs:
     name: Rust (test + release build)
     needs: detect
     if: needs.detect.outputs.rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -48,7 +48,7 @@ jobs:
 
   docs:
     name: Docs build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0
@@ -66,7 +66,7 @@ jobs:
     name: VSCode extension (test + package)
     needs: detect
     if: needs.detect.outputs.rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: editors/vscode
