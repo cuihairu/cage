@@ -6,12 +6,7 @@
 
 # Cage
 
-[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/)
-[![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage)
-[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
-
+[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/) [![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml) [![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage) [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 **A configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.**
 
 </div>
@@ -212,7 +207,6 @@ Full design and usage documentation: **https://cuihairu.github.io/cage/**
 ## Foundations
 
 Cage is built on open-source libraries from the Rust ecosystem: Excel reading via [calamine](https://crates.io/crates/calamine), serialization via [serde](https://serde.rs) / serde_yaml / toml, command-line parsing via [clap](https://docs.rs/clap), content hashing via [blake3](https://crates.io/crates/blake3), the local HTTP service via tiny_http, the remote registry client via ureq, and CSV reading/writing via csv; the documentation site is built with [VitePress](https://vitepress.dev). The Source/Target adapters, the validation pipeline, the registry, and the rest of the project logic are implemented in this repository.
-
 ## License
 
 [Apache-2.0](LICENSE)

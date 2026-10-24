@@ -6,12 +6,7 @@
 
 # Cage
 
-[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/)
-[![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage)
-[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
-
+[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/) [![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml) [![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage) [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 **游戏配置编译与验证框架**
 
 English: **Cage is a configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.**
@@ -216,7 +211,6 @@ irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 -Ou
 ## 底座
 
 Cage 基于 Rust 生态的开源库构建：Excel 读取用 [calamine](https://crates.io/crates/calamine)，序列化用 [serde](https://serde.rs) / serde_yaml / toml，命令行解析用 [clap](https://docs.rs/clap)，内容哈希用 [blake3](https://crates.io/crates/blake3)，本地 HTTP 服务用 tiny_http，远程注册表客户端用 ureq，CSV 读写用 csv；文档站由 [VitePress](https://vitepress.dev) 构建。Source/Target 适配器、验证流水线、Registry 等业务逻辑在本仓库内实现。
-
 ## 许可
 
 [Apache-2.0](LICENSE)
