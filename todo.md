@@ -1734,6 +1734,13 @@ range / unique / 描述 / client-server 分组，v1 收口列级局部），不�
 与 L7 游戏规则仍归 schema/校验层，Excel 不做编程语言。向后兼容：无元行 = 纯数据表照旧，
 声明约定的表才启用新解析，存量工程零破坏。
 
+词汇与命名来源基准（2026-10-26 11:53 用户令：不自造词，只用有共识基础的既有术语）：
+① 规则词汇直接沿用 cage Schema DSL 既有字段名（type/required/default/enum/min/max/unique/
+primary_key/reference，T3.1 已定，与 JSON Schema 同名体系，零新词）；② 元行标记借鉴 Luban
+的 `##` 元行约定（##type/##var/##comment 一类，docs/review 2026-10-23 对标已核验）；③ 预设档
+与解析器旋钮命名对齐 pandas `read_excel` 通用参数（header/skiprows/names/usecols/dtype/
+comment/converters，表处理事实标准）。三个来源均为现役主流工具，无生造词。
+
 现状证据：`cage-source-excel/src/lib.rs` 仅 header_row/has_header/eval_formulas/skip_empty_rows
 四旋钮，类型行/注释行被当数据吞掉；Canonical `Value::Array/Object`（cage-core/src/value/mod.rs
 :150-152）与 Schema `FieldType::Array/Object`（schema/mod.rs:305-307）均已存在，瓶颈纯在
