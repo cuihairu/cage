@@ -1723,11 +1723,16 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
 规则应该写在 Excel 里被吸收，而不是扔掉后在 schema YAML 重写一遍（双份维护必漂移）。
 
 设计讨论（2026-10-26 会话）：元行位置选项 A 头行块 / B `##` 标记行 / C 独立 meta sheet /
-D 单元格内联 DSL（否决：转义地狱）；倾向 A 主 + B 补充、C 留口子，**最终位置约定待用户拍板**
-（若策划存量表已有约定，适配存量优先于发明新约定）。规则词汇 v1 收口「列级局部」：type /
-required / enum / range / unique / 描述 / client-server 分组；跨表引用与 L7 游戏规则仍归 schema/
-校验层——Excel 不做编程语言。向后兼容：无元行 = 纯数据表照旧，声明约定的表才启用新解析，
-存量工程零破坏。
+D 单元格内联 DSL（否决：转义地狱）。
+
+设计重定向二号裁定（2026-10-26 11:14 用户令）：**约定必须可配置，不能预设用户的 Excel 格式**。
+A/B/C 降格为内置预设档（用户在 cage.toml 里选，含纯数据档），另加自定义脚本适配器——用户写
+脚本（Python 之类）声明自己的元行怎么读，cage 跑脚本拿结果；不是定死几套格式，而是
+「预设可选 + 脚本自定义」三层：内置预设 / 用户脚本解码 / 标准词汇表管线消费。
+边界（助手建议，待反驳）：脚本只解码「版式与位置」到标准词汇表（type / required / enum /
+range / unique / 描述 / client-server 分组，v1 收口列级局部），不发明新规则语义——跨表引用
+与 L7 游戏规则仍归 schema/校验层，Excel 不做编程语言。向后兼容：无元行 = 纯数据表照旧，
+声明约定的表才启用新解析，存量工程零破坏。
 
 现状证据：`cage-source-excel/src/lib.rs` 仅 header_row/has_header/eval_formulas/skip_empty_rows
 四旋钮，类型行/注释行被当数据吞掉；Canonical `Value::Array/Object`（cage-core/src/value/mod.rs
@@ -1735,16 +1740,23 @@ required / enum / range / unique / 描述 / client-server 分组；跨表引用�
 Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Excel 内省复用同一
 「内省 → 草稿 → review 采用」理念。
 
-- [ ] X0 设计定稿（阻塞项，先拍板后动代码）：元行位置约定（A/B/C 择一或组合）；v1 规则
-      词汇表字段清单；元行解析失败口径（报错不静默吞，E 码 + 单元格定位）；与既有
-      header_row/has_header 旋钮的关系（新约定显式声明启用，非隐式猜测）。
-      产出：docs/design.md 新节 + 本条目回填结论。验收：四问各有一个可执行答案，无「待定」残留。
+- [ ] X0 约定解析架构定稿（阻塞项，先定稿后动代码）：① 内置预设档清单（A 头行块 /
+      B `##` 标记行 / C meta sheet / 纯数据）与 cage.toml 选择语法；② 自定义脚本适配器契约——
+      输入（sheet 网格 + 列坐标 + 配置）、输出（结构化表元数据 JSON，标准词汇表承载，诊断
+      须带单元格坐标），执行载体定稿（默认候选：外部子进程语言无关，Python/Node/PS 均可；
+      备选：内嵌运行时），确定性要求（脚本哈希入 build manifest，同输入同字节）；③ 元行解析
+      失败口径（报错不静默吞，E 码 + 单元格定位，脚本侧与内置侧同口径）；④ 与既有
+      header_row/has_header 旋钮的关系（显式声明启用，非隐式猜测）。
+      产出：docs/design.md 新节 + 脚本契约 JSON Schema + 本条目回填结论。
+      验收：四问各有一个可执行答案，无「待定」残留。
 
-- [ ] X1 Excel 元行解析器：sheet 元行按约定解析为结构化表元数据（类型/required/enum/
-      range/unique/描述/profile 分组），畸形元行报错并定位到单元格（G27 式）；
-      cage-source-sheets 同约定跟进（契约「同 Excel 惯例」）。
-      验收：单测——类型行生成 FieldType、注释行生成描述、枚举行生成 enum、畸形行新 E 码 +
-      单元格定位、纯数据表字节级回归不变。
+- [ ] X1 约定解析层（内置预设 + 脚本适配器）：内置预设档解析器（A/B/C 各一）+ 脚本适配器
+      运行器（子进程 JSON 契约，超时/崩溃/非法输出 → E 码定位）；两路产出同一结构化表元
+      数据供下游（schema-draft/校验）消费；畸形元行报错定位到单元格（G27 式）；
+      cage-source-sheets 同契约跟进（「同 Excel 惯例」含脚本适配器）。
+      验收：单测——各预设档类型行生成 FieldType、注释行生成描述、枚举行生成 enum；脚本
+      fixture（跨平台可跑）走通子进程契约；脚本崩溃/超时/输出非法三态 E 码；纯数据表
+      字节级回归不变。
 
 - [ ] X2 schema-draft Excel 内省 + 漂移核对：`cage schema-draft` 支持 Excel 源，从元行生成
       schema 草稿（作者不再手写第二遍）；草稿采用后编译期与 Excel 元行核对，不一致报新 E 码
@@ -1757,6 +1769,7 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       与统一模型不冲突。
       验收：对拍套件绿；元行信息只进 schema/校验面，不泄漏进 IR 数据面。
 
-- [ ] X4 文档与示例：docs/zh/source.md Excel 节重写（约定 + 词汇表 + 拍板记录）、
-      examples/game-config 增带元行示例表、README 双语 capabilities 同步；docs/design.md 红线
-      段更新（「不做写回」与「不承载规则」两半的最终口径分开陈述）。
+- [ ] X4 文档与示例：docs/zh/source.md Excel 节重写（预设档 + 脚本适配器契约 + 词汇表 +
+      拍板记录）、脚本契约 JSON Schema 发布、examples/game-config 增带元行示例表 + 可跑通的
+      Python 示例解析脚本、README 双语 capabilities 同步；docs/design.md 红线段更新（「不做
+      写回」与「不承载规则」两半的最终口径分开陈述，并记录「约定可配置、不预设用户格式」裁定）。
