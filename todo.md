@@ -1715,3 +1715,48 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       现状：无 Luban 侧实测数据，Excel 表达力与类型系统差距未量化
       （`crates/cage-source-excel/src/lib.rs:47-54` 仅单行 `header_row` + `has_header`）。
       验收：五案例对照记录入 docs/review/，缺失能力回流为本仓条目。
+
+## Excel 元行规则承载（2026-10-26 用户令：设计重定向）
+
+背景裁定：用户判定「Excel 带规则却要另立一套规则 = 把问题复杂化，是设计问题」。原红线两半拆开处理——
+「不做 Excel 写回/编辑器」保留不变；「Excel 不承载规则」对 Excel-first 工作流不成立，读取侧推翻。
+规则应该写在 Excel 里被吸收，而不是扔掉后在 schema YAML 重写一遍（双份维护必漂移）。
+
+设计讨论（2026-10-26 会话）：元行位置选项 A 头行块 / B `##` 标记行 / C 独立 meta sheet /
+D 单元格内联 DSL（否决：转义地狱）；倾向 A 主 + B 补充、C 留口子，**最终位置约定待用户拍板**
+（若策划存量表已有约定，适配存量优先于发明新约定）。规则词汇 v1 收口「列级局部」：type /
+required / enum / range / unique / 描述 / client-server 分组；跨表引用与 L7 游戏规则仍归 schema/
+校验层——Excel 不做编程语言。向后兼容：无元行 = 纯数据表照旧，声明约定的表才启用新解析，
+存量工程零破坏。
+
+现状证据：`cage-source-excel/src/lib.rs` 仅 header_row/has_header/eval_formulas/skip_empty_rows
+四旋钮，类型行/注释行被当数据吞掉；Canonical `Value::Array/Object`（cage-core/src/value/mod.rs
+:150-152）与 Schema `FieldType::Array/Object`（schema/mod.rs:305-307）均已存在，瓶颈纯在
+Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Excel 内省复用同一
+「内省 → 草稿 → review 采用」理念。
+
+- [ ] X0 设计定稿（阻塞项，先拍板后动代码）：元行位置约定（A/B/C 择一或组合）；v1 规则
+      词汇表字段清单；元行解析失败口径（报错不静默吞，E 码 + 单元格定位）；与既有
+      header_row/has_header 旋钮的关系（新约定显式声明启用，非隐式猜测）。
+      产出：docs/design.md 新节 + 本条目回填结论。验收：四问各有一个可执行答案，无「待定」残留。
+
+- [ ] X1 Excel 元行解析器：sheet 元行按约定解析为结构化表元数据（类型/required/enum/
+      range/unique/描述/profile 分组），畸形元行报错并定位到单元格（G27 式）；
+      cage-source-sheets 同约定跟进（契约「同 Excel 惯例」）。
+      验收：单测——类型行生成 FieldType、注释行生成描述、枚举行生成 enum、畸形行新 E 码 +
+      单元格定位、纯数据表字节级回归不变。
+
+- [ ] X2 schema-draft Excel 内省 + 漂移核对：`cage schema-draft` 支持 Excel 源，从元行生成
+      schema 草稿（作者不再手写第二遍）；草稿采用后编译期与 Excel 元行核对，不一致报新 E 码
+      点名单元格（漂移检测），不再静默以 YAML 为准。
+      验收：带规则行的 Excel 不写 YAML 即可通过 check（派生链路）；元行与已采用 schema 冲突
+      必报错且定位到单元格；draft round-trip 一致。
+
+- [ ] X3 与三源对拍合流：本系列落地后，「P0 三源一致性对拍套件」的 Excel 份改用元行承载
+      （规则写 Excel，CSV/JSON 侧由 schema 承载），断言规范化 IR 一致——证明「规则放 Excel」
+      与统一模型不冲突。
+      验收：对拍套件绿；元行信息只进 schema/校验面，不泄漏进 IR 数据面。
+
+- [ ] X4 文档与示例：docs/zh/source.md Excel 节重写（约定 + 词汇表 + 拍板记录）、
+      examples/game-config 增带元行示例表、README 双语 capabilities 同步；docs/design.md 红线
+      段更新（「不做写回」与「不承载规则」两半的最终口径分开陈述）。
