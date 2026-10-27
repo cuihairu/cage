@@ -1817,6 +1817,19 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       （(a) `##var` 行作数据表头行且领地含其下至首个纯数据行 / (b) 数据表头行在
       `##var` 行之上），它触碰 Q4「内置预设档从不移动数据表头行」，故留作
       回流-5 第一个实现决策。多行记录与类型标签多态为后续切片。
+      第一片（2026-10-28）：裁定 (a)——`##var` 行就是数据表头行，marker_rows
+      领地下探到首个纯数据行；理由是 Luban 作者已经把字段名行当表头，(b) 会在
+      同一文件上随是否额外写一行而改变解析结果。触碰 Q4 的结论：内置预设仍不移动
+      `header_row`，只是把领地下界扩展到其下的声明行。实现 `ColumnMeta.sub_columns`、
+      首个标记单元格为 `+` 的子列行识别、`parse_file_with_meta` 的 `Value::Object`
+      装配。证据：`sub_column_row_builds_nested_columns`、
+      `sub_column_row_with_a_second_marker_is_e2201`、
+      `test_luban_nested_bean_assembles_sub_columns_into_object`、
+      `test_luban_nested_bean_with_flat_siblings`、
+      `test_luban_two_nested_beans_in_one_table`、
+      `test_luban_grandchild_nesting_is_an_object`、
+      `test_luban_optional_sub_column_with_default_stays_null`；cargo fmt --check、
+      cargo clippy --workspace --all-targets -- -D warnings、cargo test 全绿。
 - [x] 回流-6 tagged union 类型：kind + 按分支载荷的类型安全表达（多态配置只能 enum+`Any`
       负载列，类型安全丢失）。
       证据（commit cd2858c，已代决 ①代码目标先按运行时形状渲染为通用 map/dict/table，

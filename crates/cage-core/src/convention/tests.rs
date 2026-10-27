@@ -28,6 +28,7 @@ fn meta_of(rows: &[&[&str]], header_row: usize, territory: &[usize]) -> TableMet
         0,
         0,
         DEFAULT_MARKER,
+        &HashSet::new(),
         "config/Skill.xlsx",
         "Skill",
     )
@@ -70,6 +71,62 @@ fn marker_rows_type_comment_enum_rows() {
         Some(["common", "rare", "epic"].map(String::from).as_slice())
     );
     assert_eq!(rarity.description.as_deref(), Some("稀有度"));
+}
+
+/// A row whose first marker cell is `+` declares sub-columns (design §51
+/// Q6): each non-marker cell becomes a child of the header column at its
+/// own column, and later keyword rows descend into the deepest sub-column.
+#[test]
+fn sub_column_row_builds_nested_columns() {
+    // The parent name repeats at C and D: in a real workbook a merged span
+    // makes the covered cell take the anchor's name, so the decoder sees the
+    // same text at both columns and groups the two sub-columns under it.
+    let rows = [
+        &["##var", "id", "weapon", "weapon"][..],
+        &["##+", "", "atk", "def"][..],
+        &["##type", "Int32", "Int32", "Int32"][..],
+    ];
+    let meta = meta_of(&rows, 0, &[0, 1, 2]);
+    let weapon = meta.columns.get("weapon").expect("weapon declared");
+    assert_eq!(weapon.cell, "C2", "the `##+` cell is the parent anchor");
+    assert_eq!(
+        weapon.sub_columns.keys().collect::<Vec<_>>(),
+        ["atk", "def"],
+        "sub-columns in declaration order"
+    );
+    assert_eq!(
+        weapon.sub_columns["atk"].field_type,
+        Some(FieldType::Int32),
+        "the `##type` row descends into the sub-column scope"
+    );
+    assert_eq!(weapon.sub_columns["def"].field_type, Some(FieldType::Int32));
+}
+
+/// A `##+` row whose cell carries a second marker is two markers in one row,
+/// which the sub-column grammar forbids (E2201, anchor reported).
+#[test]
+fn sub_column_row_with_a_second_marker_is_e2201() {
+    let rows = [
+        &["##var", "id", "weapon"][..],
+        &["##+", "", "##type Int32"][..],
+        &["id", "name", "weapon"][..],
+    ];
+    let diags = decode(
+        &grid(&rows),
+        0,
+        &[0, 1][..],
+        0,
+        0,
+        DEFAULT_MARKER,
+        &HashSet::new(),
+        "config/Skill.xlsx",
+        "Skill",
+    )
+    .expect_err("a second marker cell is E2201");
+    assert!(diags
+        .errors()
+        .iter()
+        .any(|d| { d.code == E2201 && d.message.contains("second marker cell") }));
 }
 
 /// Per-cell inline form: the keyword and its own column's value share one
@@ -138,6 +195,7 @@ fn syntax_violations_are_e2201_with_anchors() {
         0,
         0,
         DEFAULT_MARKER,
+        &HashSet::new(),
         "config/Skill.xlsx",
         "Skill",
     )
@@ -209,6 +267,7 @@ fn vocabulary_violations_are_e2202() {
         0,
         0,
         DEFAULT_MARKER,
+        &HashSet::new(),
         "config/Skill.xlsx",
         "Skill",
     )
@@ -264,6 +323,7 @@ fn declaration_beyond_the_header_row_is_e2201() {
         0,
         0,
         DEFAULT_MARKER,
+        &HashSet::new(),
         "config/Skill.xlsx",
         "Skill",
     )
@@ -351,6 +411,7 @@ fn anchors_account_for_range_offset() {
         1, // range starts at sheet row 2
         1, // ...and column B
         DEFAULT_MARKER,
+        &HashSet::new(),
         "config/Skill.xlsx",
         "Skill",
     )

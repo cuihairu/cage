@@ -34,8 +34,8 @@
 )]
 use cage_core::{
     convention::{
-        decode, parse_response, run_script, CellValue, ExcelConvention, Grid, Preset, TableMeta,
-        CONTRACT_VERSION,
+        a1_column, decode, parse_response, run_script, CellValue, ColumnMeta, ExcelConvention,
+        Grid, Preset, TableMeta, CONTRACT_VERSION, DEFAULT_MARKER,
     },
     diagnostics::{Diagnostic, Diagnostics},
     error::codes::{
@@ -79,6 +79,15 @@ impl Default for ExcelSourceAdapter {
             project_root: None,
         }
     }
+}
+
+/// One top-level column group from a data header row: the column name (the
+/// header text at the group's anchor) and the absolute sheet columns the
+/// group occupies — a single column for a flat field, the merged span for a
+/// multi-level parent whose sub-columns share its header (design §51 Q6).
+struct HeaderGroup {
+    name: String,
+    columns: Vec<usize>,
 }
 
 impl ExcelSourceAdapter {
@@ -291,9 +300,45 @@ impl ExcelSourceAdapter {
                 sheet: Some(sheet_name.clone()),
             };
 
-            // Process data rows
+            // Process data rows. Under Q6 ruling (a) a built-in `marker_rows`
+            // table whose configured header row is `##var` skips the
+            // declaration rows below it; every other preset starts directly
+            // below its data header row as before.
+            let marker = self
+                .convention
+                .as_ref()
+                .map_or(DEFAULT_MARKER.to_string(), |c| c.marker.clone());
+            let marker_grid = if self.has_header
+                && self.convention.as_ref().is_some_and(|c| {
+                    !c.uses_script() && c.preset_for(&workbook_name) == Preset::MarkerRows
+                }) {
+                Some(Self::grid_of(&range, &merge_anchors))
+            } else {
+                None
+            };
+            let is_var_header = marker_grid.as_ref().is_some_and(|grid| {
+                grid.get(self.header_row).is_some_and(|row| {
+                    row.iter().any(|cell| {
+                        cell.text()
+                            .strip_prefix(&marker)
+                            .is_some_and(|rest| rest.trim() == "var")
+                    })
+                })
+            });
+            let has_nested_columns = convention_meta
+                .as_ref()
+                .is_some_and(|meta| meta.columns.values().any(|c| !c.sub_columns.is_empty()));
+            let header_groups = (self.has_header && (is_var_header || has_nested_columns))
+                .then(|| Self::header_groups_at(&range, &merge_anchors, data_header_row, &marker));
             let start_row = if self.has_header {
-                data_header_row + 1
+                if is_var_header {
+                    let grid = marker_grid
+                        .as_ref()
+                        .expect("var header implies a marker-rows grid");
+                    Self::marker_rows_territory(grid, self.header_row, &marker).1
+                } else {
+                    data_header_row + 1
+                }
             } else {
                 0
             };
@@ -314,35 +359,55 @@ impl ExcelSourceAdapter {
                     continue;
                 }
 
-                let mut fields = IndexMap::new();
+                let mut fields = if let Some(header_groups) = &header_groups {
+                    Self::fields_for_nested_row(
+                        header_groups,
+                        &range,
+                        &merge_anchors,
+                        row,
+                        convention_meta.as_ref(),
+                        rel_row,
+                        sheet_row,
+                        range_start.1 as usize,
+                        &file_path,
+                        sheet_name,
+                    )
+                } else {
+                    IndexMap::new()
+                };
                 let mut primary_key = Vec::new();
 
-                for (col_idx, cell) in row.iter().enumerate() {
-                    if col_idx >= headers.len() {
-                        break;
-                    }
+                if header_groups.is_none() {
+                    for (col_idx, cell) in row.iter().enumerate() {
+                        if col_idx >= headers.len() {
+                            break;
+                        }
 
-                    let header = &headers[col_idx];
-                    let cell = Self::resolve_cell(&range, &merge_anchors, rel_row, col_idx, cell);
-                    let cage_value = Self::cell_to_cage_value(cell);
+                        let header = &headers[col_idx];
+                        let cell =
+                            Self::resolve_cell(&range, &merge_anchors, rel_row, col_idx, cell);
+                        let cage_value = Self::cell_to_cage_value(cell);
 
-                    // Excel column letter (A, B, C... AA, AB...) on the sheet grid
-                    let col_letter = Self::col_index_to_letter(range_start.1 as usize + col_idx);
+                        // Excel column letter (A, B, C... AA, AB...) on the sheet grid
+                        let col_letter =
+                            Self::col_index_to_letter(range_start.1 as usize + col_idx);
 
-                    let loc = SourceLocation::new(&file_path)
-                        .with_format("excel")
-                        .with_sheet(sheet_name.clone())
-                        .with_row(sheet_row)
-                        .with_column(col_letter)
-                        .with_field(header.clone());
+                        let loc = SourceLocation::new(&file_path)
+                            .with_format("excel")
+                            .with_sheet(sheet_name.clone())
+                            .with_row(sheet_row)
+                            .with_column(col_letter)
+                            .with_field(header.clone());
 
-                    fields.insert(header.clone(), TypedValue::new(cage_value, loc));
+                        fields.insert(header.clone(), TypedValue::new(cage_value, loc));
 
-                    // Heuristic: first column named "id" or "ID" is primary key
-                    if primary_key.is_empty()
-                        && (header.eq_ignore_ascii_case("id") || header.eq_ignore_ascii_case("ID"))
-                    {
-                        primary_key.push(fields[header].value.clone());
+                        // Heuristic: first column named "id" or "ID" is primary key
+                        if primary_key.is_empty()
+                            && (header.eq_ignore_ascii_case("id")
+                                || header.eq_ignore_ascii_case("ID"))
+                        {
+                            primary_key.push(fields[header].value.clone());
+                        }
                     }
                 }
 
@@ -488,13 +553,11 @@ impl ExcelSourceAdapter {
             Option<String>,
         ) = match preset {
             Preset::Data => return None,
-            Preset::MarkerRows => (
-                (0..self.header_row.min(grid.len())).collect(),
-                None,
-                0,
-                0,
-                None,
-            ),
+            Preset::MarkerRows => {
+                let (territory_end, _) =
+                    Self::marker_rows_territory(&grid, self.header_row, &convention.marker);
+                ((0..territory_end).collect(), None, 0, 0, None)
+            }
             Preset::HeaderBlock => {
                 let mut start = self.header_row.min(grid.len());
                 while start > 0 && grid[start - 1].iter().any(|c| !c.text().is_empty()) {
@@ -565,6 +628,11 @@ impl ExcelSourceAdapter {
             }
         };
 
+        let covered: HashSet<(usize, usize)> = merge_anchors
+            .keys()
+            .map(|(row, col)| (*row as usize, *col as usize))
+            .collect();
+
         let decoded = if let Some(meta_grid) = meta_grid.as_ref() {
             decode(
                 meta_grid,
@@ -573,6 +641,7 @@ impl ExcelSourceAdapter {
                 meta_row0,
                 meta_col0,
                 &convention.marker,
+                &HashSet::new(),
                 file_path,
                 meta_sheet.as_deref().unwrap_or(sheet_name),
             )
@@ -584,6 +653,7 @@ impl ExcelSourceAdapter {
                 range_start.0 as usize,
                 range_start.1 as usize,
                 &convention.marker,
+                &covered,
                 file_path,
                 sheet_name,
             )
@@ -598,6 +668,199 @@ impl ExcelSourceAdapter {
                 None
             }
         }
+    }
+
+    /// `marker_rows` territory (Q6 ruling (a)): if `header_row` is a `##var`
+    /// row the territory ends at the first pure-data row below it; otherwise
+    /// it is exactly the rows above the configured header. The returned pair
+    /// is `(territory_end, first_data_row)`.
+    fn marker_rows_territory(grid: &Grid, header_row: usize, marker: &str) -> (usize, usize) {
+        let var_header = grid.get(header_row).is_some_and(|row| {
+            row.iter().any(|cell| {
+                cell.text()
+                    .strip_prefix(marker)
+                    .is_some_and(|rest| rest.trim() == "var")
+            })
+        });
+        if !var_header {
+            return (header_row.min(grid.len()), (header_row + 1).min(grid.len()));
+        }
+        let data_start = ((header_row + 1)..grid.len())
+            .find(|row| {
+                !grid[*row]
+                    .iter()
+                    .any(|cell| cell.text().starts_with(marker))
+            })
+            .unwrap_or(grid.len());
+        (data_start, data_start)
+    }
+
+    /// Top-level column groups of a data header row. Consecutive columns that
+    /// a merged region binds to one anchor form one group; a marker cell (the
+    /// `##var` of a Luban field-name row) is the row's own keyword, not a
+    /// column name.
+    fn header_groups_at(
+        range: &Range<Data>,
+        merge_anchors: &HashMap<(u32, u32), (u32, u32)>,
+        header_row: usize,
+        marker: &str,
+    ) -> Vec<HeaderGroup> {
+        let mut groups: Vec<HeaderGroup> = Vec::new();
+        let Some((range_start_row, range_start_col)) = range.start() else {
+            return groups;
+        };
+        let Some(header) = range.rows().nth(header_row) else {
+            return groups;
+        };
+        for (col_idx, cell) in header.iter().enumerate() {
+            let abs_col = range_start_col as usize + col_idx;
+            let abs_row = range_start_row as usize + header_row;
+            // The `##var` row's marker cell carries no column name.
+            if Self::cell_to_string(cell).strip_prefix(marker).is_some() {
+                continue;
+            }
+            let anchor_col = merge_anchors
+                .get(&(abs_row as u32, abs_col as u32))
+                .map_or(abs_col, |(_row, col)| *col as usize);
+            let name = Self::cell_to_string(Self::resolve_cell(
+                range,
+                merge_anchors,
+                header_row,
+                col_idx,
+                cell,
+            ))
+            .trim()
+            .to_string();
+            if let Some(current) = groups.last_mut() {
+                if current.columns.last() == Some(&anchor_col) {
+                    current.columns.push(abs_col);
+                    continue;
+                }
+            }
+            groups.push(HeaderGroup {
+                name,
+                columns: vec![abs_col],
+            });
+        }
+        groups
+    }
+
+    /// Assemble one data row under the nesting rules (design §51 Q6): a
+    /// top-level column with `sub_columns` becomes a nested `Value::Object`
+    /// (recursing through grandchildren), every other column keeps its cell
+    /// value. The top-level field order follows the header groups.
+    #[allow(clippy::too_many_arguments)]
+    fn fields_for_nested_row(
+        header_groups: &[HeaderGroup],
+        range: &Range<Data>,
+        merge_anchors: &HashMap<(u32, u32), (u32, u32)>,
+        row: &[Data],
+        convention_meta: Option<&TableMeta>,
+        rel_row: usize,
+        sheet_row: usize,
+        range_start_col: usize,
+        file_path: &str,
+        sheet_name: &str,
+    ) -> IndexMap<String, TypedValue> {
+        let mut fields = IndexMap::new();
+        for group in header_groups {
+            let nested = convention_meta
+                .and_then(|meta| meta.columns.get(&group.name))
+                .filter(|meta| !meta.sub_columns.is_empty());
+            let value = if let Some(meta) = nested {
+                Value::Object(Self::nested_object_value(
+                    meta,
+                    range,
+                    merge_anchors,
+                    row,
+                    rel_row,
+                    range_start_col,
+                ))
+            } else {
+                Self::nested_cell_value(
+                    range,
+                    merge_anchors,
+                    row,
+                    rel_row,
+                    group.columns.first().copied().unwrap_or(0),
+                    range_start_col,
+                )
+            };
+            let col_letter = Self::col_index_to_letter(group.columns.first().copied().unwrap_or(0));
+            let loc = SourceLocation::new(file_path)
+                .with_format("excel")
+                .with_sheet(sheet_name.to_string())
+                .with_row(sheet_row)
+                .with_column(col_letter)
+                .with_field(group.name.clone());
+            fields.insert(group.name.clone(), TypedValue::new(value, loc));
+        }
+        fields
+    }
+
+    /// A nested bean's fields, in sub-column declaration order: a child with
+    /// its own sub-columns is itself an object, a childless one is the cell
+    /// at its declaration column.
+    fn nested_object_value(
+        meta: &ColumnMeta,
+        range: &Range<Data>,
+        merge_anchors: &HashMap<(u32, u32), (u32, u32)>,
+        row: &[Data],
+        rel_row: usize,
+        range_start_col: usize,
+    ) -> IndexMap<String, Value> {
+        let mut value = IndexMap::new();
+        for (name, child) in &meta.sub_columns {
+            let Some(abs_col) = a1_column(&child.cell) else {
+                continue;
+            };
+            let child_value = if child.sub_columns.is_empty() {
+                Self::nested_cell_value(
+                    range,
+                    merge_anchors,
+                    row,
+                    rel_row,
+                    abs_col,
+                    range_start_col,
+                )
+            } else {
+                Value::Object(Self::nested_object_value(
+                    child,
+                    range,
+                    merge_anchors,
+                    row,
+                    rel_row,
+                    range_start_col,
+                ))
+            };
+            value.insert(name.clone(), child_value);
+        }
+        value
+    }
+
+    /// The cell value at an absolute sheet column on the current data row; a
+    /// column past the row's width is an empty cell (`Null`).
+    fn nested_cell_value(
+        range: &Range<Data>,
+        merge_anchors: &HashMap<(u32, u32), (u32, u32)>,
+        row: &[Data],
+        rel_row: usize,
+        abs_col: usize,
+        range_start_col: usize,
+    ) -> Value {
+        let Some(rel_col) = abs_col.checked_sub(range_start_col) else {
+            return Value::Null;
+        };
+        let Some(cell) = row.get(rel_col) else {
+            return Value::Null;
+        };
+        Self::cell_to_cage_value(Self::resolve_cell(
+            range,
+            merge_anchors,
+            rel_row,
+            rel_col,
+            cell,
+        ))
     }
 
     /// The sheet grid as the convention sees it: merge-resolved, and one
@@ -1600,6 +1863,17 @@ mod tests {
     /// A worksheet part from a 2-D array of cell texts; an empty string omits
     /// the cell, so a genuinely absent row or cell is representable.
     fn sheet_xml(rows: &[&[&str]], first_row: u32, dimension: &str) -> String {
+        sheet_xml_with_merges(rows, first_row, dimension, &[])
+    }
+
+    /// Like [`sheet_xml`], with `<mergeCell ref>` entries (for multi-level
+    /// headers: a parent column merged across its sub-column span).
+    fn sheet_xml_with_merges(
+        rows: &[&[&str]],
+        first_row: u32,
+        dimension: &str,
+        merges: &[&str],
+    ) -> String {
         use std::fmt::Write as _;
         let mut xml = String::from(concat!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
@@ -1623,7 +1897,15 @@ mod tests {
             }
             let _ = write!(xml, "</row>");
         }
-        let _ = write!(xml, "</sheetData></worksheet>");
+        let _ = write!(xml, "</sheetData>");
+        if !merges.is_empty() {
+            let _ = write!(xml, "<mergeCells count=\"{}\">", merges.len());
+            for cell in merges {
+                let _ = write!(xml, "<mergeCell ref=\"{cell}\"></mergeCell>");
+            }
+            let _ = write!(xml, "</mergeCells>");
+        }
+        let _ = write!(xml, "</worksheet>");
         xml
     }
 
@@ -1728,6 +2010,255 @@ mod tests {
         assert_eq!(
             rarity.enum_values.as_deref(),
             Some(["common", "rare", "epic"].map(String::from).as_slice())
+        );
+    }
+
+    // ---- Luban sub-column fixtures (design §51 Q6, 回流-5) -----------------
+    //
+    // Five cases in the Luban row shape the sourcing directive points at:
+    // `##var` is the data header row, `##+` declares sub-columns, and the
+    // `##type` (and other keyword) rows below declare them. A parent column
+    // is merged across its sub-column span, which is what makes multi-level
+    // headers and nested beans visible to the data plane.
+
+    /// A workbook from Luban-style rows; the dimension derives from the widest
+    /// row and `merges` are `<mergeCell ref>` entries.
+    fn luban_workbook(rows: &[&[&str]], merges: &[&str], file_name: &str) -> TempWorkbook {
+        let width = rows.iter().map(|r| r.len()).max().unwrap_or(1);
+        let last_col = ExcelSourceAdapter::col_index_to_letter(width - 1);
+        let dimension = format!("A1:{last_col}{}", rows.len());
+        let sheet = sheet_xml_with_merges(rows, 1, &dimension, merges);
+        TempWorkbook::new(&minimal_xlsx(Some(&sheet)), file_name)
+    }
+
+    /// A marker-rows adapter for a Luban sheet whose `##var` row is row 0.
+    fn luban_adapter() -> ExcelSourceAdapter {
+        ExcelSourceAdapter {
+            header_row: 0,
+            convention: Some(ExcelConvention {
+                preset: Preset::MarkerRows,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Case 1 — a single nested bean (skill weapon): `##var` / `##+` /
+    /// `##type` rows assemble each data row's weapon column into an object.
+    #[test]
+    fn test_luban_nested_bean_assembles_sub_columns_into_object() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "weapon", ""][..],
+                &["##+", "", "atk", "def"][..],
+                &["##type", "Int32", "Int32", "Int32"][..],
+                &["", "1", "10", "5"][..],
+                &["", "2", "20", "8"][..],
+            ],
+            &["C1:D1"],
+            "skill.xlsx",
+        );
+        let (doc, metas) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("nested bean decodes");
+        let table = doc.tables.get("Data").expect("one data table");
+        assert_eq!(table.rows.len(), 2, "declaration rows are not data");
+
+        let weapon = &table.rows[0].fields["weapon"].value;
+        assert_eq!(
+            weapon,
+            &Value::Object(IndexMap::from([
+                ("atk".to_string(), Value::Int(10)),
+                ("def".to_string(), Value::Int(5)),
+            ])),
+            "the weapon column is a nested bean"
+        );
+        assert_eq!(
+            table.rows[1].fields["weapon"].value,
+            Value::Object(IndexMap::from([
+                ("atk".to_string(), Value::Int(20)),
+                ("def".to_string(), Value::Int(8)),
+            ]))
+        );
+        assert_eq!(
+            table.rows[0].fields["weapon"].location.column.as_deref(),
+            Some("C")
+        );
+        assert_eq!(table.rows[0].primary_key, vec![Value::Int(1)]);
+
+        let meta = metas.get("Data").expect("table metadata");
+        let weapon_meta = meta.columns.get("weapon").expect("weapon declared");
+        assert_eq!(
+            weapon_meta.sub_columns.keys().collect::<Vec<_>>(),
+            ["atk", "def"],
+            "sub-columns in declaration order"
+        );
+        assert_eq!(
+            weapon_meta.sub_columns["atk"].field_type,
+            Some(FieldType::Int32)
+        );
+        assert_eq!(
+            weapon_meta.sub_columns["def"].field_type,
+            Some(FieldType::Int32)
+        );
+    }
+
+    /// Case 2 — a nested bean alongside flat scalar columns: the flat fields
+    /// are untouched and keep their cells; only the nested column changes.
+    #[test]
+    fn test_luban_nested_bean_with_flat_siblings() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "name", "weapon", ""][..],
+                &["##+", "", "", "atk", "def"][..],
+                &["##type", "Int32", "String", "Int32", "Int32"][..],
+                &["", "1", "sword", "10", "5"][..],
+                &["", "2", "shield", "3", "2"][..],
+            ],
+            &["D1:E1"],
+            "weapon.xlsx",
+        );
+        let (doc, metas) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("mixed flat and nested decodes");
+        let table = doc.tables.get("Data").expect("one data table");
+
+        assert_eq!(table.rows[0].fields["id"].value, Value::Int(1));
+        assert_eq!(
+            table.rows[0].fields["name"].value,
+            Value::String("sword".to_string())
+        );
+        assert_eq!(
+            table.rows[0].fields["weapon"].value,
+            Value::Object(IndexMap::from([
+                ("atk".to_string(), Value::Int(10)),
+                ("def".to_string(), Value::Int(5)),
+            ]))
+        );
+        let fields: Vec<&str> = table.rows[0].fields.keys().map(String::as_str).collect();
+        assert_eq!(fields, ["id", "name", "weapon"], "header order preserved");
+
+        let meta = metas.get("Data").expect("table metadata");
+        assert!(
+            meta.columns["name"].sub_columns.is_empty(),
+            "flat column has no sub-columns"
+        );
+        assert_eq!(meta.columns["name"].field_type, Some(FieldType::String));
+        assert_eq!(
+            meta.columns["weapon"].sub_columns["atk"].field_type,
+            Some(FieldType::Int32)
+        );
+    }
+
+    /// Case 3 — two nested beans in one table (dungeon stage and reward): both
+    /// groups assemble independently under their own merged parent headers.
+    #[test]
+    fn test_luban_two_nested_beans_in_one_table() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "stage", "", "reward", ""][..],
+                &["##+", "", "wave", "waveId", "gold", "items"][..],
+                &["##type", "Int32", "Int32", "Int32", "Int32", "String"][..],
+                &["", "1", "1", "100", "50", "sword"][..],
+            ],
+            &["C1:D1", "E1:F1"],
+            "dungeon.xlsx",
+        );
+        let (doc, _) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("two nested beans decode");
+        let table = doc.tables.get("Data").expect("one data table");
+
+        assert_eq!(
+            table.rows[0].fields["stage"].value,
+            Value::Object(IndexMap::from([
+                ("wave".to_string(), Value::Int(1)),
+                ("waveId".to_string(), Value::Int(100)),
+            ]))
+        );
+        assert_eq!(
+            table.rows[0].fields["reward"].value,
+            Value::Object(IndexMap::from([
+                ("gold".to_string(), Value::Int(50)),
+                ("items".to_string(), Value::String("sword".to_string())),
+            ]))
+        );
+        assert_eq!(
+            table.rows[0].fields["reward"].location.column.as_deref(),
+            Some("E")
+        );
+    }
+
+    /// Case 4 — nesting depth (hero → stats → hp): a sub-column that itself
+    /// carries sub-columns is an object, read from the deeper `##+` row.
+    #[test]
+    fn test_luban_grandchild_nesting_is_an_object() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "hero", ""][..],
+                &["##+", "", "base", "stats"][..],
+                &["##+", "", "", "hp"][..],
+                &["##type", "Int32", "Int32", "Int32"][..],
+                &["", "1", "10", "5"][..],
+            ],
+            &["C1:D1"],
+            "hero.xlsx",
+        );
+        let (doc, metas) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("grandchild nesting decodes");
+        let table = doc.tables.get("Data").expect("one data table");
+        assert_eq!(
+            table.rows[0].fields["hero"].value,
+            Value::Object(IndexMap::from([
+                ("base".to_string(), Value::Int(10)),
+                (
+                    "stats".to_string(),
+                    Value::Object(IndexMap::from([("hp".to_string(), Value::Int(5))])),
+                ),
+            ]))
+        );
+        let meta = metas.get("Data").expect("table metadata");
+        let stats = &meta.columns["hero"].sub_columns["stats"];
+        assert_eq!(
+            stats.sub_columns.keys().collect::<Vec<_>>(),
+            ["hp"],
+            "the deeper `##+` row nests under the deepest sub-column at that column"
+        );
+    }
+
+    /// Case 5 — an optional sub-column with a declared default: the empty cell
+    /// stays `Null` in the assembled object while the default lands in the
+    /// metadata (the data plane does not apply defaults; the schema layer does).
+    #[test]
+    fn test_luban_optional_sub_column_with_default_stays_null() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "equip", ""][..],
+                &["##+", "", "slot", "level"][..],
+                &["##type", "Int32", "String", "Int32"][..],
+                &["##default", "", "", "1"][..],
+                &["", "1", "weapon", ""][..],
+            ],
+            &["C1:D1"],
+            "equip.xlsx",
+        );
+        let (doc, metas) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("optional sub-column decodes");
+        let table = doc.tables.get("Data").expect("one data table");
+        assert_eq!(
+            table.rows[0].fields["equip"].value,
+            Value::Object(IndexMap::from([
+                ("slot".to_string(), Value::String("weapon".to_string())),
+                ("level".to_string(), Value::Null),
+            ]))
+        );
+        let meta = metas.get("Data").expect("table metadata");
+        assert_eq!(
+            meta.columns["equip"].sub_columns["level"].default,
+            Some(serde_json::json!(1)),
+            "the default is declared on the sub-column"
         );
     }
 

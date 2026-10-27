@@ -20,6 +20,7 @@ use crate::value::SourceLocation;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
@@ -131,6 +132,9 @@ pub struct ColumnMeta {
     pub description: Option<String>,
     /// Schema DSL `targets`
     pub targets: Vec<String>,
+    /// Child columns declared by a `##+` sub-column row. A non-empty map
+    /// makes the parent a nested bean by construction.
+    pub sub_columns: IndexMap<String, ColumnMeta>,
 }
 
 /// Decoded metadata for one table: the header row the decoder resolved, and
@@ -263,7 +267,7 @@ pub fn col_index_to_letter(mut col: usize) -> String {
 /// anchor is a real A1 address. Malformed cells are errors (E2201/E2202)
 /// with the cell anchor — nothing is silently dropped, and nothing silently
 /// degrades to data (design §51 Q3).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::implicit_hasher)]
 pub fn decode(
     grid: &Grid,
     header_row: usize,
@@ -271,6 +275,7 @@ pub fn decode(
     row0: usize,
     col0: usize,
     marker: &str,
+    covered: &HashSet<(usize, usize)>,
     source_file: &str,
     sheet: &str,
 ) -> Result<TableMeta, Diagnostics> {
@@ -298,8 +303,68 @@ pub fn decode(
         let Some(cells) = grid.get(row) else {
             continue; // a territory past the grid is empty by definition
         };
+        let abs_row = row0 + row;
+        let first = first_marker_keyword(cells, marker);
+
+        // Under ruling (a) the `##var` row is the data header row: it names
+        // the columns but carries no declaration values to `apply`.
+        if row == header_row && first.as_ref().is_some_and(|(_, keyword)| keyword == "var") {
+            continue;
+        }
+
+        // A row whose first marker cell is `+` declares sub-columns; the
+        // marker cell carries no keyword value.
+        if first.as_ref().is_some_and(|(_, keyword)| keyword == "+") {
+            for (rel_col, cell) in cells.iter().enumerate() {
+                let abs_col = col0 + rel_col;
+                if covered.contains(&(abs_row, abs_col)) {
+                    continue;
+                }
+                if rel_col == first.as_ref().expect("first marker present").0 {
+                    continue;
+                }
+                let text = cell.text();
+                if text.is_empty() {
+                    continue;
+                }
+                if text.starts_with(marker) {
+                    diags.add(
+                        error(
+                            E2201,
+                            format!(
+                                "sub-column row at {anchor} carries a second marker cell",
+                                anchor = anchor(abs_row, abs_col),
+                            ),
+                        )
+                        .with_location(loc(
+                            source_file,
+                            sheet,
+                            abs_row,
+                            abs_col,
+                        )),
+                    );
+                    continue;
+                }
+                add_sub_column(
+                    &mut meta.columns,
+                    &mut diags,
+                    &headers,
+                    &text,
+                    abs_row,
+                    abs_col,
+                    source_file,
+                    sheet,
+                );
+            }
+            continue;
+        }
+
         let mut current: Option<String> = None;
         for (rel_col, cell) in cells.iter().enumerate() {
+            let abs_col = col0 + rel_col;
+            if covered.contains(&(abs_row, abs_col)) {
+                continue;
+            }
             let text = cell.text();
             if let Some(rest) = text.strip_prefix(marker) {
                 let rest = rest.trim().to_string();
@@ -309,14 +374,14 @@ pub fn decode(
                             E2201,
                             format!(
                                 "marker cell {anchor} carries no keyword",
-                                anchor = anchor(row0 + row, col0 + rel_col)
+                                anchor = anchor(abs_row, abs_col)
                             ),
                         )
                         .with_location(loc(
                             source_file,
                             sheet,
-                            row0 + row,
-                            col0 + rel_col,
+                            abs_row,
+                            abs_col,
                         )),
                     );
                     current = None;
@@ -331,8 +396,8 @@ pub fn decode(
                         &headers,
                         &keyword,
                         &own,
-                        row0 + row,
-                        col0 + rel_col,
+                        abs_row,
+                        abs_col,
                         source_file,
                         sheet,
                     );
@@ -345,14 +410,14 @@ pub fn decode(
                             format!(
                                 "value {text:?} at {anchor} appears before any keyword cell in \
                                  its row",
-                                anchor = anchor(row0 + row, col0 + rel_col)
+                                anchor = anchor(abs_row, abs_col)
                             ),
                         )
                         .with_location(loc(
                             source_file,
                             sheet,
-                            row0 + row,
-                            col0 + rel_col,
+                            abs_row,
+                            abs_col,
                         )),
                     );
                     continue;
@@ -363,8 +428,8 @@ pub fn decode(
                     &headers,
                     keyword,
                     &text,
-                    row0 + row,
-                    col0 + rel_col,
+                    abs_row,
+                    abs_col,
                     source_file,
                     sheet,
                 );
@@ -377,6 +442,111 @@ pub fn decode(
     } else {
         Ok(meta)
     }
+}
+
+/// First marker cell of a row: `(relative column, keyword)`.
+fn first_marker_keyword(cells: &[CellValue], marker: &str) -> Option<(usize, String)> {
+    cells.iter().enumerate().find_map(|(rel_col, cell)| {
+        let rest = cell.text().strip_prefix(marker)?.trim().to_string();
+        if rest.is_empty() {
+            return None;
+        }
+        let (keyword, _) = split_keyword(&rest);
+        Some((rel_col, keyword))
+    })
+}
+
+/// Add one `##+` cell as a sub-column, descending into the deepest
+/// declaration already opened at this column (nested sub-column scope).
+#[allow(clippy::too_many_arguments)]
+fn add_sub_column(
+    columns: &mut IndexMap<String, ColumnMeta>,
+    diags: &mut Diagnostics,
+    headers: &[(usize, String)],
+    name: &str,
+    abs_row: usize,
+    abs_col: usize,
+    source_file: &str,
+    sheet: &str,
+) {
+    let anchor_text = anchor(abs_row, abs_col);
+    let Some((_header_col, parent_name)) = headers.iter().find(|(column, _)| *column == abs_col)
+    else {
+        diags.add(
+            error(
+                E2201,
+                format!("sub-column declaration at {anchor_text} has no column in the header row"),
+            )
+            .with_location(loc(source_file, sheet, abs_row, abs_col)),
+        );
+        return;
+    };
+    let parent_name = parent_name.clone();
+    let path = columns
+        .get(&parent_name)
+        .and_then(|meta| deepest_sub_column_path(meta, abs_col));
+    let parent = match &path {
+        Some(path) => target_mut(columns, &parent_name, Some(path)),
+        None => columns.entry(parent_name.clone()).or_default(),
+    };
+    if parent.cell.is_empty() {
+        parent.cell = anchor(abs_row, abs_col);
+    }
+    if parent.sub_columns.contains_key(name) {
+        diags.add(
+            error(
+                E2201,
+                format!(
+                    "sub-column {name:?} of {parent_name:?} is declared twice at {anchor_text}"
+                ),
+            )
+            .with_location(loc(source_file, sheet, abs_row, abs_col)),
+        );
+        return;
+    }
+    parent.sub_columns.insert(
+        name.to_string(),
+        ColumnMeta {
+            cell: anchor_text,
+            ..ColumnMeta::default()
+        },
+    );
+}
+
+/// Deepest declaration path (sub-column names) whose cell sits at `abs_col`.
+fn deepest_sub_column_path(meta: &ColumnMeta, abs_col: usize) -> Option<Vec<String>> {
+    for (name, child) in &meta.sub_columns {
+        if a1_column(&child.cell) == Some(abs_col) {
+            if let Some(mut path) = deepest_sub_column_path(child, abs_col) {
+                path.insert(0, name.clone());
+                return Some(path);
+            }
+            return Some(vec![name.clone()]);
+        }
+    }
+    None
+}
+
+/// Mutably resolve a top-level column, then a sub-column path.
+fn target_mut<'a>(
+    columns: &'a mut IndexMap<String, ColumnMeta>,
+    top_name: &str,
+    path: Option<&[String]>,
+) -> &'a mut ColumnMeta {
+    let top = columns
+        .get_mut(top_name)
+        .expect("top-level column must exist");
+    let Some(path) = path else {
+        return top;
+    };
+    let mut current = top;
+    for name in path {
+        current = current
+            .sub_columns
+            .get_mut(name)
+            .expect("sub-column path must exist");
+    }
+    current
 }
 
 /// Split a keyword cell's text into the keyword (up to the first space) and
@@ -421,7 +591,17 @@ fn apply(
     };
     let name = name.clone();
 
-    let meta = columns.entry(name.clone()).or_default();
+    let path = columns
+        .get(&name)
+        .and_then(|meta| deepest_sub_column_path(meta, abs_col));
+    let meta = match &path {
+        Some(_) => target_mut(
+            columns,
+            &name,
+            Some(path.as_deref().expect("path is present")),
+        ),
+        None => columns.entry(name.clone()).or_default(),
+    };
     if meta.cell.is_empty() {
         meta.cell.clone_from(&anchor_text);
     }
@@ -917,6 +1097,15 @@ pub fn parse_response(
                 ),
             );
         }
+        if has_sub_columns(&meta) {
+            return fail(
+                E2206,
+                format!(
+                    "{E2206} column {name:?} declares sub_columns; script-declared nesting \
+                     is a later slice (design §51 Q6)"
+                ),
+            );
+        }
         if !header_names.iter().any(|h| h == name) {
             return fail(
                 E2207,
@@ -929,6 +1118,21 @@ pub fn parse_response(
         header_row,
         columns,
     })
+}
+
+/// Whether this column (or any descendant) carries `##+` sub-columns.
+fn has_sub_columns(column: &ColumnMeta) -> bool {
+    !column.sub_columns.is_empty() || column.sub_columns.values().any(has_sub_columns)
+}
+
+/// 0-based column index of an A1 cell (`"G27"` → 6). Public because the
+/// Excel data plane maps a sub-column's cell anchor to its sheet column.
+pub fn a1_column(cell: &str) -> Option<usize> {
+    if !is_a1(cell) {
+        return None;
+    }
+    let letters = cell.bytes().take_while(u8::is_ascii_uppercase);
+    Some(letters.fold(0, |acc, b| acc * 26 + usize::from(b - b'A' + 1)) - 1)
 }
 
 /// A1 address shape check: 1-3 capital letters, then a row number without a
