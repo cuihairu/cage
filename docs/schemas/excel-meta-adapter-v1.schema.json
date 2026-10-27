@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cage:excel-meta-adapter-v1",
+  "title": "Cage Excel meta-row adapter contract v1",
+  "description": "The two JSON messages between `cage` and a user-supplied Excel meta-row decoding script (decision record: docs/design.md section 51, X-series). One file carries both directions; the top-level oneOf accepts either a request (cage -> script) or a response (script -> cage). Vocabulary is the Cage Schema DSL field name set (T3.1); the adapter may not invent rule semantics.",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "description": "Read on stdin by the script. The full sheet grid is supplied so the script may locate convention rows wherever the author puts them.",
+      "required": ["contract", "workbook", "sheet", "header_row", "grid"],
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "const": "cage.excel-meta/1",
+          "description": "Contract version. Cage and the script both check it; an unknown version fails loudly."
+        },
+        "workbook": {
+          "type": "string",
+          "description": "Workbook path relative to the project root, as declared in [source_roots]."
+        },
+        "sheet": {
+          "type": "string",
+          "description": "Sheet name that is being decoded. Hidden and very-hidden sheets never reach the adapter (docs/design.md section 3.1 ruling)."
+        },
+        "header_row": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index of the data header row exactly as Cage resolved it for this workbook (the [source.excel].header_row knob, default 0). Informational: the script decides where the data header really is and answers in response.header_row."
+        },
+        "grid": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The whole visible sheet as rows of cells, 0-based in both directions. Cell = integer, non-integer number, string, boolean, or null. An empty cell is null. A merged cell is back-filled to the top-left value (xlsx only, .ods never). A date or datetime cell is serialized as an ISO-8601 string in workbook-local time, with no timezone. Formula cells carry their cached value; nothing is re-evaluated (the same policy as [source.excel].eval_formulas=false).",
+          "items": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                { "type": "null" },
+                { "type": "boolean" },
+                { "type": "string" },
+                { "type": "number" }
+              ]
+            }
+          }
+        },
+        "config": {
+          "type": "object",
+          "description": "The contents of the [source.excel].script_config table, verbatim. The script reads its own tuning here, so no new cage knobs are needed to pass options through.",
+          "additionalProperties": { }
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "description": "Read from stdout by Cage. This is the only channel through which a script can influence the build: it is validated against this schema and then against the vocabulary table (unknown keywords and out-of-vocabulary literals fail, E2202). It is never interpreted as code.",
+      "required": ["contract", "table", "header_row", "columns"],
+      "additionalProperties": false,
+      "properties": {
+        "contract": { "const": "cage.excel-meta/1" },
+        "table": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The table name the decoded metadata applies to. Must match the table Cage resolves for this sheet."
+        },
+        "header_row": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index of the row that carries the data column names. Everything Cage treats as convention must sit above it (built-in presets A and B include it in the same index space)."
+        },
+        "columns": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "Per-column metadata, keyed by the data column name. Column-level only in v1: no cross-table rules, no expression rules, no L7 game rules (those stay in the Schema DSL and the validation layers).",
+          "additionalProperties": { "$ref": "#/$defs/column" }
+        }
+      }
+    },
+    "column": {
+      "type": "object",
+      "description": "One column's declared convention. Every key is a Cage Schema DSL field name (T3.1, the same set as JSON Schema's core keywords where they overlap) - the adapter layer invents no vocabulary. `cell` anchors the declaration so any diagnostic points at the exact cell.",
+      "required": ["cell", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "cell": {
+          "type": "string",
+          "pattern": "^[A-Z]{1,3}[1-9][0-9]*$",
+          "description": "A1-style address inside the decoded sheet, e.g. \"B2\" or \"G27\". Where a column-level rule has no single anchor (a keyword row whose value is spread across columns), the keyword cell is used."
+        },
+        "type": {
+          "$ref": "#/$defs/field_type"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Schema DSL name, unchanged."
+        },
+        "primary_key": {
+          "type": "boolean",
+          "description": "Schema DSL name, unchanged. Mapping a column's primary_key to the table-level `primary_key` list happens on the Schema side, not here."
+        },
+        "default": {
+          "description": "Schema DSL name, unchanged. A JSON literal: null, boolean, string, number, an array, or an object. The six branches are the six JSON Schema types, which are mutually exclusive, so exactly one can match a given default.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "boolean" },
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "array", "items": true },
+            { "type": "object", "additionalProperties": true }
+          ]
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Schema DSL name, unchanged. A literal value list; use `type` = \"Enum<Name>\" when the value set is itself a named enumeration.",
+          "items": { "type": "string" }
+        },
+        "min": {
+          "type": "number",
+          "description": "Schema DSL name, unchanged (the \"range\" of the earlier discussion is min/max)."
+        },
+        "max": {
+          "type": "number",
+          "description": "Schema DSL name, unchanged."
+        },
+        "unique": {
+          "type": "boolean",
+          "description": "Schema DSL name, unchanged."
+        },
+        "reference": {
+          "type": "object",
+          "description": "Schema DSL name, unchanged. The same object shape the Schema field reference accepts. Declaring the reference column is metadata; resolving and checking it is the validation layers' job.",
+          "required": ["table", "field"],
+          "additionalProperties": false,
+          "properties": {
+            "table": { "type": "string", "minLength": 1 },
+            "field": { "type": "string", "minLength": 1 },
+            "cardinality": { "type": "string", "enum": ["one", "many", "optional"] },
+            "compatible_profile": { "type": "string" }
+          }
+        },
+        "description": {
+          "type": "string",
+          "description": "Schema DSL name, unchanged (the \"comment\" convention row of the A/B presets maps here)."
+        },
+        "targets": {
+          "type": "array",
+          "description": "Schema DSL name, unchanged - the column's client/server grouping is a plain Schema declaration, not a new concept here.",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "field_type": {
+      "description": "The value of a column's `type`. This is the Cage Schema field's own `type` slot, verbatim - the adjacently tagged `{ kind, value }` object form that `FieldType` deserializes, one of its 19 kinds. The contract deliberately carries the exact shape the Schema accepts rather than inventing a shorthand (there is no translation step between the contract and the schema, so there is no place for the two spellings to drift). Scalars carry no `value`; `Array` and `Enum` carry a `value`; `Object` carries a property map; `Map` carries `{ key_type, value_type }`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "Null", "Bool",
+                "Int8", "Int16", "Int32", "Int64",
+                "UInt8", "UInt16", "UInt32", "UInt64",
+                "Float32", "Float64",
+                "String", "Bytes", "Any"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "Array" },
+            "value": { "$ref": "#/$defs/field_type" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "Enum" },
+            "value": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "Object" },
+            "value": { "type": "object", "additionalProperties": { "$ref": "#/$defs/field_type" } }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "Map" },
+            "value": {
+              "type": "object",
+              "required": ["value_type"],
+              "additionalProperties": false,
+              "properties": {
+                "key_type": { "enum": ["string", "int", "bool"] },
+                "value_type": { "$ref": "#/$defs/field_type" }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -2570,3 +2570,100 @@ The determinism contract of the manifest / snapshot is "same input → same byte
 - No Git LFS integration / binary diff (nothing is pre-built before a real large-table pain point appears);
 - No server side (red line restated: snapshots / bundles / the registry protocol are all static-hosting friendly);
 - `.cage-cache/` and `build/` stay out of routine backups (rebuildable; snapshots and bundles are the backup artifacts).
+
+---
+
+# 51. Excel Meta-Row Convention (X series, decided 2026-10-27)
+
+Section 3.1 chartered Excel *sheet-level* metadata (hidden sheets never enter the Canonical Model) and rejected Excel *cell comments* as a rule channel. What it did not settle is where the *rule itself* lives for a table authored in Excel. Section 39's "Excel Editor" red line forbids building an editor; it never said Excel cannot carry the rules the compiler checks. This section decides the rule-carrying surface.
+
+**Governing ruling (2026-10-26, user directive):** the convention must be *configurable*. Cage may not assume the author's Excel layout — no preset format is baked in as if it were "the" Excel format. Two consequences are fixed here and bind every later implementation in the X series:
+
+- **vocabulary is not new.** Every rule keyword is an existing Cage Schema DSL field name — `type`, `required`, `default`, `enum`, `min`, `max`, `unique`, `primary_key`, `reference`, `description`, `targets` (T3.1; the same name set as JSON Schema's core keywords where they overlap). No aliasing, no invented terms, no Luban-isms carried over wholesale.
+- **the adapter layer invents no rule semantics.** It decodes *layout and position* into that vocabulary, and stops. Cross-table references and L7 game rules are declared as metadata here, but *resolved and enforced* by the schema and validation layers. Meta rows never reach the data plane of the IR (X3 asserts this).
+
+**Boundary of v1:** column-level only. No cross-column expressions, no row-level rules, no game logic. A table that carries no convention declaration is a plain data table — byte-identical to today, no warning, no silent detection.
+
+## Q1 — built-in presets and the cage.toml switch
+
+One grammar, four location presets. The grammar is the same in all of them; only *where convention rows may sit* differs.
+
+**Grammar (one, shared):**
+
+1. A cell whose text starts with the marker (`##` by default) introduces a **keyword** = the remainder of that cell. If a space follows the keyword, the remainder is the value for *that cell's own column*.
+2. A plain (non-marker) cell inside a convention row is the value of the nearest marker to its left in the same row.
+3. A convention row is a row holding at least one marker cell. Rows with no marker cell are ignored.
+4. Column identity is positional — the column of the cell, against the data header row.
+
+**Presets:**
+
+| Preset | Convention territory | Default |
+| --- | --- | --- |
+| `data` | none — today's behavior | yes |
+| `header_block` | the contiguous non-empty run of rows immediately above the data header row (stops at the first empty row) | |
+| `marker_rows` | every row above the data header row, scanned in full; marker rows may be interleaved with author notes | |
+| `meta_sheet` | a sibling sheet named `<sheet>.meta`, parsed with the same grammar (its first row is the column-name row and must match the main sheet's header row exactly) | |
+
+`marker_rows` is the intended everyday shape: it is the row-of-`##`-keywords layout the 2026-10-26 sourcing directive points at (Luban-style marker rows — cage adopts the marker char and the row-per-keyword shape; the exact Luban dialect is not otherwise relied on or documented here). `header_block` is for authors who keep a single contiguous metadata band. `meta_sheet` is for authors who would rather not share rows with data at all.
+
+**cage.toml** (all optional; `preset` unset = `data`):
+
+```toml
+[source.excel]
+preset = "marker_rows"            # data | header_block | marker_rows | meta_sheet
+marker = "##"                      # marker_rows only; must start with '#'
+workbooks = { "Skill.xlsx" = "header_block" }   # per-workbook override, keyed by workbook file name
+
+# — instead of the built-in presets: the script adapter (mutually exclusive with preset) —
+script = "tools/excel-meta.py"    # relative to the project root, forward slashes
+script_timeout_secs = 10          # default 10
+script_config = { }               # any TOML table, passed to the script verbatim
+```
+
+Selecting a preset is *explicit*: no `[source.excel]` means no convention, and the source byte stream is read exactly as today. There is no auto-detection of marker rows anywhere — a stray `##` in a data cell of a `data`-preset table is data.
+
+`workbooks` matches by file name; if the same file name exists under two source roots the override is ambiguous (E2201), because a file-name key cannot say which workbook it means.
+
+## Q2 — the script adapter: contract, vehicle, determinism
+
+**Vehicle: an external subprocess.** cage writes one JSON document to the script's stdin and reads one from stdout. Language-agnostic: Python, Node, PowerShell, a compiled binary — anything the author can run.
+
+*Rejected, explicitly:* an embedded interpreter (a Python/JS runtime inside cage). It would make cage a code-execution surface with a supply-chain dependency it cannot vet, and it buys nothing the subprocess does not already give — the same contract either way, plus a large dependency and a security posture the repo does not want.
+
+**Trust boundary, stated plainly:** the script is *author tooling*. cage does not sandbox it and makes no sandboxing claim; the author runs it with their own privileges because they chose to. What cage does do:
+
+- the script path is project-root-relative and explicit; absolute paths, `..` escapes, and non-existent / non-executable targets fail at start (E2203). No implicit search paths, no `$PATH` lookup;
+- the only channel back is stdout JSON, and it is **validated as data** — first against the contract schema, then against the vocabulary table. Unknown keys, an unknown `kind`, a malformed `reference` object: E2202 / E2206. Output is never interpreted as code, never re-serialized into a shell, never written anywhere.
+
+**The contract** is versioned `cage.excel-meta/1` and published as a machine-checkable document: [`schemas/excel-meta-adapter-v1.schema.json`](schemas/excel-meta-adapter-v1.schema.json) (JSON Schema 2020-12, `$defs.request` and `$defs.response`).
+
+- **request → script**: `workbook`, `sheet`, `header_row` (as cage resolved it, 0-based), and the whole visible sheet as `grid` — a 2-D array of number / string / boolean / `null` (JSON has a single numeric type, so integer and non-integer are one thing: a whole number stays whole as long as the emitter writes no fractional part). Empty cells are `null`; merged cells are back-filled to the top-left value (xlsx only, `.ods` never); dates are ISO-8601 strings in workbook-local time; formula cells carry their cached value, nothing is re-evaluated. Plus `config` = the `script_config` table verbatim, so authors tune their own script without new cage knobs.
+- **script → cage**: `table`, `header_row` (0-based, as the script says the data header really is), and `columns` keyed by data column name, each value carrying the vocabulary fields plus a required `cell` anchor in A1 form (`"B2"`, `"G27"`) so every later diagnostic points at the exact cell. The value of `type` is the Schema field's own `type` slot **verbatim** — the adjacently tagged `{ kind, value }` object (`{ kind: Int32 }`, `{ kind: Array, value: { kind: Int32 } }`, `{ kind: Enum, value: Rarity }`, `{ kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }`), one of its 19 kinds. The contract invents no shorthand: there is no translation step between the contract and the schema, so there is nowhere for the two spellings to drift.
+
+**Determinism:** the source fingerprint that feeds `source_hash` / `build_id` gains four inputs — the blake3 of the script's bytes, the resolved script path, the canonical form of `script_config`, and the contract version. Editing the script or its config invalidates caches and changes `build_id`, exactly as editing a workbook does. cage cannot *prove* a script is deterministic (a script that embeds a timestamp will produce a `build_id` flip per run); it can make the failure obvious, and the cache chain guarantees no stale metadata ever masquerades as current. That is the same standard as every other source input, and it is all that the determinism contract ever claims.
+
+## Q3 — failure semantics: one standard, both sides
+
+Every failure is reported. Nothing is silently dropped, and nothing silently degrades to "data". The built-in presets and the script adapter emit the **same** codes for the **same** condition, so a diagnostic is read the same way whichever decoder produced it. Cell-level conditions carry the A1 anchor; declaration-level conditions carry workbook + sheet.
+
+| Code | Condition |
+| --- | --- |
+| **E2201** | convention *syntax*: unknown keyword, a value before any keyword, a duplicate keyword on one column, a marker cell with an unparseable form, `preset` and `script` both set, a preset declared while `has_header = false`, an ambiguous workbook override |
+| **E2202** | convention *vocabulary*: a value that does not resolve into the vocabulary — an unknown `kind`, an `enum` that is not a value list, a malformed `reference` object |
+| **E2203** | script will not start: path outside the project root, `..` escape, not found, not executable, spawn failure |
+| **E2204** | script exceeded `script_timeout_secs` |
+| **E2205** | script exited non-zero (stderr is quoted, truncated) |
+| **E2206** | script output is unusable: not valid JSON, not the contract shape, or a contract version cage does not know |
+| **E2207** | convention contradicts the data: a declared column name that is not in the header row, a `meta_sheet` name row that does not match, a response whose `table` is not the sheet's table |
+
+E22xx is the source-convention family; E10xx–E19xx (validation), E20xx (migration) and E21xx (distribution) are untouched.
+
+## Q4 — relation to the existing knobs
+
+The four knobs in `ExcelSourceAdapter` (`header_row`, `has_header`, `eval_formulas`, `skip_empty_rows`) keep their exact meaning and their exact defaults. What changes is what *surrounds* them:
+
+- `header_row` still names the **data** header row. Convention territory is computed *above* whatever `header_row` resolves to — so raising `header_row` to make room for the first type row is **not** how conventions are declared, and rows above it are never silently swallowed as data;
+- `has_header = false` cannot carry a convention (there is nothing to key columns by), so a preset alongside it is E2201 rather than a mystery;
+- `eval_formulas` and `skip_empty_rows` are untouched. A blank row still ends the `header_block` run; cached formula values are what the adapter sees.
+
+This section is the architecture decision only. X1 lands the preset parsers and the subprocess runner, X2 the `schema-draft` introspection and the drift check against an adopted schema, X3 the merge into the three-source parity suite, X4 the docs and the runnable example.
