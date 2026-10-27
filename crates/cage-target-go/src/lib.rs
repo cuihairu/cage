@@ -946,7 +946,10 @@ fn go_type(ft: &FieldType, enum_types: &HashMap<&str, String>) -> String {
         FieldType::String => "string".to_string(),
         FieldType::Bytes => "[]byte".to_string(),
         FieldType::Array(inner) => format!("[]{}", go_type(inner, enum_types)),
-        FieldType::Object(_) => "map[string]any".to_string(),
+        // Tagged union renders as its runtime shape — a flat map with the
+        // discriminant key (L2 validates the branch; a Go interface hierarchy
+        // is a follow-up).
+        FieldType::Object(_) | FieldType::TaggedUnion(_) => "map[string]any".to_string(),
         FieldType::Map(map) => format!(
             "map[{}]{}",
             go_map_key_type(map.key_type),

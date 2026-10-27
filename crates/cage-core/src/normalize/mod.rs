@@ -138,17 +138,25 @@ pub fn fill_field_defaults(schema: &crate::schema::Schema, document: &mut crate:
     }
 }
 
-/// Split scalar table cells into arrays for fields with a `separator`
-/// (回流-3, Luban's `(list#sep=,)` equivalent).
+/// Split scalar table cells for fields with a `separator` (回流-3 / 回流-6,
+/// Luban's `(list#sep=,)` and single-cell `sep="|"` polymorphism).
 ///
-/// Excel/CSV cells are scalars, so a `Array` field fed from a table source
-/// cannot arrive as an array by itself. When the schema declares a
-/// `separator`, a `String` cell is split on it, each token trimmed and
-/// coerced to the element type (via [`coerce_to_type`]); the cell is
-/// replaced by the resulting `Array`. Cells that are already arrays
-/// (JSON/YAML sources) pass through untouched. If any token cannot be
-/// coerced the cell is left as the original `String`, so the L2 type check
-/// reports the mismatch instead of silently dropping data.
+/// Excel/CSV cells are scalars, so an `Array` field fed from a table source
+/// cannot arrive as an array by itself, and a `TaggedUnion` field (whose
+/// value is a flat object) has no object surface either. When the schema
+/// declares a `separator`:
+///
+/// - `Array`: the cell is split, each token trimmed and coerced to the
+///   element type (via [`coerce_to_type`]), replaced by the resulting array.
+/// - `TaggedUnion`: the first token is the discriminant, the remaining
+///   tokens map positionally to the selected branch's payload field
+///   declaration order (Luban's `"Damage|410|wind"` → `{"$type":"Damage",
+///   "amount":410,"element":"wind"}`). Exactly one token per payload field.
+///
+/// Cells that are already the right shape (arrays / objects from JSON/YAML)
+/// pass through untouched. If any token cannot be coerced the cell is left
+/// as the original `String`, so the L2 type check reports the mismatch
+/// instead of silently dropping data.
 pub fn split_cell_arrays(schema: &crate::schema::Schema, document: &mut crate::value::Document) {
     use crate::schema::FieldType;
 
@@ -158,9 +166,6 @@ pub fn split_cell_arrays(schema: &crate::schema::Schema, document: &mut crate::v
         };
         for row in &mut table.rows {
             for (name, field) in &schema_table.fields {
-                let FieldType::Array(inner) = &field.field_type else {
-                    continue;
-                };
                 let Some(sep) = &field.separator else {
                     continue;
                 };
@@ -168,23 +173,55 @@ pub fn split_cell_arrays(schema: &crate::schema::Schema, document: &mut crate::v
                     continue;
                 };
                 let Value::String(cell) = &tv.value else {
-                    continue; // already an array (or null) — nothing to split
+                    continue; // already an array/object (or null) — no split
                 };
                 if cell.is_empty() {
                     continue;
                 }
-                let mut items = Vec::new();
-                let mut ok = true;
-                for token in cell.split(sep.as_str()) {
-                    let token = token.trim();
-                    let Some(v) = coerce_to_type(&Value::String(token.to_string()), inner) else {
-                        ok = false;
-                        break;
-                    };
-                    items.push(v);
-                }
-                if ok {
-                    tv.value = Value::Array(items);
+                match &field.field_type {
+                    FieldType::Array(inner) => {
+                        let mut items = Vec::new();
+                        let mut ok = true;
+                        for token in cell.split(sep.as_str()) {
+                            let token = token.trim();
+                            let Some(v) = coerce_to_type(&Value::String(token.to_string()), inner)
+                            else {
+                                ok = false;
+                                break;
+                            };
+                            items.push(v);
+                        }
+                        if ok {
+                            tv.value = Value::Array(items);
+                        }
+                    }
+                    FieldType::TaggedUnion(tu) => {
+                        let tokens: Vec<&str> = cell.split(sep.as_str()).map(str::trim).collect();
+                        let Some(tag) = tokens.first() else {
+                            continue;
+                        };
+                        let Some(branch) = tu.branches.get(*tag) else {
+                            continue; // unknown branch — leave as-is for L2
+                        };
+                        if tokens.len() - 1 != branch.len() {
+                            continue; // not one token per payload field
+                        }
+                        let mut obj = IndexMap::new();
+                        obj.insert(tu.tag.clone(), Value::String((*tag).to_string()));
+                        let mut ok = true;
+                        for ((k, ft), token) in branch.iter().zip(tokens.iter().skip(1)) {
+                            let Some(v) = coerce_to_type(&Value::String(token.to_string()), ft)
+                            else {
+                                ok = false;
+                                break;
+                            };
+                            obj.insert(k.clone(), v);
+                        }
+                        if ok {
+                            tv.value = Value::Object(obj);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -305,6 +342,25 @@ pub fn coerce_to_type(value: &Value, target_type: &crate::schema::FieldType) -> 
                 {
                     let v = obj.get(k)?;
                     result.insert(k.clone(), coerce_to_type(v, expected_type)?);
+                }
+            }
+            Some(Value::Object(result))
+        }
+
+        // Tagged-union coercion (回流-6): the discriminant selects a branch,
+        // and every payload key is coerced per that branch (a key from
+        // another branch makes the object uncoercible).
+        (Value::Object(obj), crate::schema::FieldType::TaggedUnion(tu)) => {
+            let Some(Value::String(tag_val)) = obj.get(&tu.tag) else {
+                return None;
+            };
+            let branch = tu.branches.get(tag_val)?;
+            let mut result = IndexMap::new();
+            for (k, v) in obj {
+                if k == &tu.tag {
+                    result.insert(k.clone(), v.clone());
+                } else {
+                    result.insert(k.clone(), coerce_to_type(v, branch.get(k)?)?);
                 }
             }
             Some(Value::Object(result))
@@ -746,6 +802,125 @@ tables:
             row.fields["bad"].value,
             Value::String("1,oops".to_string()),
             "uncoercible token leaves cell as string for L2 to report"
+        );
+    }
+
+    #[test]
+    fn split_cell_arrays_builds_tagged_union_from_single_cell() {
+        use crate::value::{Document, Row, Table};
+
+        let schema: crate::schema::Schema = serde_yaml::from_str(
+            r#"enums: {}
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      fx:
+        name: fx
+        type:
+          kind: TaggedUnion
+          value:
+            tag: "$type"
+            branches:
+              Damage: { amount: { kind: Int32 }, element: { kind: String } }
+              Heal: { amount: { kind: Int32 }, duration: { kind: Float32 } }
+        separator: "|"
+"#,
+        )
+        .expect("parse schema");
+
+        let loc = |r: usize| crate::value::SourceLocation::new("t.json").with_row(r);
+        let mut fields = IndexMap::new();
+        fields.insert("id".to_string(), TypedValue::new(Value::Int(1), loc(1)));
+        fields.insert(
+            "fx".to_string(),
+            TypedValue::new(Value::String("Damage|410|wind".to_string()), loc(1)),
+        );
+        let mut fields2 = IndexMap::new();
+        fields2.insert("id".to_string(), TypedValue::new(Value::Int(2), loc(2)));
+        fields2.insert(
+            "fx".to_string(),
+            TypedValue::new(Value::String("Heal|20|1.5".to_string()), loc(2)),
+        );
+        let mut fields3 = IndexMap::new();
+        fields3.insert("id".to_string(), TypedValue::new(Value::Int(3), loc(3)));
+        fields3.insert(
+            "fx".to_string(),
+            TypedValue::new(Value::String("Damage|oops|wind".to_string()), loc(3)),
+        );
+        let mut fields4 = IndexMap::new();
+        fields4.insert("id".to_string(), TypedValue::new(Value::Int(4), loc(4)));
+        fields4.insert(
+            "fx".to_string(),
+            TypedValue::new(Value::String("Damage|410".to_string()), loc(4)),
+        );
+
+        let mut doc = Document::new();
+        doc.add_table(Table {
+            name: "T".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![
+                Row {
+                    primary_key: vec![Value::Int(1)],
+                    fields,
+                    location: loc(1),
+                    index: 0,
+                },
+                Row {
+                    primary_key: vec![Value::Int(2)],
+                    fields: fields2,
+                    location: loc(2),
+                    index: 1,
+                },
+                Row {
+                    primary_key: vec![Value::Int(3)],
+                    fields: fields3,
+                    location: loc(3),
+                    index: 2,
+                },
+                Row {
+                    primary_key: vec![Value::Int(4)],
+                    fields: fields4,
+                    location: loc(4),
+                    index: 3,
+                },
+            ],
+            source_file: "t.json".to_string(),
+            sheet: None,
+        });
+
+        split_cell_arrays(&schema, &mut doc);
+
+        let rows = &doc.tables["T"].rows;
+        assert_eq!(
+            rows[0].fields["fx"].value,
+            Value::Object(IndexMap::from([
+                ("$type".to_string(), Value::String("Damage".to_string())),
+                ("amount".to_string(), Value::Int(410)),
+                ("element".to_string(), Value::String("wind".to_string())),
+            ])),
+            "tag + payload positional map"
+        );
+        assert_eq!(
+            rows[1].fields["fx"].value,
+            Value::Object(IndexMap::from([
+                ("$type".to_string(), Value::String("Heal".to_string())),
+                ("amount".to_string(), Value::Int(20)),
+                ("duration".to_string(), Value::Float(1.5)),
+            ])),
+            "second branch coerced"
+        );
+        assert_eq!(
+            rows[2].fields["fx"].value,
+            Value::String("Damage|oops|wind".to_string()),
+            "uncoercible payload token leaves the cell as-is"
+        );
+        assert_eq!(
+            rows[3].fields["fx"].value,
+            Value::String("Damage|410".to_string()),
+            "wrong token count leaves the cell as-is"
         );
     }
 

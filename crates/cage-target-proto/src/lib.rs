@@ -430,6 +430,13 @@ impl ProtoTargetGenerator {
                 ctx.wellknown = true;
                 "google.protobuf.Struct".to_string()
             }
+            // Tagged union renders as its runtime shape (a flat object with
+            // the discriminant key); proto's canonical free-form payload is
+            // Struct. A `oneof` hierarchy is a follow-up.
+            FieldType::TaggedUnion(_) => {
+                ctx.wellknown = true;
+                "google.protobuf.Struct".to_string()
+            }
             FieldType::Enum(name) => {
                 if eligible.contains(name) {
                     let ident = &proto_enums

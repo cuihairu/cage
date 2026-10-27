@@ -99,6 +99,7 @@ validation）、`cardinality`
 | `Object` | 对象，`value` 为属性表：`{ kind: Object, value: { x: { kind: Int32 } } }` |
 | `Map` | 映射 `map<K,V>`，`value: { key_type: string\|int, value_type: { kind: … } }`，可嵌套 |
 | `Enum` | 命名枚举引用，`value` 为枚举名（须在顶层 `enums:` 注册） |
+| `TaggedUnion` | 标签联合——扁平对象，其 `tag` 键选定一个分支，且只允许该分支的载荷键出现在旁边（回流-6，Luban `$type` 多态）。`value: { tag: "$type", branches: { Damage: { amount: { kind: Int32 } } } }`。其他分支的键、未知 tag、错误载荷类型都会被拒（enum + `Any` 负载列的 workaround 丢失的类型安全）。配合 `separator` 时，表格单元格拆单格多态（`"Damage\|13\|wind"` → `{"$type":"Damage","amount":13,"element":"wind"}`） |
 | `Any` | 任意值 |
 
 ## 字段约束清单

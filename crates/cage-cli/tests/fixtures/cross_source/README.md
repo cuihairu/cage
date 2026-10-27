@@ -27,6 +27,10 @@
   单元格（2 / 3，加载为 `Int`），schema 声明 `Float32`——数值塔向上统一
   （回流-4）后构建成功，输出 `"weight": 2` / `"weight": 3`；反向（小数入
   整数字段）仍报 `E1101`。
+- **单格标签联合多态**（`data-union.xlsx`）`fx` 列 `"Damage|13|wind"` /
+  `"Heal|7|2.5"` 在 `TaggedUnion` + `separator: "|"` 字段上于加载期拆成扁平
+  对象 `{"$type":"Damage","amount":13,"element":"wind"}`（回流-6，Luban
+  `sep="|"` 多态等价）；JSON 源自带扁平对象，不走拆分，L2 按分支校验载荷。
 
 项目读取约定：`source_roots.main = "config"`；Excel 工作表名 = 表名（`Item`/
 `Drop`）；CSV 文件名主 = 表名；JSON 根键 = 表名；YAML 根键 = 表名。

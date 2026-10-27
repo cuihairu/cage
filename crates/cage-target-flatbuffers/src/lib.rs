@@ -377,7 +377,7 @@ impl FlatbuffersTargetGenerator {
                     "// enum \"{name}\" has non-integer or duplicate members; field degrades to string"
                 ));
             }
-            FieldType::Object(_) | FieldType::Null | FieldType::Any => {
+            FieldType::Object(_) | FieldType::TaggedUnion(_) | FieldType::Null | FieldType::Any => {
                 fields.push(
                     "// free-form payload; .fbs has no open type, carried as JSON text".to_string(),
                 );
@@ -474,9 +474,11 @@ impl FlatbuffersTargetGenerator {
                 }
             }
             // No open type in .fbs: free-form payloads ride as JSON text.
-            FieldType::Null | FieldType::Any | FieldType::Object(_) | FieldType::String => {
-                "string".to_string()
-            }
+            FieldType::Null
+            | FieldType::Any
+            | FieldType::Object(_)
+            | FieldType::TaggedUnion(_)
+            | FieldType::String => "string".to_string(),
             FieldType::Enum(name) => {
                 if eligible.contains(name) {
                     let ident = &fb_enums

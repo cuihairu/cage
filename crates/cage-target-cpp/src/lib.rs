@@ -551,7 +551,10 @@ fn cpp_type(ft: &FieldType, enums: &HashMap<&str, EnumAlloc>, needs: &mut Needs)
             let item = cpp_type(inner, enums, needs);
             format!("std::vector<{item}>")
         }
-        FieldType::Object(_) => {
+        // Tagged union renders as its runtime shape — a flat map with the
+        // discriminant key (L2 validates the branch; std::variant is a
+        // follow-up).
+        FieldType::Object(_) | FieldType::TaggedUnion(_) => {
             needs.angle.insert("map");
             needs.angle.insert("string");
             needs.angle.insert("any");

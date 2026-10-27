@@ -616,7 +616,10 @@ fn java_type(ft: &FieldType, optional: bool, enum_text: Option<&str>) -> String 
             java_map_key(map.key_type),
             box_primitive(&java_type(&map.value_type, false, enum_text))
         ),
-        FieldType::Object(_) => "Map<String, Object>".to_string(),
+        // Tagged union renders as its runtime shape — a flat map with the
+        // discriminant key (L2 validates the branch; a Java sealed-hierarchy
+        // is a follow-up).
+        FieldType::Object(_) | FieldType::TaggedUnion(_) => "Map<String, Object>".to_string(),
         FieldType::Enum(_) => enum_text.unwrap_or("String").to_string(),
     }
 }

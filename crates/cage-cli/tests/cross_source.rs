@@ -361,6 +361,70 @@ fn excel_integer_cell_accepted_in_float_field() {
     assert!(!text.contains("E1101"), "unexpected E1101 in\n{text}");
 }
 
+/// common-schema with an `fx` tagged-union field appended before `drop_id`.
+fn schema_with_tagged_union() -> String {
+    fs::read_to_string(fixtures().join("common-schema.yaml"))
+        .unwrap()
+        .replace(
+            "drop_id: { name: drop_id, type: { kind: Int32 }, required: true, reference: { table: Drop, field: id } }",
+            "fx: { name: fx, type: { kind: TaggedUnion, value: { tag: \"$type\", branches: { Damage: { amount: { kind: Int32 }, element: { kind: String } }, Heal: { amount: { kind: Int32 }, duration: { kind: Float32 } } } } }, separator: \"|\" }\n      drop_id: { name: drop_id, type: { kind: Int32 }, required: true, reference: { table: Drop, field: id } }",
+        )
+}
+
+#[test]
+fn json_tagged_union_object_validates() {
+    // 回流-6: a JSON source expresses the flat tagged-union object natively.
+    // The L2 validator accepts the selected branch's payload and rejects a
+    // foreign branch key (the type safety the enum + Any-payload workaround
+    // loses).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(root.join("cage.toml"), CAGE_TOML).unwrap();
+    fs::write(root.join("schemas/item.yaml"), schema_with_tagged_union()).unwrap();
+    fs::write(
+        root.join("config/data.json"),
+        r#"{"Item":[{"id":1,"name":"Sword","kind":"Sword","price":100,"bound":2147483647,"weight":1.5,"enabled":true,"tier":3,"note":"hello","nullable":"x","drop_id":1,"fx":{"$type":"Damage","amount":13,"element":"wind"}}]}"#,
+    )
+    .unwrap();
+    fs::copy(fixtures().join("Drop.json"), root.join("config/Drop.json")).unwrap();
+
+    let (ok, out) = run_build(&root);
+    assert!(ok, "tagged-union JSON build failed:\n{out}");
+    let text = String::from_utf8(read_artifact(&root, "Item")).unwrap();
+    assert!(
+        text.contains(r#""$type": "Damage""#) && text.contains(r#""amount": 13"#),
+        "tagged object must carry the discriminant and payload, got:\n{text}"
+    );
+}
+
+#[test]
+fn excel_single_cell_tagged_union_splits() {
+    // 回流-6 single-cell form (Luban `sep="|"`): "Damage|13|wind" →
+    // {"$type":"Damage","amount":13,"element":"wind"}.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(root.join("cage.toml"), CAGE_TOML).unwrap();
+    fs::write(root.join("schemas/item.yaml"), schema_with_tagged_union()).unwrap();
+    fs::copy(
+        fixtures().join("data-union.xlsx"),
+        root.join("config/data.xlsx"),
+    )
+    .unwrap();
+    fs::copy(fixtures().join("Drop.json"), root.join("config/Drop.json")).unwrap();
+
+    let (ok, out) = run_build(&root);
+    assert!(ok, "tagged-union Excel build failed:\n{out}");
+    let text = String::from_utf8(read_artifact(&root, "Item")).unwrap();
+    assert!(
+        text.contains(r#""$type": "Damage""#) && text.contains(r#""amount": 13"#),
+        "single cell must split into a tagged object, got:\n{text}"
+    );
+}
+
 #[test]
 fn default_flows_from_schema_to_code_target_while_ir_keeps_explicit_value() {
     // Data IR: the common-core parity test pins `tier: 3` explicitly from all

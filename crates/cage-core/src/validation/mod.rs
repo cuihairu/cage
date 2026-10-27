@@ -486,6 +486,21 @@ fn value_matches_type(value: &Value, expected: &FieldType) -> bool {
                     .iter()
                     .all(|(k, v)| fields.get(k).is_some_and(|ft| value_matches_type(v, ft)))
         }
+        // Tagged union (回流-6): the discriminant key must hold a branch key,
+        // and every other key must be a payload field of that branch with a
+        // matching type. A key belonging to another branch is rejected — the
+        // type safety the enum + Any-payload workaround loses.
+        (Value::Object(obj), FieldType::TaggedUnion(tu)) => {
+            let Some(Value::String(tag_val)) = obj.get(&tu.tag) else {
+                return false; // discriminant missing or not a string
+            };
+            let Some(branch) = tu.branches.get(tag_val) else {
+                return false; // unknown branch
+            };
+            obj.iter().all(|(k, v)| {
+                k == &tu.tag || branch.get(k).is_some_and(|ft| value_matches_type(v, ft))
+            })
+        }
         // Map: an open-ended object — key_type gates which keys are legal
         // (int keys are numeric strings in the data model), value_type gates
         // every value recursively. An empty object is always a valid map.
@@ -546,6 +561,11 @@ fn type_mismatch_hint(expected: &FieldType, got: &str) -> String {
                 MapKeyType::Int => "int",
             },
             map.value_type
+        ),
+        FieldType::TaggedUnion(tu) => format!(
+            "Expected type: tagged union on key {:?} with branches [{}], got: {got}",
+            tu.tag,
+            tu.branches.keys().cloned().collect::<Vec<_>>().join(", ")
         ),
         _ => format!("Expected type: {expected:?}, got: {got}"),
     }
@@ -2250,6 +2270,65 @@ mod tests {
         // an integer field.
         assert!(!value_matches_type(&Value::Float(1.5), &FieldType::Int32));
         assert!(!value_matches_type(&Value::Float(1.5), &FieldType::UInt32));
+        // 回流-6: tagged union — the discriminant selects a branch and only
+        // that branch's payload keys may appear, each with a matching type.
+        let tu = FieldType::TaggedUnion(Box::new(crate::schema::TaggedUnion {
+            tag: "$type".to_string(),
+            branches: IndexMap::from([
+                (
+                    "Damage".to_string(),
+                    IndexMap::from([
+                        ("amount".to_string(), FieldType::Int32),
+                        ("element".to_string(), FieldType::String),
+                    ]),
+                ),
+                (
+                    "Heal".to_string(),
+                    IndexMap::from([
+                        ("amount".to_string(), FieldType::Int32),
+                        ("duration".to_string(), FieldType::Float32),
+                    ]),
+                ),
+            ]),
+        }));
+        assert!(value_matches_type(
+            &Value::Object(IndexMap::from([
+                ("$type".to_string(), Value::String("Damage".to_string())),
+                ("amount".to_string(), Value::Int(13)),
+                ("element".to_string(), Value::String("wind".to_string())),
+            ])),
+            &tu
+        ));
+        // A payload key from another branch is rejected (the type safety the
+        // enum + Any-payload workaround loses).
+        assert!(!value_matches_type(
+            &Value::Object(IndexMap::from([
+                ("$type".to_string(), Value::String("Damage".to_string())),
+                ("amount".to_string(), Value::Int(13)),
+                ("duration".to_string(), Value::Float(1.0)),
+            ])),
+            &tu
+        ));
+        // Unknown branch, missing tag, and wrong payload type all fail.
+        assert!(!value_matches_type(
+            &Value::Object(IndexMap::from([
+                ("$type".to_string(), Value::String("Buff".to_string())),
+                ("amount".to_string(), Value::Int(13)),
+            ])),
+            &tu
+        ));
+        assert!(!value_matches_type(
+            &Value::Object(IndexMap::from([("amount".to_string(), Value::Int(13))])),
+            &tu
+        ));
+        assert!(!value_matches_type(
+            &Value::Object(IndexMap::from([
+                ("$type".to_string(), Value::String("Damage".to_string())),
+                ("amount".to_string(), Value::String("thirteen".to_string())),
+                ("element".to_string(), Value::String("wind".to_string())),
+            ])),
+            &tu
+        ));
         assert!(!value_matches_type(
             &Value::Array(vec![]),
             &FieldType::String

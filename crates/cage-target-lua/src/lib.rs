@@ -291,7 +291,10 @@ fn lua_type_label(ft: &FieldType, schema: &Schema) -> String {
             map_key_label(mf.key_type),
             lua_type_label(&mf.value_type, schema)
         ),
-        FieldType::Object(_) => "table".to_string(),
+        // Tagged union renders as its runtime shape — a flat table with the
+        // discriminant key (L2 validates the branch; per-language
+        // discriminated unions are a follow-up).
+        FieldType::Object(_) | FieldType::TaggedUnion(_) => "table".to_string(),
         FieldType::Enum(name) => match schema.enums.get(name).filter(|e| !e.values.is_empty()) {
             Some(_) => name.clone(),
             // Unresolved (or empty) enum: fall back to plain string.

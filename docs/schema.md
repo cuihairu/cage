@@ -112,6 +112,7 @@ types pass their parameter in `value`); the lower-case scalar form
 | `Object` | Object; `value` is the property table: `{ kind: Object, value: { x: { kind: Int32 } } }` |
 | `Map` | Mapping `map<K,V>`; `value: { key_type: string\|int, value_type: { kind: … } }`, nestable |
 | `Enum` | Named enum reference; `value` is the enum name (must be registered under top-level `enums:`) |
+| `TaggedUnion` | Tagged union — a flat object whose `tag` key selects one branch, and only that branch's payload keys may appear next to it (回流-6, the Luban `$type` polymorphism). `value: { tag: "$type", branches: { Damage: { amount: { kind: Int32 } } } }`. A key from another branch, an unknown tag, or a wrong payload type is rejected (the type safety the enum + `Any`-payload workaround loses). With a `separator`, a table cell splits single-cell polymorphism (`"Damage\|13\|wind"` → `{"$type":"Damage","amount":13,"element":"wind"}`) |
 | `Any` | Arbitrary value |
 
 ## Field Constraint Reference

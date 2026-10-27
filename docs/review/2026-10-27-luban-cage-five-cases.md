@@ -22,13 +22,15 @@ Luban 5.1.0 单次 CLI 构建 0.84s / 峰值 RSS ≈ 83.5 MB，Cage debug 构建
 （Cage 峰值内存低约 29%）。注意两者都是进程启动主导的数值，本实验不构成「速度/内存优劣」的
 定论（见测量节）。
 
-> **补充（2026-10-27 回流-1..4 落地后）**：本文是修复前的对照快照。文中「默认值不作用于
+> **补充（2026-10-27 回流-1..6 落地后）**：本文是修复前的对照快照。文中「默认值不作用于
 > 空单元格」一项（案例 4.2）已被回流-1 修复——`fill_field_defaults`
 > （`crates/cage-core/src/normalize/mod.rs:116`）现在把 absent 与 Null（Excel 空单元格）
 > 都填为 `FieldSchema.default`，与 Luban `#default` 行为一致。「类型不塌缩的空值」已被
 > 回流-2（`nullable` 字段标志）修复，「单元格分隔列表」已被回流-3（`separator`，Luban
 > `(list#sep=,)` 等价）修复，「整数值单元格入 Float 字段」已被回流-4（数值塔向上统一）
-> 修复。其余两项差距（多级表头/多态、tagged union）按本文结论仍成立。
+> 修复，「tagged union 类型」已被回流-6（`FieldType::TaggedUnion` + 单格 `sep="|"` 拆分，
+> 输出 `{"$type":"Damage","amount":13,"element":"wind"}` 扁平对象）修复。剩余差距
+> （多级表头/嵌套 bean/多行记录）即回流-5，按本文结论仍成立。
 
 ## 实验设置
 

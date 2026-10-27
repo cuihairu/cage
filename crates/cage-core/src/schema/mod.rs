@@ -318,6 +318,29 @@ pub enum FieldType {
     Array(Box<FieldType>),
     /// Object with typed properties
     Object(IndexMap<String, FieldType>),
+    /// Tagged union: a flat object whose `tag` key selects one branch, and
+    /// only the selected branch's payload fields may appear alongside it
+    /// (回流-6, the Luban abstract-bean `$type` polymorphism).
+    ///
+    /// Canonical YAML/JSON schema syntax (adjacently tagged like every other
+    /// kind):
+    ///
+    /// ```yaml
+    /// type:
+    ///   kind: TaggedUnion
+    ///   value:
+    ///     tag: $type
+    ///     branches:
+    ///       Damage: { amount: { kind: Int32 }, element: { kind: String } }
+    ///       Heal:   { amount: { kind: Int32 }, duration: { kind: Float32 } }
+    /// ```
+    ///
+    /// A value `{"$type":"Damage","amount":13,"element":"wind"}` selects the
+    /// `Damage` branch; `buff_id` (a Heal-only key) on a `$type: Damage`
+    /// object is rejected. Sources carrying native objects (JSON/YAML)
+    /// express this directly; flat table sources stay on the enum + optional
+    /// payload-column workaround until structure building (回流-5).
+    TaggedUnion(Box<TaggedUnion>),
     /// Map with typed keys and values: `map<K, V>`.
     ///
     /// Canonical YAML/JSON schema syntax (adjacently tagged like every other
@@ -343,6 +366,19 @@ pub enum FieldType {
     Enum(String),
     /// Any value
     Any,
+}
+
+/// Tagged-union payload: the discriminant key plus one field-type map per
+/// branch — the L2 type-safety face of the Luban `$type` polymorphism (回流-6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaggedUnion {
+    /// Object key carrying the discriminant (Luban `$type`, five-case `kind`).
+    /// Must not collide with a branch payload key.
+    pub tag: String,
+    /// Branch key → the branch's payload field types. The tag key itself is
+    /// the discriminant, not a payload field; only the selected branch's
+    /// payload keys may appear next to it.
+    pub branches: IndexMap<String, IndexMap<String, FieldType>>,
 }
 
 /// Map payload: key type plus (possibly nested) value type — `map<K, V>`.
@@ -427,6 +463,7 @@ impl FieldType {
                 MapKeyType::Int => "HashMap<i64, _>",
             },
             FieldType::Enum(_) => "Enum",
+            FieldType::TaggedUnion(_) => "IndexMap<String, serde_json::Value>",
             FieldType::Any => "serde_json::Value",
         }
     }

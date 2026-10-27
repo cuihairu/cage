@@ -494,7 +494,10 @@ fn ts_type(
             ts_map_key(map.key_type),
             ts_type(&map.value_type, schema, enum_ty)
         ),
-        FieldType::Object(_) => "Record<string, unknown>".to_string(),
+        // Tagged union renders as its runtime shape — a flat record with the
+        // discriminant key (L2 validates the branch; a TS discriminated
+        // union is a follow-up).
+        FieldType::Object(_) | FieldType::TaggedUnion(_) => "Record<string, unknown>".to_string(),
         FieldType::Enum(name) => match schema.enums.get(name).filter(|e| !e.values.is_empty()) {
             Some(_) => enum_ty.get(name).cloned().unwrap_or_else(|| ts_ident(name)),
             // Unresolved (or empty) enum: fall back to plain string.

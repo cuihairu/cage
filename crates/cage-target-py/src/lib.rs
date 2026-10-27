@@ -353,7 +353,10 @@ fn py_type(ft: &FieldType, schema: &Schema) -> String {
         FieldType::String => "str".to_string(),
         FieldType::Bytes => "bytes".to_string(),
         FieldType::Array(inner) => format!("list[{}]", py_type(inner, schema)),
-        FieldType::Object(_) => "dict[str, Any]".to_string(),
+        // Tagged union renders as its runtime shape — a flat dict with the
+        // discriminant key (L2 validates the branch; a Python union of
+        // TypedDicts is a follow-up).
+        FieldType::Object(_) | FieldType::TaggedUnion(_) => "dict[str, Any]".to_string(),
         FieldType::Map(map) => format!(
             "dict[{}, {}]",
             map_key_annotation(map.key_type),

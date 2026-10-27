@@ -300,7 +300,7 @@ impl JsonSchemaTargetGenerator {
             FieldType::Array(_) => {
                 obj.insert("type".into(), Json::String("array".into()));
             }
-            FieldType::Object(_) | FieldType::Map(_) => {
+            FieldType::Object(_) | FieldType::Map(_) | FieldType::TaggedUnion(_) => {
                 obj.insert("type".into(), Json::String("object".into()));
             }
             FieldType::Enum(enum_name) => {
@@ -358,6 +358,39 @@ impl JsonSchemaTargetGenerator {
                 obj.insert("properties".into(), Json::Object(properties));
                 // Typed objects reject unknown keys (value_matches_type).
                 obj.insert("additionalProperties".into(), Json::Bool(false));
+            }
+            // Tagged union (回流-6): one branch schema per discriminant
+            // value — `const` on the tag key makes the branches mutually
+            // exclusive, so the `oneOf` cannot double-match.
+            FieldType::TaggedUnion(tu) => {
+                let mut one_of = Vec::new();
+                for (branch_name, branch_fields) in &tu.branches {
+                    let mut branch = Map::new();
+                    branch.insert("type".into(), Json::String("object".into()));
+                    let mut properties = Map::new();
+                    properties.insert(
+                        tu.tag.clone(),
+                        Json::Object(
+                            [("const".into(), Json::String(branch_name.clone()))]
+                                .into_iter()
+                                .collect(),
+                        ),
+                    );
+                    for (field_name, ft) in branch_fields {
+                        properties.insert(
+                            field_name.clone(),
+                            self.render_type_schema(ft, schema, draft),
+                        );
+                    }
+                    branch.insert("properties".into(), Json::Object(properties));
+                    branch.insert(
+                        "required".into(),
+                        Json::Array(vec![Json::String(tu.tag.clone())]),
+                    );
+                    branch.insert("additionalProperties".into(), Json::Bool(false));
+                    one_of.push(Json::Object(branch));
+                }
+                obj.insert("oneOf".into(), Json::Array(one_of));
             }
             FieldType::Map(map) => {
                 obj.insert(
@@ -622,6 +655,57 @@ enums:
         // Inline enum on an integer field: all-integer domain as numbers.
         assert_eq!(props["tier"]["type"], "integer");
         assert_eq!(props["tier"]["enum"], serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn test_tagged_union_oneof() {
+        let s = schema(
+            r#"
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      fx:
+        name: fx
+        type:
+          kind: TaggedUnion
+          value:
+            tag: "$type"
+            branches:
+              Damage: { amount: { kind: Int32 }, element: { kind: String } }
+              Heal: { amount: { kind: Int32 }, duration: { kind: Float32 } }
+enums: {}
+"#,
+        );
+        let config = TargetConfig {
+            format: "jsonschema".into(),
+            output_dir: "build/js".into(),
+            file_template: None,
+            options: None,
+        };
+        let gen = JsonSchemaTargetGenerator::from_config(&config);
+        let out = gen.generate(&s, Some("abc123")).expect("generate");
+        let (_, bytes) = out
+            .iter()
+            .find(|(p, _)| p.ends_with("Item.schema.json"))
+            .expect("item schema");
+        let v: serde_json::Value = serde_json::from_slice(bytes).expect("valid JSON");
+        let fx = &v["properties"]["fx"];
+        assert_eq!(fx["type"], "object");
+        let one_of = fx["oneOf"].as_array().expect("oneOf");
+        assert_eq!(one_of.len(), 2, "one branch per discriminant value");
+        // Branch order follows declaration; the tag key constrains it.
+        let damage = &one_of[0];
+        assert_eq!(damage["properties"]["$type"]["const"], "Damage");
+        assert_eq!(damage["properties"]["amount"]["type"], "integer");
+        assert_eq!(damage["properties"]["element"]["type"], "string");
+        assert_eq!(damage["required"], serde_json::json!(["$type"]));
+        assert_eq!(damage["additionalProperties"], false);
+        let heal = &one_of[1];
+        assert_eq!(heal["properties"]["$type"]["const"], "Heal");
+        assert_eq!(heal["properties"]["duration"]["type"], "number");
     }
 
     #[test]

@@ -389,7 +389,12 @@ fn cs_type_inner(ft: &FieldType, schema: &Schema) -> String {
         FieldType::String => "string".to_string(),
         FieldType::Bytes => "byte[]".to_string(),
         FieldType::Array(inner) => format!("IReadOnlyList<{}>", cs_type_inner(inner, schema)),
-        FieldType::Object(_) => "IReadOnlyDictionary<string, object?>".to_string(),
+        // Tagged union renders as its runtime shape — a flat dictionary with
+        // the discriminant key (L2 validates the branch; a C#
+        // discriminated union is a follow-up).
+        FieldType::Object(_) | FieldType::TaggedUnion(_) => {
+            "IReadOnlyDictionary<string, object?>".to_string()
+        }
         // Unlike Object, a Map knows its exact K/V — the concrete
         // Dictionary (not IReadOnlyDictionary) so `= new();` defaults and
         // empty initializers compile against it.
