@@ -128,6 +128,7 @@ types pass their parameter in `value`); the lower-case scalar form
 | `enum_values` | Inline enum value domain (`E1204`). Note: writing `values:` is silently ignored; named enums use top-level `enums:` + `{ kind: Enum, value: name }` |
 | `min_items` / `max_items` | Array element count range (`E1205`) |
 | `items` | Field schema for array elements (recursive) |
+| `separator` | Split a scalar table cell (Excel/CSV cannot hold arrays) into an `Array` on this separator — the equivalent of Luban's `(list#sep=,)`. Each token is trimmed and coerced to the element type; a cell that fails to split cleanly is left as-is and the type check reports it. Only meaningful on `Array` fields |
 | `properties` / `additional_properties` | Object property schema and unknown-key switch |
 | `reference` | Cross-table reference (`table` + `field`, `E1401`; see the sub-key description above) |
 | `targets` | Which profiles the field is visible to (empty = all; `"*"` is equivalent to empty; a hidden structurally required field reports `E9006`) |

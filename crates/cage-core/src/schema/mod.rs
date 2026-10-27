@@ -253,6 +253,13 @@ pub struct FieldSchema {
     /// Element schema for arrays
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<FieldSchema>>,
+    /// Split a scalar table cell (Excel/CSV cannot hold arrays) into the
+    /// field's array elements on this separator (回流-3; the equivalent of
+    /// Luban's `(list#sep=,)`). Each token is trimmed and coerced to the
+    /// element type; a cell that fails to split cleanly stays as-is and the
+    /// type check reports it. Only meaningful on `Array` fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub separator: Option<String>,
     // Object constraints
     /// Property schemas for objects
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -683,6 +690,7 @@ mod tests {
                 min_items: None,
                 max_items: None,
                 items: None,
+                separator: None,
                 properties: None,
                 additional_properties: None,
                 reference: None,
@@ -728,6 +736,7 @@ mod tests {
                 min_items: None,
                 max_items: None,
                 items: None,
+                separator: None,
                 properties: None,
                 additional_properties: None,
                 reference: None,
@@ -766,6 +775,7 @@ mod tests {
                 min_items: None,
                 max_items: None,
                 items: None,
+                separator: None,
                 properties: None,
                 additional_properties: None,
                 reference: None,
@@ -792,6 +802,7 @@ mod tests {
                 min_items: None,
                 max_items: None,
                 items: None,
+                separator: None,
                 properties: None,
                 additional_properties: None,
                 reference: Some(ReferenceSchema {
@@ -1363,6 +1374,7 @@ enums: {}
             min_items: None,
             max_items: None,
             items: None,
+            separator: None,
             properties: None,
             additional_properties: None,
             reference: None,

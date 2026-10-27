@@ -395,6 +395,7 @@ impl JsonSchemaTargetGenerator {
             min_items: None,
             max_items: None,
             items: None,
+            separator: None,
             properties: None,
             additional_properties: None,
             reference: None,

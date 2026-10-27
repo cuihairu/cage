@@ -138,6 +138,59 @@ pub fn fill_field_defaults(schema: &crate::schema::Schema, document: &mut crate:
     }
 }
 
+/// Split scalar table cells into arrays for fields with a `separator`
+/// (回流-3, Luban's `(list#sep=,)` equivalent).
+///
+/// Excel/CSV cells are scalars, so a `Array` field fed from a table source
+/// cannot arrive as an array by itself. When the schema declares a
+/// `separator`, a `String` cell is split on it, each token trimmed and
+/// coerced to the element type (via [`coerce_to_type`]); the cell is
+/// replaced by the resulting `Array`. Cells that are already arrays
+/// (JSON/YAML sources) pass through untouched. If any token cannot be
+/// coerced the cell is left as the original `String`, so the L2 type check
+/// reports the mismatch instead of silently dropping data.
+pub fn split_cell_arrays(schema: &crate::schema::Schema, document: &mut crate::value::Document) {
+    use crate::schema::FieldType;
+
+    for table in document.tables.values_mut() {
+        let Some(schema_table) = schema.tables.get(&table.name) else {
+            continue;
+        };
+        for row in &mut table.rows {
+            for (name, field) in &schema_table.fields {
+                let FieldType::Array(inner) = &field.field_type else {
+                    continue;
+                };
+                let Some(sep) = &field.separator else {
+                    continue;
+                };
+                let Some(tv) = row.fields.get_mut(name) else {
+                    continue;
+                };
+                let Value::String(cell) = &tv.value else {
+                    continue; // already an array (or null) — nothing to split
+                };
+                if cell.is_empty() {
+                    continue;
+                }
+                let mut items = Vec::new();
+                let mut ok = true;
+                for token in cell.split(sep.as_str()) {
+                    let token = token.trim();
+                    let Some(v) = coerce_to_type(&Value::String(token.to_string()), inner) else {
+                        ok = false;
+                        break;
+                    };
+                    items.push(v);
+                }
+                if ok {
+                    tv.value = Value::Array(items);
+                }
+            }
+        }
+    }
+}
+
 /// Coerce value to target type based on schema (for normalization phase)
 pub fn coerce_to_type(value: &Value, target_type: &crate::schema::FieldType) -> Option<Value> {
     match (value, target_type) {
@@ -608,6 +661,92 @@ tables:
             "absent filled in second row"
         );
         assert!(doc.tables.contains_key("Ghost"));
+    }
+
+    #[test]
+    fn split_cell_arrays_splits_and_coerces_keeps_present_arrays_and_bad_tokens() {
+        use crate::value::{Document, Row, Table};
+
+        let schema: crate::schema::Schema = serde_yaml::from_str(
+            r#"enums: {}
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      tags: { name: tags, type: { kind: Array, value: { kind: String } }, separator: "," }
+      nums: { name: nums, type: { kind: Array, value: { kind: Int32 } }, separator: "|" }
+      arr: { name: arr, type: { kind: Array, value: { kind: String } }, separator: "," }
+      bad: { name: bad, type: { kind: Array, value: { kind: Int32 } }, separator: "," }
+"#,
+        )
+        .expect("parse schema");
+
+        let loc = |r: usize| crate::value::SourceLocation::new("t.json").with_row(r);
+        let mut fields = IndexMap::new();
+        fields.insert("id".to_string(), TypedValue::new(Value::Int(1), loc(1)));
+        // " a , b " → trimmed tokens → ["a", "b"]
+        fields.insert(
+            "tags".to_string(),
+            TypedValue::new(Value::String(" a , b ".to_string()), loc(1)),
+        );
+        // "1|2|3" → coerced ints
+        fields.insert(
+            "nums".to_string(),
+            TypedValue::new(Value::String("1|2|3".to_string()), loc(1)),
+        );
+        // already an array — untouched
+        fields.insert(
+            "arr".to_string(),
+            TypedValue::new(Value::Array(vec![Value::String("x".to_string())]), loc(1)),
+        );
+        // "1,oops" — "oops" cannot coerce to Int32 → cell left as-is
+        fields.insert(
+            "bad".to_string(),
+            TypedValue::new(Value::String("1,oops".to_string()), loc(1)),
+        );
+
+        let mut doc = Document::new();
+        doc.add_table(Table {
+            name: "T".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![Row {
+                primary_key: vec![Value::Int(1)],
+                fields,
+                location: loc(1),
+                index: 0,
+            }],
+            source_file: "t.json".to_string(),
+            sheet: None,
+        });
+
+        split_cell_arrays(&schema, &mut doc);
+
+        let row = &doc.tables["T"].rows[0];
+        assert_eq!(
+            row.fields["tags"].value,
+            Value::Array(vec![
+                Value::String("a".to_string()),
+                Value::String("b".to_string())
+            ]),
+            "split + trimmed"
+        );
+        assert_eq!(
+            row.fields["nums"].value,
+            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            "coerced to element type"
+        );
+        assert_eq!(
+            row.fields["arr"].value,
+            Value::Array(vec![Value::String("x".to_string())]),
+            "already-array kept"
+        );
+        assert_eq!(
+            row.fields["bad"].value,
+            Value::String("1,oops".to_string()),
+            "uncoercible token leaves cell as string for L2 to report"
+        );
     }
 
     #[test]

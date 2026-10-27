@@ -19,6 +19,10 @@
   `nullable: true` 字段上被接受（回流-2），输出 `"note": null`；同一字段在
   非 nullable schema 上仍报 `E1101`（`common-schema.yaml` 的 `note` 无
   nullable，即回归锚点）。
+- **单元格分隔列表**（`data-separator.xlsx`）`tags` 列的标量单元格
+  （`"a, b"` / `"c,d"`）在 `Array<String>` + `separator: ","` 字段上于加载期
+  拆成数组元素（回流-3，Luban `(list#sep=,)` 等价），token trim 后输出
+  `["a","b"]` / `["c","d"]`；JSON 源自带数组，不走拆分。
 
 项目读取约定：`source_roots.main = "config"`；Excel 工作表名 = 表名（`Item`/
 `Drop`）；CSV 文件名主 = 表名；JSON 根键 = 表名；YAML 根键 = 表名。

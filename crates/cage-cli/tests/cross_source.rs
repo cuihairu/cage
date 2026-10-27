@@ -284,6 +284,47 @@ fn excel_nullable_field_accepts_empty_cell() {
 }
 
 #[test]
+fn excel_separator_cell_splits_into_array() {
+    // 回流-3: a scalar Excel cell on an `Array` field with a `separator`
+    // ("a, b" → ["a", "b"]) is split into array elements during load, each
+    // token trimmed and coerced to the element type. `tags` is an
+    // `Array<String>` with `separator: ","` in the schema below.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(root.join("cage.toml"), CAGE_TOML).unwrap();
+    let schema = fs::read_to_string(fixtures().join("common-schema.yaml"))
+        .unwrap()
+        .replace(
+            "drop_id: { name: drop_id, type: { kind: Int32 }, required: true, reference: { table: Drop, field: id } }",
+            "tags: { name: tags, type: { kind: Array, value: { kind: String } }, separator: \",\" }\n      drop_id: { name: drop_id, type: { kind: Int32 }, required: true, reference: { table: Drop, field: id } }",
+        );
+    fs::write(root.join("schemas/item.yaml"), schema).unwrap();
+    fs::copy(
+        fixtures().join("data-separator.xlsx"),
+        root.join("config/data.xlsx"),
+    )
+    .unwrap();
+    fs::copy(fixtures().join("Drop.json"), root.join("config/Drop.json")).unwrap();
+
+    let (ok, out) = run_build(&root);
+    assert!(ok, "separator cell build failed:\n{out}");
+    let text = String::from_utf8(read_artifact(&root, "Item")).unwrap();
+    // The JSON target pretty-prints; `tags` renders as a multi-line array.
+    // Split + trim "a, b" → two array elements.
+    assert!(
+        text.contains(r#""a","#) && text.contains(r#""b""#),
+        "row 1 tags must split+trim into a, b, got:\n{text}"
+    );
+    assert!(
+        text.contains(r#""c","#) && text.contains(r#""d""#),
+        "row 2 tags must split into c, d, got:\n{text}"
+    );
+    assert!(!text.contains("E1101"), "unexpected E1101 in\n{text}");
+}
+
+#[test]
 fn default_flows_from_schema_to_code_target_while_ir_keeps_explicit_value() {
     // Data IR: the common-core parity test pins `tier: 3` explicitly from all
     // three sources. The schema default is the authoring contract the code

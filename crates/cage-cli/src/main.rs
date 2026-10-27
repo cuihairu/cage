@@ -48,7 +48,7 @@ use cage_core::error::codes::distribution::E2101;
 use cage_core::error::codes::registry::E1802;
 use cage_core::error::codes::remote::E1905;
 use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig, TargetConfig};
-use cage_core::normalize::{fill_field_defaults, normalize_document};
+use cage_core::normalize::{fill_field_defaults, normalize_document, split_cell_arrays};
 use cage_core::reference::{DependencyGraph, IncrementalPlanner};
 use cage_core::schema::{Schema, ValidatedSchema};
 use cage_core::validation::ValidationLevel;
@@ -835,6 +835,7 @@ fn load_project_impl(root: &Path, no_cache: bool, fill: bool) -> Result<Project,
     // 回流-1: fields with a schema default fill absent-or-null (Excel empty
     // cells load as null) so a typed field always carries its default.
     if fill {
+        split_cell_arrays(&schema, &mut document);
         fill_field_defaults(&schema, &mut document);
     }
 
