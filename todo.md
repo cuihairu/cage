@@ -1785,8 +1785,16 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       `"note": null` 构建成功）；docs/schema.md 与 docs/zh/schema.md 字段约束表同步。
       证据（commit 2061110）：cargo fmt、clippy 0 warning、全量 cargo test 1003 passed
       0 failed（2026-10-27）。
-- [ ] 回流-3 单元格分隔列表：`(list#sep=,)` 等价物——Excel 单元格 `"a,b"` 解析为数组
+- [x] 回流-3 单元格分隔列表：`(list#sep=,)` 等价物——Excel 单元格 `"a,b"` 解析为数组
       （calamine 单元格只产出标量，Array 类型无来源面）。
+      证据（commit e3d49b8，已代决 separator 命名，源 Luban `(list#sep=,)`）：
+      `FieldSchema.separator: Option<String>`（schema/mod.rs）；`split_cell_arrays`
+      （normalize/mod.rs，String 单元格按分隔符拆、token trim + `coerce_to_type` 到元素
+      类型，拆不动的整格保持原样由 L2 报出）在 `load_project_impl` 填充默认值前执行
+      （cage-cli/src/main.rs）；单测 `split_cell_arrays_splits_and_coerces_keeps_present_arrays_and_bad_tokens`
+      与 CLI 测试 `excel_separator_cell_splits_into_array`（data-separator.xlsx）；
+      docs/schema.md + docs/zh/schema.md 增 `separator` 行。cargo fmt、clippy 0 warning、
+      全量 cargo test 全绿（2026-10-27）。
 - [ ] 回流-4 数值塔统一：Excel 整数值单元格可入 Float 字段（实测 Float32 拒绝 Int 单元格，
       40 行 E1101）。
 - [ ] 回流-5 多级表头/嵌套 bean/多行记录/多态（2026-10-23 定位评审最大空缺，五案例再次
