@@ -1795,8 +1795,15 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       与 CLI 测试 `excel_separator_cell_splits_into_array`（data-separator.xlsx）；
       docs/schema.md + docs/zh/schema.md 增 `separator` 行。cargo fmt、clippy 0 warning、
       全量 cargo test 全绿（2026-10-27）。
-- [ ] 回流-4 数值塔统一：Excel 整数值单元格可入 Float 字段（实测 Float32 拒绝 Int 单元格，
+- [x] 回流-4 数值塔统一：Excel 整数值单元格可入 Float 字段（实测 Float32 拒绝 Int 单元格，
       40 行 E1101）。
+      证据（commit 397d098）：`value_matches_type`（validation/mod.rs）数值塔向上统一——
+      `Int`/`UInt` 值接受于 `Float32`/`Float64` 字段（Excel 整数值单元格加载为 `Int`），
+      反向 `Float` 入整数字段仍拒；单测在 `value_matches_type_covers_every_family` 断言
+      正反两向；CLI 测试 `excel_integer_cell_accepted_in_float_field`（data-int-weight.xlsx，
+      weight 列 2/3 整数单元格，common-schema 的 Float32 weight 下构建成功）；
+      docs/schema.md + docs/zh/schema.md 的 Float 行注明数值塔语义。cargo fmt、clippy
+      0 warning、全量 cargo test 全绿（2026-10-27）。
 - [ ] 回流-5 多级表头/嵌套 bean/多行记录/多态（2026-10-23 定位评审最大空缺，五案例再次
       证实；`crates/cage-source-excel/src/lib.rs:47-54` 仅单行 `header_row`）。
 - [ ] 回流-6 tagged union 类型：kind + 按分支载荷的类型安全表达（多态配置只能 enum+`Any`
