@@ -22,6 +22,12 @@ Luban 5.1.0 单次 CLI 构建 0.84s / 峰值 RSS ≈ 83.5 MB，Cage debug 构建
 （Cage 峰值内存低约 29%）。注意两者都是进程启动主导的数值，本实验不构成「速度/内存优劣」的
 定论（见测量节）。
 
+> **补充（2026-10-27 回流-1 落地后）**：本文是修复前的对照快照。文中「默认值不作用于
+> 空单元格」一项（案例 4.2）已被回流-1 修复——`fill_field_defaults`
+> （`crates/cage-core/src/normalize/mod.rs:116`）现在把 absent 与 Null（Excel 空单元格）
+> 都填为 `FieldSchema.default`，与 Luban `#default` 行为一致。其余五项差距（nullable 类型、
+> 分隔列表、数值塔、多级表头/多态、tagged union）按本文结论仍成立。
+
 ## 实验设置
 
 一个 `gen.py` 生成同一份逻辑配置，分别落成 Luban 与 Cage 两套工程，数据完全一致：

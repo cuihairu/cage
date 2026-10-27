@@ -65,7 +65,9 @@ pub use manifest::{
     verify_manifest, ArtifactInfo, BuildManifest, BuildProfile, ManifestGenerator, ProjectConfig,
     ProjectInfo, RegistryConfig, TargetConfig,
 };
-pub use normalize::{coerce_to_type, normalize_document, normalize_typed_value, normalize_value};
+pub use normalize::{
+    coerce_to_type, fill_field_defaults, normalize_document, normalize_typed_value, normalize_value,
+};
 pub use reference::{
     DependencyGraph, IncrementalPlanner, ReferenceResolver, ResolvedReference, UnresolvedReference,
 };

@@ -337,7 +337,7 @@ fn draft_field(table: &str, field: &FieldDiff, draft: &mut MigrationDraft) {
 /// and then die in the L2 family check (E1101) during reverification.
 /// Unrepresentable combinations (bytes, mismatched literals) yield `None`
 /// and surface as a `# TODO` instead of a broken step.
-fn schema_default(field: &FieldSchema) -> Option<Value> {
+pub(crate) fn schema_default(field: &FieldSchema) -> Option<Value> {
     typed_json_value(field.default.as_ref()?, &field.field_type)
 }
 

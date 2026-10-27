@@ -230,6 +230,25 @@ fn explicit_empty_string_is_json_yaml_only_and_table_sources_reject_it() {
 }
 
 #[test]
+fn excel_empty_cell_fills_schema_default() {
+    // 回流-1: an Excel empty cell collapses to Null, and a field with a schema
+    // default is filled with it — the build succeeds and the output carries the
+    // default, so an empty cell is no longer a hard type error for defaulted
+    // fields. `tier` is empty in every row of `data-empty-tier.xlsx`.
+    let excel = Project::new(&["data-empty-tier.xlsx", "Drop.json"]);
+    let (ok, out) = run_build(excel.root());
+    assert!(ok, "Excel empty-cell + default build failed:\n{out}");
+    let text = String::from_utf8(read_artifact(excel.root(), "Item")).unwrap();
+    assert!(
+        text.contains(r#""tier": 3"#),
+        "defaulted tier must be filled, got:\n{text}"
+    );
+    // The rest of the row is untouched by the fill.
+    assert!(text.contains(r#""name": "Sword""#), "name lost:\n{text}");
+    assert!(!text.contains("E1101"), "unexpected E1101 in\n{text}");
+}
+
+#[test]
 fn default_flows_from_schema_to_code_target_while_ir_keeps_explicit_value() {
     // Data IR: the common-core parity test pins `tier: 3` explicitly from all
     // three sources. The schema default is the authoring contract the code

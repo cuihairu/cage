@@ -100,6 +100,44 @@ pub fn normalize_document(doc: &crate::value::Document) -> crate::value::Documen
     normalized
 }
 
+/// Fill absent-or-null fields with their schema default (回流-1).
+///
+/// Mirrors Luban's `#default`: a missing key **or** an Excel empty cell
+/// (which loads as `Value::Null`) both become the declared default, so a
+/// field with a default always carries a value. Without this an Excel empty
+/// cell in a typed field dies as E1101 (`Expected type: X, got: null`) even
+/// though the schema provides a default. The fill runs on the full document
+/// before profile projection; fields hidden by the profile are dropped after,
+/// and E9006 (required + no default + hidden) is unaffected.
+///
+/// Fields whose default cannot be represented in the field's own type family
+/// (`migrate::diff::schema_default` returns `None`, e.g. a bytes literal) are
+/// left as-is — the L2 type check surfaces them instead of silently dropping.
+pub fn fill_field_defaults(schema: &crate::schema::Schema, document: &mut crate::value::Document) {
+    for table in document.tables.values_mut() {
+        let Some(schema_table) = schema.tables.get(&table.name) else {
+            continue;
+        };
+        for row in &mut table.rows {
+            for (name, field) in &schema_table.fields {
+                let Some(default) = crate::migrate::diff::schema_default(field) else {
+                    continue;
+                };
+                let needs_fill = match row.fields.get(name) {
+                    None => true,
+                    Some(tv) => tv.value == Value::Null,
+                };
+                if needs_fill {
+                    row.fields.insert(
+                        name.clone(),
+                        TypedValue::new(default, row.location.clone().with_field(name)),
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Coerce value to target type based on schema (for normalization phase)
 pub fn coerce_to_type(value: &Value, target_type: &crate::schema::FieldType) -> Option<Value> {
     match (value, target_type) {
@@ -484,6 +522,92 @@ mod tests {
             serde_json::to_string(&normalized).unwrap(),
             serde_json::to_string(&again).unwrap()
         );
+    }
+
+    #[test]
+    fn fill_field_defaults_fills_absent_and_null_keeps_present_and_unfillable() {
+        use crate::value::{Document, Row, Table};
+
+        let schema: crate::schema::Schema = serde_yaml::from_str(
+            r#"enums: {}
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      lvl: { name: lvl, type: { kind: Int32 }, default: 1 }
+      note: { name: note, type: { kind: String }, default: "" }
+      keep: { name: keep, type: { kind: Int32 }, default: 9 }
+      bad: { name: bad, type: { kind: String }, default: 5 }
+"#,
+        )
+        .expect("parse schema");
+
+        let loc = |r: usize| crate::value::SourceLocation::new("t.json").with_row(r);
+        let mut fields = IndexMap::new();
+        fields.insert("id".to_string(), TypedValue::new(Value::Int(1), loc(1)));
+        fields.insert("keep".to_string(), TypedValue::new(Value::Int(7), loc(1)));
+        // lvl absent, note null, bad null
+        fields.insert("note".to_string(), TypedValue::new(Value::Null, loc(1)));
+        fields.insert("bad".to_string(), TypedValue::new(Value::Null, loc(1)));
+
+        let mut fields2 = IndexMap::new();
+        fields2.insert("id".to_string(), TypedValue::new(Value::Int(2), loc(2)));
+        fields2.insert("lvl".to_string(), TypedValue::new(Value::Int(5), loc(2)));
+
+        let mut doc = Document::new();
+        doc.add_table(Table {
+            name: "T".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![
+                Row {
+                    primary_key: vec![Value::Int(1)],
+                    fields,
+                    location: loc(1),
+                    index: 0,
+                },
+                Row {
+                    primary_key: vec![Value::Int(2)],
+                    fields: fields2,
+                    location: loc(2),
+                    index: 1,
+                },
+            ],
+            source_file: "t.json".to_string(),
+            sheet: None,
+        });
+        // A table absent from the schema is left untouched.
+        doc.add_table(Table {
+            name: "Ghost".to_string(),
+            primary_key_fields: vec![],
+            rows: vec![],
+            source_file: "ghost.json".to_string(),
+            sheet: None,
+        });
+
+        fill_field_defaults(&schema, &mut doc);
+
+        let rows = &doc.tables["T"].rows;
+        // absent → default, null → default, present non-null kept,
+        // unfillable default (int on String) left as null.
+        assert_eq!(rows[0].fields["lvl"].value, Value::Int(1), "absent filled");
+        assert_eq!(
+            rows[0].fields["note"].value,
+            Value::String(String::new()),
+            "null filled"
+        );
+        assert_eq!(rows[0].fields["keep"].value, Value::Int(7), "present kept");
+        assert_eq!(rows[0].fields["bad"].value, Value::Null, "unfillable left");
+        // A filled value anchors at the row with the field name.
+        assert_eq!(rows[0].fields["lvl"].location.field.as_deref(), Some("lvl"));
+        assert_eq!(rows[1].fields["lvl"].value, Value::Int(5), "present kept");
+        assert_eq!(
+            rows[1].fields["note"].value,
+            Value::String(String::new()),
+            "absent filled in second row"
+        );
+        assert!(doc.tables.contains_key("Ghost"));
     }
 
     #[test]

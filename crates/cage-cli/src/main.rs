@@ -48,7 +48,7 @@ use cage_core::error::codes::distribution::E2101;
 use cage_core::error::codes::registry::E1802;
 use cage_core::error::codes::remote::E1905;
 use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig, TargetConfig};
-use cage_core::normalize::normalize_document;
+use cage_core::normalize::{fill_field_defaults, normalize_document};
 use cage_core::reference::{DependencyGraph, IncrementalPlanner};
 use cage_core::schema::{Schema, ValidatedSchema};
 use cage_core::validation::ValidationLevel;
@@ -774,6 +774,14 @@ fn main() {
 /// Load project config (cage.toml / cage.yaml / cage.yml / cage.json), merge
 /// all schema files and parse all declared source roots into one Document.
 fn load_project(root: &Path, no_cache: bool) -> Result<Project, String> {
+    load_project_impl(root, no_cache, true)
+}
+
+/// `fill`: whether absent-or-null fields get their schema default
+/// (回流-1). Build / check / lsp / gen want the filled document; `migrate`
+/// passes `false` — it transforms raw sources, and a from-schema default
+/// filling in before the step chain would shadow a to-schema `set_default`.
+fn load_project_impl(root: &Path, no_cache: bool, fill: bool) -> Result<Project, String> {
     let config = load_project_config(root)?;
 
     let schema = load_schema_for_config(root, &config)?;
@@ -823,6 +831,12 @@ fn load_project(root: &Path, no_cache: bool) -> Result<Project, String> {
     }
     document.source_files.sort();
     document.source_files.dedup();
+
+    // 回流-1: fields with a schema default fill absent-or-null (Excel empty
+    // cells load as null) so a typed field always carries its default.
+    if fill {
+        fill_field_defaults(&schema, &mut document);
+    }
 
     Ok(Project {
         config,
@@ -1321,7 +1335,7 @@ fn affected_location_lines(step: &cage_core::migrate::StepReport) -> Vec<String>
 /// Dry-run by default; `--write` rewrites the local text sources in place,
 /// byte-identically skipping unchanged files.
 fn run_migrate(path: &Path, all: bool, to: Option<&str>, write: bool) -> i32 {
-    let project = match load_project(path, false) {
+    let project = match load_project_impl(path, false, false) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");

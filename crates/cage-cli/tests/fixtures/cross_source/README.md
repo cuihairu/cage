@@ -12,6 +12,9 @@
 - **显式空串** 仅 JSON（及 YAML）可表示（`""` → `String("")`）；CSV/Excel
   把空单元格坍缩为 `Null`（`infer_and_parse_value` / `infer_string_type` 对
   空串返回 Null），这是表格源的保真缺口，测试把两边行为都断言出来。
+- **空单元格 + 模式默认值**（`data-empty-tier.xlsx`）Excel 空 `tier` 单元格
+  坍缩为 `Null` 后，被 `FieldSchema.default` 填充（回流-1），构建成功且输出
+  携带默认值 `tier: 3`——与 `data.xlsx`（显式 `tier`）同值，不构成保真缺口。
 
 项目读取约定：`source_roots.main = "config"`；Excel 工作表名 = 表名（`Item`/
 `Drop`）；CSV 文件名主 = 表名；JSON 根键 = 表名；YAML 根键 = 表名。
