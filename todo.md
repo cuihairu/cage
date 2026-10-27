@@ -1693,11 +1693,12 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
 可声明游戏规则系统、配置生命周期；AI/MCP 已不是独占优势（Luban 5.x 亦有）。
 落地只立下面三项；Excel 表达力、三类目标总览、l10n、生命周期生产验收作观察项，不抢既有排期。
 
-- [ ] P0 三源一致性对拍套件：Excel / CSV / JSON 同一逻辑配置三份 fixture → 编译后规范化
+- [x] P0 三源一致性对拍套件：Excel / CSV / JSON 同一逻辑配置三份 fixture → 编译后规范化
       IR 逐字节一致；默认值 / 空值 / 显式空串 / 数值边界 / 嵌套对象 / 枚举 / 引用解析逐项
       断言；诊断定位分别落到「文件+工作表+单元格」「文件+行号」「JSON 路径」。
-      现状：`crates/cage-cli/tests/` 24 个集成测试全为单源，无跨源对拍，这是统一模型的地基缺口。
+      现状：`crates/cage-cli/tests/` 原 24 个集成测试全为单源；本条目已补 `cross_source.rs` 跨源对拍，落地统一模型地基缺口。
       验收：三源测试跑通 + IR 字节一致断言 + 三类定位断言。
+      证据：crates/cage-cli/tests/cross_source.rs（5 项测试）+ tests/fixtures/cross_source/ 覆盖三源公共核心逐字节一致、默认值、空值/显式空串、数值边界、嵌套 JSON/YAML、枚举、引用解析与三类诊断定位；cargo fmt、clippy -D warnings、相关测试全绿（2026-10-27）。
 
 - [ ] P0 可声明游戏规则系统（L7 由 trait 升为规则系统；与 2026-10-22 评审 P1-2 规则
       AST/可视化构建器的交叉点，必须共用一份语义模型，禁两套规则格式）：规则以数据声明、

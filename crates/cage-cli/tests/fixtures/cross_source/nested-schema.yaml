@@ -1,0 +1,18 @@
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+      stats:
+        name: stats
+        type: { kind: Object, value: { hp: { kind: Int32 }, mp: { kind: Int32 } } }
+        required: true
+      tags:
+        name: tags
+        type: { kind: Array, value: { kind: String } }
+      drop_table:
+        name: drop_table
+        type: { kind: Map, value: { key_type: string, value_type: { kind: Array, value: { kind: Int32 } } } }
+enums: {}

@@ -1,0 +1,28 @@
+tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+      kind: { name: kind, type: { kind: Enum, value: ItemKind }, required: true }
+      price: { name: price, type: { kind: Int32 }, required: true, min: 0 }
+      bound: { name: bound, type: { kind: Int32 }, required: true, min: -2147483648, max: 2147483647 }
+      weight: { name: weight, type: { kind: Float32 }, required: true }
+      enabled: { name: enabled, type: { kind: Bool }, required: true }
+      tier: { name: tier, type: { kind: Int32 }, default: 3 }
+      note: { name: note, type: { kind: String } }
+      nullable: { name: nullable, type: { kind: Any } }
+      drop_id: { name: drop_id, type: { kind: Int32 }, required: true, reference: { table: Drop, field: id } }
+  Drop:
+    name: Drop
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      label: { name: label, type: { kind: String }, required: true }
+enums:
+  ItemKind:
+    name: ItemKind
+    values:
+      - { name: Sword, value: 1 }
+      - { name: Potion, value: 2 }

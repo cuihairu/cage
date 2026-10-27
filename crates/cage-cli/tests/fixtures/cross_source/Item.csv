@@ -1,0 +1,3 @@
+id,name,kind,price,bound,weight,enabled,tier,note,nullable,drop_id
+1,Sword,Sword,100,2147483647,1.5,true,3,hello,x,1
+2,Potion,Potion,50,-2147483648,2.5,false,3,potion note,,2

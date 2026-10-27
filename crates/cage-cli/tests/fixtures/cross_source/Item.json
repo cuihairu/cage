@@ -1,0 +1,1 @@
+{"Item":[{"id":1,"name":"Sword","kind":"Sword","price":100,"bound":2147483647,"weight":1.5,"enabled":true,"tier":3,"note":"hello","nullable":"x","drop_id":1},{"id":2,"name":"Potion","kind":"Potion","price":50,"bound":-2147483648,"weight":2.5,"enabled":false,"tier":3,"note":"potion note","nullable":null,"drop_id":2}]}
