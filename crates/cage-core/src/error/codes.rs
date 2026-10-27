@@ -211,6 +211,44 @@ pub mod migration {
     pub const E2004: &str = "E2004";
 }
 
+/// Source convention errors (X series, design §51): Excel meta-row
+/// decoding, the preset grammar and the script adapter. One standard on
+/// both sides - the built-in presets and a user script fail on the same
+/// condition with the same code. Cell-level conditions carry the A1
+/// anchor; declaration-level conditions carry workbook + sheet.
+pub mod source_convention {
+    /// E2201 - Convention syntax: an unknown keyword, a value before any
+    /// keyword, a duplicate keyword on one column, a marker cell with an
+    /// unparseable form, `preset` and `script` both set, a preset declared
+    /// while `has_header` is false, or an ambiguous workbook override
+    /// (X1, `ExcelConvention::validate` and `decode`)
+    pub const E2201: &str = "E2201";
+    /// E2202 - Convention vocabulary: a value that does not resolve into the
+    /// vocabulary - an unknown type expression, a boolean that is not
+    /// true/false, an `enum` that is not a value list, a malformed
+    /// `reference` cell
+    /// (X1, `decode`, `parse_response`)
+    pub const E2202: &str = "E2202";
+    /// E2203 - Script will not start: path outside the project root, `..`
+    /// escape, not found, not a file, or the spawn failed
+    /// (X1, `resolve_script`, `run_script`)
+    pub const E2203: &str = "E2203";
+    /// E2204 - Script exceeded `script_timeout_secs` (X1, `run_script`)
+    pub const E2204: &str = "E2204";
+    /// E2205 - Script exited non-zero; stderr is quoted and truncated
+    /// (X1, `run_script`)
+    pub const E2205: &str = "E2205";
+    /// E2206 - Script output is unusable: not valid JSON, not the contract
+    /// shape, or a contract version cage does not know
+    /// (X1, `run_script`, `parse_response`)
+    pub const E2206: &str = "E2206";
+    /// E2207 - Convention contradicts the data: a declared column name that
+    /// is not in the header row, a meta-sheet name row that does not match,
+    /// or a response whose `table` is not the sheet's table
+    /// (X1, `decode`, `parse_response`)
+    pub const E2207: &str = "E2207";
+}
+
 /// Remote Source errors (S series, design §45): read-only fetch of
 /// Google Sheets / MySQL / PostgreSQL / HTTP API sources. All six are
 /// wired: E1901/E1902 at the fetch stage of every adapter, E1903 in the
@@ -327,6 +365,14 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         distribution::E2105 => Some("Distribution Credential Missing"),
         distribution::E2106 => Some("Signing Key Unavailable"),
         distribution::E2107 => Some("Bundle Signature Verification Failed"),
+        // Source Convention
+        source_convention::E2201 => Some("Convention Syntax Error"),
+        source_convention::E2202 => Some("Convention Vocabulary Error"),
+        source_convention::E2203 => Some("Convention Script Will Not Start"),
+        source_convention::E2204 => Some("Convention Script Timeout"),
+        source_convention::E2205 => Some("Convention Script Failed"),
+        source_convention::E2206 => Some("Convention Script Output Invalid"),
+        source_convention::E2207 => Some("Convention Contradicts Data"),
         // Migration
         migration::E2001 => Some("Migration Rule Invalid"),
         migration::E2002 => Some("Migration Rule Reference Invalid"),

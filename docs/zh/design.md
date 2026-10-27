@@ -3304,12 +3304,13 @@ Excel 版式——任何预设格式都不能被当成「就是那么写的 Exce
 ```toml
 [source.excel]
 preset = "marker_rows"            # data | header_block | marker_rows | meta_sheet
-marker = "##"                      # 仅 marker_rows 用；须以 '#' 开头
+marker = "##"                      # 全部内置预设档；须以 '#' 开头
 workbooks = { "Skill.xlsx" = "header_block" }   # 按工作簿文件名逐工作簿覆盖
 
 # —— 与内置预设档互斥：改用脚本适配器 ——
 script = "tools/excel-meta.py"    # 相对工程根目录，正斜杠
-script_timeout_secs = 10          # 默认 10
+script_args = [ "--strict" ]      # 附加参数，接在脚本路径之后
+script_timeout_secs = 10          # 默认 10；下限 1
 script_config = { }               # 任意 TOML 表，原样传给脚本
 ```
 
@@ -3349,8 +3350,11 @@ script_config = { }               # 任意 TOML 表，原样传给脚本
   值，0 基）与 `grid`——整张可见 sheet 的二维数组，元素为数字 / 字符串 /
   布尔 / `null`。JSON 只有一种数值类型，整数与实数同型；整数只要发射端
   不写小数部分就保持整数。空单元格为 `null`；合并单元格回填左上角
-  值（仅 xlsx，`.ods` 从不）；日期为工作簿本地时间的 ISO-8601 字符串；
-  公式单元格取缓存值，不做任何重算。另有 `config` = `script_config` 表
+  值（仅 xlsx，`.ods` 从不）；日期以数据面渲染的同一形式到达——Excel
+  序列号的 `Debug` 形式（`ExcelDateTime { value: 44927.0, datetime_type:
+  DateTime, is_1904: false }`），不是归一化的 ISO-8601 字符串——脚本看到
+  的就是 IR 看到的；公式单元格取缓存值，不做任何重算。另有 `config` =
+  `script_config` 表
   原样内容，作者调自己的脚本不需要新增 cage 旋钮。
 - **script → cage**：`table`、`header_row`（0 基，脚本认定数据表头真的
   在哪）、以及 `columns`——按数据列名索引，每项除词汇字段外必带一个
@@ -3378,7 +3382,7 @@ cage 无法**证明**脚本本身是确定性的（一个把时间戳写进输�
 
 | 码 | 条件 |
 | --- | --- |
-| **E2201** | 约定**语法**：未知关键词、关键词之前先出现取值、同一列重复声明同一关键词、标记单元格形式无法解析、`preset` 与 `script` 同时设置、`has_header = false` 时声明预设档、工作簿覆盖目标歧义 |
+| **E2201** | 约定**语法**：未知关键词、关键词之前先出现取值、同一列重复声明同一关键词、标记单元格形式无法解析、`preset` 与 `script` 同时设置、`has_header = false` 时声明预设档 |
 | **E2202** | 约定**词汇**：取值无法解析进词汇表——未知 `kind`、`enum` 不是取值列表、`reference` 对象畸形 |
 | **E2203** | 脚本无法启动：路径在工程根之外、`..` 逃逸、不存在、不可执行、spawn 失败 |
 | **E2204** | 脚本超过 `script_timeout_secs` |
@@ -3388,7 +3392,6 @@ cage 无法**证明**脚本本身是确定性的（一个把时间戳写进输�
 
 E22xx 为源约定族；E10xx–E19xx（校验）、E20xx（迁移）、E21xx（发行）
 不动。
-
 ## Q4 — 与既有旋钮的关系
 
 `ExcelSourceAdapter` 的四个旋钮（`header_row` / `has_header` /
@@ -3403,6 +3406,56 @@ E22xx 为源约定族；E10xx–E19xx（校验）、E20xx（迁移）、E21xx（
 - `eval_formulas` 与 `skip_empty_rows` 不动。空行仍然截断
   `header_block` 行段；适配器看到的仍是公式缓存值。
 
-本节只裁定架构。X1 落地预设档解析器与子进程运行器，X2 落地
-`schema-draft` 内省与对已采用 schema 的漂移核对，X3 合流到三源对拍套件，
-X4 出文档与可跑示例。
+## Q5 — as-built 备忘（X1，2026-10-27）
+
+本裁定与 X1 实际交付之间的差异，记录在此，使裁定记录与代码不再漂移。
+
+**注释行是 `##description`。** 词汇表就是 Schema 字段名集合，所以注释行
+用 schema 真正拥有的字段声明。`##comment` 报 E2202（未知变体）——cage
+不维护别名表，也不在表中列出的关键词之外新增任何关键词。
+
+**单元格类型记法，仅预设档。** 预设档单元格接受两种写法，都解析进
+Schema 自身的 `FieldType`：简写（`Int32`、`Any`、`Array<T>`、
+`Enum<Name>`、`Map<string|int, T>`，可嵌套——`Array<Array<String>>`），
+以及 Schema 表达式形式（`{ kind: Int32 }`、
+`{ kind: Array, value: { kind: Int32 } }`）。这是 cage 唯一接受简写的地方；
+Q2 的脚本契约仍要求标签形式原样，契约的「零翻译」性质不变。`Object`
+没有单元格记法，报 E2202——嵌套对象声明在 schema 里，不声明在单元格里。
+
+**`marker` 不只属于 `marker_rows`。** 它是共享语法的标记字符，适用于
+全部三个读标记单元格的内置预设档（`marker_rows`、`header_block`、
+`meta_sheet`）。`data` 忽略它。
+
+**`script_args` 与超时下限。** `script_args` 在 spawn 时接在脚本路径之后；
+不属于 stdin 契约，也不进指纹。`script_timeout_secs` 低于 1 时按 1 秒
+封底——没有零，即没有无限等待，因为卡死的脚本必须能报 E2204，而不能
+拖死构建。
+
+**隐藏的 meta sheet 读；隐藏的数据 sheet 不读。** 隐藏 sheet 作为数据
+绝不进入 Canonical Model（3.1），`<sheet>.meta` 载体也绝不作为表解析
+——但载体**会**被读取，即使它被隐藏：约定载体是作者元数据而非数据，
+隐藏 meta sheet 是作者的一个合理做法。只有数据面除外成立。
+
+**脚本放置表头行。** 用脚本时，`response.header_row` 就是数据表头行：
+脚本在表头提取之前运行，所以它可以待在它自有的类型行段之下。内置预设档
+永不移动数据表头行（Q4）。
+
+**源指纹随消费者落地。** X1 解码元数据但不读它——`parse_file` 是
+`parse_file_with_meta` 的数据面投影，元数据被丢弃。X1 不改任何
+`build_id` 字节；上面四项指纹输入在 X2 接线，那时才首次消费元数据。
+这也是 X1 的字节级回归是结构性质、而非巧合的原因。
+
+**推迟到 X4——工作簿覆盖目标歧义。** `workbooks` 按文件名键，同一文件名
+出现在两个 source root 之下时无法指明是哪一个工作簿。X1 对该覆盖按
+「每个匹配文件名的工作簿、每个 source root」逐应用，不报 E2201：裁定它
+需要一次横跨所有 source root 的遍，而逐文件适配器没有。在那之前，重复
+文件名加 `workbooks` 覆盖是逐 root 应用，不是拒绝。
+
+**`cage-source-sheets` 同一契约，后置。** v1 约定仅限 Excel：sheets
+不承载元行，sheets 适配器从 Sheets API 读 `UNFORMATTED_VALUE`，没有
+放声明的位置。语法与词汇不变，所以扩展它是适配器决策，不是重新设计。
+
+本节只裁定架构。X1 已落地预设档解析器、子进程运行器、E22xx 错误码
+与 cage.toml 开关——差异记录在 Q5。X2 落地 `schema-draft`
+内省与对已采用 schema 的漂移核对，X3 合流到三源对拍套件，X4 出文档与
+可跑示例。

@@ -317,6 +317,7 @@ dependencies = [
  "cage-core",
  "calamine",
  "indexmap",
+ "serde_json",
 ]
 
 [[package]]

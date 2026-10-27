@@ -2611,12 +2611,13 @@ One grammar, four location presets. The grammar is the same in all of them; only
 ```toml
 [source.excel]
 preset = "marker_rows"            # data | header_block | marker_rows | meta_sheet
-marker = "##"                      # marker_rows only; must start with '#'
+marker = "##"                      # every built-in preset; must start with '#'
 workbooks = { "Skill.xlsx" = "header_block" }   # per-workbook override, keyed by workbook file name
 
 # — instead of the built-in presets: the script adapter (mutually exclusive with preset) —
 script = "tools/excel-meta.py"    # relative to the project root, forward slashes
-script_timeout_secs = 10          # default 10
+script_args = [ "--strict" ]      # extra arguments, appended after the script path
+script_timeout_secs = 10          # default 10; floored at 1
 script_config = { }               # any TOML table, passed to the script verbatim
 ```
 
@@ -2637,7 +2638,7 @@ Selecting a preset is *explicit*: no `[source.excel]` means no convention, and t
 
 **The contract** is versioned `cage.excel-meta/1` and published as a machine-checkable document: [`schemas/excel-meta-adapter-v1.schema.json`](schemas/excel-meta-adapter-v1.schema.json) (JSON Schema 2020-12, `$defs.request` and `$defs.response`).
 
-- **request → script**: `workbook`, `sheet`, `header_row` (as cage resolved it, 0-based), and the whole visible sheet as `grid` — a 2-D array of number / string / boolean / `null` (JSON has a single numeric type, so integer and non-integer are one thing: a whole number stays whole as long as the emitter writes no fractional part). Empty cells are `null`; merged cells are back-filled to the top-left value (xlsx only, `.ods` never); dates are ISO-8601 strings in workbook-local time; formula cells carry their cached value, nothing is re-evaluated. Plus `config` = the `script_config` table verbatim, so authors tune their own script without new cage knobs.
+- **request → script**: `workbook`, `sheet`, `header_row` (as cage resolved it, 0-based), and the whole visible sheet as `grid` — a 2-D array of number / string / boolean / `null` (JSON has a single numeric type, so integer and non-integer are one thing: a whole number stays whole as long as the emitter writes no fractional part). Empty cells are `null`; merged cells are back-filled to the top-left value (xlsx only, `.ods` never); dates arrive in the same form the data plane renders them in — the `Debug` form of the Excel serial (`ExcelDateTime { value: 44927.0, datetime_type: DateTime, is_1904: false }`), not a normalized ISO-8601 string — so a script sees what the IR sees; formula cells carry their cached value, nothing is re-evaluated. Plus `config` = the `script_config` table verbatim, so authors tune their own script without new cage knobs.
 - **script → cage**: `table`, `header_row` (0-based, as the script says the data header really is), and `columns` keyed by data column name, each value carrying the vocabulary fields plus a required `cell` anchor in A1 form (`"B2"`, `"G27"`) so every later diagnostic points at the exact cell. The value of `type` is the Schema field's own `type` slot **verbatim** — the adjacently tagged `{ kind, value }` object (`{ kind: Int32 }`, `{ kind: Array, value: { kind: Int32 } }`, `{ kind: Enum, value: Rarity }`, `{ kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }`), one of its 19 kinds. The contract invents no shorthand: there is no translation step between the contract and the schema, so there is nowhere for the two spellings to drift.
 
 **Determinism:** the source fingerprint that feeds `source_hash` / `build_id` gains four inputs — the blake3 of the script's bytes, the resolved script path, the canonical form of `script_config`, and the contract version. Editing the script or its config invalidates caches and changes `build_id`, exactly as editing a workbook does. cage cannot *prove* a script is deterministic (a script that embeds a timestamp will produce a `build_id` flip per run); it can make the failure obvious, and the cache chain guarantees no stale metadata ever masquerades as current. That is the same standard as every other source input, and it is all that the determinism contract ever claims.
@@ -2648,7 +2649,7 @@ Every failure is reported. Nothing is silently dropped, and nothing silently deg
 
 | Code | Condition |
 | --- | --- |
-| **E2201** | convention *syntax*: unknown keyword, a value before any keyword, a duplicate keyword on one column, a marker cell with an unparseable form, `preset` and `script` both set, a preset declared while `has_header = false`, an ambiguous workbook override |
+| **E2201** | convention *syntax*: unknown keyword, a value before any keyword, a duplicate keyword on one column, a marker cell with an unparseable form, `preset` and `script` both set, a preset declared while `has_header = false` |
 | **E2202** | convention *vocabulary*: a value that does not resolve into the vocabulary — an unknown `kind`, an `enum` that is not a value list, a malformed `reference` object |
 | **E2203** | script will not start: path outside the project root, `..` escape, not found, not executable, spawn failure |
 | **E2204** | script exceeded `script_timeout_secs` |
@@ -2666,4 +2667,26 @@ The four knobs in `ExcelSourceAdapter` (`header_row`, `has_header`, `eval_formul
 - `has_header = false` cannot carry a convention (there is nothing to key columns by), so a preset alongside it is E2201 rather than a mystery;
 - `eval_formulas` and `skip_empty_rows` are untouched. A blank row still ends the `header_block` run; cached formula values are what the adapter sees.
 
-This section is the architecture decision only. X1 lands the preset parsers and the subprocess runner, X2 the `schema-draft` introspection and the drift check against an adopted schema, X3 the merge into the three-source parity suite, X4 the docs and the runnable example.
+## Q5 — as-built notes (X1, 2026-10-27)
+
+Deltas between this decision and what X1 ships, recorded so the decision record and the code cannot drift.
+
+**The comment row is `##description`.** The vocabulary is the Schema field-name set, so a comment row is declared with the field the schema actually has. `##comment` is E2202 (unknown variant) — cage keeps no alias table and adds no keywords beyond the ones in the table above.
+
+**Cell type notation, presets only.** A preset cell accepts two spellings, both resolved into the Schema's own `FieldType`: the shorthand (`Int32`, `Any`, `Array<T>`, `Enum<Name>`, `Map<string|int, T>`, nestable — `Array<Array<String>>`), and the Schema expression form (`{ kind: Int32 }`, `{ kind: Array, value: { kind: Int32 } }`). This is the one place cage accepts a shorthand; the script contract of Q2 still demands the tagged form verbatim, so the contract keeps its no-translation property. `Object` has no cell notation and is refused with E2202 — a nested object is declared in the schema, not in a cell.
+
+**`marker` is not `marker_rows`-only.** It is the marker char of the shared grammar and applies to all three built-in presets that read marker cells (`marker_rows`, `header_block`, `meta_sheet`). `data` ignores it.
+
+**`script_args` and the timeout floor.** `script_args` is appended after the script path at spawn; it is not part of the stdin contract and not part of the fingerprint. `script_timeout_secs` below 1 is floored to 1 second — there is no zero, i.e. no unlimited wait, because a hung script must be reportable as E2204 rather than stall the build.
+
+**A hidden meta sheet is read; a hidden data sheet is not.** Hidden sheets never enter the Canonical Model as data (3.1), and a `<sheet>.meta` carrier is never parsed as a table — but the carrier *is* read even when hidden, because a convention carrier is authoring metadata rather than data, and hiding a meta sheet is a plausible authoring artifact. Only the data-plane carve-out applies.
+
+**The script places the header row.** With a script, `response.header_row` is the data header row: the script runs before header extraction, so it can sit below a type band it owns. Built-in presets never move the data header row (Q4).
+
+**The source fingerprint lands with the consumer.** X1 decodes metadata and does not read it — `parse_file` is the data-plane projection of `parse_file_with_meta`, the metadata dropped. No `build_id` byte changes in X1; the four fingerprint inputs above are wired in X2, where the metadata is first consumed. That is also why X1's byte-level regression is a structural property rather than a coincidence.
+
+**Deferred to X4 — the ambiguous workbook override.** `workbooks` is keyed by file name, so a name present in two source roots cannot say which workbook it means. X1 applies the override to every workbook whose file name matches, in every source root, and does not raise E2201: deciding it needs a cross-root pass over all source roots, which the per-file adapter does not have. Until then, a duplicate file name with a `workbooks` override is a per-root application, not a rejection.
+
+**`cage-source-sheets` keeps the same contract, later.** The convention is Excel-only in v1: sheets carry no meta rows, and the sheets adapter reads `UNFORMATTED_VALUE` from the Sheets API with no place to put declarations. The grammar and vocabulary are unchanged, so extending it is an adapter decision, not a redesign.
+
+This section is the architecture decision. X1 landed the preset parsers, the subprocess runner, the E22xx codes and the cage.toml switch — the deltas are recorded in Q5. X2 lands the `schema-draft` introspection and the drift check against an adopted schema, X3 the merge into the three-source parity suite, X4 the docs and the runnable example.

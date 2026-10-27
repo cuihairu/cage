@@ -34,7 +34,7 @@
         "grid": {
           "type": "array",
           "minItems": 1,
-          "description": "The whole visible sheet as rows of cells, 0-based in both directions. Cell = integer, non-integer number, string, boolean, or null. An empty cell is null. A merged cell is back-filled to the top-left value (xlsx only, .ods never). A date or datetime cell is serialized as an ISO-8601 string in workbook-local time, with no timezone. Formula cells carry their cached value; nothing is re-evaluated (the same policy as [source.excel].eval_formulas=false).",
+          "description": "The whole visible sheet as rows of cells, 0-based in both directions. Cell = integer, non-integer number, string, boolean, or null. An empty cell is null. A merged cell is back-filled to the top-left value (xlsx only, .ods never). A date or datetime cell is sent as the same form the data plane renders it in — the Debug form of the Excel serial (ExcelDateTime { value: 44927.0, datetime_type: DateTime, is_1904: false }), not a normalized ISO-8601 string. ISO-shaped cells the spreadsheet already stored as text arrive verbatim as strings. Formula cells carry their cached value; nothing is re-evaluated (the same policy as [source.excel].eval_formulas=false).",
           "items": {
             "type": "array",
             "items": {
@@ -133,14 +133,18 @@
         },
         "reference": {
           "type": "object",
-          "description": "Schema DSL name, unchanged. The same object shape the Schema field reference accepts. Declaring the reference column is metadata; resolving and checking it is the validation layers' job.",
+          "description": "Schema DSL name, unchanged - the same object the Schema field reference accepts. Declaring the reference column is metadata; resolving and checking it is the validation layers' job. `predicate` is deliberately not part of the contract: a reference declared in a meta row points at a table and a field, and any additional predicate belongs in the Schema.",
           "required": ["table", "field"],
           "additionalProperties": false,
           "properties": {
             "table": { "type": "string", "minLength": 1 },
             "field": { "type": "string", "minLength": 1 },
             "cardinality": { "type": "string", "enum": ["one", "many", "optional"] },
-            "compatible_profile": { "type": "string" }
+            "compatible_with": {
+              "type": "array",
+              "items": { "type": "string" },
+              "uniqueItems": true
+            }
           }
         },
         "description": {
@@ -212,7 +216,7 @@
               "required": ["value_type"],
               "additionalProperties": false,
               "properties": {
-                "key_type": { "enum": ["string", "int", "bool"] },
+                "key_type": { "enum": ["string", "int"] },
                 "value_type": { "$ref": "#/$defs/field_type" }
               }
             }

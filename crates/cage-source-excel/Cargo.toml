@@ -12,4 +12,5 @@ description = "Excel source adapter for Cage (calamine)"
 [dependencies]
 cage-core = { path = "../cage-core" }
 calamine = { workspace = true }
+serde_json = { workspace = true }
 indexmap = { workspace = true }

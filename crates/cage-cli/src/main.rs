@@ -43,6 +43,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cage_core::assets::AssetInventory;
+use cage_core::convention::ExcelConvention;
 use cage_core::error::codes::distribution::E2101;
 use cage_core::error::codes::registry::E1802;
 use cage_core::error::codes::remote::E1905;
@@ -782,6 +783,10 @@ fn load_project(root: &Path, no_cache: bool) -> Result<Project, String> {
         source_files: Vec::new(),
         metadata: DocumentMetadata::default(),
     };
+    // `[source.excel]` (design §51): the meta-row convention and the root a
+    // declared script path resolves against. `None` is the baseline — every
+    // Excel file reads exactly as before.
+    let excel = config.source_excel.as_ref().map(|c| (c, root));
     for rel in config.source_roots.values() {
         // `registry:<package>[@<version>]` source roots (R1) resolve to a
         // published entry's data/ directory; the entry's ledger is verified
@@ -809,7 +814,7 @@ fn load_project(root: &Path, no_cache: bool) -> Result<Project, String> {
             // no bypass for remote bytes.
             cage_source_http::HttpSourceAdapter::load(root, rel, no_cache)?
         } else {
-            load_sources(&root.join(rel))?
+            load_sources(&root.join(rel), excel)?
         };
         for (name, table) in doc.tables {
             document.tables.insert(name, table);
@@ -953,15 +958,24 @@ pub(crate) fn load_schema_for_config(
     }
 }
 
-fn load_sources(root: &Path) -> Result<Document, String> {
-    parse_source_files(&collect_files(
-        root,
-        &["json", "yaml", "yml", "csv", "xlsx", "xls", "msgpack"],
-    )?)
+fn load_sources(root: &Path, excel: Option<(&ExcelConvention, &Path)>) -> Result<Document, String> {
+    parse_source_files(
+        &collect_files(
+            root,
+            &["json", "yaml", "yml", "csv", "xlsx", "xls", "msgpack"],
+        )?,
+        excel,
+    )
 }
 
 /// Parse the given source files into one merged document, in list order.
-fn parse_source_files(files: &[PathBuf]) -> Result<Document, String> {
+/// `excel` carries the project's `[source.excel]` convention together with the
+/// root a declared script path resolves against (design §51). `None` is the
+/// baseline: every Excel file reads with no meta-row convention at all.
+fn parse_source_files(
+    files: &[PathBuf],
+    excel: Option<(&ExcelConvention, &Path)>,
+) -> Result<Document, String> {
     let mut merged = Document {
         tables: IndexMap::new(),
         source_files: Vec::new(),
@@ -977,7 +991,7 @@ fn parse_source_files(files: &[PathBuf]) -> Result<Document, String> {
             "json" => cage_source_json::JsonSourceAdapter::parse_file(file),
             "yaml" | "yml" => cage_source_yaml::YamlSourceAdapter::parse_file(file),
             "csv" => cage_source_csv::CsvSourceAdapter::default().parse_file(file),
-            "xlsx" | "xls" => cage_source_excel::ExcelSourceAdapter::default().parse_file(file),
+            "xlsx" | "xls" => excel_adapter(excel).parse_file(file),
             "msgpack" => cage_source_msgpack::MsgPackSourceAdapter::parse_file(file),
             _ => continue,
         };
@@ -995,6 +1009,20 @@ fn parse_source_files(files: &[PathBuf]) -> Result<Document, String> {
         }
     }
     Ok(merged)
+}
+
+/// The Excel adapter for one file: the `[source.excel]` convention (design
+/// §51) plus the root a declared script path resolves against, or today's
+/// default adapter when no convention is declared.
+fn excel_adapter(
+    excel: Option<(&ExcelConvention, &Path)>,
+) -> cage_source_excel::ExcelSourceAdapter {
+    let mut adapter = cage_source_excel::ExcelSourceAdapter::default();
+    if let Some((convention, root)) = excel {
+        adapter.convention = Some(convention.clone());
+        adapter.project_root = Some(root.to_path_buf());
+    }
+    adapter
 }
 
 /// Data-target format fidelity for re-consumption: a snapshot entry packs
@@ -1076,7 +1104,7 @@ fn load_sources_from_entry(entry_dir: &Path) -> Result<Document, String> {
         metadata: DocumentMetadata::default(),
     };
     for file in picked {
-        let mut doc = parse_source_files(std::slice::from_ref(&file))?;
+        let mut doc = parse_source_files(std::slice::from_ref(&file), None)?;
         let rel = file
             .strip_prefix(&data_dir)
             .expect("file under data dir")
@@ -4239,6 +4267,28 @@ fn resolved_within_root(full: &Path, root: &Path) -> bool {
 mod tests {
     use super::*;
 
+    /// `[source.excel]` wiring (§51): a declared convention reaches the
+    /// Excel adapter together with the root a script path resolves against;
+    /// no declaration is the default adapter, byte-for-byte.
+    #[test]
+    fn excel_adapter_carries_convention_and_root() {
+        use cage_core::convention::{ExcelConvention, Preset};
+
+        let bare = excel_adapter(None);
+        assert!(bare.convention.is_none());
+        assert!(bare.project_root.is_none());
+
+        let cfg = ExcelConvention {
+            preset: Preset::MarkerRows,
+            ..Default::default()
+        };
+        let adapter = excel_adapter(Some((&cfg, Path::new("project"))));
+        let convention = adapter.convention.as_ref().expect("convention wired");
+        assert_eq!(convention.preset_for("Skill.xlsx"), Preset::MarkerRows);
+        assert!(!convention.uses_script());
+        assert_eq!(adapter.project_root.as_deref(), Some(Path::new("project")));
+    }
+
     /// Manifest paths are trusted only when normalized and relative
     /// (review 2026-10-18 表一#1).
     #[test]
@@ -4898,7 +4948,7 @@ enums: {}
         .expect("data");
 
         let schema = load_schema(&root.join("schemas")).expect("load schema");
-        let document = load_sources(&root.join("config")).expect("load sources");
+        let document = load_sources(&root.join("config"), None).expect("load sources");
 
         // client: the server-only table, the server-gated field and the
         // schema-less doc table all disappear.
@@ -5110,7 +5160,8 @@ enums: {}
         deny_read(&sources);
         let denied = std::fs::read_dir(&sources).is_err();
         assert!(
-            !denied || load_sources(&sources).is_err_and(|e| e.contains("failed to read dir")),
+            !denied
+                || load_sources(&sources, None).is_err_and(|e| e.contains("failed to read dir")),
             "unreadable source dir must surface 'failed to read dir'"
         );
         allow_read(&sources, 0o755);
@@ -7117,7 +7168,7 @@ output_dir = "o"
         // parse_source_files skips files with no adapter for their
         // extension.
         write_text(&root.join("notes.txt"), "hello");
-        let doc = parse_source_files(&[root.join("notes.txt")]).expect("parse");
+        let doc = parse_source_files(&[root.join("notes.txt")], None).expect("parse");
         assert_eq!(doc.tables.len(), 0);
 
         // A table outside the schema orders columns in load order.

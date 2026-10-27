@@ -514,6 +514,10 @@ pub struct ProjectConfig {
     /// config file entirely.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub remote: IndexMap<String, RemoteSourceConfig>,
+    /// Excel meta-row convention (`[source.excel]` in cage.toml, design §51).
+    /// `None` is the baseline: every Excel file reads exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_excel: Option<crate::convention::ExcelConvention>,
 }
 
 /// Local Configuration Registry declaration (`[registry]` in cage.toml)
@@ -614,6 +618,7 @@ impl Default for ProjectConfig {
             registry: None,
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
+            source_excel: None,
         }
     }
 }
@@ -1037,6 +1042,7 @@ mod tests {
             registry: None,
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
+            source_excel: None,
         };
 
         let json = serde_json::to_string(&cfg).expect("serialize");
@@ -1084,6 +1090,7 @@ mod tests {
             registry: None,
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
+            source_excel: None,
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();

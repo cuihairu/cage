@@ -33,14 +33,22 @@
     clippy::similar_names
 )]
 use cage_core::{
+    convention::{
+        decode, parse_response, run_script, CellValue, ExcelConvention, Grid, Preset, TableMeta,
+        CONTRACT_VERSION,
+    },
     diagnostics::{Diagnostic, Diagnostics},
-    error::codes::{internal, parse},
+    error::codes::{
+        internal, parse,
+        source_convention::{E2201, E2203, E2207},
+    },
     value::{Document, Row, SourceLocation, Table, TypedValue, Value},
 };
 use calamine::{open_workbook_auto, Data, DataType, Range, Reader, SheetVisible, Sheets};
 use indexmap::IndexMap;
+use serde_json::{json, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Excel Source Adapter
 pub struct ExcelSourceAdapter {
@@ -52,6 +60,12 @@ pub struct ExcelSourceAdapter {
     pub skip_empty_rows: bool,
     /// Treat first row as header if true, otherwise generate col0, col1...
     pub has_header: bool,
+    /// Meta-row convention declaration (`[source.excel]`, design §51).
+    /// `None` is the baseline: no convention at all, today's byte-for-byte
+    /// data plane.
+    pub convention: Option<ExcelConvention>,
+    /// Project root, used to resolve a declared script path (§51 Q2).
+    pub project_root: Option<PathBuf>,
 }
 
 impl Default for ExcelSourceAdapter {
@@ -61,6 +75,8 @@ impl Default for ExcelSourceAdapter {
             eval_formulas: true, // Use cached formula values
             skip_empty_rows: true,
             has_header: true,
+            convention: None,
+            project_root: None,
         }
     }
 }
@@ -68,8 +84,45 @@ impl Default for ExcelSourceAdapter {
 impl ExcelSourceAdapter {
     /// Parse an Excel file into a Document
     pub fn parse_file(&self, path: &Path) -> Result<Document, Diagnostics> {
+        self.parse_file_with_meta(path)
+            .map(|(document, _)| document)
+    }
+
+    /// Parse one workbook into a document **and** the decoded per-table
+    /// convention metadata (X1, design §51). [`Self::parse_file`] is the
+    /// data-plane projection of this: the same code, the metadata dropped.
+    /// With no `[source.excel]` declaration this is the byte-for-byte path
+    /// that has always shipped.
+    pub fn parse_file_with_meta(
+        &self,
+        path: &Path,
+    ) -> Result<(Document, IndexMap<String, TableMeta>), Diagnostics> {
         let mut diags = Diagnostics::new();
         let file_path = path.display().to_string();
+        let mut metas: IndexMap<String, TableMeta> = IndexMap::new();
+
+        // Declaration-level coherence is checked once per workbook, before a
+        // sheet is read (E2201).
+        if let Some(message) = self.convention.as_ref().and_then(|c| c.validate().err()) {
+            diags.add(Diagnostic::error(E2201, message).with_source(file_path.clone()));
+            return Err(diags);
+        }
+
+        // A built-in preset has nothing to key columns by when the adapter
+        // generates `col0, col1, ...` names, so it is refused at the workbook
+        // level rather than failing cell by cell (E2201). A script declares
+        // every column name itself and is unaffected.
+        if !self.has_header && self.convention.as_ref().is_some_and(|c| !c.uses_script()) {
+            diags.add(
+                Diagnostic::error(
+                    E2201,
+                    "a preset cannot carry a convention with has_header = false: there is no \
+                     header row to key columns by",
+                )
+                .with_source(file_path.clone()),
+            );
+            return Err(diags);
+        }
 
         let extension = path
             .extension()
@@ -118,8 +171,35 @@ impl ExcelSourceAdapter {
 
         let sheet_names = workbook.sheet_names();
 
+        // A `meta_sheet` workbook keeps its declarations in sibling sheets
+        // named `<sheet>.meta`. Those are convention carriers, not tables, so
+        // they are consumed by the meta sheet they serve and never parsed as
+        // data (§51 Q1). The workbook file name is the key the convention
+        // resolves against.
+        let workbook_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let is_meta_sheet_workbook = self
+            .convention
+            .as_ref()
+            .is_some_and(|c| !c.uses_script() && c.preset_for(&workbook_name) == Preset::MetaSheet);
+        let carriers: HashSet<String> = if is_meta_sheet_workbook {
+            let names: HashSet<&String> = sheet_names.iter().collect();
+            sheet_names
+                .iter()
+                .filter_map(|name| {
+                    let (stem, _) = name.split_once(".meta")?;
+                    names.iter().any(|n| **n == stem).then(|| name.clone())
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
         for sheet_name in &sheet_names {
-            if hidden.contains(sheet_name) {
+            if hidden.contains(sheet_name) || carriers.contains(sheet_name) {
                 continue;
             }
             let range = match workbook.worksheet_range(sheet_name) {
@@ -174,35 +254,34 @@ impl ExcelSourceAdapter {
             // Determine table name from sheet name
             let table_name = Self::sanitize_table_name(sheet_name);
 
-            // Extract headers (a covered header cell takes the anchor's text)
-            let headers = if self.has_header && range.height() > self.header_row {
-                let header_row = range.rows().nth(self.header_row).unwrap();
-                header_row
-                    .iter()
-                    .enumerate()
-                    .map(|(col_idx, cell)| {
-                        let cell = Self::resolve_cell(
-                            &range,
-                            &merge_anchors,
-                            self.header_row,
-                            col_idx,
-                            cell,
-                        );
-                        let val = Self::cell_to_string(cell);
-                        if val.trim().is_empty() {
-                            format!("col{}", range_start.1 as usize + col_idx)
-                        } else {
-                            val.trim().to_string()
-                        }
-                    })
-                    .collect::<Vec<String>>()
+            // Convention (§51): the script path needs the sheet grid before
+            // any header row is known, so it runs first and may place the
+            // data header row itself; a preset decodes the territory its
+            // location chooses. With no declaration both are no-ops and the
+            // data plane keeps exactly its configured header row.
+            let configured_headers = if self.convention.is_some() {
+                Self::headers_at(&range, &merge_anchors, self.header_row, self.has_header)
             } else {
-                // Generate column names from the absolute column index (col2 ↔ C)
-                let width = range.width();
-                (0..width)
-                    .map(|i| format!("col{}", range_start.1 as usize + i))
-                    .collect()
+                Vec::new()
             };
+            let convention_meta = self.resolve_convention(
+                &mut diags,
+                &mut workbook,
+                path,
+                &file_path,
+                sheet_name,
+                &table_name,
+                &range,
+                &merge_anchors,
+                &configured_headers,
+            );
+            let data_header_row = convention_meta
+                .as_ref()
+                .map_or(self.header_row, |meta| meta.header_row);
+
+            // Extract headers (a covered header cell takes the anchor's text)
+            let headers =
+                Self::headers_at(&range, &merge_anchors, data_header_row, self.has_header);
 
             let mut table = Table {
                 name: table_name.clone(),
@@ -214,7 +293,7 @@ impl ExcelSourceAdapter {
 
             // Process data rows
             let start_row = if self.has_header {
-                self.header_row + 1
+                data_header_row + 1
             } else {
                 0
             };
@@ -288,6 +367,9 @@ impl ExcelSourceAdapter {
             if !table.rows.is_empty() || !headers.is_empty() {
                 doc.add_table(table);
             }
+            if let Some(meta) = convention_meta {
+                metas.insert(table_name.clone(), meta);
+            }
         }
 
         if doc.tables.is_empty() {
@@ -300,8 +382,305 @@ impl ExcelSourceAdapter {
         if diags.has_errors() {
             Err(diags)
         } else {
-            Ok(doc)
+            Ok((doc, metas))
         }
+    }
+
+    /// Resolve the convention for one sheet (design §51): a script adapter
+    /// (subprocess, E2203–E2207) or a built-in preset, both decoded into the
+    /// same [`TableMeta`]. Returns `None` and appends diagnostics on
+    /// failure. `configured_headers` is the configured header row's names,
+    /// used to validate a script's or a meta sheet's column declarations
+    /// (E2207).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_convention<RS>(
+        &self,
+        diags: &mut Diagnostics,
+        workbook: &mut Sheets<RS>,
+        path: &Path,
+        file_path: &str,
+        sheet_name: &str,
+        table_name: &str,
+        range: &Range<Data>,
+        merge_anchors: &HashMap<(u32, u32), (u32, u32)>,
+        configured_headers: &[String],
+    ) -> Option<TableMeta>
+    where
+        RS: std::io::Read + std::io::Seek,
+    {
+        let convention = self.convention.as_ref()?;
+
+        // Script adapter (Q2): the grid goes to the script, the response is
+        // gated by the contract and the vocabulary table.
+        if convention.uses_script() {
+            let script = convention.script.as_deref()?;
+            let Some(root) = &self.project_root else {
+                diags.add(
+                    Diagnostic::error(
+                        E2203,
+                        format!(
+                            "{E2203} a script adapter is declared but cage was not given the \
+                             project root to resolve it against"
+                        ),
+                    )
+                    .with_source(file_path.to_string()),
+                );
+                return None;
+            };
+            let grid = Self::grid_of(range, merge_anchors);
+            let request = json!({
+                "contract": CONTRACT_VERSION,
+                "workbook": path
+                    .strip_prefix(root)
+                    .map_or_else(|_| path.to_path_buf(), Path::to_path_buf)
+                    .display()
+                    .to_string(),
+                "sheet": sheet_name,
+                "header_row": self.header_row,
+                "grid": grid
+                    .iter()
+                    .map(|row| row.iter().map(Self::cell_to_json).collect::<Vec<_>>())
+                    .collect::<Vec<_>>(),
+                "config": convention.script_config,
+            });
+            let value = match run_script(
+                root,
+                script,
+                &convention.script_args,
+                std::time::Duration::from_secs(convention.script_timeout_secs.max(1)),
+                &request,
+            ) {
+                Ok(value) => value,
+                Err(d) => {
+                    for d in &d {
+                        diags.add(d.clone());
+                    }
+                    return None;
+                }
+            };
+            return match parse_response(
+                &value,
+                table_name,
+                configured_headers,
+                file_path,
+                sheet_name,
+            ) {
+                Ok(meta) => Some(meta),
+                Err(d) => {
+                    for d in &d {
+                        diags.add(d.clone());
+                    }
+                    None
+                }
+            };
+        }
+
+        // Built-in presets (Q1): the territory is a location, not a rule.
+        let workbook_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let preset = convention.preset_for(workbook_name);
+        let grid = Self::grid_of(range, merge_anchors);
+        let range_start = range.start().unwrap_or((0, 0));
+        let (territory, meta_grid, meta_row0, meta_col0, meta_sheet): (
+            Vec<usize>,
+            Option<Grid>,
+            usize,
+            usize,
+            Option<String>,
+        ) = match preset {
+            Preset::Data => return None,
+            Preset::MarkerRows => (
+                (0..self.header_row.min(grid.len())).collect(),
+                None,
+                0,
+                0,
+                None,
+            ),
+            Preset::HeaderBlock => {
+                let mut start = self.header_row.min(grid.len());
+                while start > 0 && grid[start - 1].iter().any(|c| !c.text().is_empty()) {
+                    start -= 1;
+                }
+                (
+                    (start..self.header_row.min(grid.len())).collect(),
+                    None,
+                    0,
+                    0,
+                    None,
+                )
+            }
+            Preset::MetaSheet => {
+                let meta_name = format!("{sheet_name}.meta");
+                let meta_range = match workbook.worksheet_range(&meta_name) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        diags.add(
+                            Diagnostic::error(
+                                E2201,
+                                format!(
+                                    "{E2201} meta sheet {meta_name:?} for {sheet_name:?} could \
+                                     not be read: {e:?}"
+                                ),
+                            )
+                            .with_source(file_path.to_string()),
+                        );
+                        return None;
+                    }
+                };
+                let meta_grid = Self::grid_of(&meta_range, &HashMap::new());
+                let meta_start = meta_range.start().unwrap_or((0, 0));
+
+                // The meta sheet's first row names the columns and must agree
+                // with the data header row (E2207); the rows below are the
+                // declarations.
+                if let Some(names) = meta_grid.first() {
+                    for (i, cell) in names.iter().enumerate() {
+                        let name = cell.text();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        if !configured_headers.iter().any(|h| h == &name) {
+                            let loc = SourceLocation::new(file_path)
+                                .with_format("excel")
+                                .with_sheet(meta_name.clone())
+                                .with_row(meta_start.0 as usize + 1)
+                                .with_column(cage_core::convention::col_index_to_letter(i));
+                            diags.add_error(
+                                E2207,
+                                format!(
+                                    "{E2207} meta sheet {meta_name:?} names column {name:?}, which \
+                                     is not in the data header row",
+                                ),
+                                loc,
+                            );
+                        }
+                    }
+                }
+                (
+                    (1..meta_grid.len()).collect(),
+                    Some(meta_grid),
+                    meta_start.0 as usize,
+                    meta_start.1 as usize,
+                    Some(meta_name),
+                )
+            }
+        };
+
+        let decoded = if let Some(meta_grid) = meta_grid.as_ref() {
+            decode(
+                meta_grid,
+                0,
+                &territory,
+                meta_row0,
+                meta_col0,
+                &convention.marker,
+                file_path,
+                meta_sheet.as_deref().unwrap_or(sheet_name),
+            )
+        } else {
+            decode(
+                &grid,
+                self.header_row,
+                &territory,
+                range_start.0 as usize,
+                range_start.1 as usize,
+                &convention.marker,
+                file_path,
+                sheet_name,
+            )
+        };
+        match decoded {
+            Ok(meta) if meta.is_empty() => None,
+            Ok(meta) => Some(meta),
+            Err(d) => {
+                for d in &d {
+                    diags.add(d.clone());
+                }
+                None
+            }
+        }
+    }
+
+    /// The sheet grid as the convention sees it: merge-resolved, and one
+    /// [`CellValue`] per cell in the contract's shape.
+    fn grid_of(range: &Range<Data>, merge_anchors: &HashMap<(u32, u32), (u32, u32)>) -> Grid {
+        range
+            .rows()
+            .enumerate()
+            .map(|(row_idx, row)| {
+                row.iter()
+                    .enumerate()
+                    .map(|(col_idx, cell)| {
+                        Self::cell_to_contract_value(Self::resolve_cell(
+                            range,
+                            merge_anchors,
+                            row_idx,
+                            col_idx,
+                            cell,
+                        ))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Column names at a header row, the same resolution the data plane has
+    /// always used (covered cells take the merge anchor's text, empty names
+    /// fall back to `col<n>` on the absolute column index).
+    fn headers_at(
+        range: &Range<Data>,
+        merge_anchors: &HashMap<(u32, u32), (u32, u32)>,
+        header_row: usize,
+        has_header: bool,
+    ) -> Vec<String> {
+        let range_start = range.start().unwrap_or((0, 0));
+        if has_header && range.height() > header_row {
+            let row = range.rows().nth(header_row).unwrap();
+            row.iter()
+                .enumerate()
+                .map(|(col_idx, cell)| {
+                    let cell = Self::resolve_cell(range, merge_anchors, header_row, col_idx, cell);
+                    let val = Self::cell_to_string(cell);
+                    if val.trim().is_empty() {
+                        format!("col{}", range_start.1 as usize + col_idx)
+                    } else {
+                        val.trim().to_string()
+                    }
+                })
+                .collect()
+        } else {
+            let width = range.width();
+            (0..width)
+                .map(|i| format!("col{}", range_start.1 as usize + i))
+                .collect()
+        }
+    }
+
+    /// One contract cell: the raw text, number, or boolean — no type
+    /// inference, no trimming (the convention layer decides what a cell
+    /// says). Dates render the way the data plane renders them.
+    fn cell_to_contract_value(cell: &Data) -> CellValue {
+        match cell {
+            Data::Empty => CellValue::Null,
+            Data::Float(f) => {
+                if f.is_nan() || f.is_infinite() {
+                    CellValue::Str(f.to_string())
+                } else {
+                    CellValue::Float(*f)
+                }
+            }
+            Data::Int(i) => CellValue::Int(*i),
+            Data::Bool(b) => CellValue::Bool(*b),
+            Data::Error(e) => CellValue::Str(format!("#ERROR: {e:?}")),
+            Data::DateTime(dt) => CellValue::Str(format!("{dt:?}")),
+            Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => {
+                CellValue::Str(s.clone())
+            }
+        }
+    }
+
+    /// [`CellValue`] as the contract JSON sends it.
+    fn cell_to_json(cell: &CellValue) -> JsonValue {
+        serde_json::to_value(cell).unwrap_or(JsonValue::Null)
     }
 
     fn cell_to_cage_value(cell: &Data) -> Value {
@@ -462,6 +841,8 @@ impl SourceAdapter for ExcelSourceAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cage_core::error::codes::source_convention::{E2202, E2204, E2205, E2206};
+    use cage_core::schema::FieldType;
     use cage_core::value::Value;
     use std::path::PathBuf;
 
@@ -772,9 +1153,13 @@ mod tests {
 
     impl TempWorkbook {
         fn new(bytes: &[u8], file_name: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
             let path = std::env::temp_dir().join(format!(
-                "cage_excel_{}_{}",
+                "cage_excel_{}_{}_{}",
                 std::process::id(),
+                nanos,
                 file_name
             ));
             std::fs::write(&path, bytes).expect("temp workbook write");
@@ -1158,5 +1543,637 @@ mod tests {
         let adapter = ExcelSourceAdapter::default();
         let doc = SourceAdapter::parse_file(&adapter, &path).expect("fixture must parse");
         assert!(doc.tables.contains_key("Items"));
+    }
+
+    // ---- Meta-row convention (X1, design §51) ------------------------------
+    //
+    // The presets read declarations from where the author put them. The
+    // workbooks are built with the helpers above so the fixtures are inline
+    // bytes — no generated file to check in, no OS-specific reader.
+
+    /// A worksheet part from a 2-D array of cell texts; an empty string omits
+    /// the cell, so a genuinely absent row or cell is representable.
+    fn sheet_xml(rows: &[&[&str]], first_row: u32, dimension: &str) -> String {
+        use std::fmt::Write as _;
+        let mut xml = String::from(concat!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+        ));
+        let _ = write!(xml, "<dimension ref=\"{dimension}\"/>");
+        let _ = write!(xml, "<sheetData>");
+        for (i, row) in rows.iter().enumerate() {
+            let r = first_row + i as u32;
+            let _ = write!(xml, "<row r=\"{r}\">");
+            for (j, text) in row.iter().enumerate() {
+                if text.is_empty() {
+                    continue;
+                }
+                let col = ExcelSourceAdapter::col_index_to_letter(j);
+                let _ = write!(
+                    xml,
+                    "<c r=\"{col}{r}\" t=\"inlineStr\"><is><t>{text}</t></is></c>",
+                    text = xml_escape(text),
+                );
+            }
+            let _ = write!(xml, "</row>");
+        }
+        let _ = write!(xml, "</sheetData></worksheet>");
+        xml
+    }
+
+    fn xml_escape(text: &str) -> String {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+
+    /// A workbook with a Luban-style meta block: three declaration rows, the
+    /// data header at row index 3, one data row.
+    fn skill_workbook() -> TempWorkbook {
+        let sheet = sheet_xml(
+            &[
+                &["##type Int32", "String", "Enum<Rarity>"][..],
+                &["##description", "武器名", "稀有度"][..],
+                &["##enum", "", "common,rare,epic"][..],
+                &["id", "name", "rarity"][..],
+                &["1", "sword", "common"][..],
+            ],
+            1,
+            "A1:C5",
+        );
+        TempWorkbook::new(&minimal_xlsx(Some(&sheet)), "skill.xlsx")
+    }
+
+    /// The convention gate: with no `[source.excel]` declaration
+    /// declaration rows are ordinary data, exactly as before.
+    #[test]
+    fn test_convention_off_keeps_meta_rows_as_data() {
+        let wb = skill_workbook();
+        let adapter = ExcelSourceAdapter::default();
+
+        let doc = adapter.parse_file(wb.path()).expect("workbook parses");
+        let (table_name, table) = doc.tables.first().expect("one table");
+        assert_eq!(table_name, "Data");
+        assert_eq!(
+            table.rows.len(),
+            4,
+            "the header row and every row below are data"
+        );
+        // The `##type Int32` row is the header row and the `##description`
+        // row is ordinary data — nothing was decoded, nothing was dropped.
+        assert!(
+            table.rows[0]
+                .fields
+                .values()
+                .any(|v| v.value == Value::String("##description".to_string())),
+            "declaration text is ordinary data with no convention declared"
+        );
+        assert!(
+            table.rows[1]
+                .fields
+                .values()
+                .any(|v| v.value == Value::String("common,rare,epic".to_string())),
+            "the enum row is data too"
+        );
+    }
+
+    /// Preset B: every row above the header is a declaration row.
+    #[test]
+    fn test_marker_rows_preset_decodes_types_descriptions_and_enums() {
+        let wb = skill_workbook();
+        let adapter = ExcelSourceAdapter {
+            header_row: 3,
+            convention: Some(ExcelConvention {
+                preset: Preset::MarkerRows,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let (doc, metas) = adapter
+            .parse_file_with_meta(wb.path())
+            .expect("convention decodes");
+        let table = doc
+            .tables
+            .get("Data")
+            .expect("the data table is still there");
+        assert_eq!(table.rows.len(), 1, "only the row below the header is data");
+        assert_eq!(
+            table.rows[0].fields.get("name").unwrap().value,
+            Value::String("sword".to_string())
+        );
+
+        let meta = metas.get("Data").expect("metadata for the table");
+        assert_eq!(meta.header_row, 3);
+        let id = meta.columns.get("id").expect("id declared");
+        assert_eq!(id.cell, "A1");
+        assert_eq!(id.field_type, Some(FieldType::Int32));
+        assert_eq!(id.description, None);
+        let name = meta.columns.get("name").expect("name declared");
+        assert_eq!(name.cell, "B1");
+        assert_eq!(name.field_type, Some(FieldType::String));
+        assert_eq!(name.description.as_deref(), Some("武器名"));
+        let rarity = meta.columns.get("rarity").expect("rarity declared");
+        assert_eq!(rarity.cell, "C1");
+        assert_eq!(
+            rarity.field_type,
+            Some(FieldType::Enum("Rarity".to_string()))
+        );
+        assert_eq!(
+            rarity.enum_values.as_deref(),
+            Some(["common", "rare", "epic"].map(String::from).as_slice())
+        );
+    }
+
+    /// Preset A: only the contiguous non-empty run immediately above the
+    /// header row is read — a blank separator row ends the block.
+    #[test]
+    fn test_header_block_preset_stops_at_the_blank_row() {
+        let sheet = sheet_xml(
+            &[
+                &["##description", "序号说明", "名称说明"][..],
+                &["", "", ""][..],
+                &["##type Float64", "Float64", ""][..],
+                &["id", "name", "note"][..],
+                &["1", "x", ""][..],
+            ],
+            1,
+            "A1:C5",
+        );
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(&sheet)), "item.xlsx");
+        let adapter = ExcelSourceAdapter {
+            header_row: 3,
+            convention: Some(ExcelConvention {
+                preset: Preset::HeaderBlock,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let (doc, metas) = adapter
+            .parse_file_with_meta(wb.path())
+            .expect("convention decodes");
+
+        let meta = metas.get("Data").expect("metadata for the table");
+        let id = meta.columns.get("id").expect("id declared");
+        assert_eq!(
+            id.field_type,
+            Some(FieldType::Float64),
+            "the block directly above the header"
+        );
+        assert_eq!(
+            id.description, None,
+            "the description row past the blank row is not in the block"
+        );
+        let table = doc.tables.get("Data").expect("data table");
+        assert_eq!(table.rows.len(), 1);
+    }
+
+    /// Preset C: the sibling `<sheet>.meta` sheet carries the declarations and
+    /// is never parsed as a table.
+    #[test]
+    fn test_meta_sheet_preset_reads_the_sibling_and_skips_it() {
+        let data = sheet_xml(
+            &[&["id", "name", "rarity"][..], &["1", "sword", "common"][..]],
+            1,
+            "A1:C2",
+        );
+        let meta_sheet = sheet_xml(
+            &[
+                &["id", "name", "rarity"][..],
+                &["##type Int32", "String", "Enum<Rarity>"][..],
+                &["##description", "武器名", "稀有度"][..],
+                &["##enum", "", "common,rare,epic"][..],
+            ],
+            1,
+            "A1:C4",
+        );
+        let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Skill" sheetId="1" r:id="rId1"/><sheet name="Skill.meta" sheetId="2" r:id="rId2"/></sheets></workbook>"#;
+        let wb = TempWorkbook::new(
+            &minimal_xlsx_with_workbook(
+                workbook,
+                &[("sheet1.xml", &data), ("sheet2.xml", &meta_sheet)],
+            ),
+            "meta.xlsx",
+        );
+        let adapter = ExcelSourceAdapter {
+            convention: Some(ExcelConvention {
+                preset: Preset::MetaSheet,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let (doc, metas) = adapter
+            .parse_file_with_meta(wb.path())
+            .expect("convention decodes");
+
+        assert!(doc.tables.contains_key("Skill"));
+        assert!(
+            !doc.tables.contains_key("Skill.meta"),
+            "the meta sheet is a carrier, not a table"
+        );
+        let meta = metas.get("Skill").expect("metadata for the table");
+        let id = meta.columns.get("id").expect("id declared");
+        assert_eq!(id.field_type, Some(FieldType::Int32));
+        let name = meta.columns.get("name").expect("name declared");
+        assert_eq!(name.description.as_deref(), Some("武器名"));
+        let rarity = meta.columns.get("rarity").expect("rarity declared");
+        assert_eq!(
+            rarity.enum_values.as_deref(),
+            Some(["common", "rare", "epic"].map(String::from).as_slice())
+        );
+    }
+
+    /// The meta sheet's name row must agree with the data header row.
+    #[test]
+    fn test_meta_sheet_name_row_mismatch_is_e2207() {
+        let data = sheet_xml(&[&["id", "name"][..], &["1", "x"][..]], 1, "A1:B2");
+        let meta_sheet = sheet_xml(
+            &[
+                &["id", "name", "ghost"][..],
+                &["##type Int32", "String", "Float64"][..],
+            ],
+            1,
+            "A1:C2",
+        );
+        let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Skill" sheetId="1" r:id="rId1"/><sheet name="Skill.meta" sheetId="2" r:id="rId2"/></sheets></workbook>"#;
+        let wb = TempWorkbook::new(
+            &minimal_xlsx_with_workbook(
+                workbook,
+                &[("sheet1.xml", &data), ("sheet2.xml", &meta_sheet)],
+            ),
+            "mismatch.xlsx",
+        );
+        let adapter = ExcelSourceAdapter {
+            convention: Some(ExcelConvention {
+                preset: Preset::MetaSheet,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert!(diags.errors().iter().any(|d| d.code == E2207));
+        assert!(
+            diags
+                .errors()
+                .iter()
+                .any(|d| d.message.contains("ghost")
+                    && d.message.contains("not in the data header row")),
+            "{:?}",
+            diags
+                .errors()
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A declaration cell is reported where the author put it: cell anchor in
+    /// the message and in the location.
+    #[test]
+    fn test_convention_violation_is_anchored_to_the_cell() {
+        let sheet = sheet_xml(
+            &[
+                &["##type Int32", "String"][..],
+                &["name", "##description", "x"][..],
+                &["id", "name"][..],
+            ],
+            1,
+            "A1:C3",
+        );
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(&sheet)), "broken.xlsx");
+        let adapter = ExcelSourceAdapter {
+            header_row: 2,
+            convention: Some(ExcelConvention {
+                preset: Preset::MarkerRows,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert!(diags.errors().iter().all(|d| d.code == E2201));
+        let errors = diags.errors();
+        let hit = errors
+            .iter()
+            .find(|d| d.message.contains("A2"))
+            .expect("anchored error");
+        assert!(
+            hit.message.contains("before any keyword"),
+            "{:?}",
+            hit.message
+        );
+        let location = hit.location.as_ref().expect("cell location");
+        assert_eq!(location.sheet.as_deref(), Some("Data"));
+        assert_eq!(location.column.as_deref(), Some("A"));
+        assert_eq!(location.row, Some(2));
+        assert!(hit.source.contains("broken.xlsx"));
+    }
+
+    // ---- Script adapter (X1, §51 Q2) ---------------------------------------
+    //
+    // The subprocess contract, exercised with a real script. The script is a
+    // repository file with a shebang, so nothing looks anything up on $PATH.
+    // Windows cannot exec a shebang script; the same tests stand behind
+    // `cfg(unix)` and a Windows project invokes a `.cmd`/`.bat` launcher,
+    // which is a repository file too (contract §"script").
+
+    /// Where python is; the script fixture uses `#!/usr/bin/env python3`.
+    fn python() -> Option<String> {
+        for candidate in ["python3", "python"] {
+            if std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+            {
+                return Some(candidate.to_string());
+            }
+        }
+        None
+    }
+
+    /// A throwaway project root: `tools/` for scripts, a workbook inside it,
+    /// so a declared script path stays inside the root (§51 Q2).
+    struct TempRoot(PathBuf);
+
+    impl TempRoot {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let path = std::env::temp_dir().join(format!(
+                "cage_convention_{}_{}_{}",
+                std::process::id(),
+                nanos,
+                tag
+            ));
+            std::fs::create_dir_all(path.join("tools")).expect("tools dir");
+            Self(path)
+        }
+
+        fn write_script(&self, rel: &str, body: &str) -> PathBuf {
+            let path = self.0.join(rel);
+            std::fs::write(&path, body).expect("script write");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mut perms = std::fs::metadata(&path)
+                    .expect("script metadata")
+                    .permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&path, perms).expect("script chmod");
+            }
+            path
+        }
+
+        /// One data sheet: a header row and one row.
+        fn workbook(&self, name: &str) -> PathBuf {
+            let sheet = sheet_xml(&[&["id", "name"][..], &["1", "x"][..]], 1, "A1:B2");
+            let path = self.0.join(name);
+            std::fs::write(&path, minimal_xlsx(Some(&sheet))).expect("workbook write");
+            path
+        }
+
+        fn adapter(&self, script: &str, timeout: u64) -> ExcelSourceAdapter {
+            ExcelSourceAdapter {
+                header_row: 0,
+                convention: Some(ExcelConvention {
+                    script: Some(script.to_string()),
+                    script_timeout_secs: timeout,
+                    ..Default::default()
+                }),
+                project_root: Some(self.0.clone()),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The script the contract tests point at: it reads the request, checks
+    /// the contract version, and answers two columns.
+    const META_SCRIPT: &str = r#"#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+assert request["contract"] == "cage.excel-meta/1", request["contract"]
+response = {
+    "contract": "cage.excel-meta/1",
+    "table": request["sheet"],
+    "header_row": request["header_row"],
+    "columns": {
+        "id": {"cell": "A1", "type": {"kind": "Int32"}, "required": True},
+        "name": {"cell": "B1", "type": {"kind": "String"}, "description": "武器名"},
+    },
+}
+print(json.dumps(response, ensure_ascii=False))
+"#;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_script_contract_delivers_metadata() {
+        if python().is_none() {
+            eprintln!("skip: no python interpreter");
+            return;
+        }
+
+        let root = TempRoot::new("ok");
+        let path = root.write_script("tools/meta.py", META_SCRIPT);
+        let wb = root.workbook("Data.xlsx");
+
+        let (doc, metas) = root
+            .adapter("tools/meta.py", 10)
+            .parse_file_with_meta(&wb)
+            .expect("the contract round-trips");
+
+        assert!(doc.tables.contains_key("Data"));
+        let meta = metas.get("Data").expect("metadata for the table");
+        let id = meta.columns.get("id").expect("id declared");
+        assert_eq!(id.cell, "A1");
+        assert_eq!(id.field_type, Some(FieldType::Int32));
+        assert_eq!(id.required, Some(true));
+        let name = meta.columns.get("name").expect("name declared");
+        assert_eq!(name.field_type, Some(FieldType::String));
+        assert_eq!(name.description.as_deref(), Some("武器名"));
+        assert!(
+            path.exists(),
+            "the fixture still stands until it is dropped"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_script_will_not_start_is_e2203() {
+        for missing in [
+            "tools/absent.py",
+            "/absent/meta.py",
+            "tools/../tools/meta.py",
+        ] {
+            let root = TempRoot::new(&format!("missing_{}", root_tag(missing)));
+            let wb = root.workbook("Data.xlsx");
+            let diags = root.adapter(missing, 10).parse_file(&wb).unwrap_err();
+            assert!(diags.errors().iter().any(|d| d.code == E2203), "{missing}");
+        }
+    }
+
+    /// A built-in preset cannot work without a header row to key columns by:
+    /// workbook-level E2201, before any cell is read.
+    #[test]
+    fn test_preset_without_a_header_row_is_e2201() {
+        let wb = TempWorkbook::new(&minimal_xlsx(None), "headerless.xlsx");
+        let adapter = ExcelSourceAdapter {
+            has_header: false,
+            convention: Some(ExcelConvention {
+                preset: Preset::HeaderBlock,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert_eq!(diags.errors().len(), 1, "{:?}", diags.errors());
+        let d = &diags.errors()[0];
+        assert_eq!(d.code, E2201);
+        assert!(d.message.contains("has_header = false"), "{}", d.message);
+    }
+
+    /// A declared script name that is not a file inside the root is refused.
+    fn root_tag(missing: &str) -> String {
+        missing
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_script_timeout_is_e2204() {
+        if python().is_none() {
+            eprintln!("skip: no python interpreter");
+            return;
+        }
+
+        let root = TempRoot::new("timeout");
+        root.write_script(
+            "tools/slow.py",
+            "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\nprint('{}')\n",
+        );
+        let wb = root.workbook("Data.xlsx");
+
+        let diags = root
+            .adapter("tools/slow.py", 1)
+            .parse_file(&wb)
+            .unwrap_err();
+        assert!(diags.errors().iter().any(|d| d.code == E2204), "{diags:?}");
+        assert!(
+            diags
+                .errors()
+                .iter()
+                .any(|d| d.message.contains("timed out")),
+            "{:?}",
+            diags
+                .errors()
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_script_failure_is_e2205_with_its_stderr() {
+        if python().is_none() {
+            eprintln!("skip: no python interpreter");
+            return;
+        }
+
+        let root = TempRoot::new("crash");
+        root.write_script(
+            "tools/crash.py",
+            "#!/usr/bin/env python3\nimport sys\nprint('authoring went wrong', file=sys.stderr)\nsys.exit(3)\n",
+        );
+        let wb = root.workbook("Data.xlsx");
+
+        let diags = root
+            .adapter("tools/crash.py", 10)
+            .parse_file(&wb)
+            .unwrap_err();
+        assert!(diags.errors().iter().any(|d| d.code == E2205), "{diags:?}");
+        assert!(
+            diags
+                .errors()
+                .iter()
+                .any(|d| d.message.contains("authoring went wrong")),
+            "{:?}",
+            diags
+                .errors()
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_script_bad_output_is_e2206() {
+        if python().is_none() {
+            eprintln!("skip: no python interpreter");
+            return;
+        }
+
+        for (tag, code, script) in [
+            (
+                "garbage",
+                E2206,
+                "#!/usr/bin/env python3\nprint('not json at all')\n",
+            ),
+            (
+                "contract",
+                E2206,
+                "#!/usr/bin/env python3\nimport json, sys\njson.load(sys.stdin)\nprint('{\"contract\": \"cage.excel-meta/9\", \"table\": \"Data\", \"header_row\": 0, \"columns\": {}}')\n",
+            ),
+            (
+                "table",
+                E2207,
+                "#!/usr/bin/env python3\nimport json, sys\njson.load(sys.stdin)\nprint('{\"contract\": \"cage.excel-meta/1\", \"table\": \"Other\", \"header_row\": 0, \"columns\": {\"id\": {\"cell\": \"A1\", \"type\": {\"kind\": \"Int32\"}}}}')\n",
+            ),
+        ] {
+            let root = TempRoot::new(tag);
+            root.write_script("tools/case.py", script);
+            let wb = root.workbook("Data.xlsx");
+
+            let diags = root.adapter("tools/case.py", 10).parse_file(&wb).unwrap_err();
+            assert!(
+                diags.errors().iter().any(|d| d.code == code),
+                "{tag}: {diags:?}"
+            );
+        }
+    }
+
+    /// The response is gated by the Schema vocabulary, not by a whitelist.
+    #[cfg(unix)]
+    #[test]
+    fn test_script_invented_keyword_is_e2202() {
+        if python().is_none() {
+            eprintln!("skip: no python interpreter");
+            return;
+        }
+
+        let root = TempRoot::new("vocabulary");
+        root.write_script(
+            "tools/vocab.py",
+            "#!/usr/bin/env python3\nimport json, sys\njson.load(sys.stdin)\nprint('{\"contract\": \"cage.excel-meta/1\", \"table\": \"Data\", \"header_row\": 0, \"columns\": {\"id\": {\"cell\": \"A1\", \"type\": {\"kind\": \"Int32\"}, \"note\": \"invented\"}}}')\n",
+        );
+        let wb = root.workbook("Data.xlsx");
+
+        let diags = root
+            .adapter("tools/vocab.py", 10)
+            .parse_file(&wb)
+            .unwrap_err();
+        assert!(diags.errors().iter().any(|d| d.code == E2202), "{diags:?}");
     }
 }

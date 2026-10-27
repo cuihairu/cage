@@ -39,6 +39,7 @@
 )]
 
 pub mod assets;
+pub mod convention;
 pub mod diagnostics;
 pub mod edit;
 pub mod error;
