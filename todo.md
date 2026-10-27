@@ -1893,9 +1893,18 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       Python 示例解析脚本、README 双语 capabilities 同步；docs/design.md 红线段更新（「不做
       写回」与「不承载规则」两半的最终口径分开陈述，并记录「约定可配置、不预设用户格式」裁定）。
 
-- [ ] Excel 日期单元格数据面缺陷（2026-10-28 X1 轮发现）：`cell_to_cage_value` 对
+- [x] Excel 日期单元格数据面缺陷（2026-10-28 X1 轮发现）：`cell_to_cage_value` 对
       `Data::DateTime` 走 `format!("{dt:?}")`，产出结构体 dump
       `ExcelDateTime { value: 44927.0, datetime_type: DateTime, is_1904: false }` 进 IR，
       而同函数注释声称「Excel serial date -> ISO string」；`DateTimeIso`/`DurationIso`
       透传字符串反而正确。修复属数据面行为变更（影响既有 IR 字节与快照），须独立裁定
       渲染口径（ISO-8601? 保留序列号?）与迁移路径，不夹带在 X 系列内。
+      证据（commit 347b690，已代决渲染口径=ISO-8601）：`Data::DateTime` 非 duration 渲染
+      naive ISO-8601（Excel 无时区编码；整秒去小数），duration 格式单元格（`[h]:mm:ss`）
+      渲染 ISO-8601 duration 与 `DurationIso` 透传一致；`cell_to_cage_value` 单测
+      （45943.541→2025-10-13T12:59:02.400、整秒、1.5 天→PT36H0M0.000S）与既有
+      `test_cell_to_cage_value_exotic`（44927→2023-01-01T00:00:00，原钉 Debug dump 的
+      断言一并修正）。裁定理由：代码注释自述契约即 ISO、Luban 输出 naive ISO、与
+      `DateTimeIso`/`DurationIso` 透传口径一致；迁移路径=pre-1.0 且 dump 本非可用值，
+      无既有快照依赖（cargo fmt、clippy 0 warning、cage-source-excel 34 绿，
+      2026-10-28）。
