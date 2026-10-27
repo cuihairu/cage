@@ -1806,6 +1806,17 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       0 warning、全量 cargo test 全绿（2026-10-27）。
 - [ ] 回流-5 多级表头/嵌套 bean/多行记录/多态（2026-10-23 定位评审最大空缺，五案例再次
       证实；`crates/cage-source-excel/src/lib.rs:47-54` 仅单行 `header_row`）。
+      设计（commit e5aacee，已代决机制=子列声明行）：docs/design.md §51 Q6 裁定嵌套
+      机制为子列声明行（首个标记单元格为 `+` 的行，每非标记单元格 `<子名>` 在列 C
+      声明其所在列 C 的顶层列的一个子列，Q5 保留——`Object` 仍无类型单元格写法，
+      类型由子列行隐含）；`ColumnMeta.sub_columns`（默认空，严格增量，脚本契约
+      v1 不变）；数据面 `parse_file_with_meta` 行装配查阅子列分组为嵌套
+      `Value::Object`。实现前置未决：五案例 Luban fixture 的 `##var`/`##+`/`##type`
+      标记行位于字段名行及其下，X1 预设领地严格在 `header_row` 之上
+      （`marker_rows` = `0..header_row`）读不到该形状——需先单独裁定领地模型
+      （(a) `##var` 行作数据表头行且领地含其下至首个纯数据行 / (b) 数据表头行在
+      `##var` 行之上），它触碰 Q4「内置预设档从不移动数据表头行」，故留作
+      回流-5 第一个实现决策。多行记录与类型标签多态为后续切片。
 - [x] 回流-6 tagged union 类型：kind + 按分支载荷的类型安全表达（多态配置只能 enum+`Any`
       负载列，类型安全丢失）。
       证据（commit cd2858c，已代决 ①代码目标先按运行时形状渲染为通用 map/dict/table，
