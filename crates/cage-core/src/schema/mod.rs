@@ -214,6 +214,12 @@ pub struct FieldSchema {
     /// Whether the field must be present
     #[serde(default, skip_serializing_if = "is_false")]
     pub required: bool,
+    /// Whether a present Null (e.g. an Excel empty cell) is a valid value
+    /// (回流-2): the nullable equivalent of Luban's `string?` / `int?` — the
+    /// type check accepts Null without weakening the field to `Any`. A
+    /// nullable reference field should also use `cardinality: optional`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nullable: bool,
     /// Default value applied when absent
     pub default: Option<serde_json::Value>,
     // Numeric constraints
@@ -666,6 +672,7 @@ mod tests {
                 field_type: FieldType::UInt32,
                 description: None,
                 required: true,
+                nullable: false,
                 default: None,
                 min: None,
                 max: None,
@@ -710,6 +717,7 @@ mod tests {
                 field_type: FieldType::UInt32,
                 description: None,
                 required: true,
+                nullable: false,
                 default: None,
                 min: None,
                 max: None,
@@ -747,6 +755,7 @@ mod tests {
                 field_type: FieldType::UInt32,
                 description: None,
                 required: true,
+                nullable: false,
                 default: None,
                 min: None,
                 max: None,
@@ -772,6 +781,7 @@ mod tests {
                 field_type: FieldType::UInt32,
                 description: None,
                 required: true,
+                nullable: false,
                 default: None,
                 min: None,
                 max: None,
@@ -1340,6 +1350,7 @@ enums: {}
         let field = |name: &str, required: bool| FieldSchema {
             name: name.to_string(),
             field_type: FieldType::Int32,
+            nullable: false,
             description: None,
             required,
             default: None,

@@ -249,6 +249,41 @@ fn excel_empty_cell_fills_schema_default() {
 }
 
 #[test]
+fn excel_nullable_field_accepts_empty_cell() {
+    // 回流-2: an Excel empty cell collapses to Null, and a `nullable: true`
+    // typed field accepts it — the build succeeds without weakening the type
+    // to Any. `note` is empty in every row of `data-nullable.xlsx`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(root.join("cage.toml"), CAGE_TOML).unwrap();
+    // common-schema with `note` made nullable.
+    let schema = fs::read_to_string(fixtures().join("common-schema.yaml"))
+        .unwrap()
+        .replace(
+            "note: { name: note, type: { kind: String } }",
+            "note: { name: note, type: { kind: String }, nullable: true }",
+        );
+    fs::write(root.join("schemas/item.yaml"), schema).unwrap();
+    fs::copy(
+        fixtures().join("data-nullable.xlsx"),
+        root.join("config/data.xlsx"),
+    )
+    .unwrap();
+    fs::copy(fixtures().join("Drop.json"), root.join("config/Drop.json")).unwrap();
+
+    let (ok, out) = run_build(&root);
+    assert!(ok, "nullable empty-cell build failed:\n{out}");
+    let text = String::from_utf8(read_artifact(&root, "Item")).unwrap();
+    assert!(
+        text.contains(r#""note": null"#),
+        "nullable note must stay null, got:\n{text}"
+    );
+    assert!(!text.contains("E1101"), "unexpected E1101 in\n{text}");
+}
+
+#[test]
 fn default_flows_from_schema_to_code_target_while_ir_keeps_explicit_value() {
     // Data IR: the common-core parity test pins `tier: 3` explicitly from all
     // three sources. The schema default is the authoring contract the code

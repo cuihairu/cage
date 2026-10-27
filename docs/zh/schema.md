@@ -107,7 +107,8 @@ validation）、`cardinality`
 | --- | --- |
 | `type` | 字段类型（见上表，`{ kind: X }` 形态） |
 | `required` | 必填（缺失报 `E1001`） |
-| `default` | 声明缺省值；当前用于 `E9006` 可见性豁免与生成代码的成员初始值，**数据行缺失该字段仍按 `E1001` 报错**（不做数据回填） |
+| `nullable` | 接受存在的 `null`（如 Excel 空单元格），无需把类型放宽为 `Any`；`nullable` 引用字段应同时用 `cardinality: optional` |
+| `default` | 声明缺省值。构建期**回填**缺失键或存在的 `null`（Excel 空单元格），带缺省值的字段必带值；亦用于 `E9006` 可见性豁免与生成代码的成员初始值 |
 | `min` / `max` | 数值范围（`E1201`） |
 | `min_length` / `max_length` | 字符串长度范围（`E1201`） |
 | `pattern` | 字符串须匹配的正则（`E1203`）。注意：写 `regex:` 会被当作自定义元数据**静默忽略** |

@@ -120,7 +120,8 @@ types pass their parameter in `value`); the lower-case scalar form
 | --- | --- |
 | `type` | Field type (see table above, `{ kind: X }` form) |
 | `required` | Required (missing reports `E1001`) |
-| `default` | Declares a default value; currently used for the `E9006` visibility exemption and for member initial values in generated code. **A data row missing the field still reports `E1001`** (no data backfill) |
+| `nullable` | Accepts a present `null` (e.g. an Excel empty cell) without weakening the type to `Any`; a `nullable` reference field should also use `cardinality: optional` |
+| `default` | Declares a default value. **Backfills** a missing key or a present `null` (Excel empty cell) during build, so a field with a default always carries it; also used for the `E9006` visibility exemption and member initial values in generated code |
 | `min` / `max` | Numeric range (`E1201`) |
 | `min_length` / `max_length` | String length range (`E1201`) |
 | `pattern` | Regex a string must match (`E1203`). Note: writing `regex:` is treated as custom metadata and **silently ignored** |

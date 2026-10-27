@@ -384,6 +384,7 @@ impl JsonSchemaTargetGenerator {
             field_type: field_type.clone(),
             description: None,
             required: false,
+            nullable: false,
             default: None,
             min: None,
             max: None,

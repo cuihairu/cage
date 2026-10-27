@@ -1044,6 +1044,7 @@ mod tests {
             field_type: FieldType::UInt32,
             description: None,
             required: false,
+            nullable: false,
             default: None,
             min: None,
             max: None,

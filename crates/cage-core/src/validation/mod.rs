@@ -447,7 +447,11 @@ fn validate_type(ctx: &mut ValidationContext) {
                     continue; // Unknown field, already warned in L1
                 };
 
-                if value_matches_type(&typed_value.value, &field_schema.field_type) {
+                // 回流-2: a nullable field accepts a present Null (Excel empty
+                // cell / explicit null) without weakening the type to Any.
+                let matches = (field_schema.nullable && typed_value.value == Value::Null)
+                    || value_matches_type(&typed_value.value, &field_schema.field_type);
+                if matches {
                     // Store resolved type for later stages
                     // (in practice, we'd mutate typed_value, but it's borrowed)
                 } else {
@@ -1404,6 +1408,7 @@ mod tests {
                 field_type: FieldType::UInt32,
                 description: None,
                 required: true,
+                nullable: false,
                 default: None,
                 min: None,
                 max: None,
@@ -1429,6 +1434,7 @@ mod tests {
                 field_type: FieldType::UInt32,
                 description: None,
                 required: true,
+                nullable: false,
                 default: None,
                 min: Some(0.0),
                 max: Some(10000.0),
@@ -1525,6 +1531,7 @@ mod tests {
             field_type,
             description: None,
             required: false,
+            nullable: false,
             default: None,
             min: None,
             max: None,
@@ -1757,6 +1764,7 @@ mod tests {
             &["id"],
             vec![FieldSchema {
                 required: true,
+                nullable: false,
                 ..plain_field("id", FieldType::UInt32)
             }],
         ));
@@ -1796,10 +1804,12 @@ mod tests {
             vec![
                 FieldSchema {
                     required: true,
+                    nullable: false,
                     ..plain_field("id", FieldType::UInt32)
                 },
                 FieldSchema {
                     required: true,
+                    nullable: false,
                     ..plain_field("name", FieldType::String)
                 },
             ],
@@ -1877,6 +1887,67 @@ mod tests {
             .hint
             .as_deref()
             .is_some_and(|h| h.contains("Int32") && h.contains("got: string")));
+    }
+
+    #[test]
+    fn l2_nullable_field_accepts_null_without_weakening_the_type() {
+        let mut note = plain_field("note", FieldType::String);
+        note.nullable = true;
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![plain_field("id", FieldType::UInt32), note],
+        ));
+        let vs = validated(schema);
+
+        // 回流-2: a present Null is accepted on a nullable typed field.
+        let doc = doc_with(
+            "Item",
+            vec![row(0, &[("id", Value::UInt(1)), ("note", Value::Null)])],
+        );
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        assert_eq!(diags.errors().len(), 0, "nullable null must pass");
+
+        // The type is not weakened: a String value still validates, an Int
+        // still fails E1101.
+        let doc = doc_with(
+            "Item",
+            vec![row(0, &[("id", Value::UInt(1)), ("note", str_val("hi"))])],
+        );
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        assert_eq!(diags.errors().len(), 0, "nullable string must pass");
+
+        let doc = doc_with(
+            "Item",
+            vec![row(0, &[("id", Value::UInt(1)), ("note", Value::Int(7))])],
+        );
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1, "nullable still rejects wrong type");
+        assert_eq!(errors[0].code, type_val::E1101);
+    }
+
+    #[test]
+    fn l2_non_nullable_field_still_rejects_null() {
+        let mut schema = Schema::new();
+        schema.add_table(plain_table(
+            "Item",
+            &["id"],
+            vec![
+                plain_field("id", FieldType::UInt32),
+                plain_field("note", FieldType::String),
+            ],
+        ));
+        let vs = validated(schema);
+        let doc = doc_with(
+            "Item",
+            vec![row(0, &[("id", Value::UInt(1)), ("note", Value::Null)])],
+        );
+        let diags = validate(&vs, &doc, ValidationLevel::Type, false);
+        let errors = diags.errors();
+        assert_eq!(errors.len(), 1, "non-nullable null must fail");
+        assert_eq!(errors[0].code, type_val::E1101);
     }
 
     /// Table used by the map-focused L2 tests: `weights` is `map<int, Int32>`,
