@@ -1806,8 +1806,24 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       0 warning、全量 cargo test 全绿（2026-10-27）。
 - [ ] 回流-5 多级表头/嵌套 bean/多行记录/多态（2026-10-23 定位评审最大空缺，五案例再次
       证实；`crates/cage-source-excel/src/lib.rs:47-54` 仅单行 `header_row`）。
-- [ ] 回流-6 tagged union 类型：kind + 按分支载荷的类型安全表达（多态配置只能 enum+`Any`
+- [x] 回流-6 tagged union 类型：kind + 按分支载荷的类型安全表达（多态配置只能 enum+`Any`
       负载列，类型安全丢失）。
+      证据（commit cd2858c，已代决 ①代码目标先按运行时形状渲染为通用 map/dict/table，
+      逐语言判别联合为后续项 ②Excel 单格位置载荷映射 = Luban `sep="|"` 语义 ③oneOf
+      不相交性已离线验证）：
+      `FieldType::TaggedUnion(Box<TaggedUnion>)` + `TaggedUnion { tag, branches }`
+      （schema/mod.rs，`#[serde(tag="kind", content="value")]` 契约原样承载）；
+      `value_matches_type` 判别值 + 逐键按分支载荷校验、`type_mismatch_hint` 分支渲染
+      （validation/mod.rs）；`coerce_to_type` 的 TaggedUnion 分支载荷强制 + `split_cell_arrays`
+      单格 `sep="|"` 拆 tag+位置载荷、未知分支/载荷数不符整格保持由 L2 报出（normalize/mod.rs，
+      `load_project_impl` 内于填充默认值前执行）；jsonschema 目标出闭式 `oneOf`（tag 键
+      `const` + `required` + `additionalProperties:false`），其余目标出通用运行时形状；
+      单测 `split_cell_arrays_builds_tagged_union_from_single_cell` 与
+      `value_matches_type_covers_every_family`、CLI 测试
+      `json_tagged_union_object_validates` / `excel_single_cell_tagged_union_splits`
+      （data-union.xlsx）、jsonschema `test_tagged_union_oneof`；
+      docs/schema.md + docs/zh/schema.md 增 TaggedUnion 行。cargo fmt、clippy 0 warning、
+      全量 cargo test 全绿（2026-10-27）。
 
 ## Excel 元行规则承载（2026-10-26 用户令：设计重定向）
 
