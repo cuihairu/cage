@@ -709,8 +709,31 @@ impl ExcelSourceAdapter {
             Data::Bool(b) => Value::Bool(*b),
             Data::Error(e) => Value::String(format!("#ERROR: {e:?}")),
             Data::DateTime(dt) => {
-                // Excel serial date -> ISO string
-                Value::String(format!("{dt:?}"))
+                // Excel serial date -> ISO-8601 string (the documented
+                // contract; was accidentally rendering the `ExcelDateTime`
+                // struct dump into the IR).
+                if dt.is_duration() {
+                    // Duration format cell (`[h]:mm:ss`): the serial is a day
+                    // count; render as an ISO-8601 duration to match the
+                    // `DurationIso` passthrough.
+                    let total_ms = (dt.as_f64() * 86_400_000.0).round() as i64;
+                    let (ms, s, m, h) = (
+                        total_ms % 1000,
+                        total_ms / 1000 % 60,
+                        total_ms / 60_000 % 60,
+                        total_ms / 3_600_000,
+                    );
+                    Value::String(format!("PT{h}H{m}M{s}.{ms:03}S"))
+                } else {
+                    let (y, mo, d, h, mi, s, ms) = dt.to_ymd_hms_milli();
+                    if ms == 0 {
+                        Value::String(format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}"))
+                    } else {
+                        Value::String(format!(
+                            "{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{ms:03}"
+                        ))
+                    }
+                }
             }
             Data::DateTimeIso(s) | Data::DurationIso(s) => Value::String(s.clone()),
         }
@@ -873,7 +896,7 @@ mod tests {
 
     #[test]
     fn test_cell_to_cage_value() {
-        use calamine::Data;
+        use calamine::{Data, ExcelDateTime, ExcelDateTimeType};
 
         assert_eq!(
             ExcelSourceAdapter::cell_to_cage_value(&Data::Empty),
@@ -898,6 +921,25 @@ mod tests {
         assert_eq!(
             ExcelSourceAdapter::cell_to_cage_value(&Data::Bool(true)),
             Value::Bool(true)
+        );
+        // Excel serial date -> ISO-8601 (2025/10/13 12:59:02.400 = 45943.541),
+        // not the `ExcelDateTime` struct dump.
+        let dt = ExcelDateTime::new(45943.541, ExcelDateTimeType::DateTime, false);
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::DateTime(dt)),
+            Value::String("2025-10-13T12:59:02.400".to_string())
+        );
+        // Whole-second datetime drops the fractional part.
+        let whole = ExcelDateTime::new(45943.5, ExcelDateTimeType::DateTime, false);
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::DateTime(whole)),
+            Value::String("2025-10-13T12:00:00".to_string())
+        );
+        // Duration format cell renders as an ISO-8601 duration.
+        let dur = ExcelDateTime::new(1.5, ExcelDateTimeType::TimeDelta, false);
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_cage_value(&Data::DateTime(dur)),
+            Value::String("PT36H0M0.000S".to_string())
         );
     }
 
@@ -1470,11 +1512,15 @@ mod tests {
             ExcelSourceAdapter::cell_to_cage_value(&Data::Error(CellErrorType::Div0)),
             Value::String("#ERROR: Div0".to_string())
         );
+        // Serial 44927 (1900 epoch) is 2023-01-01; the ISO-8601 rendering
+        // replaces the old `ExcelDateTime` Debug dump (the data-plane defect
+        // fixed 2026-10-28).
         let dt = ExcelDateTime::new(44_927.0, ExcelDateTimeType::DateTime, false);
         let converted = ExcelSourceAdapter::cell_to_cage_value(&Data::DateTime(dt));
-        assert!(
-            matches!(converted, Value::String(ref s) if s.contains("44927")),
-            "serial date renders as its Debug form: {converted:?}"
+        assert_eq!(
+            converted,
+            Value::String("2023-01-01T00:00:00".to_string()),
+            "serial date renders as ISO-8601: {converted:?}"
         );
         assert_eq!(
             ExcelSourceAdapter::cell_to_cage_value(&Data::DateTimeIso(
