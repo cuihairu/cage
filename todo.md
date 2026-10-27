@@ -1747,7 +1747,7 @@ comment/converters，表处理事实标准）。三个来源均为现役主流�
 Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Excel 内省复用同一
 「内省 → 草稿 → review 采用」理念。
 
-- [ ] X0 约定解析架构定稿（阻塞项，先定稿后动代码）：① 内置预设档清单（A 头行块 /
+- [x] X0 约定解析架构定稿（阻塞项，先定稿后动代码）：① 内置预设档清单（A 头行块 /
       B `##` 标记行 / C meta sheet / 纯数据）与 cage.toml 选择语法；② 自定义脚本适配器契约——
       输入（sheet 网格 + 列坐标 + 配置）、输出（结构化表元数据 JSON，标准词汇表承载，诊断
       须带单元格坐标），执行载体定稿（默认候选：外部子进程语言无关，Python/Node/PS 均可；
@@ -1756,6 +1756,13 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       header_row/has_header 旋钮的关系（显式声明启用，非隐式猜测）。
       产出：docs/design.md 新节 + 脚本契约 JSON Schema + 本条目回填结论。
       验收：四问各有一个可执行答案，无「待定」残留。
+      （2026-10-27 裁定，四问结论定稿：① 一套语法四种预设档 data/header_block/
+      marker_rows/meta_sheet，`[source.excel]` 显式启用、不自动探测；② 载体=外部子进程
+      JSON 契约 cage.excel-meta/1（内嵌运行时否决），脚本字节 blake3 + 路径 + script_config
+      + 契约版本入源指纹；③ E2201–E2207，两侧同码、列级带 A1 锚点；④ 四旋钮原义原默认，
+      元行区间在 header_row 之上计算，无声明=逐字节照旧。词汇沿用 Schema DSL 11 字段名
+      零新词；v1 收口列级，约定不承载规则语义。docs/design.md §51 + zh §51 +
+      docs/schemas/excel-meta-adapter-v1.schema.json — 落地 4082da8，docs:build 绿）
 
 - [ ] X1 约定解析层（内置预设 + 脚本适配器）：内置预设档解析器（A/B/C 各一）+ 脚本适配器
       运行器（子进程 JSON 契约，超时/崩溃/非法输出 → E 码定位）；两路产出同一结构化表元
