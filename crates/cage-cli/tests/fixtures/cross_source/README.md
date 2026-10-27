@@ -23,6 +23,10 @@
   （`"a, b"` / `"c,d"`）在 `Array<String>` + `separator: ","` 字段上于加载期
   拆成数组元素（回流-3，Luban `(list#sep=,)` 等价），token trim 后输出
   `["a","b"]` / `["c","d"]`；JSON 源自带数组，不走拆分。
+- **整数值单元格入 Float 字段**（`data-int-weight.xlsx`）`weight` 列为整数
+  单元格（2 / 3，加载为 `Int`），schema 声明 `Float32`——数值塔向上统一
+  （回流-4）后构建成功，输出 `"weight": 2` / `"weight": 3`；反向（小数入
+  整数字段）仍报 `E1101`。
 
 项目读取约定：`source_roots.main = "config"`；Excel 工作表名 = 表名（`Item`/
 `Drop`）；CSV 文件名主 = 表名；JSON 根键 = 表名；YAML 根键 = 表名。

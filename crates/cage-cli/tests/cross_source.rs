@@ -325,6 +325,43 @@ fn excel_separator_cell_splits_into_array() {
 }
 
 #[test]
+fn excel_integer_cell_accepted_in_float_field() {
+    // 回流-4: an Excel whole-number cell loads as `Int`, and the number
+    // tower unifies upward — an integer value is accepted on a `Float32`
+    // field. `weight` is Float32 in common-schema; `data-int-weight.xlsx`
+    // writes it as 2 / 3 (integer cells). Before the fix this was E1101.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(root.join("cage.toml"), CAGE_TOML).unwrap();
+    fs::copy(
+        fixtures().join("common-schema.yaml"),
+        root.join("schemas/item.yaml"),
+    )
+    .unwrap();
+    fs::copy(
+        fixtures().join("data-int-weight.xlsx"),
+        root.join("config/data.xlsx"),
+    )
+    .unwrap();
+    fs::copy(fixtures().join("Drop.json"), root.join("config/Drop.json")).unwrap();
+
+    let (ok, out) = run_build(&root);
+    assert!(ok, "integer-cell float build failed:\n{out}");
+    let text = String::from_utf8(read_artifact(&root, "Item")).unwrap();
+    assert!(
+        text.contains(r#""weight": 2"#),
+        "row 1 integer weight must be accepted, got:\n{text}"
+    );
+    assert!(
+        text.contains(r#""weight": 3"#),
+        "row 2 integer weight must be accepted, got:\n{text}"
+    );
+    assert!(!text.contains("E1101"), "unexpected E1101 in\n{text}");
+}
+
+#[test]
 fn default_flows_from_schema_to_code_target_while_ir_keeps_explicit_value() {
     // Data IR: the common-core parity test pins `tier: 3` explicitly from all
     // three sources. The schema default is the authoring contract the code

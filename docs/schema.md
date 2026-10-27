@@ -106,7 +106,7 @@ types pass their parameter in `value`); the lower-case scalar form
 | `Null` / `Bool` | Null value / boolean |
 | `Int8` `Int16` `Int32` `Int64` | Signed integers |
 | `UInt8` `UInt16` `UInt32` `UInt64` | Unsigned integers |
-| `Float32` `Float64` | Floating-point numbers |
+| `Float32` `Float64` | Floating-point numbers; an integer value (e.g. an Excel whole-number cell) is accepted — the number tower unifies upward, a fractional value into an integer field is still rejected |
 | `String` / `Bytes` | UTF-8 string / raw bytes |
 | `Array` | Array; `value` is the element type: `{ kind: Array, value: { kind: Int32 } }` |
 | `Object` | Object; `value` is the property table: `{ kind: Object, value: { x: { kind: Int32 } } }` |

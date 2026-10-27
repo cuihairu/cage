@@ -499,7 +499,11 @@ fn value_matches_type(value: &Value, expected: &FieldType) -> bool {
         }
         // Enum membership itself is checked in L3 (value constraints)
         (Value::String(_), FieldType::Enum(_)) => true,
-        // Scalars: only the family must match; width checking happens in L3
+        // Scalars: only the family must match; width checking happens in L3.
+        // The number tower is unified upward (回流-4): an integer value is a
+        // valid float, so `Int`/`UInt` cells (an Excel whole-number cell loads
+        // as `Int`) are accepted on `Float32`/`Float64` fields. The reverse
+        // (`Float` into an integer field) is rejected.
         _ if matches!(
             (value, expected),
             (Value::Null, FieldType::Null)
@@ -512,7 +516,10 @@ fn value_matches_type(value: &Value, expected: &FieldType) -> bool {
                     Value::UInt(_),
                     FieldType::UInt8 | FieldType::UInt16 | FieldType::UInt32 | FieldType::UInt64
                 )
-                | (Value::Float(_), FieldType::Float32 | FieldType::Float64)
+                | (
+                    Value::Float(_) | Value::Int(_) | Value::UInt(_),
+                    FieldType::Float32 | FieldType::Float64
+                )
                 | (Value::String(_), FieldType::String)
                 | (Value::Bytes(_), FieldType::Bytes)
                 | (_, FieldType::Any)
@@ -2226,6 +2233,10 @@ mod tests {
         assert!(value_matches_type(&Value::Int(1), &FieldType::Int8));
         assert!(value_matches_type(&Value::UInt(1), &FieldType::UInt64));
         assert!(value_matches_type(&Value::Float(1.5), &FieldType::Float32));
+        // 回流-4: the number tower unifies upward — an integer value is a
+        // valid float (an Excel whole-number cell loads as `Int`).
+        assert!(value_matches_type(&Value::Int(2), &FieldType::Float32));
+        assert!(value_matches_type(&Value::UInt(2), &FieldType::Float64));
         assert!(value_matches_type(&str_val("s"), &FieldType::String));
         assert!(value_matches_type(
             &Value::Bytes(vec![1]),
@@ -2235,6 +2246,10 @@ mod tests {
         // Family mismatches fall through to false.
         assert!(!value_matches_type(&str_val("10"), &FieldType::Int32));
         assert!(!value_matches_type(&Value::Int(10), &FieldType::String));
+        // The reverse direction stays strict: a fractional value never fits
+        // an integer field.
+        assert!(!value_matches_type(&Value::Float(1.5), &FieldType::Int32));
+        assert!(!value_matches_type(&Value::Float(1.5), &FieldType::UInt32));
         assert!(!value_matches_type(
             &Value::Array(vec![]),
             &FieldType::String

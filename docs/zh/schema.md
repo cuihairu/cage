@@ -93,7 +93,7 @@ validation）、`cardinality`
 | `Null` / `Bool` | 空值 / 布尔 |
 | `Int8` `Int16` `Int32` `Int64` | 有符号整数 |
 | `UInt8` `UInt16` `UInt32` `UInt64` | 无符号整数 |
-| `Float32` `Float64` | 浮点数 |
+| `Float32` `Float64` | 浮点数；整数值（如 Excel 整数值单元格）被接受——数值塔向上统一，小数值入整数字段仍被拒绝 |
 | `String` / `Bytes` | UTF-8 字符串 / 原始字节 |
 | `Array` | 数组，`value` 为元素类型：`{ kind: Array, value: { kind: Int32 } }` |
 | `Object` | 对象，`value` 为属性表：`{ kind: Object, value: { x: { kind: Int32 } } }` |
