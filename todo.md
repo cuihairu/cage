@@ -1772,8 +1772,19 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       构建成功）；`default:` 无默认值的 `note` 空单元格 E1101 断言不变。
       证据（commit f889b12）：cargo fmt、clippy 0 warning、全量 cargo test 1000 passed 0 failed
       （2026-10-27）。
-- [ ] 回流-2 nullable 类型字段：`string?`/`int?` 等价物，或「可空字段 Null 匹配其基类型」
+- [x] 回流-2 nullable 类型字段：`string?`/`int?` 等价物，或「可空字段 Null 匹配其基类型」
       （`value_matches_type` 只允许 Null↔Null/Any，`crates/cage-core/src/validation/mod.rs:501,514`）。
+      现状：已落（采纳推荐方案：「可空字段 Null 匹配其基类型」，已代决）。`FieldSchema`
+      新增 `nullable: bool`（serde default false，`crates/cage-core/src/schema/mod.rs:222`）；
+      `validate_type` 短路接受 Null（`crates/cage-core/src/validation/mod.rs:452`），类型本身
+      不放宽（nullable String 收 Int 仍 E1101，实测）；非 nullable 字段行为不变（E1101 回归
+      锚点，`common-schema.yaml` 的 `note`）；nullable 引用字段仍按既有 `cardinality` 规则
+      （null 引用需 `optional`，设计不变）。测试：validation 单测两条（nullable 接受
+      null/字符串且拒错型；非 nullable 拒 null）+ cross_source
+      `excel_nullable_field_accepts_empty_cell`（`data-nullable.xlsx` fixture，空 note →
+      `"note": null` 构建成功）；docs/schema.md 与 docs/zh/schema.md 字段约束表同步。
+      证据（commit 2061110）：cargo fmt、clippy 0 warning、全量 cargo test 1003 passed
+      0 failed（2026-10-27）。
 - [ ] 回流-3 单元格分隔列表：`(list#sep=,)` 等价物——Excel 单元格 `"a,b"` 解析为数组
       （calamine 单元格只产出标量，Array 类型无来源面）。
 - [ ] 回流-4 数值塔统一：Excel 整数值单元格可入 Float 字段（实测 Float32 拒绝 Int 单元格，

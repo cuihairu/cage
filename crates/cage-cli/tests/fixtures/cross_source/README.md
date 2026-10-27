@@ -15,6 +15,10 @@
 - **空单元格 + 模式默认值**（`data-empty-tier.xlsx`）Excel 空 `tier` 单元格
   坍缩为 `Null` 后，被 `FieldSchema.default` 填充（回流-1），构建成功且输出
   携带默认值 `tier: 3`——与 `data.xlsx`（显式 `tier`）同值，不构成保真缺口。
+- **空单元格 + nullable 字段**（`data-nullable.xlsx`）空 `note` 单元格在
+  `nullable: true` 字段上被接受（回流-2），输出 `"note": null`；同一字段在
+  非 nullable schema 上仍报 `E1101`（`common-schema.yaml` 的 `note` 无
+  nullable，即回归锚点）。
 
 项目读取约定：`source_roots.main = "config"`；Excel 工作表名 = 表名（`Item`/
 `Drop`）；CSV 文件名主 = 表名；JSON 根键 = 表名；YAML 根键 = 表名。
