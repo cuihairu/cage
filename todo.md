@@ -1758,9 +1758,20 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       + 测量 + 源码锚点）、`docs/review/luban-five-cases/gen.py`（自包含生成器，约 600 行，
       重建全部 xlsx/配置）。
 
-- [ ] 回流-1 Excel 空单元格默认值：`FieldSchema.default`（`crates/cage-core/src/schema/mod.rs:217`
+- [x] 回流-1 Excel 空单元格默认值：`FieldSchema.default`（`crates/cage-core/src/schema/mod.rs:217`
       「applied when absent」）扩展到 Null 单元格——luban `#default` 填空单元格、cage 不填
       （实测 100 行 E1101），Excel-first 工作流最大差距。
+      现状：已落。`fill_field_defaults`（`crates/cage-core/src/normalize/mod.rs:116`）把 absent
+      与 Null（Excel 空单元格）都填为 schema default，转换复用 `migrate::diff::schema_default`
+      （类型族转换，不可表示的 default 不填、留给 L2 报错）；接线在 `load_project_impl`
+      （`crates/cage-cli/src/main.rs:784`）——build/check/lsp/gen 填充，migrate 传 `false` 保持
+      原始源（from-schema default 不得遮蔽 to-schema `set_default`）。实测五案例工程
+      `level Int32 default:1` 空单元格 100 行全填（与 Luban 计数一致 140）；测试：normalize
+      单测（absent/null 填充、present 保留、不可表示保留、schema 外表不动）+ cross_source
+      `excel_empty_cell_fills_schema_default`（`data-empty-tier.xlsx` fixture，空 tier → `tier: 3`
+      构建成功）；`default:` 无默认值的 `note` 空单元格 E1101 断言不变。
+      证据（commit f889b12）：cargo fmt、clippy 0 warning、全量 cargo test 1000 passed 0 failed
+      （2026-10-27）。
 - [ ] 回流-2 nullable 类型字段：`string?`/`int?` 等价物，或「可空字段 Null 匹配其基类型」
       （`value_matches_type` 只允许 Null↔Null/Any，`crates/cage-core/src/validation/mod.rs:501,514`）。
 - [ ] 回流-3 单元格分隔列表：`(list#sep=,)` 等价物——Excel 单元格 `"a,b"` 解析为数组
