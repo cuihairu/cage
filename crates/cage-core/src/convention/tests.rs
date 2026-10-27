@@ -503,3 +503,60 @@ fn meta_sheet_grid_decodes_by_its_name_row() {
         Some(FieldType::Enum("Rarity".to_string()))
     );
 }
+
+/// Multi-row records (回流-5, design §51 Q6): a top-level column named
+/// `*waves` in the `##var` row declares a multi-row list — the field name
+/// is the name without the `*`, and the flag lands on the column whose
+/// sub-columns the `##+` row declares.
+#[test]
+fn multi_row_var_column_marks_the_column_and_strips_the_star() {
+    let rows = [
+        &["##var", "id", "name", "*waves", "*waves"][..],
+        &["##+", "", "", "index", "groups"][..],
+        &["##type", "Int32", "String", "Int32", "String"][..],
+    ];
+    let meta = meta_of(&rows, 0, &[0, 1, 2]);
+    assert_eq!(
+        meta.columns.get("waves").map(|c| c.multi_row),
+        Some(true),
+        "the `*` prefix marks waves as a multi-row column"
+    );
+    assert!(
+        meta.columns.get("name").is_some_and(|c| !c.multi_row),
+        "a plain header column is not multi-row"
+    );
+    assert_eq!(
+        meta.columns["waves"].sub_columns.keys().collect::<Vec<_>>(),
+        ["index", "groups"],
+        "the `##+` row declares the list element shape"
+    );
+    assert_eq!(
+        meta.columns["waves"].cell, "D1",
+        "anchored at its header cell"
+    );
+}
+
+/// A `*name` column with no `##+` sub-column row cannot declare the element
+/// shape — E2201, anchored at the column.
+#[test]
+fn multi_row_column_without_sub_columns_is_e2201() {
+    let rows = [
+        &["##var", "id", "*waves"][..],
+        &["##type", "Int32", "Int32"][..],
+    ];
+    let diags = decode(
+        &grid(&rows),
+        0,
+        &[0, 1][..],
+        0,
+        0,
+        DEFAULT_MARKER,
+        &HashSet::new(),
+        "config/DungeonStage.xlsx",
+        "DungeonStage",
+    )
+    .expect_err("a `*name` column without `##+` is E2201");
+    assert!(diags.errors().iter().any(|d| {
+        d.code == E2201 && d.message.contains("multi-row column") && d.message.contains("waves")
+    }));
+}

@@ -45,7 +45,7 @@ use cage_core::{
     value::{Document, Row, SourceLocation, Table, TypedValue, Value},
 };
 use calamine::{open_workbook_auto, Data, DataType, Range, Reader, SheetVisible, Sheets};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use serde_json::{json, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -328,7 +328,19 @@ impl ExcelSourceAdapter {
             let has_nested_columns = convention_meta
                 .as_ref()
                 .is_some_and(|meta| meta.columns.values().any(|c| !c.sub_columns.is_empty()));
-            let header_groups = (self.has_header && (is_var_header || has_nested_columns))
+            let multi_row_columns = convention_meta
+                .as_ref()
+                .map(|meta| {
+                    meta.columns
+                        .iter()
+                        .filter(|(_name, column)| column.multi_row)
+                        .map(|(name, _column)| name.clone())
+                        .collect::<IndexSet<String>>()
+                })
+                .unwrap_or_default();
+            let has_structural =
+                is_var_header || has_nested_columns || !multi_row_columns.is_empty();
+            let header_groups = (self.has_header && has_structural)
                 .then(|| Self::header_groups_at(&range, &merge_anchors, data_header_row, &marker));
             let start_row = if self.has_header {
                 if is_var_header {
@@ -342,6 +354,14 @@ impl ExcelSourceAdapter {
             } else {
                 0
             };
+
+            // Multi-row records (回流-5, design §51 Q6): a top-level column
+            // declared `*name` in the `##var` row folds contiguous data rows
+            // into a `Value::Array` of the nested objects its sub-columns
+            // declare. A row whose every root (non-multi-row) field is empty
+            // continues the previous record; any other row starts a new one.
+            let has_multi_row = !multi_row_columns.is_empty();
+            let mut pending_multi_row: Option<Row> = None;
 
             for (row_idx, row) in range.rows().skip(start_row).enumerate() {
                 let rel_row = start_row + row_idx;
@@ -358,6 +378,24 @@ impl ExcelSourceAdapter {
                 {
                     continue;
                 }
+
+                let is_record_start = !has_multi_row
+                    || pending_multi_row.is_none()
+                    || header_groups.as_ref().is_some_and(|groups| {
+                        groups.iter().any(|group| {
+                            !multi_row_columns.contains(&group.name)
+                                && group.columns.iter().any(|col| {
+                                    Self::nested_cell_value(
+                                        &range,
+                                        &merge_anchors,
+                                        row,
+                                        rel_row,
+                                        *col,
+                                        range_start.1 as usize,
+                                    ) != Value::Null
+                                })
+                        })
+                    });
 
                 let mut fields = if let Some(header_groups) = &header_groups {
                     Self::fields_for_nested_row(
@@ -418,7 +456,7 @@ impl ExcelSourceAdapter {
                     }
                 }
 
-                table.rows.push(Row {
+                let row_to_push = Row {
                     primary_key,
                     fields,
                     location: SourceLocation::new(&file_path)
@@ -426,7 +464,64 @@ impl ExcelSourceAdapter {
                         .with_sheet(sheet_name.clone())
                         .with_row(sheet_row),
                     index: table.rows.len(),
-                });
+                };
+
+                if has_multi_row {
+                    if pending_multi_row.is_none() || is_record_start {
+                        let flushed = pending_multi_row.take();
+                        let mut anchor = row_to_push;
+                        for name in &multi_row_columns {
+                            if let Some(entry) = anchor.fields.get_mut(name) {
+                                if !matches!(entry.value, Value::Array(_)) {
+                                    let value = std::mem::replace(&mut entry.value, Value::Null);
+                                    entry.value = Value::Array(vec![value]);
+                                }
+                            }
+                        }
+                        pending_multi_row = Some(anchor);
+                        if let Some(row) = flushed {
+                            table.rows.push(row);
+                        }
+                        continue;
+                    }
+                    // Continuation: fold each multi-row column of this row
+                    // into the pending record's array for that column.
+                    for name in &multi_row_columns {
+                        let Some(meta) = convention_meta
+                            .as_ref()
+                            .and_then(|meta| meta.columns.get(name))
+                        else {
+                            continue;
+                        };
+                        let object = Value::Object(Self::nested_object_value(
+                            meta,
+                            &range,
+                            &merge_anchors,
+                            row,
+                            rel_row,
+                            range_start.1 as usize,
+                        ));
+                        let pending = pending_multi_row.as_mut().expect("pending present");
+                        let entry = pending
+                            .fields
+                            .get_mut(name)
+                            .expect("multi-row field present after its anchor row");
+                        match &mut entry.value {
+                            Value::Array(items) => items.push(object),
+                            value => {
+                                let items = std::mem::replace(value, Value::Null);
+                                *value = Value::Array(vec![items, object]);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                table.rows.push(row_to_push);
+            }
+
+            if let Some(row) = pending_multi_row {
+                table.rows.push(row);
             }
 
             if !table.rows.is_empty() || !headers.is_empty() {
@@ -731,6 +826,13 @@ impl ExcelSourceAdapter {
             ))
             .trim()
             .to_string();
+            // A `*name` header declares a multi-row list (回流-5 Q6): the `*`
+            // is a layout modifier, not part of the field name.
+            let name = name
+                .strip_prefix('*')
+                .filter(|n| !n.is_empty())
+                .unwrap_or(&name)
+                .to_string();
             if let Some(current) = groups.last_mut() {
                 if current.columns.last() == Some(&anchor_col) {
                     current.columns.push(abs_col);
@@ -2262,6 +2364,201 @@ mod tests {
         );
     }
 
+    // ---- Luban multi-row fixtures (design §51 Q6, 回流-5) ------------------
+    //
+    // A top-level `*name` in the `##var` row folds contiguous data rows into
+    // one record: the first row carries the root fields, continuation rows
+    // carry only the listed sub-columns, and each such row appends one list
+    // element to the named column.
+
+    /// Case 1 — `*waves` multi-row list (dungeon stage): root fields on the
+    /// first row, continuation rows append elements; the named column is a
+    /// `Value::Array` of the sub-column objects.
+    #[test]
+    fn test_luban_multi_row_folds_contiguous_rows_into_an_array() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "name", "*waves", "*waves", "*waves"][..],
+                &["##+", "", "", "index", "groups", "rewards"][..],
+                &["##type", "Int32", "String", "Int32", "String", "String"][..],
+                &["", "1", "stage1", "1", "wolf,skeleton", "sword"][..],
+                &["", "", "", "2", "goblin", "potion"][..],
+                &["", "2", "stage2", "1", "dragon", "gem"][..],
+            ],
+            &["D1:F1"],
+            "dungeon.xlsx",
+        );
+        let (doc, metas) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("multi-row records decode");
+        let table = doc.tables.get("Data").expect("one data table");
+        assert_eq!(table.rows.len(), 2, "three data rows fold into two records");
+
+        let first = &table.rows[0];
+        assert_eq!(first.fields["id"].value, Value::Int(1));
+        assert_eq!(first.fields["name"].value, Value::String("stage1".into()));
+        assert_eq!(
+            first.fields["waves"].value,
+            Value::Array(vec![
+                Value::Object(IndexMap::from([
+                    ("index".to_string(), Value::Int(1)),
+                    ("groups".to_string(), Value::String("wolf,skeleton".into())),
+                    ("rewards".to_string(), Value::String("sword".into())),
+                ])),
+                Value::Object(IndexMap::from([
+                    ("index".to_string(), Value::Int(2)),
+                    ("groups".to_string(), Value::String("goblin".into())),
+                    ("rewards".to_string(), Value::String("potion".into())),
+                ])),
+            ]),
+            "continuation rows append to the waves array"
+        );
+        assert_eq!(first.primary_key, vec![Value::Int(1)]);
+
+        let second = &table.rows[1];
+        assert_eq!(second.fields["id"].value, Value::Int(2));
+        assert_eq!(second.fields["name"].value, Value::String("stage2".into()));
+        assert_eq!(
+            second.fields["waves"].value,
+            Value::Array(vec![Value::Object(IndexMap::from([
+                ("index".to_string(), Value::Int(1)),
+                ("groups".to_string(), Value::String("dragon".into())),
+                ("rewards".to_string(), Value::String("gem".into())),
+            ]))]),
+            "a fresh record starts when a root field is present"
+        );
+
+        let meta = metas.get("Data").expect("table metadata");
+        assert!(
+            meta.columns["waves"].multi_row,
+            "the * header marks the column multi-row"
+        );
+        assert_eq!(
+            meta.columns["waves"].sub_columns.keys().collect::<Vec<_>>(),
+            ["index", "groups", "rewards"],
+            "list element shape from the ##+ row"
+        );
+    }
+
+    /// Case 2 — a multi-row list beside a nested bean and flat fields: the
+    /// bean folds into one array while the nested cost column and root
+    /// scalars stay per-record. The list column keeps declaration order.
+    #[test]
+    fn test_luban_multi_row_beside_nested_bean_and_flat_fields() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "name", "cost", "", "*effects", ""][..],
+                &["##+", "", "", "mp", "cd", "trigger", "damage"][..],
+                &[
+                    "##type", "Int32", "String", "Int32", "Int32", "String", "Int32",
+                ][..],
+                &["", "1", "skill1", "10", "5", "crit", "100"][..],
+                &["", "", "", "", "", "heal", "60"][..],
+                &["", "2", "skill2", "20", "8", "miss", "0"][..],
+            ],
+            &["D1:E1", "F1:G1"],
+            "skill.xlsx",
+        );
+        let (doc, _) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("multi-row beside a bean decodes");
+        let table = doc.tables.get("Data").expect("one data table");
+        assert_eq!(table.rows.len(), 2);
+
+        let first = &table.rows[0];
+        assert_eq!(
+            first.fields["cost"].value,
+            Value::Object(IndexMap::from([
+                ("mp".to_string(), Value::Int(10)),
+                ("cd".to_string(), Value::Int(5)),
+            ])),
+            "the flat record's nested bean is untouched"
+        );
+        assert_eq!(
+            first.fields["effects"].value,
+            Value::Array(vec![
+                Value::Object(IndexMap::from([
+                    ("trigger".to_string(), Value::String("crit".into())),
+                    ("damage".to_string(), Value::Int(100)),
+                ])),
+                Value::Object(IndexMap::from([
+                    ("trigger".to_string(), Value::String("heal".into())),
+                    ("damage".to_string(), Value::Int(60)),
+                ])),
+            ])
+        );
+        let fields: Vec<&str> = first.fields.keys().map(String::as_str).collect();
+        assert_eq!(fields, ["id", "name", "cost", "effects"], "header order");
+    }
+
+    /// Case 3 — a single-row multi-row record produces a one-element array,
+    /// and the record's trailing row closes the pending array.
+    #[test]
+    fn test_luban_multi_row_single_element_and_flush_at_end() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "*waves", "*waves"][..],
+                &["##+", "", "index", "note"][..],
+                &["##type", "Int32", "Int32", "String"][..],
+                &["", "7", "3", "a"][..],
+            ],
+            &["C1:D1"],
+            "stage.xlsx",
+        );
+        let (doc, _) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("single-element multi-row decodes");
+        let table = doc.tables.get("Data").expect("one data table");
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(
+            table.rows[0].fields["waves"].value,
+            Value::Array(vec![Value::Object(IndexMap::from([
+                ("index".to_string(), Value::Int(3)),
+                ("note".to_string(), Value::String("a".into())),
+            ]))]),
+            "the pending record flushes at end of data"
+        );
+        assert_eq!(table.rows[0].fields["id"].value, Value::Int(7));
+    }
+
+    /// A blank row between two multi-row records is a separator: it is
+    /// skipped (no bogus list element) and the records fold independently.
+    #[test]
+    fn test_luban_multi_row_blank_row_is_a_separator_not_an_element() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "*waves", "*waves"][..],
+                &["##+", "", "index", "note"][..],
+                &["##type", "Int32", "Int32", "String"][..],
+                &["", "1", "10", "a"][..],
+                &["", "", "", ""][..],
+                &["", "2", "20", "b"][..],
+            ],
+            &["C1:D1"],
+            "stages.xlsx",
+        );
+        let (doc, _) = luban_adapter()
+            .parse_file_with_meta(wb.path())
+            .expect("blank separator decodes");
+        let table = doc.tables.get("Data").expect("one data table");
+        assert_eq!(table.rows.len(), 2, "the blank row is skipped");
+        assert_eq!(
+            table.rows[0].fields["waves"].value,
+            Value::Array(vec![Value::Object(IndexMap::from([
+                ("index".to_string(), Value::Int(10)),
+                ("note".to_string(), Value::String("a".into())),
+            ]))]),
+            "no bogus element from the separator"
+        );
+        assert_eq!(table.rows[1].fields["id"].value, Value::Int(2));
+        assert_eq!(
+            table.rows[1].fields["waves"].value,
+            Value::Array(vec![Value::Object(IndexMap::from([
+                ("index".to_string(), Value::Int(20)),
+                ("note".to_string(), Value::String("b".into())),
+            ]))])
+        );
+    }
     /// Preset A: only the contiguous non-empty run immediately above the
     /// header row is read — a blank separator row ends the block.
     #[test]

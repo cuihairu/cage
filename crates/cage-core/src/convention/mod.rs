@@ -135,6 +135,9 @@ pub struct ColumnMeta {
     /// Child columns declared by a `##+` sub-column row. A non-empty map
     /// makes the parent a nested bean by construction.
     pub sub_columns: IndexMap<String, ColumnMeta>,
+    /// Whether a Luban `*name` header folds adjacent data rows into an array
+    /// of the nested objects declared by `sub_columns`.
+    pub multi_row: bool,
 }
 
 /// Decoded metadata for one table: the header row the decoder resolved, and
@@ -289,12 +292,29 @@ pub fn decode(
     }
 
     // Column identity comes from the data header row: absolute column index
-    // → name. A declaration cell with no header above it cannot attach.
+    // → name. A declaration cell with no header above it cannot attach. Under
+    // ruling (a) a `##var` row is the data header row, and a `*name` header
+    // there declares a multi-row list (回流-5 Q6) — the `*` is a layout
+    // modifier, not part of the field name, so every downstream lookup
+    // (##type, ##+, assembly) uses the bare name. A plain header row is never
+    // re-read through the `*` lens: a column literally named `*foo` keeps its
+    // name outside the Luban `##var` shape.
+    let header_is_var = grid.get(header_row).is_some_and(|row| {
+        first_marker_keyword(row, marker).is_some_and(|(_, keyword)| keyword == "var")
+    });
     let headers: Vec<(usize, String)> = match grid.get(header_row) {
         Some(row) => row
             .iter()
             .enumerate()
-            .map(|(i, c)| (col0 + i, c.text()))
+            .map(|(i, c)| {
+                let text = c.text();
+                let name = if header_is_var {
+                    text.strip_prefix('*').filter(|n| !n.is_empty())
+                } else {
+                    None
+                };
+                (col0 + i, name.unwrap_or(&text).to_string())
+            })
             .collect(),
         None => Vec::new(),
     };
@@ -309,6 +329,21 @@ pub fn decode(
         // Under ruling (a) the `##var` row is the data header row: it names
         // the columns but carries no declaration values to `apply`.
         if row == header_row && first.as_ref().is_some_and(|(_, keyword)| keyword == "var") {
+            for (rel_col, cell) in cells.iter().enumerate() {
+                let abs_col = col0 + rel_col;
+                let text = cell.text();
+                let Some(name) = text.strip_prefix('*') else {
+                    continue;
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                let meta = meta.columns.entry(name.to_string()).or_default();
+                if meta.cell.is_empty() {
+                    meta.cell = anchor(abs_row, abs_col);
+                }
+                meta.multi_row = true;
+            }
             continue;
         }
 
@@ -440,6 +475,24 @@ pub fn decode(
     if diags.has_errors() {
         Err(diags)
     } else {
+        for (name, column) in &meta.columns {
+            if column.multi_row && column.sub_columns.is_empty() {
+                let (cell_row, cell_col) = a1_row_col(&column.cell).unwrap_or((row0, col0));
+                diags.add(
+                    error(
+                        E2201,
+                        format!(
+                            "multi-row column {name:?} declares no sub-columns; declare them \
+                             with a + sub-column row"
+                        ),
+                    )
+                    .with_location(loc(source_file, sheet, cell_row, cell_col)),
+                );
+            }
+        }
+        if diags.has_errors() {
+            return Err(diags);
+        }
         Ok(meta)
     }
 }
@@ -1106,6 +1159,15 @@ pub fn parse_response(
                 ),
             );
         }
+        if meta.multi_row {
+            return fail(
+                E2206,
+                format!(
+                    "{E2206} column {name:?} declares multi_row; script-declared multi-row \
+                     records are a later slice (design §51 Q6)"
+                ),
+            );
+        }
         if !header_names.iter().any(|h| h == name) {
             return fail(
                 E2207,
@@ -1133,6 +1195,20 @@ pub fn a1_column(cell: &str) -> Option<usize> {
     }
     let letters = cell.bytes().take_while(u8::is_ascii_uppercase);
     Some(letters.fold(0, |acc, b| acc * 26 + usize::from(b - b'A' + 1)) - 1)
+}
+
+/// 0-based row of an A1 cell (`"G27"` → 26), alongside [`a1_column`].
+pub fn a1_row(cell: &str) -> Option<usize> {
+    if !is_a1(cell) {
+        return None;
+    }
+    let letters = cell.bytes().take_while(u8::is_ascii_uppercase).count();
+    cell[letters..].parse::<usize>().ok().map(|r| r - 1)
+}
+
+/// Both coordinates of an A1 cell, 0-based.
+fn a1_row_col(cell: &str) -> Option<(usize, usize)> {
+    Some((a1_row(cell)?, a1_column(cell)?))
 }
 
 /// A1 address shape check: 1-3 capital letters, then a row number without a

@@ -1804,7 +1804,7 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       weight 列 2/3 整数单元格，common-schema 的 Float32 weight 下构建成功）；
       docs/schema.md + docs/zh/schema.md 的 Float 行注明数值塔语义。cargo fmt、clippy
       0 warning、全量 cargo test 全绿（2026-10-27）。
-- [ ] 回流-5 多级表头/嵌套 bean/多行记录/多态（2026-10-23 定位评审最大空缺，五案例再次
+- [x] 回流-5 多级表头/嵌套 bean/多行记录/多态（2026-10-23 定位评审最大空缺，五案例再次
       证实；`crates/cage-source-excel/src/lib.rs:47-54` 仅单行 `header_row`）。
       设计（commit e5aacee，已代决机制=子列声明行）：docs/design.md §51 Q6 裁定嵌套
       机制为子列声明行（首个标记单元格为 `+` 的行，每非标记单元格 `<子名>` 在列 C
@@ -1830,6 +1830,25 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       `test_luban_grandchild_nesting_is_an_object`、
       `test_luban_optional_sub_column_with_default_stays_null`；cargo fmt --check、
       cargo clippy --workspace --all-targets -- -D warnings、cargo test 全绿。
+      第二片（2026-10-28，多行记录）：`*name` 表头（`##var` 行，`*` 为布局修饰符不
+      属字段名）在 `ColumnMeta.multi_row` 上标记（convention/mod.rs:135-139、
+      decode 的 `header_is_var` 剥离 `*` 并置 multi_row，convention/mod.rs:302-317、
+      332-343）；`##+` 子列行声明列表元素形状；无 `##+` 的 `*name` 列是 E2201
+      （convention/mod.rs:521-533）。数据面 `parse_file_with_meta`：`*name` 列把
+      连续数据行折叠为该列的 `Value::Array`，锚行根字段非空的下一行开新记录，空行
+      跳过不产生杂散元素（cage-source-excel/src/lib.rs:360-527）；行装配按子列回退
+      `Value::Object`（lib.rs:873-935）。证据：
+      `multi_row_var_column_marks_the_column_and_strips_the_star`
+      （crates/cage-core/src/convention/tests.rs:512）、
+      `multi_row_column_without_sub_columns_is_e2201`（:542）、
+      `test_luban_multi_row_folds_contiguous_rows_into_an_array`
+      （crates/cage-source-excel/src/lib.rs:2378）、
+      `test_luban_multi_row_beside_nested_bean_and_flat_fields`（:2447）、
+      `test_luban_multi_row_single_element_and_flush_at_end`（:2497）、
+      `test_luban_multi_row_blank_row_is_a_separator_not_an_element`（:2527）。
+      cargo fmt --check、cargo clippy --workspace --all-targets -- -D warnings
+      0 warning、全量 cargo test 全绿 1023 passed / 0 failed（2026-10-28）。
+      多态（TaggedUnion）已由回流-6 commit cd2858c 覆盖。
 - [x] 回流-6 tagged union 类型：kind + 按分支载荷的类型安全表达（多态配置只能 enum+`Any`
       负载列，类型安全丢失）。
       证据（commit cd2858c，已代决 ①代码目标先按运行时形状渲染为通用 map/dict/table，
