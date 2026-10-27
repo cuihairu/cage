@@ -1764,13 +1764,25 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       零新词；v1 收口列级，约定不承载规则语义。docs/design.md §51 + zh §51 +
       docs/schemas/excel-meta-adapter-v1.schema.json — 落地 4082da8，docs:build 绿）
 
-- [ ] X1 约定解析层（内置预设 + 脚本适配器）：内置预设档解析器（A/B/C 各一）+ 脚本适配器
+- [x] X1 约定解析层（内置预设 + 脚本适配器）：内置预设档解析器（A/B/C 各一）+ 脚本适配器
       运行器（子进程 JSON 契约，超时/崩溃/非法输出 → E 码定位）；两路产出同一结构化表元
       数据供下游（schema-draft/校验）消费；畸形元行报错定位到单元格（G27 式）；
       cage-source-sheets 同契约跟进（「同 Excel 惯例」含脚本适配器）。
       验收：单测——各预设档类型行生成 FieldType、注释行生成描述、枚举行生成 enum；脚本
       fixture（跨平台可跑）走通子进程契约；脚本崩溃/超时/输出非法三态 E 码；纯数据表
       字节级回归不变。
+      （2026-10-28 落地 5be24c0：cage-core/src/convention 一套语法四预设档解码器 + 子进程
+      契约运行器（cage.excel-meta/1），E2201–E2207 词汇=Schema 11 字段名；cage-source-excel
+      parse_file_with_meta 两路共出 TableMeta，畸形元行 E2201/E2202 带 A1 锚点；
+      [source.excel] → ProjectConfig.source_excel → CLI 接线含 project_root。验收四条全绿：
+      预设档类型/注释行(##description)/枚举行 12 单测（cage-core 290 绿）；python fixture
+      子进程契约 + 崩溃 E2205/超时 E2204/非法输出 E2206 及 E2202/E2203/E2207
+      （cage-source-excel 34 绿）；无声明=逐字节照旧回归测试绿；fmt/clippy/docs:build 绿。
+      差异记 docs/design.md §51 Q5；cage-source-sheets 同契约后置为下一条。）
+
+- [ ] X1 跟进：cage-source-sheets 同契约（「同 Excel 惯例」含脚本适配器）——Sheets 侧无元行
+      承载面（UNFORMATTED_VALUE 纯数据网格），须先裁定声明载体（命名 tab / 首行块 / 脚本），
+      语法与词汇沿用 §51 不新造（§51 Q5 后置裁定）。
 
 - [ ] X2 schema-draft Excel 内省 + 漂移核对：`cage schema-draft` 支持 Excel 源，从元行生成
       schema 草稿（作者不再手写第二遍）；草稿采用后编译期与 Excel 元行核对，不一致报新 E 码
@@ -1787,3 +1799,10 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       拍板记录）、脚本契约 JSON Schema 发布、examples/game-config 增带元行示例表 + 可跑通的
       Python 示例解析脚本、README 双语 capabilities 同步；docs/design.md 红线段更新（「不做
       写回」与「不承载规则」两半的最终口径分开陈述，并记录「约定可配置、不预设用户格式」裁定）。
+
+- [ ] Excel 日期单元格数据面缺陷（2026-10-28 X1 轮发现）：`cell_to_cage_value` 对
+      `Data::DateTime` 走 `format!("{dt:?}")`，产出结构体 dump
+      `ExcelDateTime { value: 44927.0, datetime_type: DateTime, is_1904: false }` 进 IR，
+      而同函数注释声称「Excel serial date -> ISO string」；`DateTimeIso`/`DurationIso`
+      透传字符串反而正确。修复属数据面行为变更（影响既有 IR 字节与快照），须独立裁定
+      渲染口径（ISO-8601? 保留序列号?）与迁移路径，不夹带在 X 系列内。
