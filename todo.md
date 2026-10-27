@@ -1737,13 +1737,40 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       cargo fmt、clippy --all-targets 0 warning、cargo test -p cage-core -p cage-cli
       全绿（2026-10-27）。
 
-- [ ] P1 Luban 同题对照五案例测试：技能多层嵌套与继承、副本阶段多波次/怪物组/奖励、
+- [x] P1 Luban 同题对照五案例测试：技能多层嵌套与继承、副本阶段多波次/怪物组/奖励、
       带类型标签的多态配置、可选字段+默认值+空值+显式空串、客户端/服务端字段投影；
       两侧各跑通并记录「未实现 / 实现但行为不同 / 一致但性能不同」三分类结论 + 构建耗时
       与内存峰值（不以单一速度数字评价整个系统）。
-      现状：无 Luban 侧实测数据，Excel 表达力与类型系统差距未量化
-      （`crates/cage-source-excel/src/lib.rs:47-54` 仅单行 `header_row` + `has_header`）。
-      验收：五案例对照记录入 docs/review/，缺失能力回流为本仓条目。
+      现状：已落。`docs/review/luban-five-cases/gen.py` 一键生成同题两套工程（Luban 5.1.0
+      `~/tools/luban/Luban`，Cage `target/debug`），两侧 client/server/all 全跑通；五案例
+      三分类记录入 `docs/review/2026-10-27-luban-cage-five-cases.md`。未实现：Excel 嵌套
+      bean/多行列表/类型标签多态（平表分解 + 外键 workaround）、单元格分隔列表
+      `(list#sep=)`、tagged union。实现但行为不同：nullable 类型只能 `Any`（`Value::Null`
+      只匹配 Null/Any，`crates/cage-core/src/validation/mod.rs:501,514`）；`default` 不作用于
+      空单元格（实测 `level default:1` 100 行 E1101「Expected type: Int32, got: null」，luban
+      `#default` 填充）；E9006 要求被投影隐藏的 required 字段带 `default`（实测 4 个）；Excel
+      整数单元格入 Float32 E1101（40 行实测）；Enum 只接受字符串单元格（250 行实测）。
+      一致：投影字段集/取值完全相同；显式空串与空单元格两侧都坍缩为 null（实测各 30 行）；
+      诊断定位 Cage 带 table/row/col/expected 更精确。测量：Luban 0.84s / 峰值 83.5MB vs
+      Cage debug 0.75-0.82s / 59MB（两侧启动主导，不作系统优劣定论）。
+      验收：五案例对照记录入 docs/review/，缺失能力回流为本仓条目（见下方回流-1..6）。
+      证据（commit 6782fbe）：`docs/review/2026-10-27-luban-cage-five-cases.md`（五案例三分类
+      + 测量 + 源码锚点）、`docs/review/luban-five-cases/gen.py`（自包含生成器，约 600 行，
+      重建全部 xlsx/配置）。
+
+- [ ] 回流-1 Excel 空单元格默认值：`FieldSchema.default`（`crates/cage-core/src/schema/mod.rs:217`
+      「applied when absent」）扩展到 Null 单元格——luban `#default` 填空单元格、cage 不填
+      （实测 100 行 E1101），Excel-first 工作流最大差距。
+- [ ] 回流-2 nullable 类型字段：`string?`/`int?` 等价物，或「可空字段 Null 匹配其基类型」
+      （`value_matches_type` 只允许 Null↔Null/Any，`crates/cage-core/src/validation/mod.rs:501,514`）。
+- [ ] 回流-3 单元格分隔列表：`(list#sep=,)` 等价物——Excel 单元格 `"a,b"` 解析为数组
+      （calamine 单元格只产出标量，Array 类型无来源面）。
+- [ ] 回流-4 数值塔统一：Excel 整数值单元格可入 Float 字段（实测 Float32 拒绝 Int 单元格，
+      40 行 E1101）。
+- [ ] 回流-5 多级表头/嵌套 bean/多行记录/多态（2026-10-23 定位评审最大空缺，五案例再次
+      证实；`crates/cage-source-excel/src/lib.rs:47-54` 仅单行 `header_row`）。
+- [ ] 回流-6 tagged union 类型：kind + 按分支载荷的类型安全表达（多态配置只能 enum+`Any`
+      负载列，类型安全丢失）。
 
 ## Excel 元行规则承载（2026-10-26 用户令：设计重定向）
 
