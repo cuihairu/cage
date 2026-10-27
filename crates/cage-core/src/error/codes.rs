@@ -117,6 +117,12 @@ pub mod gamerule {
     pub const E1602: &str = "E1602";
     /// E1603 - Validator plugin execution failed (panic, timeout, etc.)
     pub const E1603: &str = "E1603";
+    /// E1604 - Skill references an item in a disallowed category
+    /// (declarative `skill_item_category` rule)
+    pub const E1604: &str = "E1604";
+    /// E1605 - Cross-table reference cycle detected
+    /// (declarative `reference_cycle` rule)
+    pub const E1605: &str = "E1605";
 }
 
 /// Editor interchange errors (Web UI / Schema Editor, third phase)
@@ -351,6 +357,8 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         gamerule::E1601 => Some("Game Rule Validation Failed"),
         gamerule::E1602 => Some("Validator Plugin Not Found"),
         gamerule::E1603 => Some("Validator Plugin Execution Failed"),
+        gamerule::E1604 => Some("Skill Item Category Violation"),
+        gamerule::E1605 => Some("Reference Cycle Detected"),
         // Editor
         editor::E1701 => Some("Editor Interchange Invalid"),
         // Registry

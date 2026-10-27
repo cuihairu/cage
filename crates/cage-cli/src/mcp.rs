@@ -850,6 +850,8 @@ fn suggestion_for(d: &Diagnostic) -> Option<String> {
         gamerule::E1601 => "自定义校验器报错：看 message 里校验器给的具体原因。",
         gamerule::E1602 => "校验器未找到：确认插件名与注册表。",
         gamerule::E1603 => "校验器执行失败（panic/超时）：看校验器实现。",
+        gamerule::E1604 => "技能引用了不允许类别的道具：把 item 改成允许类别的道具，或扩 allowed_categories。",
+        gamerule::E1605 => "跨表引用成环：打破环（A→B→A）或移除该条引用。",
         // 编辑器交换
         editor::E1701 => "编辑器交换格式非法：检查 JSON/YAML 是否能解析成 Schema。",
         // registry

@@ -1705,9 +1705,21 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       可组合、可启用禁用、执行顺序确定，诊断可定位到行/字段并可单测；覆盖评审列出的五类
       跨表语义——技能引用道具须属允许类别、掉落奖励 ID 与数量/权重约束、副本阶段-怪物组-
       奖励合法关系、客户端字段不得依赖服务端字段、引用环检测。
-      现状：`crates/cage-core/src/validation/rules.rs:23` 仅 `trait GameRuleValidator` +
-      注册表，`:45` 内置只注册 `PowerCurveValidator`；无声明式规则、无组合/顺序、无逐规则测试入口。
-      验收：五类规则各一条跑通，断言诊断码 + 定位 + 单测。
+      现状：`crates/cage-core/src/validation/rules.rs:23` 仍保留 `trait GameRuleValidator`
+      插件扩展点；`:45/:81` 已升为数据声明规则模型——`RuleConfig`（name/enabled/order/kind/
+      params）+ `RuleKind` 与 `RuleParams`，注册表按 order 排序、disabled 跳过、可组合复用
+      同一语义模型；`:225` `run_skill_item_category`（技能引用道具须属允许类别）与 `:302`
+      `run_reference_cycle`（引用环检测）两条跨表规则已跑通。
+      验收：五类规则各一条跑通，断言诊断码 + 定位 + 单测；本片已落两类。
+      证据：`crates/cage-core/src/error/codes.rs:122,125` 新增稳定诊断码 E1604（技能引用
+      不被允许类别的道具）与 E1605（跨表引用成环）；`crates/cage-core/src/validation/rules.rs:748`
+      `skill_item_category_reports_violation_with_field_location`（E1604+行/字段定位，field=item）、
+      `:805` `skill_item_category_accepts_allowed_scalar_and_array_items`（正例）、`:855`
+      `disabled_skill_item_category_rule_is_declared_but_skipped`（可禁用）、`:886`
+      `declarative_rules_run_in_declared_order`（可组合+执行顺序确定）、`:961`
+      `reference_cycle_reports_closing_edge_with_field_location`（E1605+行/字段定位）、`:1018`
+      `reference_cycle_accepts_acyclic_schema`（正例）、`:1040` `reference_cycle_detects_self_reference`
+      （自引用环）；cargo fmt、clippy -D warnings、cargo test 全绿（2026-10-27）。
 
 - [ ] P1 Luban 同题对照五案例测试：技能多层嵌套与继承、副本阶段多波次/怪物组/奖励、
       带类型标签的多态配置、可选字段+默认值+空值+显式空串、客户端/服务端字段投影；
