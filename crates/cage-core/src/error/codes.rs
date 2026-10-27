@@ -123,6 +123,15 @@ pub mod gamerule {
     /// E1605 - Cross-table reference cycle detected
     /// (declarative `reference_cycle` rule)
     pub const E1605: &str = "E1605";
+    /// E1606 - Drop reward references an unknown item or carries an invalid
+    /// quantity/weight (declarative `drop_reward` rule)
+    pub const E1606: &str = "E1606";
+    /// E1607 - Dungeon stage references an unknown monster group or reward
+    /// (declarative `dungeon_stage` rule)
+    pub const E1607: &str = "E1607";
+    /// E1608 - A field visible to a profile depends on an entity hidden from
+    /// that profile (declarative `client_server_field` rule)
+    pub const E1608: &str = "E1608";
 }
 
 /// Editor interchange errors (Web UI / Schema Editor, third phase)
@@ -359,6 +368,9 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         gamerule::E1603 => Some("Validator Plugin Execution Failed"),
         gamerule::E1604 => Some("Skill Item Category Violation"),
         gamerule::E1605 => Some("Reference Cycle Detected"),
+        gamerule::E1606 => Some("Drop Reward Invalid"),
+        gamerule::E1607 => Some("Dungeon Stage Relation Invalid"),
+        gamerule::E1608 => Some("Profile Field Dependency Violation"),
         // Editor
         editor::E1701 => Some("Editor Interchange Invalid"),
         // Registry

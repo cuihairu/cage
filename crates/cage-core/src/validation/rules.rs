@@ -17,7 +17,7 @@ use crate::error::codes::gamerule;
 use crate::reference::DependencyGraph;
 use crate::schema::Schema;
 use crate::value::{Document, Row, SourceLocation, TypedValue, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A game rule validator plugin. Receives the validated schema and document,
 /// returns diagnostics (locations come from the document, codes from the
@@ -38,6 +38,14 @@ pub enum RuleKind {
     SkillItemCategory,
     /// Cross-table reference graph must be acyclic.
     ReferenceCycle,
+    /// Drop rewards must reference known items and carry a valid quantity
+    /// and weight.
+    DropReward,
+    /// Dungeon stages must reference existing monster groups and rewards.
+    DungeonStage,
+    /// A field visible to a profile must not depend on an entity hidden
+    /// from that profile.
+    ClientServerField,
 }
 
 /// Data-declared parameters for the skill/item-category rule.
@@ -64,6 +72,52 @@ pub struct ReferenceCycleConfig {
     pub table_filter: Vec<String>,
 }
 
+/// Data-declared parameters for the drop-reward rule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropRewardConfig {
+    /// Table holding the drop rows.
+    pub drop_table: String,
+    /// Field holding the dropped item id (scalar or array).
+    pub item_field: String,
+    /// Table holding the item definitions.
+    pub item_table: String,
+    /// Field holding the unique item id.
+    pub item_id_field: String,
+    /// Field holding the per-drop quantity (checked when the row has it).
+    pub quantity_field: String,
+    /// Field holding the drop probability weight (checked when the row has it).
+    pub weight_field: String,
+}
+
+/// Data-declared parameters for the dungeon-stage rule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DungeonStageConfig {
+    /// Table holding the stage rows.
+    pub stage_table: String,
+    /// Field holding the referenced monster-group id (scalar or array).
+    pub group_field: String,
+    /// Table holding the monster-group definitions.
+    pub group_table: String,
+    /// Field holding the unique monster-group id.
+    pub group_id_field: String,
+    /// Field holding the referenced reward id (scalar or array).
+    pub reward_field: String,
+    /// Table holding the reward definitions.
+    pub reward_table: String,
+    /// Field holding the unique reward id.
+    pub reward_id_field: String,
+}
+
+/// Data-declared parameters for the client/server field rule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientServerFieldConfig {
+    /// The consuming profile (e.g. `"client"`): fields visible to it must
+    /// not reference entities hidden from it.
+    pub profile: String,
+    /// Restrict the scan to these table names; empty means every schema table.
+    pub table_filter: Vec<String>,
+}
+
 /// Parameters for one declarative rule instance.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuleParams {
@@ -71,6 +125,12 @@ pub enum RuleParams {
     SkillItemCategory(SkillItemCategoryConfig),
     /// [`RuleKind::ReferenceCycle`] parameters.
     ReferenceCycle(ReferenceCycleConfig),
+    /// [`RuleKind::DropReward`] parameters.
+    DropReward(DropRewardConfig),
+    /// [`RuleKind::DungeonStage`] parameters.
+    DungeonStage(DungeonStageConfig),
+    /// [`RuleKind::ClientServerField`] parameters.
+    ClientServerField(ClientServerFieldConfig),
 }
 
 /// A data-declared game rule: stable name, enable flag, deterministic
@@ -214,6 +274,11 @@ fn run_rule(config: &RuleConfig, schema: &Schema, document: &Document) -> Vec<Di
             run_skill_item_category(config, schema, document, params)
         }
         RuleParams::ReferenceCycle(params) => run_reference_cycle(config, schema, document, params),
+        RuleParams::DropReward(params) => run_drop_reward(config, document, params),
+        RuleParams::DungeonStage(params) => run_dungeon_stage(config, document, params),
+        RuleParams::ClientServerField(params) => {
+            run_client_server_field(config, schema, document, params)
+        }
     }
 }
 
@@ -388,6 +453,282 @@ fn run_reference_cycle(
         );
     }
     out
+}
+
+/// L7.3 declarative rule: every drop row must reference a known item and,
+/// when it declares them, carry a non-negative whole-number quantity and a
+/// finite probability weight within `[0, 1]`. Unknown item references are
+/// reported here (the L5 check covers schema-declared references; a
+/// data-declared drop relation needs its own cross-table resolution).
+fn run_drop_reward(
+    config: &RuleConfig,
+    document: &Document,
+    params: &DropRewardConfig,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let Some(drop_table) = document.tables.get(&params.drop_table) else {
+        return out;
+    };
+    let Some(item_table) = document.tables.get(&params.item_table) else {
+        return out;
+    };
+    let item_ids = id_set(item_table, &params.item_id_field);
+
+    for row in &drop_table.rows {
+        let Some(item_field) = row.fields.get(&params.item_field) else {
+            continue;
+        };
+        for item_ref in as_values(&item_field.value) {
+            let Some(item_id) = item_ref.coerce_to_string() else {
+                continue;
+            };
+            if item_ids.contains(&item_id) {
+                continue;
+            }
+            out.push(
+                DiagnosticBuilder::error(gamerule::E1606, "Drop rewards an unknown item")
+                    .location(field_location(item_field, row))
+                    .table(&params.drop_table)
+                    .row(format!("{}", row.index))
+                    .field(&params.item_field)
+                    .value(item_id.clone())
+                    .hint(format!(
+                        "{}: item '{item_id}' is not in {}.{}",
+                        config.name, params.item_table, params.item_id_field
+                    ))
+                    .build(),
+            );
+        }
+
+        if let Some(quantity) = row.fields.get(&params.quantity_field) {
+            let valid = as_f64(&quantity.value)
+                .is_some_and(|f| f.is_finite() && f >= 0.0 && f.fract() == 0.0);
+            if !valid {
+                out.push(
+                    DiagnosticBuilder::error(
+                        gamerule::E1606,
+                        "Drop quantity must be a non-negative whole number",
+                    )
+                    .location(field_location(quantity, row))
+                    .table(&params.drop_table)
+                    .row(format!("{}", row.index))
+                    .field(&params.quantity_field)
+                    .value(quantity.value.to_string())
+                    .hint(format!("{}: got {:?}", config.name, quantity.value))
+                    .build(),
+                );
+            }
+        }
+
+        if let Some(weight) = row.fields.get(&params.weight_field) {
+            let valid =
+                as_f64(&weight.value).is_some_and(|f| f.is_finite() && (0.0..=1.0).contains(&f));
+            if !valid {
+                out.push(
+                    DiagnosticBuilder::error(
+                        gamerule::E1606,
+                        "Drop weight must be a finite number within [0, 1]",
+                    )
+                    .location(field_location(weight, row))
+                    .table(&params.drop_table)
+                    .row(format!("{}", row.index))
+                    .field(&params.weight_field)
+                    .value(weight.value.to_string())
+                    .hint(format!("{}: got {:?}", config.name, weight.value))
+                    .build(),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// L7.4 declarative rule: every dungeon stage must reference a monster group
+/// and a reward that actually exist in their definition tables. Both edges
+/// are data-declared relations (not schema references), so they are resolved
+/// and enforced here.
+fn run_dungeon_stage(
+    config: &RuleConfig,
+    document: &Document,
+    params: &DungeonStageConfig,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let Some(stage_table) = document.tables.get(&params.stage_table) else {
+        return out;
+    };
+    let Some(group_table) = document.tables.get(&params.group_table) else {
+        return out;
+    };
+    let Some(reward_table) = document.tables.get(&params.reward_table) else {
+        return out;
+    };
+    let group_ids = id_set(group_table, &params.group_id_field);
+    let reward_ids = id_set(reward_table, &params.reward_id_field);
+
+    for row in &stage_table.rows {
+        for (field_name, target_table, allowed) in [
+            (&params.group_field, &params.group_table, &group_ids),
+            (&params.reward_field, &params.reward_table, &reward_ids),
+        ] {
+            let Some(field) = row.fields.get(field_name) else {
+                continue;
+            };
+            for reference in as_values(&field.value) {
+                let Some(id) = reference.coerce_to_string() else {
+                    continue;
+                };
+                if allowed.contains(&id) {
+                    continue;
+                }
+                out.push(
+                    DiagnosticBuilder::error(
+                        gamerule::E1607,
+                        "Dungeon stage references an unknown monster group or reward",
+                    )
+                    .location(field_location(field, row))
+                    .table(&params.stage_table)
+                    .row(format!("{}", row.index))
+                    .field(field_name)
+                    .value(id.clone())
+                    .hint(format!(
+                        "{}: '{id}' is not a row of {}",
+                        config.name, target_table
+                    ))
+                    .build(),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// L7.5 declarative rule: a field exposed to a profile must not reference an
+/// entity (table or field) that the profile projection hides — otherwise the
+/// profile build would silently dangle. Both the referenced table and the
+/// referenced field are checked against the same visibility rule the profile
+/// projection uses (empty targets = visible everywhere, `*` = wildcard).
+fn run_client_server_field(
+    config: &RuleConfig,
+    schema: &Schema,
+    document: &Document,
+    params: &ClientServerFieldConfig,
+) -> Vec<Diagnostic> {
+    let in_scope = |table: &str| {
+        params.table_filter.is_empty() || params.table_filter.iter().any(|t| t == table)
+    };
+    let mut table_source: HashMap<String, (String, Option<String>)> = HashMap::new();
+    for (name, table) in &document.tables {
+        table_source.insert(
+            name.clone(),
+            (table.source_file.clone(), table.sheet.clone()),
+        );
+    }
+
+    let mut out = Vec::new();
+    for (table_name, table_schema) in &schema.tables {
+        if !in_scope(table_name) {
+            continue;
+        }
+        for (field_name, field_schema) in &table_schema.fields {
+            if !visible_to(&field_schema.targets, &params.profile) {
+                continue;
+            }
+            let Some(reference) = &field_schema.reference else {
+                continue;
+            };
+            // Unknown reference targets are the L5 reference check's report.
+            let Some(target_schema) = schema.tables.get(&reference.table) else {
+                continue;
+            };
+            if !visible_to(&target_schema.targets, &params.profile) {
+                out.push(
+                    DiagnosticBuilder::error(
+                        gamerule::E1608,
+                        "A field visible to the profile references a table hidden from it",
+                    )
+                    .location(reference_edge_location(
+                        document,
+                        table_name,
+                        field_name,
+                        &table_source,
+                    ))
+                    .table(table_name)
+                    .field(field_name)
+                    .value(format!("{}.{}", reference.table, reference.field))
+                    .hint(format!(
+                        "{}: {table_name}.{field_name} is visible to profile {:?} but \
+                         references {}.{}, which is not (targets: {:?})",
+                        config.name,
+                        params.profile,
+                        reference.table,
+                        reference.field,
+                        target_schema.targets,
+                    ))
+                    .build(),
+                );
+                continue;
+            }
+            let Some(target_field) = target_schema.fields.get(&reference.field) else {
+                continue; // unknown referenced field: L5's job
+            };
+            if !visible_to(&target_field.targets, &params.profile) {
+                out.push(
+                    DiagnosticBuilder::error(
+                        gamerule::E1608,
+                        "A field visible to the profile references a field hidden from it",
+                    )
+                    .location(reference_edge_location(
+                        document,
+                        table_name,
+                        field_name,
+                        &table_source,
+                    ))
+                    .table(table_name)
+                    .field(field_name)
+                    .value(format!("{}.{}", reference.table, reference.field))
+                    .hint(format!(
+                        "{}: {table_name}.{field_name} is visible to profile {:?} but \
+                         references {}.{}, which is not (targets: {:?})",
+                        config.name,
+                        params.profile,
+                        reference.table,
+                        reference.field,
+                        target_field.targets,
+                    ))
+                    .build(),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// The set of string ids a table declares in one field (scalar or array
+/// values, first row wins per id).
+fn id_set(table: &crate::value::Table, id_field: &str) -> HashSet<String> {
+    table
+        .rows
+        .iter()
+        .filter_map(|row| row.fields.get(id_field))
+        .flat_map(|tv| as_values(&tv.value))
+        .filter_map(|value| value.coerce_to_string())
+        .collect()
+}
+
+/// A scalar-or-array field's values, each value cloned (mirrors the
+/// skill-item rule's handling of array item fields).
+fn as_values(value: &Value) -> Vec<Value> {
+    match value {
+        Value::Array(items) => items.clone(),
+        single => vec![single.clone()],
+    }
+}
+
+/// Whether a target list exposes an entity to the given profile: empty
+/// targets are visible everywhere and `*` is a wildcard — the same rule the
+/// profile projection applies.
+fn visible_to(targets: &[String], profile: &str) -> bool {
+    targets.is_empty() || targets.iter().any(|t| t == profile || t == "*")
 }
 
 /// Choose the most precise location for a field: the typed value's own
@@ -1075,9 +1416,321 @@ mod tests {
         assert_eq!(diags[0].code, gamerule::E1605);
         assert_eq!(diags[0].table.as_deref(), Some("Skill"));
         assert_eq!(diags[0].field.as_deref(), Some("parent"));
+
         assert!(diags[0]
             .hint
             .as_deref()
             .is_some_and(|hint| { hint.contains("Skill -> Skill") }));
+    }
+
+    fn drop_reward_rule() -> RuleConfig {
+        RuleConfig::new(
+            "drop_reward",
+            RuleKind::DropReward,
+            RuleParams::DropReward(DropRewardConfig {
+                drop_table: "Drop".to_string(),
+                item_field: "item".to_string(),
+                item_table: "Item".to_string(),
+                item_id_field: "id".to_string(),
+                quantity_field: "quantity".to_string(),
+                weight_field: "weight".to_string(),
+            }),
+            20,
+        )
+    }
+
+    #[test]
+    fn drop_reward_reports_unknown_item_and_invalid_quantity_weight() {
+        let items = declarative_table(
+            "Item",
+            vec![declarative_row(
+                vec![declarative_field("id", Value::UInt(100), None)],
+                None,
+                0,
+            )],
+        );
+        let drops = declarative_table(
+            "Drop",
+            vec![declarative_row(
+                vec![
+                    declarative_field("item", Value::UInt(999), None),
+                    declarative_field("quantity", Value::Int(-1), None),
+                    declarative_field("weight", Value::Float(1.5), None),
+                ],
+                None,
+                0,
+            )],
+        );
+        let mut doc = Document::new();
+        doc.add_table(items);
+        doc.add_table(drops);
+
+        let registry = GameRuleRegistry::with_rules(vec![drop_reward_rule()]);
+        let diags = registry.run(&Schema::new(), &doc);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == gamerule::E1606));
+        assert!(diags.iter().all(|d| d.table.as_deref() == Some("Drop")));
+        let fields: Vec<&str> = diags.iter().filter_map(|d| d.field.as_deref()).collect();
+        assert_eq!(fields, ["item", "quantity", "weight"]);
+    }
+
+    #[test]
+    fn drop_reward_accepts_known_item_and_valid_quantity_weight() {
+        let items = declarative_table(
+            "Item",
+            vec![declarative_row(
+                vec![declarative_field("id", Value::UInt(100), None)],
+                None,
+                0,
+            )],
+        );
+        let drops = declarative_table(
+            "Drop",
+            vec![declarative_row(
+                vec![
+                    declarative_field("item", Value::Array(vec![Value::UInt(100)]), None),
+                    declarative_field("quantity", Value::UInt(2), None),
+                    declarative_field("weight", Value::Float(0.0), None),
+                ],
+                None,
+                0,
+            )],
+        );
+        let mut doc = Document::new();
+        doc.add_table(items);
+        doc.add_table(drops);
+
+        let registry = GameRuleRegistry::with_rules(vec![drop_reward_rule()]);
+        assert!(registry.run(&Schema::new(), &doc).is_empty());
+    }
+
+    fn dungeon_stage_rule() -> RuleConfig {
+        RuleConfig::new(
+            "dungeon_stage",
+            RuleKind::DungeonStage,
+            RuleParams::DungeonStage(DungeonStageConfig {
+                stage_table: "Stage".to_string(),
+                group_field: "monsters".to_string(),
+                group_table: "MonsterGroup".to_string(),
+                group_id_field: "id".to_string(),
+                reward_field: "reward".to_string(),
+                reward_table: "Reward".to_string(),
+                reward_id_field: "id".to_string(),
+            }),
+            30,
+        )
+    }
+
+    #[test]
+    fn dungeon_stage_reports_unresolved_group_and_reward() {
+        let groups = declarative_table(
+            "MonsterGroup",
+            vec![declarative_row(
+                vec![declarative_field("id", Value::String("g1".into()), None)],
+                None,
+                0,
+            )],
+        );
+        let rewards = declarative_table(
+            "Reward",
+            vec![declarative_row(
+                vec![declarative_field("id", Value::String("r1".into()), None)],
+                None,
+                0,
+            )],
+        );
+        let stages = declarative_table(
+            "Stage",
+            vec![declarative_row(
+                vec![
+                    declarative_field(
+                        "monsters",
+                        Value::Array(vec![Value::String("g1".into()), Value::String("g2".into())]),
+                        None,
+                    ),
+                    declarative_field("reward", Value::String("r9".into()), None),
+                ],
+                None,
+                0,
+            )],
+        );
+        let mut doc = Document::new();
+        doc.add_table(groups);
+        doc.add_table(rewards);
+        doc.add_table(stages);
+
+        let registry = GameRuleRegistry::with_rules(vec![dungeon_stage_rule()]);
+        let diags = registry.run(&Schema::new(), &doc);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == gamerule::E1607));
+        assert_eq!(
+            diags
+                .iter()
+                .filter_map(|d| d.field.as_deref())
+                .collect::<Vec<_>>(),
+            ["monsters", "reward"]
+        );
+    }
+
+    #[test]
+    fn dungeon_stage_accepts_resolved_group_and_reward() {
+        let groups = declarative_table(
+            "MonsterGroup",
+            vec![declarative_row(
+                vec![declarative_field("id", Value::String("g1".into()), None)],
+                None,
+                0,
+            )],
+        );
+        let rewards = declarative_table(
+            "Reward",
+            vec![declarative_row(
+                vec![declarative_field("id", Value::String("r1".into()), None)],
+                None,
+                0,
+            )],
+        );
+        let stages = declarative_table(
+            "Stage",
+            vec![declarative_row(
+                vec![
+                    declarative_field("monsters", Value::String("g1".into()), None),
+                    declarative_field("reward", Value::String("r1".into()), None),
+                ],
+                None,
+                0,
+            )],
+        );
+        let mut doc = Document::new();
+        doc.add_table(groups);
+        doc.add_table(rewards);
+        doc.add_table(stages);
+
+        let registry = GameRuleRegistry::with_rules(vec![dungeon_stage_rule()]);
+        assert!(registry.run(&Schema::new(), &doc).is_empty());
+    }
+
+    fn client_server_rule() -> RuleConfig {
+        RuleConfig::new(
+            "client_server_field",
+            RuleKind::ClientServerField,
+            RuleParams::ClientServerField(ClientServerFieldConfig {
+                profile: "client".to_string(),
+                table_filter: vec![],
+            }),
+            40,
+        )
+    }
+
+    fn targeted_reference_field(name: &str, target: &str, targets: &[&str]) -> FieldSchema {
+        let mut field = reference_field(name, target);
+        field.targets = targets.iter().map(ToString::to_string).collect();
+        field
+    }
+
+    #[test]
+    fn client_server_field_reports_dependency_on_server_only_table() {
+        let mut fields = indexmap::IndexMap::new();
+        fields.insert(
+            "client_item".to_string(),
+            targeted_reference_field("client_item", "Item", &["client"]),
+        );
+        let mut schema = Schema::new();
+        let mut skill_schema = plain_table_schema("Skill", fields);
+        skill_schema.targets = vec!["client".to_string()];
+        schema.add_table(skill_schema);
+        let mut item_schema = plain_table_schema("Item", indexmap::IndexMap::new());
+        item_schema.targets = vec!["server".to_string()];
+        schema.add_table(item_schema);
+
+        let skills = declarative_table(
+            "Skill",
+            vec![declarative_row(
+                vec![declarative_field("client_item", Value::UInt(1), None)],
+                None,
+                0,
+            )],
+        );
+        let mut doc = Document::new();
+        doc.add_table(skills);
+
+        let registry = GameRuleRegistry::with_rules(vec![client_server_rule()]);
+        let diags = registry.run(&schema, &doc);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, gamerule::E1608);
+        assert_eq!(diags[0].table.as_deref(), Some("Skill"));
+        assert_eq!(diags[0].field.as_deref(), Some("client_item"));
+    }
+
+    #[test]
+    fn client_server_field_reports_dependency_on_server_only_field() {
+        let mut fields = indexmap::IndexMap::new();
+        fields.insert(
+            "item".to_string(),
+            targeted_reference_field("item", "Item", &["client"]),
+        );
+        let mut schema = Schema::new();
+        let mut skill_schema = plain_table_schema("Skill", fields);
+        skill_schema.targets = vec!["client".to_string()];
+        schema.add_table(skill_schema);
+        let mut item_fields = indexmap::IndexMap::new();
+        let mut id_field = reference_field("id", "Skill");
+        id_field.targets = vec!["server".to_string()];
+        item_fields.insert("id".to_string(), id_field);
+        let mut item_schema = plain_table_schema("Item", item_fields);
+        item_schema.targets = vec!["client".to_string()];
+        schema.add_table(item_schema);
+
+        let skills = declarative_table(
+            "Skill",
+            vec![declarative_row(
+                vec![declarative_field("item", Value::UInt(1), None)],
+                None,
+                0,
+            )],
+        );
+        let mut doc = Document::new();
+        doc.add_table(skills);
+
+        let registry = GameRuleRegistry::with_rules(vec![client_server_rule()]);
+        let diags = registry.run(&schema, &doc);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, gamerule::E1608);
+        assert_eq!(diags[0].field.as_deref(), Some("item"));
+        assert!(diags[0]
+            .hint
+            .as_deref()
+            .is_some_and(|hint| { hint.contains("Item.id") }));
+    }
+
+    #[test]
+    fn client_server_field_accepts_shared_targets() {
+        let mut fields = indexmap::IndexMap::new();
+        fields.insert(
+            "item".to_string(),
+            targeted_reference_field("item", "Item", &["client"]),
+        );
+        let mut schema = Schema::new();
+        let mut skill_schema = plain_table_schema("Skill", fields);
+        skill_schema.targets = vec!["client".to_string()];
+        schema.add_table(skill_schema);
+        let mut item_fields = indexmap::IndexMap::new();
+        item_fields.insert("id".to_string(), reference_field("id", "Skill"));
+        let item_schema = plain_table_schema("Item", item_fields);
+        schema.add_table(item_schema);
+
+        let skills = declarative_table(
+            "Skill",
+            vec![declarative_row(
+                vec![declarative_field("item", Value::UInt(1), None)],
+                None,
+                0,
+            )],
+        );
+        let mut doc = Document::new();
+        doc.add_table(skills);
+
+        let registry = GameRuleRegistry::with_rules(vec![client_server_rule()]);
+        assert!(registry.run(&schema, &doc).is_empty());
     }
 }
