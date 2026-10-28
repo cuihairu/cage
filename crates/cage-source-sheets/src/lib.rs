@@ -18,13 +18,19 @@
 //! the same cache anchor and the same parsing chain as every other
 //! source, L0-L7 with no bypass.
 
+use cage_core::convention::{
+    self, a1_column, convention_territory, decode, parse_response, run_script, CellValue,
+    ColumnMeta, Grid, Preset, SheetsConvention, TableMeta, CONTRACT_VERSION,
+};
 use cage_core::error::codes::internal::E9902;
 use cage_core::error::codes::remote::E1901;
 use cage_core::error::codes::remote::{E1902, E1903, E1904};
+use cage_core::error::codes::source_convention::{E2201, E2207};
 use cage_core::manifest::{ProjectConfig, RemoteSourceConfig};
 use cage_core::remote::{self, FetchFailure};
 use cage_core::value::Document;
 use cage_source_json::JsonSourceAdapter;
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Config section name for the Sheets scheme: the spec prefix is
@@ -111,14 +117,10 @@ fn cell_to_json(cell: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Validate the response shape and serialize it to canonical JSON
-/// (`{tab: [row objects]}`): first row = header (blank header cells
-/// fall back to `col<i>` like the Excel adapter), remaining rows =
-/// records, ragged rows padded/truncated to the header width, fully
-/// blank rows skipped, natural row order preserved. Everything that is
-/// not a proper row set is E1903 — this is the shape gate E1903 exists
-/// for.
-pub fn sheets_json_to_canonical(table_name: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+/// Validate the response shape and return its `values` array (the tab's
+/// rows, each an array of cells). Everything that is not a proper row set
+/// is E1903 — this is the shape gate E1903 exists for.
+fn values_from_body(table_name: &str, body: &[u8]) -> Result<Vec<serde_json::Value>, String> {
     let reject =
         |why: &str| format!("{E1903} sheets response is not a row set, {why}: {table_name}");
     let response: serde_json::Value =
@@ -138,14 +140,36 @@ pub fn sheets_json_to_canonical(table_name: &str, body: &[u8]) -> Result<Vec<u8>
         .get("values")
         .and_then(|v| v.as_array())
         .ok_or_else(|| reject("no values (empty tab or malformed response)"))?;
-    let header_row = values
+    if values
         .first()
         .and_then(|row| row.as_array())
-        .ok_or_else(|| reject("no values (empty tab or malformed response)"))?;
-    if header_row.is_empty() {
+        .is_none_or(|row| row.is_empty())
+    {
+        return Err(reject("no values (empty tab or malformed response)"));
+    }
+    Ok(values.clone())
+}
+
+/// Serialize rows to canonical JSON (`{tab: [row objects]}`): the header is
+/// `values[header_row]` (blank header cells fall back to `col<i>` like the
+/// Excel adapter), the rows below are records, ragged rows padded/truncated
+/// to the header width, fully blank rows skipped, natural row order
+/// preserved. This is the plain (no-convention) reading of a tab.
+fn plain_rows_canonical(
+    table_name: &str,
+    values: &[serde_json::Value],
+    header_row: usize,
+) -> Result<Vec<u8>, String> {
+    let reject =
+        |why: &str| format!("{E1903} sheets response is not a row set, {why}: {table_name}");
+    let header_cells = values
+        .get(header_row)
+        .and_then(|row| row.as_array())
+        .ok_or_else(|| reject(&format!("no header row at index {header_row}")))?;
+    if header_cells.is_empty() {
         return Err(reject("blank header row"));
     }
-    let headers: Vec<String> = header_row
+    let headers: Vec<String> = header_cells
         .iter()
         .enumerate()
         .map(|(idx, cell)| match cell.as_str() {
@@ -155,7 +179,7 @@ pub fn sheets_json_to_canonical(table_name: &str, body: &[u8]) -> Result<Vec<u8>
         .collect();
 
     let mut rows = Vec::new();
-    for row in values.iter().skip(1) {
+    for row in values.iter().skip(header_row + 1) {
         let mut obj = serde_json::Map::new();
         let mut any_value = false;
         for (idx, header) in headers.iter().enumerate() {
@@ -179,6 +203,82 @@ pub fn sheets_json_to_canonical(table_name: &str, body: &[u8]) -> Result<Vec<u8>
     doc.insert(table_name.to_string(), serde_json::Value::Array(rows));
     serde_json::to_vec_pretty(&serde_json::Value::Object(doc))
         .map_err(|e| reject(&format!("cannot serialize ({e})")))
+}
+
+/// Validate the response shape and serialize it to canonical JSON with the
+/// plain reading (header at row 0): the no-convention baseline.
+pub fn sheets_json_to_canonical(table_name: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+    let values = values_from_body(table_name, body)?;
+    plain_rows_canonical(table_name, &values, 0)
+}
+
+/// The canonical bytes for one fetched tab under the project's
+/// `[source.sheets]` declaration (design §51 Q7): no declaration reads as
+/// the plain baseline; a `data` preset with a custom `header_row` just
+/// moves the header; the other presets and the script adapter decode the
+/// meta-row convention and apply the decoded structure (nested beans,
+/// multi-row folds) before serializing.
+fn conventioned_bytes(
+    project_root: &Path,
+    config: &ProjectConfig,
+    id: &str,
+    tab: &str,
+    body: &[u8],
+    api_base: &str,
+    api_key: &str,
+) -> Result<Vec<u8>, String> {
+    let Some(convention) = config.source_sheets.as_ref() else {
+        return sheets_json_to_canonical(tab, body);
+    };
+    // Declaration-level coherence, once per source (E2201), as Excel does.
+    convention
+        .validate()
+        .map_err(|message| format!("{message} ({tab})"))?;
+    let values = values_from_body(tab, body)?;
+    if convention.preset == Preset::Data && !convention.uses_script() {
+        return plain_rows_canonical(tab, &values, convention.header_row);
+    }
+    // `meta_sheet` reads the sibling `<tab>.meta` tab. The fetch happens
+    // online alongside the main tab — the conventioned output is what gets
+    // cached, so the offline fallback replays it without re-fetching.
+    let meta_values = if needs_meta_fetch(Some(convention)) {
+        let meta_tab = format!("{tab}.meta");
+        let meta_url = build_url(api_base, id, &meta_tab, api_key);
+        // A missing sibling is a convention error (E2201), as in the Excel
+        // adapter — never a fetch error, and never the keyed URL.
+        let meta_body = remote::http_get(&meta_url).map_err(|failure| {
+            format!(
+                "{E2201} the meta sheet {meta_tab:?} for {tab:?} could not be read: {}",
+                failure_brief(&failure)
+            )
+        })?;
+        Some(values_from_body(&meta_tab, &meta_body)?)
+    } else {
+        None
+    };
+    canonical_with_convention(
+        tab,
+        &values,
+        convention.header_row,
+        convention,
+        project_root,
+        id,
+        tab,
+        meta_values.as_deref(),
+    )
+}
+
+/// A URL-free rendering of a fetch failure. The API key rides the query
+/// string, so no failure text may echo the URL; `FetchFailure`'s `Display`
+/// does (it embeds the resource URL), so convention errors that carry a
+/// `FetchFailure` use this instead.
+fn failure_brief(failure: &FetchFailure) -> String {
+    match failure {
+        FetchFailure::Transport(_) => "transport failure".to_string(),
+        FetchFailure::RateLimited(_) => "rate limited".to_string(),
+        FetchFailure::NotFound(_) => "not found".to_string(),
+        FetchFailure::Status(code) => format!("http {code}"),
+    }
 }
 
 /// Map one fetch failure to its error code: auth rejection (401/403) is
@@ -241,7 +341,8 @@ impl SheetsSourceAdapter {
 
         let cache = match remote::http_get(&url) {
             Ok(body) => {
-                let bytes = sheets_json_to_canonical(tab, &body)?;
+                let bytes =
+                    conventioned_bytes(project_root, config, id, tab, &body, api_base, &key)?;
                 std::fs::create_dir_all(&cache_dir).map_err(|e| {
                     format!(
                         "{E9902} cannot create source cache {}: {e}",
@@ -270,6 +371,321 @@ impl SheetsSourceAdapter {
             format!("failed to parse row set for {spec}")
         })
     }
+}
+
+// ---- design §51 Q7: the sheets adapter carries the same convention the
+// Excel adapter does. The pipeline is fetch → canonical JSON → JSON adapter,
+// so the convention decode and the structure application (sub_columns → nested
+// objects, multi_row → folded arrays) happen at the JSON level, reusing the
+// shared cage-core::convention machinery (decode / run_script /
+// parse_response) but not the Excel `Range<Data>` code.
+
+/// One fetched cell into the convention grid's cell form.
+fn cell_to_cellvalue(cell: &serde_json::Value) -> CellValue {
+    match cell {
+        serde_json::Value::Null => CellValue::Null,
+        serde_json::Value::Bool(b) => CellValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                CellValue::Int(i)
+            } else {
+                CellValue::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => CellValue::Str(s.clone()),
+        other => CellValue::Str(other.to_string()),
+    }
+}
+
+/// One fetched row into a convention grid row.
+fn row_to_grid_row(row: &serde_json::Value) -> Vec<CellValue> {
+    row.as_array()
+        .map(|cells| cells.iter().map(cell_to_cellvalue).collect())
+        .unwrap_or_default()
+}
+
+/// The fetched rows as a convention grid (the `values` array is already the
+/// tab's used range from its top-left, so row 0 is the grid's row 0).
+fn values_grid(values: &[serde_json::Value]) -> Grid {
+    values.iter().map(row_to_grid_row).collect()
+}
+
+/// A data cell's canonical form: numbers and booleans keep their JSON text
+/// (UNFORMATTED_VALUE's cache value), NULL stays null, strings stay strings —
+/// the same rendering the baseline `sheets_json_to_canonical` uses.
+fn render_cell(cell: &serde_json::Value) -> serde_json::Value {
+    match cell {
+        serde_json::Value::Null => serde_json::Value::Null,
+        serde_json::Value::String(s) => serde_json::Value::String(s.clone()),
+        other => serde_json::Value::String(other.to_string()),
+    }
+}
+
+/// The cell at absolute column `abs_col` in one fetched row (ragged rows read
+/// as null past their width, like the baseline).
+fn cell_at(row: &serde_json::Value, abs_col: usize) -> serde_json::Value {
+    row.as_array()
+        .and_then(|cells| cells.get(abs_col))
+        .map(render_cell)
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// One top-level column's value for a data row: a column with sub-columns is
+/// a nested bean (object of its children), a childless column is its cell.
+fn column_value(meta: &ColumnMeta, row: &serde_json::Value) -> serde_json::Value {
+    if meta.sub_columns.is_empty() {
+        return cell_at(row, a1_column(&meta.cell).unwrap_or(0));
+    }
+    let mut obj = serde_json::Map::new();
+    for (name, child) in &meta.sub_columns {
+        obj.insert(name.clone(), column_value(child, row));
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// Whether a value is a present record field (the Excel adapter's "root field
+/// non-empty" test, at the JSON level).
+fn value_nonempty(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(s) => !s.is_empty(),
+        serde_json::Value::Array(a) => !a.is_empty(),
+        serde_json::Value::Object(o) => !o.is_empty(),
+        _ => true,
+    }
+}
+
+/// One data row as a canonical row object, keyed by the (stripped) top-level
+/// column names.
+fn row_object(meta: &TableMeta, row: &serde_json::Value) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (name, col) in &meta.columns {
+        obj.insert(name.clone(), column_value(col, row));
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// A fully blank row (all cells null or empty string) is a separator, not an
+/// element — the sheets baseline's `any_value` rule.
+fn row_blank(row: &serde_json::Value) -> bool {
+    row.as_array()
+        .map(|cells| {
+            cells.iter().all(|c| {
+                matches!(c, serde_json::Value::Null)
+                    || matches!(c, serde_json::Value::String(s) if s.is_empty())
+            })
+        })
+        .unwrap_or(true)
+}
+
+/// Apply the decoded structure to the data rows: `sub_columns` group into
+/// nested objects and `multi_row` columns fold contiguous rows into arrays,
+/// mirroring the Excel adapter's assembly (回流-5). `data_start` is the first
+/// data row (the `##var` territory may leave marker rows between the header
+/// row and the data).
+fn structured_rows(
+    values: &[serde_json::Value],
+    data_start: usize,
+    meta: &TableMeta,
+) -> Vec<serde_json::Value> {
+    let multi_row_columns: Vec<String> = meta
+        .columns
+        .iter()
+        .filter(|(_, c)| c.multi_row)
+        .map(|(n, _)| n.clone())
+        .collect();
+    let has_multi_row = !multi_row_columns.is_empty();
+    let mut out = Vec::new();
+    let mut pending: Option<serde_json::Value> = None;
+
+    for row in values.iter().skip(data_start) {
+        if row_blank(row) {
+            continue;
+        }
+        if has_multi_row {
+            let is_start = pending.is_none()
+                || meta
+                    .columns
+                    .iter()
+                    .any(|(_, col)| !col.multi_row && value_nonempty(&column_value(col, row)));
+            if pending.is_none() || is_start {
+                let flushed = pending.take();
+                let mut anchor = row_object(meta, row);
+                for name in &multi_row_columns {
+                    let entry = anchor.get_mut(name).expect("multi-row field present");
+                    let value = std::mem::replace(entry, serde_json::Value::Null);
+                    *entry = serde_json::Value::Array(vec![value]);
+                }
+                pending = Some(anchor);
+                if let Some(r) = flushed {
+                    out.push(r);
+                }
+                continue;
+            }
+            let pending_obj = pending.as_mut().expect("pending record present");
+            for name in &multi_row_columns {
+                let element = column_value(&meta.columns[name], row);
+                let entry = pending_obj.get_mut(name).expect("multi-row field present");
+                if let serde_json::Value::Array(items) = entry {
+                    items.push(element);
+                } else {
+                    let old = std::mem::replace(entry, serde_json::Value::Null);
+                    *entry = serde_json::Value::Array(vec![old, element]);
+                }
+            }
+            continue;
+        }
+        out.push(row_object(meta, row));
+    }
+    if let Some(r) = pending {
+        out.push(r);
+    }
+    out
+}
+
+/// Decode the declared convention for one tab into [`TableMeta`], plus the
+/// first data row. `meta_grid` is the fetched `<tab>.meta` grid when the
+/// preset is `meta_sheet`.
+#[allow(clippy::too_many_arguments)]
+fn resolve_meta(
+    main_grid: &Grid,
+    header_row: usize,
+    convention: &SheetsConvention,
+    project_root: &Path,
+    table_name: &str,
+    sheet: &str,
+    workbook: &str,
+    meta_grid: Option<&Grid>,
+) -> Result<(TableMeta, usize), String> {
+    let excel = convention.as_excel_convention();
+    let marker = &excel.marker;
+
+    if excel.uses_script() {
+        let script = excel.script.as_deref().expect("uses_script");
+        let request = serde_json::json!({
+            "contract": CONTRACT_VERSION,
+            "workbook": workbook,
+            "sheet": sheet,
+            "header_row": header_row,
+            "grid": main_grid
+                .iter()
+                .map(|row| row.iter().map(|c| c.text()).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            "config": excel.script_config,
+        });
+        let value = run_script(
+            project_root,
+            script,
+            &excel.script_args,
+            std::time::Duration::from_secs(excel.script_timeout_secs.max(1)),
+            &request,
+        )
+        .map_err(|diags| diags.render(false))?;
+        let header_names: Vec<String> = main_grid
+            .get(header_row)
+            .map(|row| row.iter().map(CellValue::text).collect())
+            .unwrap_or_default();
+        let meta = parse_response(&value, table_name, &header_names, workbook, sheet)
+            .map_err(|diags| diags.render(false))?;
+        let data_start = meta.header_row.saturating_add(1);
+        return Ok((meta, data_start));
+    }
+
+    match convention.preset {
+        Preset::Data => Ok((TableMeta::default(), header_row.saturating_add(1))),
+        Preset::MetaSheet => {
+            let meta_grid = meta_grid.ok_or_else(|| {
+                format!(
+                    "{E2201} meta_sheet preset needs the <tab>.meta grid, which was not fetched"
+                )
+            })?;
+            let header_names: Vec<String> = main_grid
+                .get(header_row)
+                .map(|row| row.iter().map(CellValue::text).collect())
+                .unwrap_or_default();
+            if let Some(names) = meta_grid.first() {
+                for (i, cell) in names.iter().enumerate() {
+                    let name = cell.text();
+                    if !name.is_empty() && !header_names.iter().any(|h| h == &name) {
+                        return Err(format!(
+                            "{E2207} meta sheet names column {name:?} at {}, which is not in \
+                             the data header row",
+                            convention::col_index_to_letter(i)
+                        ));
+                    }
+                }
+            }
+            let territory: Vec<usize> = (1..meta_grid.len()).collect();
+            let meta = decode(
+                meta_grid,
+                0,
+                &territory,
+                0,
+                0,
+                marker,
+                &HashSet::new(),
+                workbook,
+                sheet,
+            )
+            .map_err(|diags| diags.render(false))?;
+            Ok((meta, header_row.saturating_add(1)))
+        }
+        preset => {
+            let (territory, data_start) =
+                convention_territory(main_grid, header_row, marker, preset);
+            let meta = decode(
+                main_grid,
+                header_row,
+                &territory,
+                0,
+                0,
+                marker,
+                &HashSet::new(),
+                workbook,
+                sheet,
+            )
+            .map_err(|diags| diags.render(false))?;
+            Ok((meta, data_start))
+        }
+    }
+}
+
+/// The canonical JSON for a convention-declared tab: decode the convention,
+/// apply the structure, serialize `{tab: [row objects]}`. `meta_values` is
+/// the fetched `<tab>.meta` rows for the `meta_sheet` preset.
+#[allow(clippy::too_many_arguments)]
+fn canonical_with_convention(
+    table_name: &str,
+    values: &[serde_json::Value],
+    header_row: usize,
+    convention: &SheetsConvention,
+    project_root: &Path,
+    workbook: &str,
+    sheet: &str,
+    meta_values: Option<&[serde_json::Value]>,
+) -> Result<Vec<u8>, String> {
+    let main_grid = values_grid(values);
+    let (meta, data_start) = resolve_meta(
+        &main_grid,
+        header_row,
+        convention,
+        project_root,
+        table_name,
+        sheet,
+        workbook,
+        meta_values.map(values_grid).as_ref(),
+    )?;
+    let rows = structured_rows(values, data_start, &meta);
+    let mut doc = serde_json::Map::new();
+    doc.insert(table_name.to_string(), serde_json::Value::Array(rows));
+    serde_json::to_vec_pretty(&serde_json::Value::Object(doc))
+        .map_err(|e| format!("{E1903} cannot serialize ({e})"))
+}
+
+/// Whether a declared convention needs a `<tab>.meta` fetch (the `meta_sheet`
+/// preset). The caller fetches it before calling `canonical_with_convention`.
+fn needs_meta_fetch(convention: Option<&SheetsConvention>) -> bool {
+    convention.is_some_and(|c| !c.uses_script() && c.preset == Preset::MetaSheet)
 }
 
 #[cfg(test)]
@@ -488,6 +904,52 @@ mod tests {
         }
     }
 
+    /// A canned-response server that routes by substring of the request
+    /// line (the tab path), answering the first matching route — used when
+    /// one fetch pulls the main tab and the `<tab>.meta` sibling.
+    fn start_server_routes(routes: Vec<(&'static str, u16, &'static str)>) -> TestServer {
+        use std::io::Read as _;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let handle = thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while !stop2.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0u8; 2048];
+                        let n = stream.read(&mut buf).unwrap_or(0);
+                        let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let (status, body) = routes
+                            .iter()
+                            .find(|(pattern, _, _)| head.contains(pattern))
+                            .map(|(_, s, b)| (*s, *b))
+                            .unwrap_or((404, r#"{"error": "no route"}"#));
+                        let resp = format!(
+                            "HTTP/1.1 {status} REASON\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        use std::io::Write as _;
+                        let _ = stream.write_all(resp.as_bytes());
+                        let _ = stream.write_all(body.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        TestServer {
+            base: format!("http://127.0.0.1:{port}"),
+            stop,
+            handle: Some(handle),
+        }
+    }
+
     /// A port with nothing listening on it (bound, then released).
     fn dead_port() -> u16 {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -645,6 +1107,350 @@ mod tests {
         let err = SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &base, true)
             .unwrap_err();
         assert!(err.contains("E1901"), "{err}");
+
+        std::env::remove_var(var);
+    }
+
+    // ---- design §51 Q7: the `[source.sheets]` declaration carries the same
+    // convention as `[source.excel]`.
+
+    fn conv(preset: Preset, header_row: usize) -> SheetsConvention {
+        SheetsConvention {
+            header_row,
+            preset,
+            marker: "##".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_declaration_reads_byte_identical_to_the_baseline() {
+        let body =
+            br#"{"majorDimension":"ROWS","values":[["id","name"],[1,"sword"],[2,"shield"]]}"#;
+        let baseline = sheets_json_to_canonical("Levels", body).unwrap();
+        let config = ProjectConfig {
+            source_sheets: Some(SheetsConvention::default()),
+            ..Default::default()
+        };
+        let via_adapter = conventioned_bytes(
+            Path::new("/tmp"),
+            &config,
+            "1AbC",
+            "Levels",
+            body,
+            "http://127.0.0.1:1",
+            "k",
+        )
+        .unwrap();
+        assert_eq!(
+            baseline, via_adapter,
+            "data preset with header_row 0 must match the baseline"
+        );
+    }
+
+    #[test]
+    fn marker_rows_decodes_declarations_above_the_header() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let body = r###"{
+            "range": "Levels!A1:B5",
+            "majorDimension": "ROWS",
+            "values": [
+                ["##type Int32", "String"],
+                ["##description 描述词", "武器名"],
+                ["id", "name"],
+                [1, "sword"],
+                [2, "shield"]
+            ]
+        }"###;
+        let server = start_server(200, body);
+        let var = "CAGE_TEST_SHEETS_KEY_CONV1";
+        std::env::set_var(var, "test-key");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfig::default();
+        config
+            .remote
+            .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
+        config.source_sheets = Some(conv(Preset::MarkerRows, 2));
+
+        let doc = SheetsSourceAdapter::load_with_base(
+            tmp.path(),
+            &config,
+            "gsheet:1AbC/Levels",
+            &server.base,
+            false,
+        )
+        .unwrap();
+        let table = doc.tables.get("Levels").expect("Levels table");
+        assert_eq!(table.rows.len(), 2);
+
+        // The cache anchor holds the structured rows — the marker rows are
+        // decoded, not emitted.
+        let key_input = format!("{CONFIG_KEY}\n1AbC\nLevels");
+        let cache_file = remote::source_cache_dir(tmp.path(), &key_input)
+            .join(format!("{}.json", remote::cache_key(&key_input)));
+        let text = std::fs::read_to_string(&cache_file).unwrap();
+        assert!(text.contains("\"id\": \"1\""), "{text}");
+        assert!(
+            !text.contains("##type"),
+            "marker rows must not leak into the canonical rows: {text}"
+        );
+
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn data_preset_moves_the_header_row() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let body = r#"{
+            "range": "Levels!A1:B4",
+            "majorDimension": "ROWS",
+            "values": [
+                ["meta junk", ""],
+                ["more junk", ""],
+                ["id", "name"],
+                [1, "sword"]
+            ]
+        }"#;
+        let server = start_server(200, body);
+        let var = "CAGE_TEST_SHEETS_KEY_CONV2";
+        std::env::set_var(var, "test-key");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfig::default();
+        config
+            .remote
+            .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
+        config.source_sheets = Some(conv(Preset::Data, 2));
+
+        let doc = SheetsSourceAdapter::load_with_base(
+            tmp.path(),
+            &config,
+            "gsheet:1AbC/Levels",
+            &server.base,
+            false,
+        )
+        .unwrap();
+        let table = doc.tables.get("Levels").expect("Levels table");
+        assert_eq!(table.rows.len(), 1);
+        let text = std::fs::read_to_string(
+            remote::source_cache_dir(tmp.path(), &format!("{CONFIG_KEY}\n1AbC\nLevels")).join(
+                format!(
+                    "{}.json",
+                    remote::cache_key(&format!("{CONFIG_KEY}\n1AbC\nLevels"))
+                ),
+            ),
+        )
+        .unwrap();
+        assert!(
+            !text.contains("meta junk"),
+            "pre-header rows must be skipped: {text}"
+        );
+
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn var_row_multi_row_folds_rows_into_arrays() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let body = r###"{
+            "range": "Levels!A1:D6",
+            "majorDimension": "ROWS",
+            "values": [
+                ["##var", "id", "*waves", "*waves"],
+                ["##+", "", "atk", "def"],
+                ["##type", "Int32", "Int32", "Int32"],
+                ["", 1, 10, 20],
+                ["", "", 11, 21],
+                ["", 2, 30, 40]
+            ]
+        }"###;
+        let server = start_server(200, body);
+        let var = "CAGE_TEST_SHEETS_KEY_CONV3";
+        std::env::set_var(var, "test-key");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfig::default();
+        config
+            .remote
+            .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
+        config.source_sheets = Some(conv(Preset::MarkerRows, 0));
+
+        let doc = SheetsSourceAdapter::load_with_base(
+            tmp.path(),
+            &config,
+            "gsheet:1AbC/Levels",
+            &server.base,
+            false,
+        )
+        .unwrap();
+        let table = doc.tables.get("Levels").expect("Levels table");
+        assert_eq!(table.rows.len(), 2);
+        let key_input = format!("{CONFIG_KEY}\n1AbC\nLevels");
+        let text = std::fs::read_to_string(
+            remote::source_cache_dir(tmp.path(), &key_input)
+                .join(format!("{}.json", remote::cache_key(&key_input))),
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let rows = doc["Levels"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{text}");
+        assert_eq!(rows[0]["id"], "1");
+        let waves0 = rows[0]["waves"].as_array().unwrap();
+        assert_eq!(
+            waves0.len(),
+            2,
+            "contiguous rows fold into the multi-row array: {text}"
+        );
+        assert_eq!(waves0[0]["atk"], "10");
+        assert_eq!(waves0[0]["def"], "20");
+        assert_eq!(waves0[1]["atk"], "11");
+        assert_eq!(waves0[1]["def"], "21");
+        let waves1 = rows[1]["waves"].as_array().unwrap();
+        assert_eq!(waves1.len(), 1);
+        assert_eq!(waves1[0]["atk"], "30");
+        assert_eq!(rows[1]["id"], "2");
+
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn sub_columns_assemble_nested_objects() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let body = r###"{
+            "range": "Levels!A1:D4",
+            "majorDimension": "ROWS",
+            "values": [
+                ["##var", "id", "weapon", "weapon"],
+                ["##+", "", "atk", "def"],
+                ["##type", "Int32", "Int32", "Int32"],
+                ["", 1, 10, 20]
+            ]
+        }"###;
+        let server = start_server(200, body);
+        let var = "CAGE_TEST_SHEETS_KEY_CONV4";
+        std::env::set_var(var, "test-key");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfig::default();
+        config
+            .remote
+            .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
+        config.source_sheets = Some(conv(Preset::MarkerRows, 0));
+
+        let doc = SheetsSourceAdapter::load_with_base(
+            tmp.path(),
+            &config,
+            "gsheet:1AbC/Levels",
+            &server.base,
+            false,
+        )
+        .unwrap();
+        let table = doc.tables.get("Levels").expect("Levels table");
+        assert_eq!(table.rows.len(), 1);
+        let key_input = format!("{CONFIG_KEY}\n1AbC\nLevels");
+        let text = std::fs::read_to_string(
+            remote::source_cache_dir(tmp.path(), &key_input)
+                .join(format!("{}.json", remote::cache_key(&key_input))),
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let rows = doc["Levels"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{text}");
+        assert_eq!(rows[0]["id"], "1");
+        assert_eq!(
+            rows[0]["weapon"]["atk"], "10",
+            "sub-columns group into a nested bean: {text}"
+        );
+        assert_eq!(rows[0]["weapon"]["def"], "20");
+
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn meta_sheet_fetches_the_sibling_tab() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let main = r#"{
+            "range": "Levels!A1:B2",
+            "majorDimension": "ROWS",
+            "values": [["id", "name"], [1, "sword"]]
+        }"#;
+        let meta = r###"{
+            "range": "Levels.meta!A1:B2",
+            "majorDimension": "ROWS",
+            "values": [["id", "name"], ["##type Int32", "String"]]
+        }"###;
+        let server = start_server_routes(vec![
+            ("/values/Levels.meta?", 200, meta),
+            ("/values/Levels?", 200, main),
+        ]);
+        let var = "CAGE_TEST_SHEETS_KEY_CONV5";
+        std::env::set_var(var, "test-key");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfig::default();
+        config
+            .remote
+            .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
+        config.source_sheets = Some(conv(Preset::MetaSheet, 0));
+
+        let doc = SheetsSourceAdapter::load_with_base(
+            tmp.path(),
+            &config,
+            "gsheet:1AbC/Levels",
+            &server.base,
+            false,
+        )
+        .unwrap();
+        let table = doc.tables.get("Levels").expect("Levels table");
+        assert_eq!(table.rows.len(), 1);
+        let key_input = format!("{CONFIG_KEY}\n1AbC\nLevels");
+        let text = std::fs::read_to_string(
+            remote::source_cache_dir(tmp.path(), &key_input)
+                .join(format!("{}.json", remote::cache_key(&key_input))),
+        )
+        .unwrap();
+        assert!(text.contains("\"id\": \"1\""), "{text}");
+        assert!(
+            !text.contains("##type"),
+            "the meta sheet is decoded, not emitted: {text}"
+        );
+
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn meta_sheet_missing_or_mismatched_is_e2207_or_e2201() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let var = "CAGE_TEST_SHEETS_KEY_CONV6";
+        std::env::set_var(var, "test-key");
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfig::default();
+        config
+            .remote
+            .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
+        config.source_sheets = Some(conv(Preset::MetaSheet, 0));
+        let spec = "gsheet:1AbC/Levels";
+
+        // The sibling tab is absent → E2201 (the fetch is online and fails).
+        let main = r#"{"range":"Levels!A1:B2","majorDimension":"ROWS","values":[["id","name"],[1,"sword"]]}"#;
+        let server = start_server_routes(vec![("/values/Levels?", 200, main)]);
+        let err =
+            SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &server.base, false)
+                .unwrap_err();
+        assert!(err.contains("E2201"), "{err}");
+        drop(server);
+
+        // The sibling names a column the data header does not → E2207.
+        let meta = r###"{"range":"Levels.meta!A1:B2","majorDimension":"ROWS","values":[["id","nope"],["##type Int32","String"]]}"###;
+        let server = start_server_routes(vec![
+            ("/values/Levels.meta?", 200, meta),
+            ("/values/Levels?", 200, main),
+        ]);
+        let err =
+            SheetsSourceAdapter::load_with_base(tmp.path(), &config, spec, &server.base, false)
+                .unwrap_err();
+        assert!(err.contains("E2207"), "{err}");
 
         std::env::remove_var(var);
     }

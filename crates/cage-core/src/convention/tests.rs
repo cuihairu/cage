@@ -560,3 +560,25 @@ fn multi_row_column_without_sub_columns_is_e2201() {
         d.code == E2201 && d.message.contains("multi-row column") && d.message.contains("waves")
     }));
 }
+
+/// `[source.sheets]` is one flat table: the shared §51 fields plus the
+/// `header_row` knob, deserialized from the same flat shape `[source.excel]`
+/// uses (Q7). A typo'd key is rejected like it is for Excel.
+#[test]
+fn sheets_convention_flatten_roundtrip_and_unknown_key() {
+    let cfg: SheetsConvention =
+        serde_json::from_str(r###"{"header_row": 2, "preset": "meta_sheet", "marker": "##"}"###)
+            .expect("flat [source.sheets] table deserializes");
+    assert_eq!(cfg.header_row, 2);
+    assert!(matches!(cfg.preset, Preset::MetaSheet));
+    assert_eq!(cfg.marker, "##");
+    assert!(!cfg.uses_script());
+    assert!(matches!(
+        cfg.as_excel_convention().preset,
+        Preset::MetaSheet
+    ));
+
+    // An unknown key is a config typo — rejected, not silently ignored.
+    let err = serde_json::from_str::<SheetsConvention>(r#"{"presett": "data"}"#);
+    assert!(err.is_err(), "unknown key is rejected: {err:?}");
+}

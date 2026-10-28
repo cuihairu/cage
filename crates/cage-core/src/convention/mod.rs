@@ -246,6 +246,88 @@ impl ExcelConvention {
     }
 }
 
+/// `[source.sheets]` (design §51 Q7): the shared §51 fields plus the
+/// sheets-side `header_row` knob, in one flat table. `None` on
+/// `ProjectConfig` — or a default value — is the baseline: the first
+/// fetched row is the header and no meta-row convention is read at all.
+///
+/// The fields mirror `ExcelConvention` exactly (same grammar, vocabulary and
+/// E-codes); they are repeated here rather than flattened because serde
+/// `flatten` disables `deny_unknown_fields`, so a config typo (e.g.
+/// `presett = "marker_rows"`) would silently mean "no convention" instead of
+/// erroring the way `[source.excel]` does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SheetsConvention {
+    /// 0-based index of the data header row in the fetched tab. Default 0
+    /// is today's assumption; `marker_rows` / `header_block` read the
+    /// convention territory above it (Q7).
+    pub header_row: usize,
+    /// Location preset, as in `ExcelConvention.preset`.
+    pub preset: Preset,
+    /// Marker that introduces a keyword cell.
+    pub marker: String,
+    /// Per-workbook preset override — sheets has no workbook file name, so
+    /// this is unused (it is only a validation error when a script is
+    /// declared, as in `ExcelConvention::validate`); kept for the shared
+    /// vocabulary.
+    pub workbooks: IndexMap<String, Preset>,
+    /// Script adapter path, as in `ExcelConvention.script`.
+    pub script: Option<String>,
+    /// Extra script argv.
+    pub script_args: Vec<String>,
+    /// Script stdout timeout in seconds.
+    pub script_timeout_secs: u64,
+    /// Any TOML table passed to the script in the request's `config` field.
+    pub script_config: JsonValue,
+}
+
+impl Default for SheetsConvention {
+    /// Same defaults as [`ExcelConvention`]: a sheet author who writes
+    /// `preset = "marker_rows"` gets `##` as the marker and the same
+    /// script timeout, not the type defaults.
+    fn default() -> Self {
+        Self {
+            header_row: 0,
+            preset: Preset::Data,
+            marker: DEFAULT_MARKER.to_string(),
+            workbooks: IndexMap::new(),
+            script: None,
+            script_args: Vec::new(),
+            script_timeout_secs: DEFAULT_SCRIPT_TIMEOUT_SECS,
+            script_config: serde_json::json!({}),
+        }
+    }
+}
+
+impl SheetsConvention {
+    /// Whether the script adapter handles the tab instead of the built-in
+    /// presets.
+    pub fn uses_script(&self) -> bool {
+        self.script.is_some()
+    }
+
+    /// Declaration-level coherence checks (E2201), as
+    /// [`ExcelConvention::validate`].
+    pub fn validate(&self) -> Result<(), String> {
+        self.as_excel_convention().validate()
+    }
+
+    /// The shared convention view (the `[source.excel]`-equivalent), so the
+    /// sheets adapter reuses the same decode path and E-code vocabulary.
+    pub fn as_excel_convention(&self) -> ExcelConvention {
+        ExcelConvention {
+            preset: self.preset,
+            marker: self.marker.clone(),
+            workbooks: self.workbooks.clone(),
+            script: self.script.clone(),
+            script_args: self.script_args.clone(),
+            script_timeout_secs: self.script_timeout_secs,
+            script_config: self.script_config.clone(),
+        }
+    }
+}
+
 /// A1 column letters for a 0-based absolute column index (0 → "A", 25 →
 /// "Z", 26 → "AA").
 pub fn col_index_to_letter(mut col: usize) -> String {
@@ -259,6 +341,54 @@ pub fn col_index_to_letter(mut col: usize) -> String {
     }
     letters.reverse();
     letters.into_iter().collect()
+}
+
+/// Convention territory for a built-in preset on one grid, plus the row
+/// where the data begins. `marker_rows` follows Q6 ruling (a): when the data
+/// header row is a `##var` row the territory runs from row 0 to the first
+/// pure-data row below it (the marker rows at and below the field-name row);
+/// otherwise it is exactly the rows above the configured header. `data` and
+/// `meta_sheet` carry no in-grid territory (a `meta_sheet` territory is the
+/// fetched sibling sheet's rows, decided by the caller).
+pub fn convention_territory(
+    grid: &Grid,
+    header_row: usize,
+    marker: &str,
+    preset: Preset,
+) -> (Vec<usize>, usize) {
+    let header = header_row.min(grid.len());
+    match preset {
+        Preset::Data | Preset::MetaSheet => (Vec::new(), header.saturating_add(1).min(grid.len())),
+        Preset::MarkerRows => {
+            let var_header = grid.get(header_row).is_some_and(|row| {
+                row.iter().any(|cell| {
+                    cell.text()
+                        .strip_prefix(marker)
+                        .is_some_and(|rest| rest.trim() == "var")
+                })
+            });
+            if !var_header {
+                return (
+                    (0..header).collect(),
+                    header.saturating_add(1).min(grid.len()),
+                );
+            }
+            let data_start = ((header_row + 1)..grid.len())
+                .find(|row| !grid[*row].iter().any(|c| c.text().starts_with(marker)))
+                .unwrap_or(grid.len());
+            ((0..data_start).collect(), data_start)
+        }
+        Preset::HeaderBlock => {
+            let mut start = header;
+            while start > 0 && grid[start - 1].iter().any(|c| !c.text().is_empty()) {
+                start -= 1;
+            }
+            (
+                (start..header).collect(),
+                header.saturating_add(1).min(grid.len()),
+            )
+        }
+    }
 }
 
 /// Decode a territory of rows into column declarations (the built-in

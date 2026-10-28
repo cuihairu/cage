@@ -518,6 +518,11 @@ pub struct ProjectConfig {
     /// `None` is the baseline: every Excel file reads exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_excel: Option<crate::convention::ExcelConvention>,
+    /// Sheets meta-row convention (`[source.sheets]` in cage.toml, design
+    /// §51 Q7). `None` is the baseline: every `gsheet:` source reads exactly
+    /// as before (first fetched row = header, no convention rows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sheets: Option<crate::convention::SheetsConvention>,
 }
 
 /// Local Configuration Registry declaration (`[registry]` in cage.toml)
@@ -619,6 +624,7 @@ impl Default for ProjectConfig {
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
             source_excel: None,
+            source_sheets: None,
         }
     }
 }
@@ -1045,6 +1051,7 @@ mod tests {
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
             source_excel: None,
+            source_sheets: None,
         };
 
         let json = serde_json::to_string(&cfg).expect("serialize");
@@ -1093,6 +1100,7 @@ mod tests {
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
             source_excel: None,
+            source_sheets: None,
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
