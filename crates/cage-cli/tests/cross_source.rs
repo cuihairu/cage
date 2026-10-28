@@ -145,6 +145,77 @@ fn three_source_common_core_builds_byte_identical() {
     assert_common_parity([excel.root(), csv.root(), json.root()], "common-core");
 }
 
+/// X3: the Excel share carries its rules as **meta rows** (a convention
+/// workbook, no schema YAML) while the CSV/JSON shares carry them in the
+/// schema. Same data, same rules → the normalized IR is byte-identical, which
+/// proves "rules live in Excel" and the unified model are not in conflict.
+/// The meta rows stay in the schema/validation face: the IR carries no `##`
+/// marker, no meta keyword, no marker-column cell — only the data fields.
+#[test]
+fn excel_meta_rows_carry_rules_and_parity_with_csv_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let meta_root = tmp.path().join("proj-meta");
+    fs::create_dir_all(meta_root.join("config")).unwrap();
+    fs::create_dir_all(meta_root.join("schemas")).unwrap();
+    fs::write(
+        meta_root.join("cage.toml"),
+        r###"output_dir = "build"
+
+[project]
+name = "cross-source-parity"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[source.excel]
+preset = "marker_rows"
+marker = "##"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+"###,
+    )
+    .unwrap();
+    fs::copy(
+        fixtures().join("data-meta.xlsx"),
+        meta_root.join("config/data.xlsx"),
+    )
+    .unwrap();
+
+    let csv = Project::new(&["Item.csv", "Drop.csv"]);
+    let json = Project::new(&["Item.json", "Drop.json"]);
+
+    for (label, p) in [
+        ("meta-excel", meta_root.as_path()),
+        ("csv", csv.root()),
+        ("json", json.root()),
+    ] {
+        let (ok, out) = run_build(p);
+        assert!(ok, "{label} build failed:\n{out}");
+    }
+
+    for table in ["Item", "Drop"] {
+        let meta = read_artifact(&meta_root, table);
+        let csv_a = read_artifact(csv.root(), table);
+        let json_a = read_artifact(json.root(), table);
+        assert_eq!(meta, csv_a, "{table}: meta-excel IR diverges from csv");
+        assert_eq!(meta, json_a, "{table}: meta-excel IR diverges from json");
+    }
+
+    // Meta-row info never leaks into the IR data plane.
+    let text = String::from_utf8(read_artifact(&meta_root, "Item")).unwrap();
+    assert!(!text.contains("##"), "meta marker leaked into IR:\n{text}");
+    assert!(
+        text.contains(r#""kind": "Sword""#),
+        "data field lost:\n{text}"
+    );
+}
+
 #[test]
 fn nested_object_json_and_yaml_build_byte_identical() {
     let tmp = tempfile::tempdir().unwrap();
