@@ -2140,6 +2140,47 @@ enum BuildFailure {
     UpToDate { artifacts: usize, manifest: PathBuf },
 }
 
+/// The combined script-adapter fingerprint for the project's declared
+/// `[source.excel]` / `[source.sheets]` conventions (design §51 Q2). The
+/// four inputs — script bytes, resolved path, canonical `script_config`,
+/// contract version — are mixed into `source_hash` / `build_id` so editing a
+/// script or its config rotates the id even when the parsed model is
+/// unchanged. `None` when no script adapter is declared; the extra must be
+/// read before the incremental skip compares the previous manifest.
+fn source_script_fingerprint(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Option<String>, String> {
+    use cage_core::convention::script_fingerprint;
+    let mut parts: Vec<(String, String)> = Vec::new();
+    if let Some(excel) = config.source_excel() {
+        if let Some(fp) = script_fingerprint(root, excel).map_err(|diags| diags.render(false))? {
+            parts.push(("excel".to_string(), fp));
+        }
+    }
+    if let Some(sheets) = config.source_sheets() {
+        if let Some(fp) = script_fingerprint(root, &sheets.as_excel_convention())
+            .map_err(|diags| diags.render(false))?
+        {
+            parts.push(("sheets".to_string(), fp));
+        }
+    }
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    parts.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = String::new();
+    for (kind, fp) in parts {
+        if !out.is_empty() {
+            out.push('|');
+        }
+        out.push_str(&kind);
+        out.push('|');
+        out.push_str(&fp);
+    }
+    Ok(Some(out))
+}
+
 fn build_project(
     path: &Path,
     level: &str,
@@ -2198,7 +2239,10 @@ fn build_project(
 
     let normalized = normalize_document(&document);
 
-    let (schema_hash, source_hash) = ManifestGenerator::input_hashes(&schema, &normalized);
+    let source_extra =
+        source_script_fingerprint(path, &project.config).map_err(BuildFailure::Io)?;
+    let (schema_hash, source_hash) =
+        ManifestGenerator::input_hashes(&schema, &normalized, source_extra.as_deref());
     let output_dir = project.config.output_dir.as_deref().unwrap_or("build");
     let manifest_dir = path.join(output_dir);
 
@@ -2454,6 +2498,7 @@ fn build_project(
     )
     .with_environment(env)
     .with_targets(&build_profile.targets)
+    .with_source_extra(source_extra)
     .generate(&schema, &normalized, &artifacts);
     let manifest_path = match write_manifest(&manifest_dir, &manifest) {
         Ok(p) => p,
@@ -3529,7 +3574,7 @@ fn run_gen(path: &Path, profile: &str, env: Option<&str>, no_cache: bool) -> i32
 
     let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
     let normalized = normalize_document(&document);
-    let (schema_hash, _) = ManifestGenerator::input_hashes(&schema, &normalized);
+    let (schema_hash, _) = ManifestGenerator::input_hashes(&schema, &normalized, None);
 
     let mut artifacts: Vec<(String, Vec<u8>, String, Option<String>)> = Vec::new();
     for target in &build_profile.targets {

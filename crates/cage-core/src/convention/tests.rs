@@ -713,6 +713,47 @@ fn derive_multi_row_column_is_array_of_nested_object() {
     assert_eq!(props["atk"].field_type, FieldType::Int32);
 }
 
+/// A nested/multi-row parent keeps its own declared field attributes —
+/// `required`/`default`/`targets` are not swallowed by the Object/Array
+/// element structure (review finding).
+#[test]
+fn derive_nested_column_keeps_parent_attributes() {
+    let mut weapon = ColumnMeta {
+        multi_row: true,
+        cell: "C2".to_string(),
+        required: Some(true),
+        default: Some(serde_json::Value::Null),
+        targets: vec!["client".to_string()],
+        ..ColumnMeta::default()
+    };
+    weapon.sub_columns.insert(
+        "atk".to_string(),
+        ColumnMeta {
+            cell: "C2".to_string(),
+            field_type: Some(FieldType::Int32),
+            ..ColumnMeta::default()
+        },
+    );
+    weapon.sub_columns.insert(
+        "def".to_string(),
+        ColumnMeta {
+            cell: "D2".to_string(),
+            field_type: Some(FieldType::Int32),
+            ..ColumnMeta::default()
+        },
+    );
+    assert!(weapon.multi_row);
+
+    let field = derive::field_schema("weapon", &weapon);
+    assert!(field.required, "required from the parent declaration");
+    assert_eq!(field.default, Some(serde_json::Value::Null));
+    assert_eq!(field.targets, ["client"].map(String::from).to_vec());
+
+    let items = field.items.as_ref().expect("items");
+    assert!(items.required);
+    assert_eq!(items.targets, ["client"].map(String::from).to_vec());
+}
+
 /// A declared primary key becomes the table-level list.
 #[test]
 fn derive_collects_declared_primary_key_columns() {
@@ -951,6 +992,109 @@ fn drift_reference_table_mismatch_is_e2208() {
         "{}",
         diags.errors()[0].message
     );
+}
+
+/// A workbook that declares `bean`/`multi_row` while the adopted schema
+/// carries a scalar (or a non-object array) is structural drift — the
+/// implied Object/Array shape is compared even when no `##type` was written
+/// (review finding: nested shape drift silently passed E2208).
+#[test]
+fn drift_structural_shape_mismatch_is_e2208() {
+    // `weapon` declares a bean (sub-columns atk/def, no `##type` written);
+    // the adopted schema says it is a plain Int32 scalar.
+    let rows = [
+        &["##var", "id", "weapon", "weapon"][..],
+        &["##+", "", "atk", "def"][..],
+        &["##type", "Int32", "", ""][..],
+    ];
+    let metas = metas_of(&rows, 0, &[0, 1, 2]);
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            (
+                "weapon".to_string(),
+                declared_field("weapon", FieldType::Int32),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    let err = &diags.errors()[0];
+    assert_eq!(err.code, crate::error::codes::source_convention::E2208);
+    assert!(
+        err.message.contains("declares a bean structure"),
+        "{}",
+        err.message
+    );
+}
+
+/// A `multi_row` column whose adopted schema is a scalar (not an array of
+/// objects) is structural drift too, and the mismatch is anchored at the
+/// column's declaration cell.
+#[test]
+fn drift_multi_row_shape_mismatch_is_e2208() {
+    let rows = [
+        &["##var", "id", "*weapon", "*weapon"][..],
+        &["##+", "", "atk", "def"][..],
+        &["##type", "Int32", "", ""][..],
+    ];
+    let metas = metas_of(&rows, 0, &[0, 1, 2]);
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            (
+                "weapon".to_string(),
+                declared_field("weapon", FieldType::Int32),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    let err = &diags.errors()[0];
+    assert_eq!(err.code, crate::error::codes::source_convention::E2208);
+    assert!(
+        err.message.contains("declares a multi_row structure"),
+        "{}",
+        err.message
+    );
+}
+
+/// A nested child whose adopted schema says `atk` is a String (not the
+/// declared Int32) is reported — the recursion descends into the bean's
+/// properties, which the old code skipped for nested columns.
+#[test]
+fn drift_nested_child_mismatch_is_e2208() {
+    let rows = [
+        &["##var", "id", "weapon", "weapon"][..],
+        &["##+", "", "atk", "def"][..],
+        &["##type", "Int32", "Int32", "Int32"][..],
+    ];
+    let metas = metas_of(&rows, 0, &[0, 1, 2]);
+    let mut props = IndexMap::new();
+    props.insert("atk".to_string(), declared_field("atk", FieldType::String));
+    props.insert("def".to_string(), declared_field("def", FieldType::Int32));
+    let mut weapon = declared_field("weapon", FieldType::Object(IndexMap::new()));
+    weapon.properties = Some(props);
+    weapon.additional_properties = Some(false);
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            ("weapon".to_string(), weapon),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    let err = &diags.errors()[0];
+    assert!(err.message.contains("weapon.atk"), "{}", err.message);
 }
 
 /// The documented `[source.excel]` / `[source.sheets]` tables (design §51)

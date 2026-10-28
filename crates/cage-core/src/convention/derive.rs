@@ -103,6 +103,9 @@ fn bean_schema(name: &str, column: &ColumnMeta) -> FieldSchema {
                 .collect(),
         ),
         description: column.description.clone(),
+        required: column.required.unwrap_or(false),
+        default: column.default.clone(),
+        targets: column.targets.clone(),
         properties: Some(props),
         additional_properties: Some(false),
         ..empty_field()
@@ -122,6 +125,9 @@ pub fn field_schema(name: &str, column: &ColumnMeta) -> FieldSchema {
                 name: name.to_string(),
                 field_type: FieldType::Array(Box::new(bean.field_type.clone())),
                 items: Some(Box::new(bean)),
+                required: column.required.unwrap_or(false),
+                default: column.default.clone(),
+                targets: column.targets.clone(),
                 ..empty_field()
             };
         }
@@ -373,62 +379,121 @@ pub fn drift(
             }
         }
         for (name, column) in &meta.columns {
-            let derived = field_schema(name, column);
-            let Some(adopted_field) = adopted_table.fields.get(name) else {
-                diags.add(drift_diag(
+            match adopted_table.fields.get(name) {
+                None => diags.add(drift_diag(
                     source_file,
                     &sheet,
                     table_name,
                     &column.cell,
                     format!("declares field '{name}' which is not in the adopted schema"),
-                ));
-                continue;
-            };
-            if let Some(why) = declared_mismatch(column, &derived, adopted_field) {
-                diags.add(drift_diag(
+                )),
+                Some(adopted_field) => check_drift_column(
+                    &mut diags,
                     source_file,
                     &sheet,
                     table_name,
-                    &column.cell,
-                    format!("field '{name}' {why}"),
-                ));
-            }
-            // Recurse into sub-columns when the adopted field is a bean too.
-            if let (Some(a_props), Some(b_props)) = (&adopted_field.properties, &derived.properties)
-            {
-                for (child_name, child) in &column.sub_columns {
-                    match (a_props.get(child_name), b_props.get(child_name)) {
-                        (Some(a_child), Some(_)) => {
-                            let d = field_schema(child_name, child);
-                            if let Some(why) = declared_mismatch(child, &d, a_child) {
-                                diags.add(drift_diag(
-                                    source_file,
-                                    &sheet,
-                                    table_name,
-                                    &child.cell,
-                                    format!("field '{name}.{child_name}' {why}"),
-                                ));
-                            }
-                        }
-                        (None, _) => {
-                            diags.add(drift_diag(
-                                source_file,
-                                &sheet,
-                                table_name,
-                                &child.cell,
-                                format!(
-                                    "declares sub-field '{name}.{child_name}' which is not \
-                                     in the adopted schema"
-                                ),
-                            ));
-                        }
-                        _ => {}
-                    }
-                }
+                    name,
+                    column,
+                    adopted_field,
+                ),
             }
         }
     }
     diags
+}
+
+/// Compare one declared column against its adopted field, descending into
+/// sub-columns recursively. The structural shape (bean → `Object`,
+/// `multi_row` → `Array`) is compared even when the column never wrote an
+/// explicit `##type` — a workbook that declares `bean`/`multi_row` while the
+/// schema carries a scalar or a non-array is drift (review finding).
+fn check_drift_column(
+    diags: &mut Diagnostics,
+    source_file: &str,
+    sheet: &str,
+    table_name: &str,
+    path: &str,
+    column: &ColumnMeta,
+    adopted_field: &FieldSchema,
+) {
+    let derived = field_schema(path, column);
+    if let Some(why) = declared_mismatch(column, &derived, adopted_field) {
+        diags.add(drift_diag(
+            source_file,
+            sheet,
+            table_name,
+            &column.cell,
+            format!("field '{path}' {why}"),
+        ));
+    }
+
+    // The implied shape of a structured column is itself part of the drift
+    // contract: a bean must be an `Object` in the schema, a multi_row must be
+    // an `Array` of an `Object`. Without this, a workbook that declares
+    // `bean`/`multi_row` while the schema says scalar silently passes.
+    if !column.sub_columns.is_empty() {
+        let shape_ok = if column.multi_row {
+            matches!(
+                &adopted_field.field_type,
+                FieldType::Array(inner) if matches!(**inner, FieldType::Object(_))
+            )
+        } else {
+            matches!(&adopted_field.field_type, FieldType::Object(_))
+        };
+        if !shape_ok {
+            diags.add(drift_diag(
+                source_file,
+                sheet,
+                table_name,
+                &column.cell,
+                format!(
+                    "field '{path}' declares a {} structure but the schema has {}",
+                    if column.multi_row {
+                        "multi_row"
+                    } else {
+                        "bean"
+                    },
+                    field_type_label(&adopted_field.field_type)
+                ),
+            ));
+            return;
+        }
+    }
+
+    // Descend into sub-columns: unwrap the `Array` items for multi_row, then
+    // compare each child against the `Object` properties. The old code only
+    // recursed when both sides carried `properties` and never looked at the
+    // `items` element, so a nested child drift went unreported.
+    let adopted_bean = if column.multi_row {
+        adopted_field.items.as_deref().map(|i| (i, &i.properties))
+    } else {
+        Some((adopted_field, &adopted_field.properties))
+    };
+    if let Some((_bean, Some(a_props))) = adopted_bean {
+        let derived_props = derived.properties.as_ref();
+        for (child_name, child) in &column.sub_columns {
+            let child_path = format!("{path}.{child_name}");
+            match a_props.get(child_name) {
+                Some(a_child) => check_drift_column(
+                    diags,
+                    source_file,
+                    sheet,
+                    table_name,
+                    &child_path,
+                    child,
+                    a_child,
+                ),
+                None => diags.add(drift_diag(
+                    source_file,
+                    sheet,
+                    table_name,
+                    &child.cell,
+                    format!("declares sub-field '{child_path}' which is not in the adopted schema"),
+                )),
+            }
+            let _ = derived_props;
+        }
+    }
 }
 
 /// Render the derived schema as a reviewable YAML draft (X2 `schema-draft`).

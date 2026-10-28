@@ -454,7 +454,10 @@ fn run_build_dry_run(
     };
     let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
     let normalized = normalize_document(&document);
-    let (schema_hash, source_hash) = ManifestGenerator::input_hashes(&schema, &normalized);
+    let source_extra =
+        super::source_script_fingerprint(&root, &project.config).map_err(|e| e.to_string())?;
+    let (schema_hash, source_hash) =
+        ManifestGenerator::input_hashes(&schema, &normalized, source_extra.as_deref());
 
     // 逐 target 生成到内存——与 cage build 同一份 generate_target_items，
     // 只是不调用写盘路径。
@@ -500,6 +503,7 @@ fn run_build_dry_run(
     )
     .with_environment(env)
     .with_targets(&build_profile.targets)
+    .with_source_extra(source_extra)
     .generate(&schema, &normalized, &artifacts);
 
     let artifact_list: Vec<Value> = artifacts

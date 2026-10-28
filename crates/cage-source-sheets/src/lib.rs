@@ -392,6 +392,7 @@ fn cell_to_cellvalue(cell: &serde_json::Value) -> CellValue {
                 CellValue::Float(n.as_f64().unwrap_or(0.0))
             }
         }
+        serde_json::Value::String(s) if s.is_empty() => CellValue::Null,
         serde_json::Value::String(s) => CellValue::Str(s.clone()),
         other => CellValue::Str(other.to_string()),
     }
@@ -569,7 +570,11 @@ fn resolve_meta(
             "header_row": header_row,
             "grid": main_grid
                 .iter()
-                .map(|row| row.iter().map(|c| c.text()).collect::<Vec<_>>())
+                .map(|row| {
+                    row.iter()
+                        .map(|c| serde_json::to_value(c).unwrap_or(serde_json::Value::Null))
+                        .collect::<Vec<_>>()
+                })
                 .collect::<Vec<_>>(),
             "config": excel.script_config,
         });
@@ -1463,5 +1468,70 @@ mod tests {
         assert!(err.contains("E2207"), "{err}");
 
         std::env::remove_var(var);
+    }
+
+    /// The script adapter's `request.grid` carries the contract's typed
+    /// cells — number / string / boolean / null — not `.text()`-stringified
+    /// cells (review finding: sheets was flattening every cell to a string,
+    /// turning blank cells into `""` instead of `null`).
+    #[test]
+    fn script_grid_keeps_typed_cells_not_strings() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        // The script echoes the grid it saw into a side file, then answers
+        // the contract with two columns typed from the header.
+        let script = tmp.path().join("echo_grid.py");
+        std::fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import json,sys
+req = json.load(sys.stdin)
+with open(sys.argv[1], "w") as f:
+    json.dump(req["grid"], f)
+print(json.dumps({
+  "contract": req["contract"],
+  "table": req["sheet"],
+  "header_row": 0,
+  "columns": {
+    "id": {"cell": "A1", "type": {"kind": "Int32"}},
+    "flag": {"cell": "B1", "type": {"kind": "Bool"}},
+  },
+}))"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let out = tmp.path().join("grid_seen.json");
+
+        let body = r#"{"majorDimension":"ROWS","values":[["id","flag"],[7,true],["",""]]}"#;
+        let mut config = ProjectConfig::default();
+        config.source = Some(cage_core::manifest::SourceConfig {
+            sheets: Some(SheetsConvention {
+                script: Some("echo_grid.py".to_string()),
+                script_args: vec![out.display().to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let bytes = conventioned_bytes(
+            tmp.path(),
+            &config,
+            "1AbC",
+            "Levels",
+            body.as_bytes(),
+            "http://127.0.0.1:1",
+            "k",
+        )
+        .unwrap();
+        let seen: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!(seen[1][0], serde_json::json!(7), "Int stays a number");
+        assert_eq!(seen[1][1], serde_json::json!(true), "Bool stays a boolean");
+        assert_eq!(
+            seen[2][0],
+            serde_json::Value::Null,
+            "blank cell is null, not an empty string"
+        );
+        let _ = bytes;
     }
 }

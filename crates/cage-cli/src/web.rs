@@ -1017,7 +1017,8 @@ fn build_facts(ctx: &Ctx, env: Option<&str>) -> serde_json::Value {
         let target_records = ManifestGenerator::target_records(&build_profile.targets);
         let (schema, document) = crate::filter_by_profile(&project.schema, &project.document, name);
         let normalized = cage_core::normalize::normalize_document(&document);
-        let (schema_hash, source_hash) = ManifestGenerator::input_hashes(&schema, &normalized);
+        let (schema_hash, source_hash) =
+            ManifestGenerator::input_hashes(&schema, &normalized, None);
         let cur_table_hashes = ManifestGenerator::table_hashes(&normalized);
 
         let mut entry = serde_json::json!({

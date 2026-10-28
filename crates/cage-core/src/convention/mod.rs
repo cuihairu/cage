@@ -246,6 +246,35 @@ impl ExcelConvention {
     }
 }
 
+/// The source fingerprint input for a script adapter (design §51 Q2):
+/// blake3 of the script's bytes + resolved path + canonical `script_config`
+/// + contract version. Editing the script or its config changes the string,
+///   so `source_hash` / `build_id` rotate even when the parsed model is byte-identical.
+pub fn script_fingerprint(
+    root: &Path,
+    convention: &ExcelConvention,
+) -> Result<Option<String>, Diagnostics> {
+    let Some(rel) = convention.script.as_deref() else {
+        return Ok(None);
+    };
+    let script = resolve_script(root, rel)?;
+    let bytes = std::fs::read(&script).map_err(|e| {
+        let mut diags = Diagnostics::new();
+        diags.add(Diagnostic::error(
+            crate::error::codes::source_convention::E2203,
+            format!("failed to read script {}: {e}", script.display()),
+        ));
+        diags
+    })?;
+    let script_hash = blake3::hash(&bytes).to_hex().to_string();
+    let config = serde_json::to_string(&convention.script_config)
+        .unwrap_or_else(|_| convention.script_config.to_string());
+    Ok(Some(format!(
+        "{CONTRACT_VERSION}|{script_hash}|{}|{config}",
+        script.display()
+    )))
+}
+
 /// `[source.sheets]` (design §51 Q7): the shared §51 fields plus the
 /// sheets-side `header_row` knob, in one flat table. `None` on
 /// `ProjectConfig` — or a default value — is the baseline: the first

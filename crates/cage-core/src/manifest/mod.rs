@@ -96,6 +96,12 @@ pub struct ManifestGenerator {
     cage_version: String,
     targets: Vec<TargetRecord>,
     environment: Option<String>,
+    /// Extra bytes mixed into `source_hash` / `build_id` that are not part
+    /// of the parsed Canonical Model — the script-adapter fingerprint
+    /// (design §51 Q2): the script bytes, the resolved path, the canonical
+    /// `script_config` and the contract version. `None` means no extra input
+    /// (no script adapter declared).
+    source_extra: Option<String>,
 }
 
 impl ManifestGenerator {
@@ -110,7 +116,15 @@ impl ManifestGenerator {
             cage_version,
             targets: Vec::new(),
             environment: None,
+            source_extra: None,
         }
+    }
+
+    /// Mix the script-adapter fingerprint into `source_hash` / `build_id`
+    /// (design §51 Q2: editing the script or its config rotates the id).
+    pub fn with_source_extra(mut self, extra: Option<String>) -> Self {
+        self.source_extra = extra;
+        self
     }
 
     /// Record the build's environment (`--env`). `None` (or `Some("")`)
@@ -171,6 +185,7 @@ impl ManifestGenerator {
     ) -> BuildManifest {
         let schema_hash = Self::hash_schema(schema);
         let source_hash = Self::hash_source(document);
+        let source_hash = Self::mix_extra(source_hash, self.source_extra.as_deref());
         let content_hash = Self::hash_content(artifacts);
         let build_id = Self::build_id(
             &self.profile_name,
@@ -253,8 +268,32 @@ impl ManifestGenerator {
     /// [`Self::generate`] does — the pair an incremental build compares
     /// against the previous manifest to decide whether a rebuild can be
     /// skipped.
-    pub fn input_hashes(schema: &crate::schema::Schema, document: &Document) -> (String, String) {
-        (Self::hash_schema(schema), Self::hash_source(document))
+    pub fn input_hashes(
+        schema: &crate::schema::Schema,
+        document: &Document,
+        source_extra: Option<&str>,
+    ) -> (String, String) {
+        let source_hash = Self::hash_source(document);
+        (
+            Self::hash_schema(schema),
+            Self::mix_extra(source_hash, source_extra),
+        )
+    }
+
+    /// Mix the extra fingerprint bytes into `source_hash` (identity when
+    /// `None`), so a script edit rotates the id even when the parsed model
+    /// is unchanged.
+    fn mix_extra(source_hash: String, extra: Option<&str>) -> String {
+        match extra {
+            None => source_hash,
+            Some(extra) => {
+                let mut ctx = blake3::Hasher::new();
+                ctx.update(source_hash.as_bytes());
+                ctx.update(b"|");
+                ctx.update(extra.as_bytes());
+                ctx.finalize().to_hex().to_string()
+            }
+        }
     }
 
     /// Deterministic build id: fingerprints the build's semantic identity
@@ -785,28 +824,28 @@ mod tests {
         );
 
         let schema = Schema::new();
-        let (h1, s1) = ManifestGenerator::input_hashes(&schema, &doc);
-        let (h2, s2) = ManifestGenerator::input_hashes(&schema, &doc);
+        let (h1, s1) = ManifestGenerator::input_hashes(&schema, &doc, None);
+        let (h2, s2) = ManifestGenerator::input_hashes(&schema, &doc, None);
         // Same input -> same hash (stability)
         assert_eq!(h1, h2);
         assert_eq!(s1, s2);
 
         // Empty document hashes deterministically too
         let empty = Document::new();
-        let (e1, es1) = ManifestGenerator::input_hashes(&schema, &empty);
-        let (e2, es2) = ManifestGenerator::input_hashes(&schema, &empty);
+        let (e1, es1) = ManifestGenerator::input_hashes(&schema, &empty, None);
+        let (e2, es2) = ManifestGenerator::input_hashes(&schema, &empty, None);
         assert_eq!(e1, e2);
         assert_eq!(es1, es2);
         assert_ne!(s1, es1);
 
         // Changed field value -> different source hash
         let changed = doc_with_row(vec![("f", Value::Float(2.5))], Value::UInt(9));
-        let (_, s_changed) = ManifestGenerator::input_hashes(&schema, &changed);
+        let (_, s_changed) = ManifestGenerator::input_hashes(&schema, &changed, None);
         assert_ne!(s1, s_changed);
 
         // Changed primary key -> different source hash
         let changed_pk = doc_with_row(vec![("f", Value::Float(1.25))], Value::UInt(10));
-        let (_, s_pk) = ManifestGenerator::input_hashes(&schema, &changed_pk);
+        let (_, s_pk) = ManifestGenerator::input_hashes(&schema, &changed_pk, None);
         assert_ne!(s1, s_pk);
 
         // Float and its string twin hash differently (floats use fixed
@@ -816,8 +855,8 @@ mod tests {
             vec![("x", Value::String("1.25".to_string()))],
             Value::UInt(9),
         );
-        let (_, s_float) = ManifestGenerator::input_hashes(&schema, &float_row);
-        let (_, s_string) = ManifestGenerator::input_hashes(&schema, &string_row);
+        let (_, s_float) = ManifestGenerator::input_hashes(&schema, &float_row, None);
+        let (_, s_string) = ManifestGenerator::input_hashes(&schema, &string_row, None);
         assert_ne!(s_float, s_string);
     }
 
@@ -1493,9 +1532,38 @@ mod tests {
             "0.1.0".to_string(),
         );
         let manifest = generator.generate(&schema, &doc, &[]);
-        let (schema_hash, source_hash) = ManifestGenerator::input_hashes(&schema, &doc);
+        let (schema_hash, source_hash) = ManifestGenerator::input_hashes(&schema, &doc, None);
         assert_eq!(schema_hash, manifest.schema_hash);
         assert_eq!(source_hash, manifest.source_hash);
+    }
+
+    /// The script-adapter fingerprint mixes into `source_hash` / `build_id`:
+    /// a different script or config rotates the id even when the parsed
+    /// document is byte-identical (design §51 Q2).
+    #[test]
+    fn source_extra_rotates_build_id() {
+        let schema = make_test_schema();
+        let doc = make_test_doc();
+        let mk = || {
+            ManifestGenerator::new(
+                "test".to_string(),
+                "client".to_string(),
+                "0.1.0".to_string(),
+            )
+        };
+        let m_base = mk().generate(&schema, &doc, &[]);
+        let m_script = mk()
+            .with_source_extra(Some("script-a".to_string()))
+            .generate(&schema, &doc, &[]);
+        let m_other = mk()
+            .with_source_extra(Some("script-b".to_string()))
+            .generate(&schema, &doc, &[]);
+        assert_ne!(m_base.source_hash, m_script.source_hash, "extra rotates");
+        assert_ne!(m_script.source_hash, m_other.source_hash);
+        assert_ne!(m_script.build_id, m_other.build_id);
+        // input_hashes agrees with generate under the same extra.
+        let (_, s) = ManifestGenerator::input_hashes(&schema, &doc, Some("script-a"));
+        assert_eq!(s, m_script.source_hash);
     }
 
     #[test]

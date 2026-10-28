@@ -2016,3 +2016,10 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       `DateTimeIso`/`DurationIso` 透传口径一致；迁移路径=pre-1.0 且 dump 本非可用值，
       无既有快照依赖（cargo fmt、clippy 0 warning、cage-source-excel 34 绿，
       2026-10-28）。
+
+## 审核发现
+
+- [x] 审核发现：X2 未兑现 §51 Q2/Q5 脚本指纹契约——脚本字节 blake3/解析路径/script_config/契约版本从未汇入 source_hash 或 build_id，改脚本但输出不变时 build_id 不变，违背设计 Q2「编辑脚本或其 config 必改 build_id」承诺（docs/design.md:2647,2689; crates/cage-core/src/manifest/mod.rs:281-311 无任何 script 相关输入）（属实，已修；证据 crates/cage-core/src/convention/mod.rs:250-277; crates/cage-core/src/manifest/mod.rs:96-122,185-215; crates/cage-cli/src/main.rs:2143-2188）
+- [x] 审核发现：drift 对结构形状漂移漏报——嵌套 bean/multi_row 列自身隐含的 Object/Array 类型从不与 adopted 比较，子列递归仅在双方 properties 均 Some 时发生且从不下钻 items，故工作簿声明 bean/multi_row 而 schema 写标量或数组标量时静默通过 E2208（crates/cage-core/src/convention/derive.rs:213-258,397-428）（属实，已修；证据 crates/cage-core/src/convention/derive.rs:379-470）
+- [x] 审核发现：派生 schema 丢弃 bean/multi_row 列自身的 required/default/targets——field_schema/bean_schema 对含子列字段统一走 ..empty_field()，无 YAML 派生链路下 ##required true 声明被静默降级为 false（crates/cage-core/src/convention/derive.rs:89-128）（属实，已修；证据 crates/cage-core/src/convention/derive.rs:89-145）
+- [x] 审核发现：sheets 脚本适配器违反共享契约网格类型——request.grid 对所有单元格调 .text() 致数字/布尔/空格全部序列化为字符串（空格变 "" 而非 null），与契约 Q2「number/string/boolean/null」及 Excel 侧 cell_to_json 的类型保真不一致（crates/cage-source-sheets/src/lib.rs:565-577; docs/design.md:2644）（属实，已修；证据 crates/cage-source-sheets/src/lib.rs:392-398,570-580）
