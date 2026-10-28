@@ -1932,9 +1932,12 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       （cage-source-excel 34 绿）；无声明=逐字节照旧回归测试绿；fmt/clippy/docs:build 绿。
       差异记 docs/design.md §51 Q5；cage-source-sheets 同契约后置为下一条。）
 
-- [ ] X1 跟进：cage-source-sheets 同契约（「同 Excel 惯例」含脚本适配器）——Sheets 侧无元行
+- [x] X1 跟进：cage-source-sheets 同契约（「同 Excel 惯例」含脚本适配器）——Sheets 侧无元行
       承载面（UNFORMATTED_VALUE 纯数据网格），须先裁定声明载体（命名 tab / 首行块 / 脚本），
       语法与词汇沿用 §51 不新造（§51 Q5 后置裁定）。
+      12abdb0（Q7 裁定）+ 8525da8（[source.sheets] 实现）：同一 §51 预设集，`header_row` 旋钮，
+      meta_sheet = 兄弟 `<tab>.meta` tab（E2207），脚本 = 共享 cage.excel-meta/1 契约；
+      数据面 JSON 级装配（sub_columns 嵌套、multi_row 折叠），无声明逐字节不变。
 
 - [ ] X2 schema-draft Excel 内省 + 漂移核对：`cage schema-draft` 支持 Excel 源，从元行生成
       schema 草稿（作者不再手写第二遍）；草稿采用后编译期与 Excel 元行核对，不一致报新 E 码
