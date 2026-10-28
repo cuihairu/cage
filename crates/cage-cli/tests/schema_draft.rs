@@ -188,3 +188,119 @@ fn schema_draft_needs_a_project_and_at_least_one_spec() {
         "clap usage error names the missing argument\n{err}"
     );
 }
+
+// ------------------------------------------------------- X2 (design §51) ---
+// `cage schema-draft excel:<rel>` and the derived/drift chain over the
+// convention Excel meta rows. The fixture workbook (##var / ##type / ##min)
+// is copied into the project so the source root is hermetic.
+
+/// Copy the fixture workbook under `config/Items.xlsx` and write cage.toml
+/// with the documented `[source.excel]` table. `schema_path` and
+/// `schema_yaml` are optional: `Some` turns on the drift path, `None` is the
+/// derived chain (no adopted schema).
+fn write_excel_project(dir: &Path, schema_yaml: Option<&str>) {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema_draft/Items.xlsx");
+    let dest = dir.join("config/Items.xlsx");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::copy(&fixture, &dest).unwrap();
+
+    let schema_path = if schema_yaml.is_some() {
+        "schema_path = \"schemas\"\n"
+    } else {
+        ""
+    };
+    let body = format!(
+        r###"{schema_path}[project]
+name = "drafter"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[source.excel]
+preset = "marker_rows"
+marker = "##"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+file_template = "{{table}}.json"
+"###
+    );
+    write(&dir.join("cage.toml"), &body);
+
+    if let Some(schema) = schema_yaml {
+        write(&dir.join("schemas/item.yaml"), schema);
+    }
+}
+
+/// X2 acceptance (a): a convention Excel with **no** adopted schema passes
+/// `check` on the derived chain — the meta rows themselves are the schema, no
+/// YAML is written, and the workbook's declared table is validated.
+#[test]
+fn excel_meta_rows_pass_check_without_yaml() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_excel_project(tmp.path(), None);
+
+    let out = run_cage(&["check", tmp.path().to_str().unwrap()]);
+    assert_code(&out, 0, "derived chain check");
+    let msg = stdout(&out);
+    assert!(
+        msg.contains("OK") && msg.contains("1 tables"),
+        "the derived table is validated\n{msg}"
+    );
+}
+
+/// X2 acceptance (b): a meta row that contradicts the adopted schema is an
+/// E2208 anchored at the exact declaration cell (the `##type` value cell).
+#[test]
+fn excel_drift_conflict_is_e2208_at_the_cell() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Adopted schema says `name` is Int32; the workbook declares String.
+    write_excel_project(
+        tmp.path(),
+        Some(
+            "tables:\n  Items:\n    name: Items\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: Int32 }\n      name:\n        name: name\n        type: { kind: Int32 }\nenums: {}\n",
+        ),
+    );
+
+    let out = run_cage(&["check", tmp.path().to_str().unwrap()]);
+    assert_code(&out, 2, "drift is a hard error");
+    let err = stderr(&out);
+    assert!(err.contains("E2208"), "{err}");
+    assert!(err.contains("declares type"), "{err}");
+    assert!(
+        err.contains("Col: C"),
+        "anchored at the name declaration cell\n{err}"
+    );
+    assert!(err.contains("Row: 2"), "the ##type row\n{err}");
+}
+
+/// X2 acceptance (c): `schema-draft excel:` renders a deterministic YAML
+/// draft of the derived schema, and the same input renders identically on
+/// re-run (round-trip stable).
+#[test]
+fn schema_draft_excel_renders_a_stable_draft() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_excel_project(tmp.path(), None);
+
+    let spec = "excel:config/Items.xlsx";
+    let first = run_cage(&["schema-draft", tmp.path().to_str().unwrap(), spec]);
+    assert_code(&first, 0, "excel draft");
+    let first_out = stdout(&first);
+    assert!(first_out.contains("tables:"), "{first_out}");
+    assert!(first_out.contains("Items:"), "{first_out}");
+    assert!(first_out.contains("primary_key:"), "{first_out}");
+    assert!(
+        first_out.contains("kind: Int32"),
+        "declared type carried\n{first_out}"
+    );
+
+    let second = run_cage(&["schema-draft", tmp.path().to_str().unwrap(), spec]);
+    assert_code(&second, 0, "re-run draft");
+    assert_eq!(stdout(&second), first_out, "draft is deterministic");
+}

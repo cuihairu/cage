@@ -582,3 +582,399 @@ fn sheets_convention_flatten_roundtrip_and_unknown_key() {
     let err = serde_json::from_str::<SheetsConvention>(r#"{"presett": "data"}"#);
     assert!(err.is_err(), "unknown key is rejected: {err:?}");
 }
+
+// ------------------------------------------------------------------
+// X2: the decoded TableMeta as a schema, and the drift check (derive.rs)
+// ------------------------------------------------------------------
+
+use crate::schema::{FieldSchema, FieldType, ReferenceSchema, Schema, TableSchema};
+
+fn metas_of(
+    rows: &[&[&str]],
+    header_row: usize,
+    territory: &[usize],
+) -> IndexMap<String, TableMeta> {
+    let mut metas = IndexMap::new();
+    metas.insert("Skill".to_string(), meta_of(rows, header_row, territory));
+    metas
+}
+
+fn adopt_one_table(fields: IndexMap<String, FieldSchema>, primary_key: Vec<String>) -> Schema {
+    let mut tables = IndexMap::new();
+    tables.insert(
+        "Skill".to_string(),
+        TableSchema {
+            name: "Skill".to_string(),
+            description: None,
+            primary_key,
+            fields,
+            unique_constraints: Vec::new(),
+            order_by: None,
+            targets: Vec::new(),
+            env_overrides: IndexMap::new(),
+        },
+    );
+    Schema {
+        tables,
+        enums: IndexMap::new(),
+        metadata: None,
+    }
+}
+
+fn declared_field(name: &str, t: FieldType) -> FieldSchema {
+    FieldSchema {
+        name: name.to_string(),
+        field_type: t,
+        description: None,
+        required: false,
+        nullable: false,
+        default: None,
+        min: None,
+        max: None,
+        min_length: None,
+        max_length: None,
+        pattern: None,
+        enum_values: None,
+        min_items: None,
+        max_items: None,
+        items: None,
+        separator: None,
+        properties: None,
+        additional_properties: None,
+        reference: None,
+        targets: Vec::new(),
+        rules: Vec::new(),
+        metadata: IndexMap::new(),
+    }
+}
+
+/// Declared columns map field-for-field into the Schema DSL, and a named
+/// enum (`Enum<Rarity>` + `##enum` values) is registered once into
+/// `Schema.enums` — the derived chain's `Schema` is valid as a whole.
+#[test]
+fn derive_schema_maps_declared_columns_and_registers_enums() {
+    let rows = [
+        &["##type Int32", "String", "Enum<Rarity>"][..],
+        &["##enum", "", "common,rare,epic"][..],
+        &["id", "name", "rarity"][..],
+    ];
+    let schema = derive::derive_schema(&metas_of(&rows, 2, &[0, 1]));
+    let skill = schema.tables.get("Skill").expect("table");
+    assert_eq!(skill.name, "Skill");
+    assert_eq!(skill.fields.len(), 3);
+    assert_eq!(skill.fields["id"].field_type, FieldType::Int32);
+    assert_eq!(skill.fields["name"].field_type, FieldType::String);
+    assert_eq!(
+        skill.fields["rarity"].field_type,
+        FieldType::Enum("Rarity".to_string())
+    );
+    let rarity = schema.enums.get("Rarity").expect("enum registered");
+    assert_eq!(
+        rarity
+            .values
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>(),
+        ["common", "rare", "epic"]
+    );
+    // No primary key declared → the derived table names none.
+    assert_eq!(skill.primary_key, Vec::<String>::new());
+}
+
+/// A `multi_row` column with `##+` sub-columns derives to an `Array` of a
+/// nested `Object` whose `properties` carry the sub-columns (回流-5/6).
+#[test]
+fn derive_multi_row_column_is_array_of_nested_object() {
+    let rows = [
+        &["##var", "id", "*weapon", "*weapon"][..],
+        &["##+", "", "atk", "def"][..],
+        &["##type", "Int32", "Int32", "Int32"][..],
+    ];
+    let metas = metas_of(&rows, 0, &[0, 1, 2]);
+    let weapon = metas["Skill"]
+        .columns
+        .get("weapon")
+        .expect("weapon declared");
+    assert!(weapon.multi_row);
+
+    let field = derive::field_schema("weapon", weapon);
+    assert!(
+        matches!(field.field_type, FieldType::Array(_)),
+        "a multi_row column is an Array"
+    );
+    let items = field.items.as_ref().expect("items for the Array");
+    assert!(matches!(items.field_type, FieldType::Object(_)));
+    let props = items.properties.as_ref().expect("properties of the bean");
+    assert_eq!(
+        props.keys().collect::<Vec<_>>(),
+        ["atk", "def"],
+        "sub-columns become the bean's properties"
+    );
+    assert_eq!(props["atk"].field_type, FieldType::Int32);
+}
+
+/// A declared primary key becomes the table-level list.
+#[test]
+fn derive_collects_declared_primary_key_columns() {
+    let rows = [
+        &["##type Int32", "String"][..],
+        &["##primary_key true", ""][..],
+        &["id", "name"][..],
+    ];
+    let schema = derive::derive_schema(&metas_of(&rows, 2, &[0, 1]));
+    assert_eq!(
+        schema.tables["Skill"].primary_key,
+        ["id"].map(String::from).to_vec()
+    );
+}
+
+/// `render_draft` output re-parses to the exact derived schema (the
+/// round-trip acceptance): the body is the Schema's own serde, the header
+/// is comments only.
+#[test]
+fn draft_render_round_trips_to_the_derived_schema() {
+    let rows = [
+        &["##type Int32", "String", "Enum<Rarity>"][..],
+        &["##enum", "", "common,rare"][..],
+        &["##min 0", "", ""][..],
+        &["id", "name", "rarity"][..],
+    ];
+    let derived = derive::derive_schema(&metas_of(&rows, 3, &[0, 1, 2]));
+    let draft = derive::render_draft("excel:config/Skill.xlsx", &derived);
+
+    assert!(draft.starts_with("# schema draft"), "comment header first");
+    let body: Schema =
+        serde_yaml::from_str(&draft).expect("the draft body is a valid schema document");
+    assert_eq!(body.tables.keys().collect::<Vec<_>>(), ["Skill"]);
+    assert_eq!(
+        body.tables["Skill"].fields["id"].field_type,
+        FieldType::Int32
+    );
+    assert_eq!(body.enums["Rarity"].values.len(), 2);
+    assert_eq!(body.tables["Skill"].fields["id"].min, Some(0.0));
+}
+
+/// `fill_derived` inserts only tables the schema does not already have —
+/// an adopted partial schema keeps its own table untouched (the derived
+/// remainder fills the rest).
+#[test]
+fn fill_derived_leaves_adopted_tables_alone() {
+    let rows = [&["##type Int32", "String"][..], &["id", "name"][..]];
+    let mut metas = metas_of(&rows, 1, &[0]);
+    metas.insert("Item".to_string(), metas["Skill"].clone());
+
+    // "Skill" is adopted with a different field order; "Item" is not.
+    let mut adopted = adopt_one_table(
+        [("id".to_string(), declared_field("id", FieldType::Int32))]
+            .into_iter()
+            .collect(),
+        vec!["id".to_string()],
+    );
+    adopted.tables.get_mut("Skill").expect("skill").description = Some("adopted".to_string());
+
+    derive::fill_derived(&mut adopted, &metas);
+    assert_eq!(
+        adopted.tables["Skill"].description.as_deref(),
+        Some("adopted"),
+        "an adopted table is not overwritten"
+    );
+    assert_eq!(
+        adopted.tables["Skill"].fields.len(),
+        1,
+        "id only, as adopted"
+    );
+    assert_eq!(
+        adopted.tables["Item"].fields["name"].field_type,
+        FieldType::String,
+        "the missing table is filled from the workbook"
+    );
+}
+
+/// A column the meta declares as `Int32` but the adopted schema has as
+/// `String` is drift: E2208, anchored at the exact declaration cell.
+#[test]
+fn drift_type_mismatch_is_e2208_at_the_declaration_cell() {
+    let rows = [&["##type Int32", "String"][..], &["id", "name"][..]];
+    let metas = metas_of(&rows, 1, &[0]);
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::String)),
+            (
+                "name".to_string(),
+                declared_field("name", FieldType::String),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    let err = diags.errors()[0];
+    assert_eq!(err.code, crate::error::codes::source_convention::E2208);
+    assert!(err.message.contains("declares type"), "{}", err.message);
+    let loc = err.location.as_ref().expect("cell location");
+    assert_eq!(
+        loc.column.as_deref(),
+        Some("A"),
+        "the `##type` column letter"
+    );
+    assert_eq!(loc.row, Some(1), "the `##type` row");
+}
+
+/// An adopted field the workbook never mentions is the author's own and is
+/// not drift — only the declaration-carried subset is compared.
+#[test]
+fn drift_ignores_author_added_constraints_and_extra_fields() {
+    let rows = [&["##type Int32", "String"][..], &["id", "name"][..]];
+    let metas = metas_of(&rows, 1, &[0]);
+    let mut name = declared_field("name", FieldType::String);
+    name.pattern = Some("^[a-z]+$".to_string());
+    name.min_length = Some(1);
+    let extra = declared_field("level", FieldType::Int32);
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            ("name".to_string(), name),
+            ("level".to_string(), extra),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert!(diags.is_empty(), "no drift: {diags:?}");
+}
+
+/// A meta-declared field the adopted schema lacks is drift (the workbook
+/// grew a column the schema never adopted), and so is a table the workbook
+/// declares but the schema has no entry for.
+#[test]
+fn drift_missing_field_and_missing_table_are_e2208() {
+    let rows = [&["##type Int32", "String"][..], &["id", "name"][..]];
+    let mut metas = metas_of(&rows, 1, &[0]);
+    metas.insert("Item".to_string(), metas["Skill"].clone());
+
+    let adopted = adopt_one_table(
+        [("id".to_string(), declared_field("id", FieldType::Int32))]
+            .into_iter()
+            .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    let errors: Vec<&Diagnostic> = diags.errors();
+    assert_eq!(
+        errors.len(),
+        2,
+        "the missing field + the missing table: {errors:?}"
+    );
+    assert!(errors
+        .iter()
+        .all(|e| e.code == crate::error::codes::source_convention::E2208));
+    let field_errs: Vec<&&Diagnostic> = errors
+        .iter()
+        .filter(|e| e.message.contains("declares field 'name'"))
+        .collect();
+    assert_eq!(field_errs.len(), 1);
+    let loc = field_errs[0].location.as_ref().expect("cell location");
+    assert_eq!(loc.column.as_deref(), Some("B"), "the name column letter");
+}
+
+/// A primary key the workbook declares that differs from the adopted one is
+/// drift (declaration-bearing on the schema side too).
+#[test]
+fn drift_primary_key_mismatch_is_e2208() {
+    let rows = [
+        &["##type Int32", "String"][..],
+        &["##primary_key true", ""][..],
+        &["id", "name"][..],
+    ];
+    let metas = metas_of(&rows, 2, &[0, 1]);
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            (
+                "name".to_string(),
+                declared_field("name", FieldType::String),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        vec!["name".to_string()],
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    let err = diags.errors()[0];
+    assert!(
+        err.message.contains("declares primary key"),
+        "{}",
+        err.message
+    );
+}
+
+/// A reference the workbook declares must match the adopted table+field
+/// (the predicate and cardinality are schema-side and not compared).
+#[test]
+fn drift_reference_table_mismatch_is_e2208() {
+    let rows = [
+        &["##type Int32", "String"][..],
+        &["##reference Item.id", ""][..],
+        &["id", "name"][..],
+    ];
+    let metas = metas_of(&rows, 2, &[0, 1]);
+    // The meta marks the id column (cell 0) as referencing Item.id; the
+    // adopted schema points the same field at a different target.
+    let mut adopted_id = declared_field("id", FieldType::Int32);
+    adopted_id.reference = Some(ReferenceSchema {
+        table: "Item".to_string(),
+        field: "other".to_string(),
+        predicate: None,
+        cardinality: "one".to_string(),
+        compatible_with: None,
+    });
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), adopted_id),
+            (
+                "name".to_string(),
+                declared_field("name", FieldType::String),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    assert!(
+        diags.errors()[0].message.contains("reference"),
+        "{}",
+        diags.errors()[0].message
+    );
+}
+
+/// The documented `[source.excel]` / `[source.sheets]` tables (design §51)
+/// map to the `source` container — the nested shape is the contract, not the
+/// flat `source_excel` spelling, and a config typo inside a declared table is
+/// rejected rather than silently meaning "no convention".
+#[test]
+fn project_config_source_tables_map_to_the_container() {
+    use crate::manifest::ProjectConfig;
+
+    let cfg: ProjectConfig = serde_yaml::from_str(
+        "project:\n  name: demo\nprofiles: {}\nsource:\n  excel:\n    preset: marker_rows\n    marker: \"##\"\n  sheets:\n    preset: meta_sheet\n    header_row: 2\n",
+    )
+    .expect("[source.excel]/[source.sheets] shape deserializes");
+    let excel = cfg.source_excel().expect("excel convention present");
+    assert!(matches!(excel.preset, Preset::MarkerRows));
+    assert_eq!(excel.marker, "##");
+    let sheets = cfg.source_sheets().expect("sheets convention present");
+    assert_eq!(sheets.header_row, 2);
+    assert!(matches!(sheets.preset, Preset::MetaSheet));
+
+    // A typo inside a declared table is a hard parse error, not "no convention".
+    let err = serde_yaml::from_str::<ProjectConfig>(
+        "project:\n  name: demo\nprofiles: {}\nsource:\n  excel:\n    presett: data\n",
+    );
+    assert!(err.is_err(), "typo'd key is rejected: {err:?}");
+}

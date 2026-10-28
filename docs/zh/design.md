@@ -3535,7 +3535,12 @@ E2206）承载该标记；`*name` 没有子列时报 E2201。数据面把连续�
 配置 = 与今天逐字节一致。
 
 **配置：`[source.sheets]`，复用 `ExcelConvention`。**
-`ProjectConfig.source_sheets: Option<SheetsConvention>`，其中
+两个约定挂在同一个 `[source.<format>]` 容器下：
+`ProjectConfig.source: Option<SourceConfig>`，其中
+`SourceConfig { excel: Option<ExcelConvention>, sheets: Option<SheetsConvention> }`
+——文档化的 `[source.excel]` / `[source.sheets]` 表与其 1:1 对应，扁平
+`source_excel`/`source_sheets` 拼写不存在（已代决，2026-10-28：容器即契约；
+子表拼写错误必须是硬解析错误，绝不静默变成"无约定"）。其中
 `SheetsConvention { header_row, ..ExcelConvention 字段 }`。字段逐字镜像
 `ExcelConvention` 但重复列出而非 `#[serde(flatten)]`——`serde(flatten)`
 会关掉 `deny_unknown_fields`，于是配置拼写错误（如 `presett = "marker_rows"`）

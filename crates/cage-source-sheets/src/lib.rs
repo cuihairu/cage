@@ -227,7 +227,7 @@ fn conventioned_bytes(
     api_base: &str,
     api_key: &str,
 ) -> Result<Vec<u8>, String> {
-    let Some(convention) = config.source_sheets.as_ref() else {
+    let Some(convention) = config.source_sheets() else {
         return sheets_json_to_canonical(tab, body);
     };
     // Declaration-level coherence, once per source (E2201), as Excel does.
@@ -1123,13 +1123,23 @@ mod tests {
         }
     }
 
+    fn set_sheets(config: &mut ProjectConfig, convention: SheetsConvention) {
+        config.source = Some(cage_core::manifest::SourceConfig {
+            sheets: Some(convention),
+            ..Default::default()
+        });
+    }
+
     #[test]
     fn no_declaration_reads_byte_identical_to_the_baseline() {
         let body =
             br#"{"majorDimension":"ROWS","values":[["id","name"],[1,"sword"],[2,"shield"]]}"#;
         let baseline = sheets_json_to_canonical("Levels", body).unwrap();
         let config = ProjectConfig {
-            source_sheets: Some(SheetsConvention::default()),
+            source: Some(cage_core::manifest::SourceConfig {
+                sheets: Some(SheetsConvention::default()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let via_adapter = conventioned_bytes(
@@ -1171,7 +1181,7 @@ mod tests {
         config
             .remote
             .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
-        config.source_sheets = Some(conv(Preset::MarkerRows, 2));
+        set_sheets(&mut config, conv(Preset::MarkerRows, 2));
 
         let doc = SheetsSourceAdapter::load_with_base(
             tmp.path(),
@@ -1221,7 +1231,7 @@ mod tests {
         config
             .remote
             .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
-        config.source_sheets = Some(conv(Preset::Data, 2));
+        set_sheets(&mut config, conv(Preset::Data, 2));
 
         let doc = SheetsSourceAdapter::load_with_base(
             tmp.path(),
@@ -1274,7 +1284,7 @@ mod tests {
         config
             .remote
             .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
-        config.source_sheets = Some(conv(Preset::MarkerRows, 0));
+        set_sheets(&mut config, conv(Preset::MarkerRows, 0));
 
         let doc = SheetsSourceAdapter::load_with_base(
             tmp.path(),
@@ -1336,7 +1346,7 @@ mod tests {
         config
             .remote
             .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
-        config.source_sheets = Some(conv(Preset::MarkerRows, 0));
+        set_sheets(&mut config, conv(Preset::MarkerRows, 0));
 
         let doc = SheetsSourceAdapter::load_with_base(
             tmp.path(),
@@ -1392,7 +1402,7 @@ mod tests {
         config
             .remote
             .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
-        config.source_sheets = Some(conv(Preset::MetaSheet, 0));
+        set_sheets(&mut config, conv(Preset::MetaSheet, 0));
 
         let doc = SheetsSourceAdapter::load_with_base(
             tmp.path(),
@@ -1429,7 +1439,7 @@ mod tests {
         config
             .remote
             .insert(CONFIG_KEY.to_string(), config_with(Some(var)));
-        config.source_sheets = Some(conv(Preset::MetaSheet, 0));
+        set_sheets(&mut config, conv(Preset::MetaSheet, 0));
         let spec = "gsheet:1AbC/Levels";
 
         // The sibling tab is absent → E2201 (the fetch is online and fails).

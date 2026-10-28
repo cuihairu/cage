@@ -1939,11 +1939,29 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       meta_sheet = 兄弟 `<tab>.meta` tab（E2207），脚本 = 共享 cage.excel-meta/1 契约；
       数据面 JSON 级装配（sub_columns 嵌套、multi_row 折叠），无声明逐字节不变。
 
-- [ ] X2 schema-draft Excel 内省 + 漂移核对：`cage schema-draft` 支持 Excel 源，从元行生成
+- [x] X2 schema-draft Excel 内省 + 漂移核对：`cage schema-draft` 支持 Excel 源，从元行生成
       schema 草稿（作者不再手写第二遍）；草稿采用后编译期与 Excel 元行核对，不一致报新 E 码
       点名单元格（漂移检测），不再静默以 YAML 为准。
       验收：带规则行的 Excel 不写 YAML 即可通过 check（派生链路）；元行与已采用 schema 冲突
       必报错且定位到单元格；draft round-trip 一致。
+      证据（commit 见提交记录，2026-10-28）：`crates/cage-core/src/convention/derive.rs`
+      （`derive_schema`/`fill_derived`/`drift`/`render_draft`，字段对字段复制，无翻译层）；
+      `load_project_impl` 接线（main.rs：`schema_path` 无 → 派生链路 `fill_derived`；
+      有 → 逐文件 `drift`，`has_errors` 即渲染+Err）；`run_schema_draft` 的 `excel:<rel>` 规格
+      渲染确定性 YAML 草稿；E2208 "Schema Drift"（error/codes.rs）；
+      `project_config_source_tables_map_to_the_container`（回归：`[source.excel]`/`[source.sheets]`
+      表此前被静默忽略，已代决——容器 `SourceConfig` 即契约，扁平 `source_excel` 拼写不存在）；
+      10 个 derive/drift 核心单测（derive_schema_maps_declared_columns_and_registers_enums /
+      derive_multi_row_column_is_array_of_nested_object /
+      derive_collects_declared_primary_key_columns / draft_render_round_trips_to_the_derived_schema /
+      fill_derived_leaves_adopted_tables_alone / drift_type_mismatch_is_e2208_at_the_declaration_cell /
+      drift_ignores_author_added_constraints_and_extra_fields / drift_missing_field_and_missing_table_are_e2208 /
+      drift_primary_key_mismatch_is_e2208 / drift_reference_table_mismatch_is_e2208）；
+      CLI 集成（schema_draft.rs）：`excel_meta_rows_pass_check_without_yaml`（派生链路，无 YAML 通过 check）、
+      `excel_drift_conflict_is_e2208_at_the_cell`（E2208 锚定 `Col: C`/`Row: 2`）、
+      `schema_draft_excel_renders_a_stable_draft`（两次渲染字节一致）；fixture
+      `tests/fixtures/schema_draft/Items.xlsx`（`##var`/`##type`/`##min` 形状）。cargo fmt --check、
+      cargo clippy --workspace --all-targets -- -D warnings 0 warning、全量 cargo test 全绿。
 
 - [ ] X3 与三源对拍合流：本系列落地后，「P0 三源一致性对拍套件」的 Excel 份改用元行承载
       （规则写 Excel，CSV/JSON 侧由 schema 承载），断言规范化 IR 一致——证明「规则放 Excel」

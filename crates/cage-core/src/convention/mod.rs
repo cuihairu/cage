@@ -433,19 +433,30 @@ pub fn decode(
         first_marker_keyword(row, marker).is_some_and(|(_, keyword)| keyword == "var")
     });
     let headers: Vec<(usize, String)> = match grid.get(header_row) {
-        Some(row) => row
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let text = c.text();
-                let name = if header_is_var {
-                    text.strip_prefix('*').filter(|n| !n.is_empty())
-                } else {
-                    None
-                };
-                (col0 + i, name.unwrap_or(&text).to_string())
-            })
-            .collect(),
+        Some(row) => {
+            // Under ruling (a) the `##var` marker cell is the row's own
+            // keyword, not a column name (design §51 Q6): a phantom column
+            // named `##var` would otherwise be declared like any other and
+            // leak into the derived schema (X2). Everything else — a plain
+            // name, a `*name` layout modifier stripped to its bare name —
+            // is a data column.
+            let marker_cell = header_is_var
+                .then(|| first_marker_keyword(row, marker).map(|(i, _)| i))
+                .flatten();
+            row.iter()
+                .enumerate()
+                .filter(|(i, _)| Some(*i) != marker_cell)
+                .map(|(i, c)| {
+                    let text = c.text();
+                    let name = if header_is_var {
+                        text.strip_prefix('*').filter(|n| !n.is_empty())
+                    } else {
+                        None
+                    };
+                    (col0 + i, name.unwrap_or(&text).to_string())
+                })
+                .collect()
+        }
         None => Vec::new(),
     };
 
@@ -1355,3 +1366,6 @@ fn is_a1(cell: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// X2: decoded `TableMeta` as a schema, and the drift check (E2208).
+pub mod derive;

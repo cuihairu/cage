@@ -262,6 +262,11 @@ pub mod source_convention {
     /// or a response whose `table` is not the sheet's table
     /// (X1, `decode`, `parse_response`)
     pub const E2207: &str = "E2207";
+    /// E2208 - Schema drift: a meta-row declaration contradicts an adopted
+    /// schema — a field the meta declares is absent or differently shaped
+    /// in the schema, or the declared primary key differs (X2). The cell
+    /// anchor names the exact declaration cell.
+    pub const E2208: &str = "E2208";
 }
 
 /// Remote Source errors (S series, design §45): read-only fetch of
@@ -393,6 +398,7 @@ pub fn error_title(code: &str) -> Option<&'static str> {
         source_convention::E2205 => Some("Convention Script Failed"),
         source_convention::E2206 => Some("Convention Script Output Invalid"),
         source_convention::E2207 => Some("Convention Contradicts Data"),
+        source_convention::E2208 => Some("Schema Drift"),
         // Migration
         migration::E2001 => Some("Migration Rule Invalid"),
         migration::E2002 => Some("Migration Rule Reference Invalid"),

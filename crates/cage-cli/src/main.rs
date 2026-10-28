@@ -43,10 +43,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cage_core::assets::AssetInventory;
+use cage_core::convention::derive;
 use cage_core::convention::ExcelConvention;
+use cage_core::convention::TableMeta;
 use cage_core::error::codes::distribution::E2101;
 use cage_core::error::codes::registry::E1802;
 use cage_core::error::codes::remote::E1905;
+use cage_core::error::codes::source_convention::E2201;
 use cage_core::manifest::{BuildManifest, ManifestGenerator, ProjectConfig, TargetConfig};
 use cage_core::normalize::{fill_field_defaults, normalize_document, split_cell_arrays};
 use cage_core::reference::{DependencyGraph, IncrementalPlanner};
@@ -784,7 +787,7 @@ fn load_project(root: &Path, no_cache: bool) -> Result<Project, String> {
 fn load_project_impl(root: &Path, no_cache: bool, fill: bool) -> Result<Project, String> {
     let config = load_project_config(root)?;
 
-    let schema = load_schema_for_config(root, &config)?;
+    let mut schema = load_schema_for_config(root, &config)?;
 
     let mut document = Document {
         tables: IndexMap::new(),
@@ -794,7 +797,10 @@ fn load_project_impl(root: &Path, no_cache: bool, fill: bool) -> Result<Project,
     // `[source.excel]` (design §51): the meta-row convention and the root a
     // declared script path resolves against. `None` is the baseline — every
     // Excel file reads exactly as before.
-    let excel = config.source_excel.as_ref().map(|c| (c, root));
+    let excel = config.source_excel().map(|c| (c, root));
+    // Convention metadata each Excel file decoded, per file (X2): the
+    // derived/drift chain runs once all sources are in.
+    let mut excel_metas: Vec<(PathBuf, IndexMap<String, TableMeta>)> = Vec::new();
     for rel in config.source_roots.values() {
         // `registry:<package>[@<version>]` source roots (R1) resolve to a
         // published entry's data/ directory; the entry's ledger is verified
@@ -822,7 +828,9 @@ fn load_project_impl(root: &Path, no_cache: bool, fill: bool) -> Result<Project,
             // no bypass for remote bytes.
             cage_source_http::HttpSourceAdapter::load(root, rel, no_cache)?
         } else {
-            load_sources(&root.join(rel), excel)?
+            let (doc, metas) = load_sources_with_meta(&root.join(rel), excel)?;
+            excel_metas.extend(metas);
+            doc
         };
         for (name, table) in doc.tables {
             document.tables.insert(name, table);
@@ -831,6 +839,32 @@ fn load_project_impl(root: &Path, no_cache: bool, fill: bool) -> Result<Project,
     }
     document.source_files.sort();
     document.source_files.dedup();
+
+    // X2 (design §51): a convention Excel is either the whole schema when
+    // the project adopts none (the derived chain — "no YAML" acceptance),
+    // or it is cross-checked against the adopted one (the drift check —
+    // E2208, anchored at the declaration cell). Adopting a schema never
+    // silences a contradiction; both paths are loud.
+    if !excel_metas.is_empty() {
+        if config.schema_path.is_some() {
+            let mut drift_diags = Diagnostics::new();
+            for (file, metas) in &excel_metas {
+                drift_diags.extend(derive::drift(metas, &schema, &file.display().to_string()));
+            }
+            if drift_diags.has_errors() {
+                eprintln!("{}", drift_diags.render(false));
+                return Err("convention Excel drifts from the adopted schema".to_string());
+            }
+        } else {
+            let mut merged_metas = IndexMap::new();
+            for (_, metas) in &excel_metas {
+                for (name, meta) in metas {
+                    merged_metas.insert(name.clone(), meta.clone());
+                }
+            }
+            derive::fill_derived(&mut schema, &merged_metas);
+        }
+    }
 
     // 回流-1: fields with a schema default fill absent-or-null (Excel empty
     // cells load as null) so a typed field always carries its default.
@@ -973,8 +1007,21 @@ pub(crate) fn load_schema_for_config(
     }
 }
 
-fn load_sources(root: &Path, excel: Option<(&ExcelConvention, &Path)>) -> Result<Document, String> {
-    parse_source_files(
+/// One source root's tables plus the convention `TableMeta` each Excel file
+/// decoded, kept per file (X2): the derived/drift chain anchors a drift
+/// diagnostic at the file that declared the mismatch.
+type SourceWithMeta = (Document, Vec<(PathBuf, IndexMap<String, TableMeta>)>);
+
+/// Load one local source root's document, plus the per-file convention
+/// metadata the Excel adapter decoded (X2): the `schema-draft`
+/// introspection and the derived/drift chain both consume the per-table
+/// `TableMeta` the same parser already produced. Non-Excel files contribute
+/// no metadata.
+fn load_sources_with_meta(
+    root: &Path,
+    excel: Option<(&ExcelConvention, &Path)>,
+) -> Result<SourceWithMeta, String> {
+    parse_source_files_with_meta(
         &collect_files(
             root,
             &["json", "yaml", "yml", "csv", "xlsx", "xls", "msgpack"],
@@ -991,11 +1038,22 @@ fn parse_source_files(
     files: &[PathBuf],
     excel: Option<(&ExcelConvention, &Path)>,
 ) -> Result<Document, String> {
+    parse_source_files_with_meta(files, excel).map(|(doc, _)| doc)
+}
+
+/// [`parse_source_files`] plus the convention metadata each Excel file
+/// decoded, kept per file (the drift diagnostics anchor at a file's own
+/// path). Non-Excel files append nothing.
+fn parse_source_files_with_meta(
+    files: &[PathBuf],
+    excel: Option<(&ExcelConvention, &Path)>,
+) -> Result<SourceWithMeta, String> {
     let mut merged = Document {
         tables: IndexMap::new(),
         source_files: Vec::new(),
         metadata: DocumentMetadata::default(),
     };
+    let mut metas_by_file = Vec::new();
     for file in files {
         let ext = file
             .extension()
@@ -1006,7 +1064,15 @@ fn parse_source_files(
             "json" => cage_source_json::JsonSourceAdapter::parse_file(file),
             "yaml" | "yml" => cage_source_yaml::YamlSourceAdapter::parse_file(file),
             "csv" => cage_source_csv::CsvSourceAdapter::default().parse_file(file),
-            "xlsx" | "xls" => excel_adapter(excel).parse_file(file),
+            "xlsx" | "xls" => match excel_adapter(excel).parse_file_with_meta(file) {
+                Ok((doc, metas)) => {
+                    if !metas.is_empty() {
+                        metas_by_file.push((file.clone(), metas));
+                    }
+                    Ok(doc)
+                }
+                Err(diags) => Err(diags),
+            },
             "msgpack" => cage_source_msgpack::MsgPackSourceAdapter::parse_file(file),
             _ => continue,
         };
@@ -1023,7 +1089,7 @@ fn parse_source_files(
             }
         }
     }
-    Ok(merged)
+    Ok((merged, metas_by_file))
 }
 
 /// The Excel adapter for one file: the `[source.excel]` convention (design
@@ -1587,9 +1653,39 @@ fn run_schema_draft(path: &Path, specs: &[String], out: Option<&Path>) -> i32 {
         }
     };
     let mut tables = Vec::new();
+    let mut db_specs = Vec::new();
+    let mut excel_drafts = Vec::new();
+    let mut excel_specs = Vec::new();
     for spec in specs {
+        // X2 (design §51): `excel:<relative-path>` drafts the schema from a
+        // convention Excel's meta rows — same parser, same `TableMeta`, so
+        // the draft is exactly what the derived chain would validate against.
+        if let Some(rel) = spec.strip_prefix("excel:") {
+            let file = path.join(rel);
+            let excel = config.source_excel().map(|c| (c, path));
+            let metas = match excel_adapter(excel).parse_file_with_meta(&file) {
+                Ok((_, metas)) => metas,
+                Err(diags) => {
+                    eprintln!("{}", diags.render(false));
+                    return 2;
+                }
+            };
+            if metas.is_empty() {
+                eprintln!(
+                    "error: {E2201} no convention metadata decoded from {} (is `[source.excel]` \
+                     declared and does the sheet carry meta rows?)",
+                    file.display()
+                );
+                return 2;
+            }
+            let derived = derive::derive_schema(&metas);
+            let count = derived.tables.len();
+            excel_drafts.push(derive::render_draft(spec, &derived));
+            excel_specs.push(count);
+            continue;
+        }
         let Some((scheme, name)) = cage_source_db::parse_spec(spec) else {
-            eprintln!("error: {E1905} not a mysql:/pg: source spec: {spec}");
+            eprintln!("error: {E1905} not a mysql:/pg:/excel: source spec: {spec}");
             return 2;
         };
         let dsn = match cage_source_db::resolve_dsn(scheme, config.remote.get(scheme)) {
@@ -1600,14 +1696,27 @@ fn run_schema_draft(path: &Path, specs: &[String], out: Option<&Path>) -> i32 {
             }
         };
         match cage_source_db::introspect(scheme, &dsn, name) {
-            Ok(info) => tables.push(info),
+            Ok(info) => {
+                db_specs.push(spec.clone());
+                tables.push(info);
+            }
             Err(e) => {
                 eprintln!("error: {e}");
                 return 2;
             }
         }
     }
-    let text = cage_source_db::draft::render_draft(specs, &tables);
+    let mut text = String::new();
+    if !tables.is_empty() {
+        text.push_str(&cage_source_db::draft::render_draft(&db_specs, &tables));
+    }
+    for draft in &excel_drafts {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(draft);
+    }
+    let table_count = tables.len() + excel_specs.iter().sum::<usize>();
     match out {
         Some(path) => {
             // `-o schemas/draft.yaml` with no `schemas/` yet is the
@@ -1625,7 +1734,7 @@ fn run_schema_draft(path: &Path, specs: &[String], out: Option<&Path>) -> i32 {
             }
             println!(
                 "cage schema-draft: {} table(s) → {} — review the comments before adopting",
-                tables.len(),
+                table_count,
                 path.display()
             );
         }
@@ -4963,7 +5072,8 @@ enums: {}
         .expect("data");
 
         let schema = load_schema(&root.join("schemas")).expect("load schema");
-        let document = load_sources(&root.join("config"), None).expect("load sources");
+        let (document, _) =
+            load_sources_with_meta(&root.join("config"), None).expect("load sources");
 
         // client: the server-only table, the server-gated field and the
         // schema-less doc table all disappear.
@@ -5176,7 +5286,8 @@ enums: {}
         let denied = std::fs::read_dir(&sources).is_err();
         assert!(
             !denied
-                || load_sources(&sources, None).is_err_and(|e| e.contains("failed to read dir")),
+                || load_sources_with_meta(&sources, None)
+                    .is_err_and(|e| e.contains("failed to read dir")),
             "unreadable source dir must surface 'failed to read dir'"
         );
         allow_read(&sources, 0o755);

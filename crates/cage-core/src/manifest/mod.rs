@@ -514,15 +514,39 @@ pub struct ProjectConfig {
     /// config file entirely.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub remote: IndexMap<String, RemoteSourceConfig>,
-    /// Excel meta-row convention (`[source.excel]` in cage.toml, design §51).
-    /// `None` is the baseline: every Excel file reads exactly as before.
+    /// The `[source.<format>]` meta-row convention tables (design §51).
+    /// A container struct rather than flat `source_excel` fields: the
+    /// documented key is the nested table `[source.excel]`, and only a
+    /// matching struct makes an unknown sub-table error instead of
+    /// silently meaning "no convention".
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_excel: Option<crate::convention::ExcelConvention>,
-    /// Sheets meta-row convention (`[source.sheets]` in cage.toml, design
-    /// §51 Q7). `None` is the baseline: every `gsheet:` source reads exactly
-    /// as before (first fetched row = header, no convention rows).
+    pub source: Option<SourceConfig>,
+}
+
+/// The `[source.<format>]` tables in cage.toml (design §51).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SourceConfig {
+    /// Excel meta-row convention (`[source.excel]`). `None` is the
+    /// baseline: every Excel file reads exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_sheets: Option<crate::convention::SheetsConvention>,
+    pub excel: Option<crate::convention::ExcelConvention>,
+    /// Sheets meta-row convention (`[source.sheets]`, design §51 Q7).
+    /// `None` is the baseline: every `gsheet:` source reads exactly as
+    /// before (first fetched row = header, no convention rows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheets: Option<crate::convention::SheetsConvention>,
+}
+
+impl ProjectConfig {
+    /// The Excel meta-row convention, when the project declares one.
+    pub fn source_excel(&self) -> Option<&crate::convention::ExcelConvention> {
+        self.source.as_ref().and_then(|s| s.excel.as_ref())
+    }
+
+    /// The Sheets meta-row convention, when the project declares one.
+    pub fn source_sheets(&self) -> Option<&crate::convention::SheetsConvention> {
+        self.source.as_ref().and_then(|s| s.sheets.as_ref())
+    }
 }
 
 /// Local Configuration Registry declaration (`[registry]` in cage.toml)
@@ -623,8 +647,7 @@ impl Default for ProjectConfig {
             registry: None,
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
-            source_excel: None,
-            source_sheets: None,
+            source: None,
         }
     }
 }
@@ -1050,8 +1073,7 @@ mod tests {
             registry: None,
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
-            source_excel: None,
-            source_sheets: None,
+            source: None,
         };
 
         let json = serde_json::to_string(&cfg).expect("serialize");
@@ -1099,8 +1121,7 @@ mod tests {
             registry: None,
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
-            source_excel: None,
-            source_sheets: None,
+            source: None,
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
