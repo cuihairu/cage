@@ -1944,7 +1944,7 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       点名单元格（漂移检测），不再静默以 YAML 为准。
       验收：带规则行的 Excel 不写 YAML 即可通过 check（派生链路）；元行与已采用 schema 冲突
       必报错且定位到单元格；draft round-trip 一致。
-      证据（commit 见提交记录，2026-10-28）：`crates/cage-core/src/convention/derive.rs`
+      证据（commit 50bcfe5，2026-10-28）：`crates/cage-core/src/convention/derive.rs`
       （`derive_schema`/`fill_derived`/`drift`/`render_draft`，字段对字段复制，无翻译层）；
       `load_project_impl` 接线（main.rs：`schema_path` 无 → 派生链路 `fill_derived`；
       有 → 逐文件 `drift`，`has_errors` 即渲染+Err）；`run_schema_draft` 的 `excel:<rel>` 规格
