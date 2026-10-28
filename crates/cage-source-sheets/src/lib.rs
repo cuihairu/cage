@@ -1504,15 +1504,17 @@ print(json.dumps({
         let out = tmp.path().join("grid_seen.json");
 
         let body = r#"{"majorDimension":"ROWS","values":[["id","flag"],[7,true],["",""]]}"#;
-        let mut config = ProjectConfig::default();
-        config.source = Some(cage_core::manifest::SourceConfig {
-            sheets: Some(SheetsConvention {
-                script: Some("echo_grid.py".to_string()),
-                script_args: vec![out.display().to_string()],
+        let config = ProjectConfig {
+            source: Some(cage_core::manifest::SourceConfig {
+                sheets: Some(SheetsConvention {
+                    script: Some("echo_grid.py".to_string()),
+                    script_args: vec![out.display().to_string()],
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
-        });
+        };
         let bytes = conventioned_bytes(
             tmp.path(),
             &config,

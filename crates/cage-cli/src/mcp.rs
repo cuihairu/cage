@@ -454,8 +454,7 @@ fn run_build_dry_run(
     };
     let (schema, document) = filter_by_profile(&project.schema, &project.document, profile);
     let normalized = normalize_document(&document);
-    let source_extra =
-        super::source_script_fingerprint(&root, &project.config).map_err(|e| e.to_string())?;
+    let source_extra = super::source_script_fingerprint(&root, &project.config)?;
     let (schema_hash, source_hash) =
         ManifestGenerator::input_hashes(&schema, &normalized, source_extra.as_deref());
 

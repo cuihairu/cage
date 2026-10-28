@@ -250,7 +250,7 @@ assert_true(status == 409 and "directory" in payload["error"],
 status, doc = req("GET", "/api/schema")
 assert_true(status == 200 and doc["ok"] and "sources" in doc, f"GET /api/schema: {status}")
 src = doc["sources"]
-assert_true(len(src["files"]) == 5 and src["metadata"] == "schemas/character.yaml",
+assert_true(len(src["files"]) == 6 and src["metadata"] == "schemas/character.yaml",
             f"sources index: {src['files']} / {src['metadata']}")
 def disk(f):
     return (root / f).read_bytes()
@@ -274,7 +274,7 @@ schema["tables"]["Item"]["fields"]["price"]["max"] = 123456
 status, payload = req("POST", "/api/schema",
                       {"schema": schema, "sources": src})
 assert_true(status == 200 and payload["ok"], f"incremental save: {status} {payload}")
-assert_true(payload["written"] == ["schemas/item.yaml"] and payload["unchanged"] == 4,
+assert_true(payload["written"] == ["schemas/item.yaml"] and payload["unchanged"] == 5,
             f"only the owner file is rewritten: {payload}")
 for f, b in before.items():
     now = disk(f)

@@ -12,7 +12,7 @@
 //! - the derived chain — a table whose workbook declares meta rows and has
 //!   no adopted schema entry validates against the schema derived here;
 //! - `schema-draft` renders the derived schema as a reviewable YAML draft.
-//! And [`drift`] is the adopted-schema cross-check (E2208, cell-anchored).
+//! And [`derive::drift`] is the adopted-schema cross-check (E2208, cell-anchored).
 
 use super::{ColumnMeta, TableMeta};
 use crate::diagnostics::{Diagnostic, Diagnostics};
