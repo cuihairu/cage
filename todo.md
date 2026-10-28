@@ -1976,10 +1976,30 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       cargo fmt --check、cargo clippy --workspace --all-targets -- -D warnings 0 warning、
       全量 cargo test 全绿。
 
-- [ ] X4 文档与示例：docs/zh/source.md Excel 节重写（预设档 + 脚本适配器契约 + 词汇表 +
+- [x] X4 文档与示例：docs/zh/source.md Excel 节重写（预设档 + 脚本适配器契约 + 词汇表 +
       拍板记录）、脚本契约 JSON Schema 发布、examples/game-config 增带元行示例表 + 可跑通的
       Python 示例解析脚本、README 双语 capabilities 同步；docs/design.md 红线段更新（「不做
       写回」与「不承载规则」两半的最终口径分开陈述，并记录「约定可配置、不预设用户格式」裁定）。
+      验收：文档双语一致；示例端到端可跑；契约 schema 正反例离线校验通过。
+      证据（commit f613ac6，2026-10-28）：docs/zh/source.md 新增「元行规则约定（design §51）」
+      小节（四预设档表 + `##var`/`##type`/`##min`/`##max`/`##enum`/`##required`/`##default`/
+      `##reference`/`##primary_key`/`##+` 词汇表 + `cage.excel-meta/1` 脚本契约 + 派生/漂移
+      X2 + 拍板记录）；docs/schemas/excel-meta-adapter-v1.schema.json 补 `sub_columns`（递归）/
+      `multi_row`（Luban `*name`）/`TaggedUnion` 分支，Draft202012Validator 离线正反例过
+      （正例 sub_columns+multi_row+TaggedUnion VALID，反例未知列键/未知子列键/标量带 value
+      REJECTED）；examples/game-config 增 `config/Skill.xlsx`（marker_rows：`##var` 表头 +
+      `##type`/`##min`/`##required`/`##primary_key` 元行，Frost Nova tier 显式 1——空单元格
+      默认回填与 migrate `fill=false` 原始源语义冲突，改走 schema 侧 `default: 1` 声明）、
+      `schemas/skill.yaml`（被采用 schema，enum 成员表在 schema 侧）、`tools/excel-meta-demo.py`
+      （`--self-check` 自检，stdout 经 Draft202012Validator 对发布契约校验通过）、cage.toml
+      `[source.excel]` 工作簿覆盖；run.sh 步骤 4 增 Skill 产物断言（元行零泄漏 + tier 带值）、
+      步骤 10 迁移回验、步骤 12 消费方 6 表逐字节对拍；bad/ 副本保持完整（补 Skill.xlsx 与
+      同款 `[source.excel]`，共享 schema 不再产生 "Expected table 'Skill'" 警告）；根 README.md
+      / README.zh.md 各增「Excel 元行约定」capabilities 行；docs/design.md + zh 第 39 节
+      「Excel Editor」红线改两半分述（不做写回=保留，「Excel 不承载规则」=读取侧被 §51 推翻，
+      记录 2026-10-26「约定可配置、不预设用户格式」裁定）；mcp 测试 example 表数 5→6。
+      门禁：cargo fmt --check、cargo clippy --workspace --all-targets -- -D warnings 0 warning、
+      全量 cargo test 全绿、bash examples/run.sh 15 步全过。
 
 - [x] Excel 日期单元格数据面缺陷（2026-10-28 X1 轮发现）：`cell_to_cage_value` 对
       `Data::DateTime` 走 `format!("{dt:?}")`，产出结构体 dump
