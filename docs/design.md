@@ -1856,7 +1856,10 @@ Cage should not become:
 
 ### Excel Editor
 
-Excel itself is already a mature Authoring Tool.
+Excel itself is already a mature Authoring Tool. Since the X series (§51) the red line has two halves, stated separately:
+
+- **No write-back** — still a red line. Cage reads Excel; it never edits, reformats, or writes `.xlsx` back. Authoring, fixing, and restructuring happen in the author's spreadsheet tool (for Excel sources the migrate report is the only visible change surface; the §37 migrate red line "no Excel editor" is the same line).
+- **"Excel does not carry rules" — superseded on the read side.** The early stance that rules live only in the Schema no longer binds: §51 lets a table carry its own rule declarations as configurable `##` meta rows (preset / per-workbook override / script adapter). What remains binding is the governing ruling recorded there (2026-10-26, user directive): the convention is configurable — Cage never presets the author's Excel layout — the vocabulary is the Schema DSL's own, and meta rows never reach the IR's data plane.
 
 ### Game Database
 

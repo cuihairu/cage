@@ -1,6 +1,6 @@
 # rpg-demo —— Cage 完整示例工程
 
-贴近真实游戏的五张配置表，端到端演示 cage 的全部能力（含 CI 使用）。
+贴近真实游戏的六张配置表，端到端演示 cage 的全部能力（含 CI 使用）。
 **一键跑通（在仓库根目录）**：
 
 ```bash
@@ -9,14 +9,15 @@ bash examples/run.sh
 
 15 步覆盖：check → L7 gamerule → 四套环境的分环境 `--env` → 双 profile 构建 →
 增量 → 快照打包与回验 → 代码生成 → diff → 声明式迁移 → 注册表发布 →
-远程分发全链路（直推 / presigned / 消费方 resolve）→ 坏数据诊断 → inspect。
+远程分发全链路（直推 / presigned / 消费方 resolve）→ 坏数据诊断 → inspect →
+lsp（stdio 诊断 Language Server）。
 
 ## 目录
 
 ```
 game-config/
-├── cage.toml          # 工程配置：client（13 target）/ server（3 target）双 profile
-├── schemas/           # 五个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
+├── cage.toml          # 工程配置：client（14 target）/ server（3 target）双 profile
+├── schemas/           # 六个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
 │   ├── character.yaml # 角色成长：枚举/唯一约束/正则/范围/默认值/保留字字段 class
 │   │                  #   + hp：L6 语义规则 hp <= attack（E1501）
 │   │                  #   + nickname：env_overrides 四套环境（dev 32 → test 24 → staging 20、prod 必填）
@@ -24,13 +25,20 @@ game-config/
 │   ├── item.yaml      # 道具：整型枚举 + 字符串枚举 + 可选字段
 │   ├── quest.yaml     # 任务：Excel 源、跨表引用、order_by 行排序
 │   ├── shop.yaml      # 商店：MsgPack 源、env_overrides 四套环境（折扣上限 0.9/0.7/0.6/0.5）
+│   ├── skill.yaml     # 技能：Excel 元行约定（design §51）——规则写在 Excel 的 ## 行，
+│   │                  #   被采用 schema 与其核对，不一致报 E2208 定位到单元格
 │   └── stage.yaml     # 关卡：数组/对象/跨表引用（含 cardinality: many 数组引用）/Map<string, Array<Int32>>
-├── config/            # 五种源格式（同一 profile 一起加载）
+├── config/            # 六张源表、五种格式（同一 profile 一起加载）
 │   ├── Character.csv  # CSV：文件名即表名
 │   ├── Item.yaml      # YAML：根键 = 表名
-│   ├── Quest.xlsx     # Excel：工作表名即表名（源适配自动发现）
+│   ├── Quest.xlsx     # Excel：工作表名即表名（源适配自动发现，基线无元行）
 │   ├── Shop.msgpack   # MsgPack：裸行对象数组，文件名即表名
+│   ├── Skill.xlsx     # Excel：元行约定（marker_rows）——##var 表头 + ##type/##min/
+│   │                  #   ##required/##primary_key 元行声明规则；tier 的 default 1
+│   │                  #   属 schema 侧声明（元行未声明 default，非漂移，见 skill.yaml）
 │   └── Stage.json     # JSON：根键 = 表名
+├── tools/             # 脚本适配器契约示例（cage.excel-meta/1，design §51 Q2）
+│   └── excel-meta-demo.py  # 可跑通的最小元行解码脚本（--self-check 自检）
 ├── migrations/        # 声明式数据迁移规则（cage migrate dry-run）
 │   └── 0001_rename_desc.yaml   # Item.desc → description（from 0.1.0 → 0.2.0）
 ├── ci/                # CI 参考片段（Jenkinsfile / github-actions.yml / gitlab-ci.yml）
@@ -44,6 +52,10 @@ game-config/
 | 演示 | 位置 |
 | --- | --- |
 | 多源异构（csv/yaml/json/xlsx/msgpack 五种源格式） | `config/` |
+| Excel 元行约定（design §51：规则写在 `##` 行，`[source.excel]` 预设可配） | `config/Skill.xlsx`（marker_rows 档）+ `cage.toml [source.excel]` |
+| 元行 vs schema 漂移核对（E2208，定位到声明单元格，不静默以 YAML 为准） | `Skill.xlsx` 的 `##type`/`##min` ↔ `schemas/skill.yaml` |
+| 元行派生 schema 草稿（无 YAML 也能起步） | `cage schema-draft examples/game-config excel:config/Skill.xlsx` |
+| 脚本适配器契约（cage.excel-meta/1，语言无关，stdin/stdout JSON） | `tools/excel-meta-demo.py --self-check` |
 | 字段类型覆盖（Int/Bool/String/枚举/数组/对象/Map/引用/浮点） | `schemas/stage.yaml`、`quest.yaml`、`shop.yaml` |
 | 整型枚举（带整数值） / 字符串枚举（无值） / 无值枚举 | `CharacterClass` / `Rarity` / `Difficulty` |
 | 可选字段与默认值 | `Item.attack_bonus` 缺省、`Character.unlocked` 默认 true |
@@ -68,18 +80,18 @@ game-config/
 ## 手动执行
 
 ```bash
-cage check examples/game-config                    # L0-L6 校验（5 张表）
+cage check examples/game-config                    # L0-L6 校验（6 张表）
 cage check examples/game-config --level gamerule   # 加上 L7 业务规则
 cage check examples/game-config --env dev          # 四套环境之一：nickname ≤ 32、折扣 ≤ 0.9
 cage check examples/game-config --env test         # nickname ≤ 24、折扣 ≤ 0.7
 cage check examples/game-config --env staging      # nickname ≤ 20、折扣 ≤ 0.6
 cage check examples/game-config --env prod         # nickname 必填、折扣 ≤ 0.5
-cage build examples/game-config --profile client   # 13 个 target 全量构建（5 张表）
+cage build examples/game-config --profile client   # 14 个 target 全量构建（6 张表）
 cage build examples/game-config --profile client --incremental  # up to date
 cage build examples/game-config --profile server   # 服务端视图（internal_note 可见）
 cage snapshot examples/game-config --profile client        # 自校验快照打包
 cage snapshot examples/game-config/build/snapshot/client-*/ --verify  # 回验
-cage gen   examples/game-config --profile client   # 只生成 9 种代码绑定（含 proto 定义）
+cage gen   examples/game-config --profile client   # 只生成 10 种定义/绑定 target + JSON Schema（数据 target 跳过）
 cage diff  examples/game-config/build examples/game-config/build    # 确定性比对
 cage migrate examples/game-config --to 0.2.0       # 迁移 dry-run（不写盘）
 cage registry publish examples/game-config --registry /tmp/reg   # 发布到本地仓库
@@ -89,7 +101,9 @@ cage check examples/game-config/bad                   # E1501（hp > attack）�
 cage check examples/game-config/bad --level gamerule  # E1601，退出码 1
 cage check examples/game-config/bad --env prod        # E1001（prod 必填 nickname），退出码 1
 cage inspect examples/game-config                   # 表结构清单
+cage schema-draft examples/game-config excel:config/Skill.xlsx  # 从元行派生 schema 草稿（X2 派生链）
+python3 examples/game-config/tools/excel-meta-demo.py --self-check  # 脚本适配器契约自检（无需 cage）
 ```
 
-产物在 `build/client/{json,csv,msgpack,proto,cs,py,lua,ts,js,cpp,go,java,jsonschema}/`
+产物在 `build/client/{json,csv,msgpack,proto,fbs,cs,py,lua,ts,js,cpp,go,java,jsonschema}/`
 与 `build/server/{json,csv,cs}/`（已 gitignore，按需重新生成）。

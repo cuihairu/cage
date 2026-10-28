@@ -30,6 +30,7 @@ Authoring Sources → Source Adapters → Canonical Model
 ## 核心能力
 
 - Source Adapter 插件：Excel / CSV / JSON / YAML，以及 HTTP API / MySQL / PostgreSQL / Google Sheets 远程源（后续 XML、SQLite…），只读取解析，不做业务校验
+- Excel 元行约定：规则以 `##` 前缀元行写在工作簿内（`[source.excel]` 预设 / 按工作簿覆盖 / 用户脚本适配器 `cage.excel-meta/1`）——表可自带 schema 声明，派生为可审阅草稿（`cage schema-draft … excel:`）并与被采用 schema 漂移核对（E2208，定位到单元格）；元行绝不泄入构建产物
 - Schema 与 Source 解耦：同一 Schema 可用于多个配置源（类型/必填/默认值/范围/枚举/唯一/引用）
 - 八级验证流水线：Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule，可分级执行（`cage check --level`）
 - 跨配置引用校验：存在性 + 兼容性检查（引用对象存在但类型不合法同样报错；引用谓词按语义求值，不满足报 E1410）

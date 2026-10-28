@@ -932,7 +932,7 @@ mod tests {
         )
         .expect("example project loads");
         assert_eq!(v["ok"], json!(true), "output: {v}");
-        assert_eq!(v["tables_checked"], json!(5));
+        assert_eq!(v["tables_checked"], json!(6));
         assert_eq!(v["error_count"], json!(0));
     }
 

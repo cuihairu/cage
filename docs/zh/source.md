@@ -75,6 +75,54 @@ Document
   +-- Table: Skill
 ```
 
+#### 元行规则约定（[design §51](https://github.com/cuihairu/cage/blob/main/docs/design.md#51-excel-meta-row-convention)）
+
+规则可以**写进 Excel 被吸收**，而不是扔掉后在 schema YAML 重写一遍（双份维护必漂移）。
+没有 `[source.excel]` 声明时字节流完全按基线读取（首个非空行 = 表头，无约定行）；
+声明后工作簿按声明的预设档解析。**约定可配置、不预设用户的 Excel 格式**。
+
+```toml
+[source.excel]
+preset = "marker_rows"            # data | header_block | marker_rows | meta_sheet
+marker = "##"                      # 每个内置预设档；必须以 '#' 开头
+workbooks = { "Skill.xlsx" = "header_block" }   # 按工作簿文件名的逐簿覆盖
+```
+
+| 预设档 | 领地 |
+| --- | --- |
+| `data` | 无约定行；每个文件与今天完全一致（默认） |
+| `header_block` | 表头行之上的一段连续非空行是约定带 |
+| `marker_rows` | 以 `##` 开头的标记行；`##var` 行是数据表头行，领地下探到其下首个纯数据行（Q6 裁定 (a)） |
+| `meta_sheet` | 名为 `<表>.meta` 的兄弟 sheet，用同一语法解析，首行 = 列名行 |
+
+**词汇表**（`marker` 开头的标记单元格；一个单元格一个声明）：
+
+| 标记 | 声明 | 值形 |
+| --- | --- | --- |
+| `##var` | 字段名行（数据表头行） | 每非标记单元格一个字段名 |
+| `##type` | 字段类型 | `Int32` / `String` / `Float32` / `Bool` / `Any` / `Enum<名称>` / `Array<…>` / `Map<k, v>` 或 Schema 类型表达式 |
+| `##min` / `##max` | 数值边界 | 数字文本 |
+| `##enum` | 枚举成员 | 逗号分隔成员名 |
+| `##required` | 必填 | `true` / `false` |
+| `##default` | 默认值 | 与目标类型一致的 JSON 值 |
+| `##reference` | 外键 | `表.字段[:基数]` |
+| `##primary_key` | 主键列 | `true` |
+| `##+` | 子列声明行（回流-5/6） | 每非标记单元格一个子列名；其所在列的顶层列成为嵌套 bean（`*` 前缀 = `multi_row`，无 `##+` 的 `*名` 列是 E2201） |
+
+**脚本适配器**（互斥于 `preset`；`cage.excel-meta/1` 子进程契约）：cage 写一个 JSON
+请求到脚本 stdin、从 stdout 读一个 JSON 响应；请求携带 `workbook`/`sheet`/`grid`/
+`header_row`，响应携带 `TableMeta` 或诊断。语言无关（Python/Node/任何可执行）。
+
+**派生与漂移（X2）**：`cage schema-draft <工程> excel:<相对路径>` 从元行生成 schema
+草稿（作者不再手写第二遍）。项目采用 schema 后，编译期与 Excel 元行核对——不一致报
+`E2208` 且定位到声明单元格，绝不静默以 YAML 为准。无已采用 schema 时（派生链路），
+带规则行的 Excel 不写 YAML 即可通过 `check`。
+
+**拍板记录**：2026-10-26 「不做 Excel 写回/编辑器」保留、「Excel 不承载规则」读取侧
+推翻（规则写 Excel 被吸收）；2026-10-26 11:14 约定必须可配置、不预设用户格式；
+2026-10-28 Q6 裁定 (a) `##var` 行即数据表头行、marker_rows 领地下探到首个纯数据行。
+完整裁定与 E2201–E2208 码表见 design §51。
+
 ### CSV
 
 - 以表头行定义列名，行为数据行

@@ -11,6 +11,12 @@ description = "Cage 坏数据示例：attack 越过 power curve → E1601"
 [source_roots]
 main = "config"
 
+# 与上层工程同一份元行约定：复制过来的 Skill.xlsx 的 ## 元行需要
+# marker_rows 档解码（skill.yaml 在共享的 ../schemas 里被一起采用）。
+[source.excel]
+preset = "data"
+workbooks = { "Skill.xlsx" = "marker_rows" }
+
 [profiles.client]
 name = "client"
 targets = []

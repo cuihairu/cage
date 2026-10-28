@@ -28,6 +28,7 @@ Authoring Sources → Source Adapters → Canonical Model
 ## Capabilities
 
 - Source adapter plugins: Excel / CSV / JSON / YAML, plus the remote sources HTTP API / MySQL / PostgreSQL / Google Sheets (XML, SQLite, … later); they read and parse only, and do no business-rule validation
+- Excel meta-row convention: rules written as `##`-prefixed rows inside the workbook (`[source.excel]` preset / per-workbook override / user script adapter `cage.excel-meta/1`) — a table may carry its own schema declaration next to the data, derived into a reviewable draft (`cage schema-draft … excel:`) and drift-checked against an adopted schema (E2208, cell-anchored); meta rows never leak into the built artifacts
 - Schema decoupled from Source: one schema serves multiple configuration sources (types / required / defaults / ranges / enums / uniqueness / references)
 - Eight-level validation pipeline: Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule, executable level by level (`cage check --level`)
 - Cross-configuration reference checks: existence plus compatibility (a reference whose target exists but has an invalid type is still an error; reference predicates are evaluated semantically, and an unsatisfied predicate reports E1410)

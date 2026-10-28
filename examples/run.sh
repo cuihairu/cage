@@ -64,7 +64,7 @@ echo "$ENV_OUT"
 case "$ENV_OUT" in *"unknown environment 'qa'"*) ;; *) echo "FAIL: 输出未点名 unknown environment" >&2; exit 1 ;; esac
 case "$ENV_OUT" in *"declared: dev, prod, staging, test"*) ;; *) echo "FAIL: 声明清单未含四套环境" >&2; exit 1 ;; esac
 
-step "[4/15] cage build --profile client   —— 验证 + 生成全部 14 个 target（5 张表）"
+step "[4/15] cage build --profile client   —— 验证 + 生成全部 14 个 target（6 张表）"
 echo "\$ cage build examples/game-config --profile client"
 "$CAGE_BIN" build "$EX" --profile client
 # 新源产物抽查：Excel 源 Quest.json / MsgPack 源 Shop.json + 新 target 的 proto/msgpack
@@ -73,6 +73,18 @@ for f in json/Quest.json json/Shop.json msgpack/Shop.msgpack msgpack/Quest.msgpa
          fbs/Item.fbs fbs/Quest.fbs fbs/cage_enums.fbs; do
   test -s "$EX/build/client/$f" || { echo "FAIL: 缺产物 $f" >&2; exit 1; }
 done
+# Excel 元行源抽查：Skill.xlsx（marker_rows 档）入产物——元行不泄入，tier 带值
+test -s "$EX/build/client/json/Skill.json" || { echo "FAIL: 缺产物 json/Skill.json" >&2; exit 1; }
+python3 - "$EX/build/client/json/Skill.json" << 'PYEOF'
+import json, sys
+text = open(sys.argv[1]).read()
+assert "##" not in text, "## meta rows leaked into the built artifact"
+data = json.loads(text)
+rows = data if isinstance(data, list) else next(iter(data.values()))
+nova = next(r for r in rows if r["name"] == "Frost Nova")
+assert nova["tier"] == 1, nova
+print("Skill.xlsx 元行演示：meta rows 未泄入产物，Frost Nova tier=1")
+PYEOF
 # 确定性抽查：全量重建后两格式逐字节一致
 B1="$(sha256sum "$EX/build/client/msgpack/Item.msgpack" | cut -d' ' -f1)"
 B2="$(sha256sum "$EX/build/client/proto/Item.proto" | cut -d' ' -f1)"
@@ -242,7 +254,7 @@ EOF
   "$CAGE_BIN" build "$CONS_DIR/$name" --profile client
 done
 # 消费方产物与发布方逐字节一致（远端条目 = 本地构建的同一份字节）
-for t in Item Character Quest Shop Stage; do
+for t in Item Character Quest Shop Skill Stage; do
   A="$(sha256sum "$EX/build/client/json/$t.json" | cut -d' ' -f1)"
   B="$(sha256sum "$CONS_DIR/consA/build/client/json/$t.json" | cut -d' ' -f1)"
   C="$(sha256sum "$CONS_DIR/consB/build/client/json/$t.json" | cut -d' ' -f1)"
@@ -250,7 +262,7 @@ for t in Item Character Quest Shop Stage; do
     echo "FAIL: $t 消费方产物与发布方不一致" >&2; exit 1
   fi
 done
-echo "消费方产物与发布方逐字节一致（5 张表 × 2 条分发路）"
+echo "消费方产物与发布方逐字节一致（6 张表 × 2 条分发路）"
 
 kill $SRV_PID_A $SRV_PID_B 2>/dev/null
 rm -rf "$SRV_DIR" "$CONS_DIR" "$EX/reg"

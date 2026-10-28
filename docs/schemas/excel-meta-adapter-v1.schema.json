@@ -156,6 +156,15 @@
           "description": "Schema DSL name, unchanged - the column's client/server grouping is a plain Schema declaration, not a new concept here.",
           "items": { "type": "string", "minLength": 1 },
           "uniqueItems": true
+        },
+        "sub_columns": {
+          "type": "object",
+          "description": "Child columns declared by a `##+` sub-column row (design §51 Q6, 回流-5): a non-empty map makes the parent a nested bean by construction - the Schema side builds an `Object` whose `properties` are these sub-columns. Recursive: a sub-column may itself carry sub-columns.",
+          "additionalProperties": { "$ref": "#/$defs/column" }
+        },
+        "multi_row": {
+          "type": "boolean",
+          "description": "Whether a Luban `*name` header (design §51 Q6, 回流-5) folds the contiguous data rows of this column into an array of the nested objects declared by `sub_columns`. A `*name` header with no `##+` sub-column row is an error (E2201) on the decode side."
         }
       }
     },
@@ -218,6 +227,30 @@
               "properties": {
                 "key_type": { "enum": ["string", "int"] },
                 "value_type": { "$ref": "#/$defs/field_type" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "TaggedUnion" },
+            "value": {
+              "type": "object",
+              "required": ["tag", "branches"],
+              "additionalProperties": false,
+              "properties": {
+                "tag": { "type": "string", "minLength": 1 },
+                "branches": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/$defs/field_type" }
+                  }
+                }
               }
             }
           }

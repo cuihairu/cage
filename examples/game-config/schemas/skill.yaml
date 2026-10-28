@@ -1,0 +1,20 @@
+# 技能（源：config/Skill.xlsx —— Excel 元行约定演示，design §51）。
+# 规则写在 Excel 的 ## 元行里，这里是被采用的 schema：编译期与元行核对，
+# 不一致报 E2208 且定位到单元格（不静默以 YAML 为准）。元行声明的子集必须
+# 一致；enum 成员表属于 schema（named enum），元行只写 `##type Enum<SkillKind>`。
+tables:
+  Skill:
+    name: Skill
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+      cost: { name: cost, type: { kind: Int32 }, required: true, min: 0 }
+      tier: { name: tier, type: { kind: Int32 }, default: 1 }
+      kind: { name: kind, type: { kind: Enum, value: SkillKind }, required: true }
+enums:
+  SkillKind:
+    name: SkillKind
+    values:
+      - { name: Fire, value: 1 }
+      - { name: Ice, value: 2 }

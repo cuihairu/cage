@@ -1,7 +1,7 @@
 # Cage 完整示例工程 —— 一键跑通见 examples/run.sh
-# 三张表、三种源格式（CSV / YAML / JSON）、三个 schema 文件（合并加载），
-# 一个 profile 构建全部 14 个 target（json/csv/msgpack 数据 + proto/fbs 定义
-# + 8 种语言代码绑定 + JSON Schema）。
+# 六张表、五种源格式（CSV / YAML / JSON / XLSX / MsgPack）、六个 schema 文件
+# （合并加载），client profile 构建全部 14 个 target（json/csv/msgpack 数据
+# + proto/fbs 定义 + 8 种语言代码绑定 + JSON Schema）。
 output_dir = "build"
 schema_path = "schemas"
 
@@ -13,9 +13,16 @@ description = "角色成长 + 道具 + 关卡：Cage 端到端示例"
 [source_roots]
 main = "config"
 
+# Excel 元行约定（design §51）：默认 data 基线，仅 Skill.xlsx 用 marker_rows
+# 元行档——规则写在 Excel 的 ## 行里，schema（skill.yaml）与其核对，不一致
+# 报 E2208。其余 Excel（Quest.xlsx）完全按基线读取。
+[source.excel]
+preset = "data"
+workbooks = { "Skill.xlsx" = "marker_rows" }
+
 [profiles.client]
 name = "client"
-description = "全量构建：3 个数据 target + 9 种语言代码绑定"
+description = "全量构建：3 个数据 target + 10 种定义/绑定 target + JSON Schema"
 # options 为可选内联表：namespace / package / enums_file 演示各 target 常用项
 targets = [
   { format = "json",         output_dir = "build/client/json" },
