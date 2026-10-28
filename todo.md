@@ -1963,10 +1963,18 @@ Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Exce
       `tests/fixtures/schema_draft/Items.xlsx`（`##var`/`##type`/`##min` 形状）。cargo fmt --check、
       cargo clippy --workspace --all-targets -- -D warnings 0 warning、全量 cargo test 全绿。
 
-- [ ] X3 与三源对拍合流：本系列落地后，「P0 三源一致性对拍套件」的 Excel 份改用元行承载
+- [x] X3 与三源对拍合流：本系列落地后，「P0 三源一致性对拍套件」的 Excel 份改用元行承载
       （规则写 Excel，CSV/JSON 侧由 schema 承载），断言规范化 IR 一致——证明「规则放 Excel」
       与统一模型不冲突。
       验收：对拍套件绿；元行信息只进 schema/校验面，不泄漏进 IR 数据面。
+      证据（commit 9174f28，2026-10-28）：fixture `tests/fixtures/cross_source/data-meta.xlsx`
+      （Item 表 `##var` 表头 + `##type`/`##min`/`##max`/`##enum`/`##required`/`##reference`
+      元行声明 11 字段，Drop 表 `##var`+`##type`/`##required`；数据行与 data.xlsx 逐格一致）；
+      测试 `excel_meta_rows_carry_rules_and_parity_with_csv_json`（cross_source.rs）：元行 Excel
+      无 schema 构建（派生链路）产出 Item/Drop IR 与 CSV、JSON 份**逐字节一致**；IR 文本
+      零 `##` 泄漏、字段名与数据一致（「元行只进 schema/校验面」）。同套件其余 11 测全绿；
+      cargo fmt --check、cargo clippy --workspace --all-targets -- -D warnings 0 warning、
+      全量 cargo test 全绿。
 
 - [ ] X4 文档与示例：docs/zh/source.md Excel 节重写（预设档 + 脚本适配器契约 + 词汇表 +
       拍板记录）、脚本契约 JSON Schema 发布、examples/game-config 增带元行示例表 + 可跑通的
