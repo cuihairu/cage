@@ -3513,6 +3513,43 @@ E2206）承载该标记；`*name` 没有子列时报 E2201。数据面把连续�
 的第一个实现决策，刻意在此留白而非静默裁定——它触碰 Q4 承诺「内置
 预设档从不移动数据表头行」，必须在动代码前单独记录裁定。
 
+## Q7 — sheets 承载同一约定（X1 跟进，2026-10-28）
+
+约定（§51）在 v1 仅限 Excel；`cage-source-sheets` 读 tab 的
+`UNFORMATTED_VALUE` 网格，没有放声明的位置。此裁定 sheets 声明载体
+（已代决）——Q5 留白项。
+
+**采纳：同一套 §51 预设档，不是单一载体。** 条目里列出的三个载体
+（命名 tab / 首行块 / 脚本）正是预设档领地，所以 sheets 全部支持——
+同一语法、同一词汇、同一 E 码（E2201–E2207），零新语法：
+
+| 预设档 | Sheets 载体 | 声明位置 |
+| --- | --- | --- |
+| `marker_rows` | 首行块（数据表头行之上、主 tab 内） | tab 自身网格——`values` 响应从 tab 左上返回使用区，这些行已存在 |
+| `header_block` | 首行块（连续非空段） | 同上，遇首个空行止 |
+| `meta_sheet` | 命名 tab | 兄弟 tab `<tab>.meta`，一次额外 `values` 调用；其首行命名列且必须与主 tab 表头行一致（E2207） |
+| `script` | 脚本 | 共享子进程契约 `cage.excel-meta/1`——`request.workbook` = spreadsheet id，`request.sheet` = tab，`request.grid` = 拉取网格，`request.header_row` = 旋钮 |
+
+**`header_row` 旋钮入 sheets 配置。** `marker_rows`/`header_block` 需知
+数据表头行在哪；今天适配器硬设行 0。旋钮默认 0，所以无约定 + 默认
+配置 = 与今天逐字节一致。
+
+**配置：`[source.sheets]`，复用 `ExcelConvention`。**
+`ProjectConfig.source_sheets: Option<SheetsConvention>`，其中
+`SheetsConvention { header_row, ..ExcelConvention 字段 }`。字段逐字镜像
+`ExcelConvention` 但重复列出而非 `#[serde(flatten)]`——`serde(flatten)`
+会关掉 `deny_unknown_fields`，于是配置拼写错误（如 `presett = "marker_rows"`）
+会静默变成「无约定」而非像 `[source.excel]` 那样报错；平铺严格结构
+拒绝它（与 Excel 同款的解析错）。`as_excel_convention()` 还原共享视图。
+语法、词汇、E 码族与 Excel 共享——sheets 作者写与工作簿作者相同的标记行。
+
+**数据面镜像 Excel 适配器。** sheets 适配器拉取网格，然后（声明约定时）
+经共享 `cage-core::convention` 路径解码 `TableMeta`，并应用与 Excel
+适配器相同的结构：`sub_columns` 分组为嵌套对象，`multi_row` 把连续行
+折叠为数组。这是 sheets 侧 JSON 级装配（sheets 管道 = 拉取 → canonical
+JSON → JSON 适配器），复用约定解码但不复用 Excel `Range<Data>` 机械。
+无约定 = 今天 canonical JSON，逐字节一致。
+
 本节只裁定架构。X1 已落地预设档解析器、子进程运行器、E22xx 错误码
 与 cage.toml 开关——差异记录在 Q5。X2 落地 `schema-draft`
 内省与对已采用 schema 的漂移核对，X3 合流到三源对拍套件，X4 出文档与

@@ -2711,4 +2711,23 @@ The five-case review (2026-10-27) found Cage's Excel source reads a single heade
 
 **This refines Q4 rather than breaking it.** Built-in presets never move the data header row — but `##var` *names* that row, so the decoder reads it as the header it already is, and only the territory's *lower bound* moves to include the declaration rows beneath it. The configured `header_row` is unchanged; it just happens to point at a `##var` row, which the decoder recognises and does not treat as a declaration value at all. A config that points `header_row` at a plain header keeps the exact X1 behaviour.
 
+## Q7 — sheets carries the same convention (X1 跟进, 2026-10-28)
+
+The convention (§51) is Excel-only in v1; `cage-source-sheets` reads a tab's `UNFORMATTED_VALUE` grid with no place for declarations. This decides the sheets declaration carrier (已代决) — the Q5 item left open.
+
+**Adopted: the same §51 preset set, not one carrier.** The three carriers named in the item (命名 tab / 首行块 / 脚本) are exactly the preset territories, so sheets supports all of them — same grammar, same vocabulary, same E-codes (E2201–E2207), zero new syntax:
+
+| Preset | Sheets carrier | Where the declarations sit |
+| --- | --- | --- |
+| `marker_rows` | 首行块 (rows above the data header row, in the main tab) | the tab's own grid — the `values` response returns the used range from the tab's top-left, so those rows are already present |
+| `header_block` | 首行块 (contiguous non-empty run) | same, stops at the first empty row |
+| `meta_sheet` | 命名 tab | a sibling tab named `<tab>.meta`, one extra `values` call; its first row names the columns and must match the main tab's header row (E2207) |
+| `script` | 脚本 | the shared subprocess contract `cage.excel-meta/1` — `request.workbook` = the spreadsheet id, `request.sheet` = the tab, `request.grid` = the fetched grid, `request.header_row` = the knob |
+
+**A `header_row` knob joins the sheets config.** `marker_rows`/`header_block` need to know where the data header row is; today the adapter hard-assumes row 0. The knob defaults to 0, so no convention and a default config are byte-for-byte today's behavior.
+
+**Config: `[source.sheets]`, reusing `ExcelConvention`.** `ProjectConfig.source_sheets: Option<SheetsConvention>` where `SheetsConvention { header_row, ..ExcelConvention fields }`. The fields mirror `ExcelConvention` exactly but are repeated rather than `#[serde(flatten)]`ed — `serde(flatten)` disables `deny_unknown_fields`, so a config typo (e.g. `presett = "marker_rows"`) would silently mean "no convention" instead of erroring the way `[source.excel]` does; the flat strict struct rejects it (E0000-series parse error, same as Excel). `as_excel_convention()` reconstructs the shared view. The grammar, vocabulary and E-code families are shared with Excel — a sheet author writes the same marker rows a workbook author does.
+
+**Data plane mirrors the Excel adapter.** The sheets adapter fetches the grid, then (when a convention is declared) decodes `TableMeta` via the shared `cage-core::convention` path and applies the same structure the Excel adapter applies: `sub_columns` group into nested `Value::Object`/JSON objects, `multi_row` folds contiguous rows into arrays. This is sheets-side JSON-level assembly (the sheets pipeline is fetch → canonical JSON → JSON adapter), reusing the convention decode but not the Excel `Range<Data>` machinery. No convention = today's canonical JSON, byte for byte.
+
 This section is the architecture decision. X1 landed the preset parsers, the subprocess runner, the E22xx codes and the cage.toml switch — the deltas are recorded in Q5. X2 lands the `schema-draft` introspection and the drift check against an adopted schema, X3 the merge into the three-source parity suite, X4 the docs and the runnable example.
