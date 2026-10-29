@@ -2147,7 +2147,7 @@ enum BuildFailure {
 /// script or its config rotates the id even when the parsed model is
 /// unchanged. `None` when no script adapter is declared; the extra must be
 /// read before the incremental skip compares the previous manifest.
-fn source_script_fingerprint(
+pub(crate) fn source_script_fingerprint(
     root: &Path,
     config: &ProjectConfig,
 ) -> Result<Option<String>, String> {

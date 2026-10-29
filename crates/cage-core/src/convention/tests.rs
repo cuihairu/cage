@@ -1122,3 +1122,173 @@ fn project_config_source_tables_map_to_the_container() {
     );
     assert!(err.is_err(), "typo'd key is rejected: {err:?}");
 }
+
+/// `script_fingerprint` mixes the script bytes + resolved path + canonical
+/// `script_config` + contract version (design §51 Q2). The two review
+/// findings: a raw `root.join(script)` path (never canonicalized) and a
+/// non-order-normalized `script_config` both broke the "same input → same
+/// `build_id`" contract — same project spelled differently, or the same config
+/// with reordered keys, produced different fingerprints.
+#[test]
+fn script_fingerprint_is_path_and_config_canonical() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tools")).expect("mkdir tools");
+    std::fs::write(root.join("tools/echo.py"), b"print('hello')\n").expect("write script");
+
+    let mut cfg = ExcelConvention {
+        script: Some("tools/echo.py".to_string()),
+        script_config: serde_json::json!({"b": 2, "a": {"d": 4, "c": 3}}),
+        ..Default::default()
+    };
+    let fp1 = script_fingerprint(root, &cfg)
+        .expect("fingerprint")
+        .expect("Some");
+
+    // Same project, same script, same config but with reordered object keys
+    // (config semantically equal) → identical fingerprint (canonical order).
+    cfg.script_config = serde_json::json!({"a": {"c": 3, "d": 4}, "b": 2});
+    let fp2 = script_fingerprint(root, &cfg)
+        .expect("fingerprint")
+        .expect("Some");
+    assert_eq!(
+        fp1, fp2,
+        "reordered config keys must not change the fingerprint"
+    );
+
+    // Same config, different config values → different fingerprint.
+    cfg.script_config = serde_json::json!({"b": 99, "a": {"d": 4, "c": 3}});
+    let fp3 = script_fingerprint(root, &cfg)
+        .expect("fingerprint")
+        .expect("Some");
+    assert_ne!(
+        fp1, fp3,
+        "a different config value must rotate the fingerprint"
+    );
+
+    // Same project spelled with a relative root vs the same absolute root:
+    // the raw `root.join` spelling would differ, the canonical path must not.
+    // `root.join("tools/echo.py")` from an uncanonicalized root spelling
+    // differs, but `resolve_script` returns the canonicalized join — so a
+    // root spelled as `root` and as `root/../<tmpname>` (both canonicalize
+    // to the same dir) must produce the same fingerprint.
+    let dotdot = root.join("..").join(root.file_name().expect("tmp name"));
+    let rel_fp = script_fingerprint(&dotdot, &cfg)
+        .expect("fingerprint")
+        .expect("Some");
+    let abs_fp = script_fingerprint(root, &cfg)
+        .expect("fingerprint")
+        .expect("Some");
+    assert_eq!(rel_fp, abs_fp, "equivalent root spellings must match");
+}
+
+/// `script_fingerprint` returns `None` when no script is declared, and the
+/// contract version prefix is stable.
+#[test]
+fn script_fingerprint_none_without_script() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = ExcelConvention::default();
+    assert!(script_fingerprint(tmp.path(), &cfg)
+        .expect("no script")
+        .is_none());
+}
+
+/// A regular `type: Object` schema carries its children in the `FieldType`
+/// value map, not in `FieldSchema.properties` — the drift recursion must
+/// still descend into them (review finding: only `properties`-bearing
+/// adopted fields were recursed, so a plain `Object` skipped every sub-column
+/// existence and type check).
+#[test]
+fn drift_descends_into_regular_object_type_schema() {
+    let rows = [
+        &["##var", "id", "weapon", "weapon"][..],
+        &["##+", "", "atk", "def"][..],
+        &["##type", "Int32", "Int32", "Int32"][..],
+    ];
+    let metas = metas_of(&rows, 0, &[0, 1, 2]);
+    // The adopted schema spells the bean as a plain `type: Object` with the
+    // children in the `FieldType` map and no `properties`/`items`.
+    let mut props = IndexMap::new();
+    props.insert("atk".to_string(), FieldType::String); // mismatched: declared Int32
+    props.insert("def".to_string(), FieldType::Int32);
+    let weapon = declared_field("weapon", FieldType::Object(props));
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            ("weapon".to_string(), weapon),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    let err = &diags.errors()[0];
+    assert!(err.message.contains("weapon.atk"), "{}", err.message);
+}
+
+/// A regular `type: Array<Object>` `multi_row` schema likewise carries its
+/// element children in the `FieldType` value map — the drift recursion must
+/// unwrap the array element and descend (review finding).
+#[test]
+fn drift_descends_into_regular_array_of_object_type_schema() {
+    let rows = [
+        &["##var", "id", "*weapon", "*weapon"][..],
+        &["##+", "", "atk", "def"][..],
+        &["##type", "Int32", "Int32", "Int32"][..],
+    ];
+    let metas = metas_of(&rows, 0, &[0, 1, 2]);
+    let mut props = IndexMap::new();
+    props.insert("atk".to_string(), FieldType::Int32);
+    props.insert("def".to_string(), FieldType::String); // mismatched: declared Int32
+    let weapon = declared_field(
+        "weapon",
+        FieldType::Array(Box::new(FieldType::Object(props))),
+    );
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            ("weapon".to_string(), weapon),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    let err = &diags.errors()[0];
+    assert!(err.message.contains("weapon.def"), "{}", err.message);
+}
+
+/// A sub-field the regular `type: Object` schema lacks is drift too — the
+/// recursion reports the declared-but-unadopted child rather than skipping.
+#[test]
+fn drift_reports_missing_child_in_regular_object_type_schema() {
+    let rows = [
+        &["##var", "id", "weapon", "weapon"][..],
+        &["##+", "", "atk", "def"][..],
+        &["##type", "Int32", "Int32", "Int32"][..],
+    ];
+    let metas = metas_of(&rows, 0, &[0, 1, 2]);
+    // The schema only adopts `atk` — `def` is missing.
+    let mut props = IndexMap::new();
+    props.insert("atk".to_string(), FieldType::Int32);
+    let weapon = declared_field("weapon", FieldType::Object(props));
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            ("weapon".to_string(), weapon),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert_eq!(diags.errors().len(), 1, "{diags:?}");
+    let err = &diags.errors()[0];
+    assert!(
+        err.message.contains("declares sub-field 'weapon.def'"),
+        "{}",
+        err.message
+    );
+}

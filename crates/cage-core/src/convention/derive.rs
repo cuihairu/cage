@@ -463,14 +463,22 @@ fn check_drift_column(
     // Descend into sub-columns: unwrap the `Array` items for multi_row, then
     // compare each child against the `Object` properties. The old code only
     // recursed when both sides carried `properties` and never looked at the
-    // `items` element, so a nested child drift went unreported.
-    let adopted_bean = if column.multi_row {
-        adopted_field.items.as_deref().map(|i| (i, &i.properties))
+    // `items` element, so a nested child drift went unreported. A regular
+    // `type: Object` / `Array<Object>` schema carries its children in the
+    // `FieldType` value map rather than `properties`/`items` — resolve both
+    // spellings so those children are checked too.
+    let a_props: Option<IndexMap<String, FieldSchema>> = if column.multi_row {
+        match adopted_field.items.as_deref() {
+            Some(bean) => object_props(bean),
+            None => match &adopted_field.field_type {
+                FieldType::Array(inner) => object_props_from_type(inner),
+                _ => None,
+            },
+        }
     } else {
-        Some((adopted_field, &adopted_field.properties))
+        object_props(adopted_field)
     };
-    if let Some((_bean, Some(a_props))) = adopted_bean {
-        let derived_props = derived.properties.as_ref();
+    if let Some(a_props) = a_props {
         for (child_name, child) in &column.sub_columns {
             let child_path = format!("{path}.{child_name}");
             match a_props.get(child_name) {
@@ -491,8 +499,43 @@ fn check_drift_column(
                     format!("declares sub-field '{child_path}' which is not in the adopted schema"),
                 )),
             }
-            let _ = derived_props;
         }
+    }
+}
+
+/// The adopted bean's child-property map, from either the field-carried
+/// `properties` (the derived-chain / editor spelling) or the `FieldType`
+/// value map a regular `type: Object` schema carries.
+fn object_props(field: &FieldSchema) -> Option<IndexMap<String, FieldSchema>> {
+    field
+        .properties
+        .clone()
+        .or_else(|| object_props_from_type(&field.field_type))
+}
+
+/// Build child-property `FieldSchema`s from a `FieldType::Object` value map
+/// (a regular `type: Object` schema has no `FieldSchema.properties`, only the
+/// typed children in the `FieldType`).
+fn object_props_from_type(t: &FieldType) -> Option<IndexMap<String, FieldSchema>> {
+    match t {
+        FieldType::Object(fields) => Some(
+            fields
+                .iter()
+                .map(|(name, ft)| (name.clone(), field_from_type(name, ft)))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// A minimal `FieldSchema` carrying only a type — the property-table shape a
+/// `FieldType::Object` child contributes when the schema never spelled out
+/// `FieldSchema.properties`.
+fn field_from_type(name: &str, t: &FieldType) -> FieldSchema {
+    FieldSchema {
+        name: name.to_string(),
+        field_type: t.clone(),
+        ..empty_field()
     }
 }
 

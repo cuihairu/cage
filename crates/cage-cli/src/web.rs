@@ -1011,6 +1011,13 @@ fn build_facts(ctx: &Ctx, env: Option<&str>) -> serde_json::Value {
             Ok(p) => p,
             Err(e) => return serde_json::json!({"ok": false, "error": e}),
         };
+    // The script-adapter fingerprint (design §51 Q2): `build_project` mixes
+    // this into `source_hash`, so the status page must too — otherwise a
+    // script edit (byte-identical parsed model) is misreported as fresh.
+    let source_extra = match crate::source_script_fingerprint(&ctx.root, &project.config) {
+        Ok(extra) => extra,
+        Err(e) => return serde_json::json!({"ok": false, "error": e}),
+    };
 
     let mut builds = serde_json::Map::new();
     for (name, build_profile) in &ctx.config.profiles {
@@ -1018,7 +1025,7 @@ fn build_facts(ctx: &Ctx, env: Option<&str>) -> serde_json::Value {
         let (schema, document) = crate::filter_by_profile(&project.schema, &project.document, name);
         let normalized = cage_core::normalize::normalize_document(&document);
         let (schema_hash, source_hash) =
-            ManifestGenerator::input_hashes(&schema, &normalized, None);
+            ManifestGenerator::input_hashes(&schema, &normalized, source_extra.as_deref());
         let cur_table_hashes = ManifestGenerator::table_hashes(&normalized);
 
         let mut entry = serde_json::json!({
@@ -2810,6 +2817,92 @@ output_dir = "build/server/csv"
         let client = &payload["builds"]["client"];
         assert_eq!(client["fresh"], serde_json::json!(false));
         assert_eq!(client["changed_tables"], serde_json::json!(["Item"]));
+    }
+
+    /// A script-adapter project (design §51 Q2): `build_project` mixes the
+    /// script fingerprint into `source_hash`, and the status page must too —
+    /// otherwise editing the script (byte-identical parsed model) is
+    /// misreported as fresh (review finding).
+    #[test]
+    fn api_status_marks_script_edit_stale() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::create_dir_all(dir.path().join("config")).expect("mkdir config");
+        fs::create_dir_all(dir.path().join("tools")).expect("mkdir tools");
+        fs::write(
+            dir.path().join("tools/meta.py"),
+            "#!/usr/bin/env python3\nprint('v1')\n",
+        )
+        .expect("write script");
+        fs::write(
+            dir.path().join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[source_roots]
+main = "config"
+
+[project]
+name = "demo"
+
+# A declared script adapter — the script bytes feed `source_hash` even
+# though this demo's source is JSON (the fingerprint is config-driven).
+[source.excel]
+script = "tools/meta.py"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+"#,
+        )
+        .expect("write config");
+        fs::write(
+            dir.path().join("schema.yaml"),
+            "tables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      \
+             id: { name: id, type: { kind: Int32 }, required: true }\n      \
+             name: { name: name, type: { kind: String } }\nenums: {}\n",
+        )
+        .expect("write schema");
+        fs::write(
+            dir.path().join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        )
+        .expect("write source");
+
+        // Build a Ctx carrying the on-disk config (with the script wiring),
+        // the way `run_web` does — `ctx_in` only carries the default config.
+        let config = crate::load_project_config(dir.path()).expect("config");
+        let ctx = Ctx {
+            root: dir.path().to_path_buf(),
+            config,
+        };
+
+        // First build mixes the v1 script bytes into source_hash.
+        let (status, payload) = api_build(&ctx, r#"{"profile": "client"}"#);
+        assert_eq!(status, 200, "{payload}");
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        let (_, payload) = api_status(&ctx, "profile=client");
+        assert_eq!(
+            payload["builds"]["client"]["fresh"],
+            serde_json::json!(true),
+            "unchanged script → still fresh"
+        );
+
+        // Edit the script: the parsed JSON model is byte-identical, but the
+        // script fingerprint rotates — status must not report fresh.
+        fs::write(
+            dir.path().join("tools/meta.py"),
+            "#!/usr/bin/env python3\nprint('v2')\n",
+        )
+        .expect("edit script");
+        let (_, payload) = api_status(&ctx, "profile=client");
+        assert_eq!(
+            payload["builds"]["client"]["fresh"],
+            serde_json::json!(false),
+            "a script edit must mark the build stale"
+        );
     }
 
     #[test]

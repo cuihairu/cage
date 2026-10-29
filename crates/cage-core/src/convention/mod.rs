@@ -267,12 +267,34 @@ pub fn script_fingerprint(
         diags
     })?;
     let script_hash = blake3::hash(&bytes).to_hex().to_string();
-    let config = serde_json::to_string(&convention.script_config)
-        .unwrap_or_else(|_| convention.script_config.to_string());
+    // Canonical `script_config`: serialize with object keys sorted so that
+    // semantically equal configs (differing only in key order) hash the
+    // same, matching the "canonical form" determinism contract.
+    let config = canonical_json(&convention.script_config);
     Ok(Some(format!(
         "{CONTRACT_VERSION}|{script_hash}|{}|{config}",
-        script.display()
+        script.to_string_lossy()
     )))
+}
+
+/// Serialize a JSON value with every object's keys sorted lexicographically
+/// (recursively), so the bytes are order-independent — the "canonical form"
+/// the deterministic-build contract requires. Arrays keep their order (order
+/// is meaningful there); only object key order is normalized.
+fn canonical_json(value: &JsonValue) -> String {
+    fn sort(value: &JsonValue) -> JsonValue {
+        match value {
+            JsonValue::Object(map) => {
+                let mut entries: Vec<(String, JsonValue)> =
+                    map.iter().map(|(k, v)| (k.clone(), sort(v))).collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                JsonValue::Object(entries.into_iter().collect())
+            }
+            JsonValue::Array(items) => JsonValue::Array(items.iter().map(sort).collect()),
+            other => other.clone(),
+        }
+    }
+    serde_json::to_string(&sort(value)).unwrap_or_else(|_| value.to_string())
 }
 
 /// `[source.sheets]` (design §51 Q7): the shared §51 fields plus the
@@ -1097,7 +1119,12 @@ pub fn resolve_script(root: &Path, rel: &str) -> Result<PathBuf, Diagnostics> {
             joined.display()
         ));
     }
-    Ok(joined)
+    // Return the canonical path: `root` may itself be a relative path (e.g.
+    // `.` from the CLI), so the raw `root.join(rel)` spelling would make the
+    // same project hash differently depending on how the root was spelled.
+    // The canonical path is the same bytes for every spelling of the same
+    // project, preserving the "same input → same build_id" contract.
+    Ok(joined_canon)
 }
 
 /// Run the script adapter once: the request JSON on stdin, the response on
