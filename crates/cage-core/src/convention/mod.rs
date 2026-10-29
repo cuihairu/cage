@@ -504,7 +504,17 @@ pub fn decode(
                     } else {
                         None
                     };
-                    (col0 + i, name.unwrap_or(&text).to_string())
+                    let name = name.unwrap_or(&text).to_string();
+                    // Audit finding 2026-10-30: a blank header cell gets the
+                    // same `col<n>` fallback the data plane's headers_at uses,
+                    // so two blank headers don't collapse onto the same empty
+                    // column name (and collide in the duplicate check).
+                    let name = if name.is_empty() {
+                        format!("col{}", col0 + i)
+                    } else {
+                        name
+                    };
+                    (col0 + i, name)
                 })
                 .collect()
         }

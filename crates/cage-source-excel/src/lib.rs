@@ -888,6 +888,15 @@ impl ExcelSourceAdapter {
                 .filter(|n| !n.is_empty())
                 .unwrap_or(&name)
                 .to_string();
+            // Audit finding 2026-10-30: the flat path names an empty header
+            // cell `col<n>` (headers_at), so the structural path must do the
+            // same; an empty group name would otherwise make two blank
+            // top-level headers collide as "Duplicate column name ''".
+            let name = if name.is_empty() {
+                format!("col{abs_col}")
+            } else {
+                name
+            };
             // One merged region binds every covered column to the same
             // anchor, so a multi-level parent (width >= 3, e.g. `*waves`
             // spanning D1:F1) stays a single group rather than being split
@@ -1748,6 +1757,46 @@ mod tests {
             err.source.contains("structural-dup.xlsx"),
             "source: {}",
             err.source
+        );
+    }
+
+    /// Two blank top-level `##var` headers in the structural path get the
+    /// same `col<n>` fallback the flat path already uses; they must not
+    /// collide as an empty-string duplicate (audit finding 2026-10-30).
+    #[test]
+    fn test_structural_blank_headers_get_unique_col_fallbacks() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "", "weapon", ""][..],
+                &["##+", "", "", "atk", ""][..],
+                &["##type", "Int32", "String", "Int32", "String"][..],
+                &["", "1", "spare", "10", "extra"][..],
+            ],
+            &[],
+            "structural-blank-headers.xlsx",
+        );
+
+        let doc = luban_adapter()
+            .parse_file(wb.path())
+            .expect("blank headers must not collide as an empty name");
+        let table = doc.tables.get("Data").expect("Data table");
+        let names: Vec<&str> = table.rows[0].fields.keys().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            ["id", "col2", "weapon", "col4"],
+            "blank headers get col<n> on their absolute column"
+        );
+        assert_eq!(
+            table.rows[0].fields["col2"].value,
+            Value::String("spare".to_string())
+        );
+        assert_eq!(
+            table.rows[0].fields["col4"].value,
+            Value::String("extra".to_string())
+        );
+        assert_eq!(
+            table.rows[0].fields["weapon"].value,
+            Value::Object(IndexMap::from([("atk".to_string(), Value::Int(10))]))
         );
     }
 
