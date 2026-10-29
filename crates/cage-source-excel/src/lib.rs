@@ -359,32 +359,41 @@ impl ExcelSourceAdapter {
             let header_groups = (self.has_header && has_structural)
                 .then(|| Self::header_groups_at(&range, &merge_anchors, data_header_row, &marker));
 
-            // Audit finding 2026-10-29: the flat path stores fields by header
-            // name (`fields.insert(header, ...)`), so two columns with the same
-            // header would silently overwrite the earlier column and lose its
-            // values. Report the collision as an error instead. Only the flat
-            // path consumes these headers: the structural path (marker rows,
-            // sub-columns, multi-row) groups columns by merge anchor and skips
-            // `##`-marker cells, so its names are checked by the convention
-            // layer (E2201) and are not what the flat path would store.
-            if header_groups.is_none() {
-                let mut seen: HashSet<&str> = HashSet::new();
-                for (col_idx, header) in headers.iter().enumerate() {
-                    if !seen.insert(header.as_str()) {
-                        let col_letter =
-                            Self::col_index_to_letter(range_start.1 as usize + col_idx);
-                        diags.add(
-                            Diagnostic::error(
-                                parse::E0001,
-                                format!(
-                                    "Duplicate column name '{header}' in sheet \
-                                     '{sheet_name}' (column {col_letter}); rename \
-                                     one of the columns so every header is unique"
-                                ),
-                            )
-                            .with_source(file_path.clone()),
-                        );
-                    }
+            // Audit finding 2026-10-29: every path stores top-level fields by
+            // header name (flat: `fields.insert(header, ...)`; structural:
+            // `fields.insert(group.name, ...)`), so two columns with the same
+            // top-level header would silently overwrite the earlier column and
+            // lose its values. Report the collision as an error instead. The
+            // flat path reads names from `headers`; the structural path reads
+            // them from `header_groups`, whose names already skip `##`-marker
+            // cells and strip a `*` layout modifier.
+            let duplicate_headers = if let Some(groups) = &header_groups {
+                groups
+                    .iter()
+                    .map(|g| (g.columns.first().copied().unwrap_or(0), g.name.as_str()))
+                    .collect::<Vec<_>>()
+            } else {
+                headers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| (range_start.1 as usize + i, h.as_str()))
+                    .collect()
+            };
+            let mut seen: HashSet<&str> = HashSet::new();
+            for (col_idx, header) in duplicate_headers {
+                if !seen.insert(header) {
+                    let col_letter = Self::col_index_to_letter(col_idx);
+                    diags.add(
+                        Diagnostic::error(
+                            parse::E0001,
+                            format!(
+                                "Duplicate column name '{header}' in sheet \
+                                 '{sheet_name}' (column {col_letter}); rename \
+                                 one of the columns so every header is unique"
+                            ),
+                        )
+                        .with_source(file_path.clone()),
+                    );
                 }
             }
 
@@ -879,8 +888,13 @@ impl ExcelSourceAdapter {
                 .filter(|n| !n.is_empty())
                 .unwrap_or(&name)
                 .to_string();
+            // One merged region binds every covered column to the same
+            // anchor, so a multi-level parent (width >= 3, e.g. `*waves`
+            // spanning D1:F1) stays a single group rather than being split
+            // into sibling groups that share the parent's name (audit
+            // finding 2026-10-29).
             if let Some(current) = groups.last_mut() {
-                if current.columns.last() == Some(&anchor_col) {
+                if current.columns.first() == Some(&anchor_col) {
                     current.columns.push(abs_col);
                     continue;
                 }
@@ -1695,6 +1709,46 @@ mod tests {
             err.message
         );
         assert!(err.source.contains("dup.xlsx"), "source: {}", err.source);
+    }
+
+    /// The structural path (`##var` / marker rows) stores fields by group
+    /// name too, so a duplicate top-level header is the same silent
+    /// overwrite the flat path already reports (audit finding 2026-10-29).
+    #[test]
+    fn test_duplicate_top_level_headers_are_an_error_in_structural_path() {
+        let wb = luban_workbook(
+            &[
+                &["##var", "id", "name", "weapon", "", "name", ""][..],
+                &["##+", "", "", "atk", "def", "", ""][..],
+                &["##type", "Int32", "String", "Int32", "Int32", "", ""][..],
+                &["", "1", "sword", "10", "5", "other", ""][..],
+            ],
+            &["D1:E1"],
+            "structural-dup.xlsx",
+        );
+
+        let diags = luban_adapter().parse_file(wb.path()).unwrap_err();
+        assert!(diags.has_errors(), "duplicate header must fail the parse");
+        let errors = diags.errors();
+        let err = errors
+            .iter()
+            .find(|d| d.code == parse::E0001)
+            .expect("an E0001 diagnostic names the duplicate");
+        assert!(
+            err.message.contains("Duplicate column name 'name'"),
+            "message names the duplicate: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("column F"),
+            "message anchors the later column: {}",
+            err.message
+        );
+        assert!(
+            err.source.contains("structural-dup.xlsx"),
+            "source: {}",
+            err.source
+        );
     }
 
     /// A visible sheet with an empty used range is an authoring error, not a
