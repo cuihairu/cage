@@ -225,7 +225,23 @@ impl ExcelSourceAdapter {
                 }
             };
 
+            // Audit finding 2026-10-29: an empty used range was skipped with no
+            // diagnostic at all, silently dropping the sheet. By §3.1 a visible
+            // sheet is a table — hiding a sheet is the documented way to say it
+            // is not — so an empty one is an authoring error, not a no-op.
+            // (An error, not a warning: source-adapter warnings are discarded
+            // on the Ok path, so only an error surfaces.)
             if range.is_empty() {
+                diags.add(
+                    Diagnostic::error(
+                        parse::E0001,
+                        format!(
+                            "Sheet '{sheet_name}' has an empty used range; a visible \
+                             sheet is a table, so remove it or hide it if it is not one"
+                        ),
+                    )
+                    .with_source(file_path.clone()),
+                );
                 continue;
             }
 
@@ -342,6 +358,36 @@ impl ExcelSourceAdapter {
                 is_var_header || has_nested_columns || !multi_row_columns.is_empty();
             let header_groups = (self.has_header && has_structural)
                 .then(|| Self::header_groups_at(&range, &merge_anchors, data_header_row, &marker));
+
+            // Audit finding 2026-10-29: the flat path stores fields by header
+            // name (`fields.insert(header, ...)`), so two columns with the same
+            // header would silently overwrite the earlier column and lose its
+            // values. Report the collision as an error instead. Only the flat
+            // path consumes these headers: the structural path (marker rows,
+            // sub-columns, multi-row) groups columns by merge anchor and skips
+            // `##`-marker cells, so its names are checked by the convention
+            // layer (E2201) and are not what the flat path would store.
+            if header_groups.is_none() {
+                let mut seen: HashSet<&str> = HashSet::new();
+                for (col_idx, header) in headers.iter().enumerate() {
+                    if !seen.insert(header.as_str()) {
+                        let col_letter =
+                            Self::col_index_to_letter(range_start.1 as usize + col_idx);
+                        diags.add(
+                            Diagnostic::error(
+                                parse::E0001,
+                                format!(
+                                    "Duplicate column name '{header}' in sheet \
+                                     '{sheet_name}' (column {col_letter}); rename \
+                                     one of the columns so every header is unique"
+                                ),
+                            )
+                            .with_source(file_path.clone()),
+                        );
+                    }
+                }
+            }
+
             let start_row = if self.has_header {
                 if is_var_header {
                     let grid = marker_grid
@@ -1617,6 +1663,72 @@ mod tests {
         assert!(diags.errors()[0].source.contains("corrupt.xlsx"));
     }
 
+    /// A header row that names the same column twice is an authoring error,
+    /// not a silent overwrite: the flat path stores fields by name, so the
+    /// later column would replace the earlier one and its values would be
+    /// lost without any report (audit finding 2026-10-29).
+    #[test]
+    fn test_duplicate_header_names_are_an_error_not_a_silent_overwrite() {
+        let sheet = sheet_xml(
+            &[&["id", "name", "name"][..], &["1", "a", "b"][..]],
+            1,
+            "A1:C2",
+        );
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(&sheet)), "dup.xlsx");
+        let adapter = ExcelSourceAdapter::default();
+
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert!(diags.has_errors(), "duplicate header must fail the parse");
+        let errors = diags.errors();
+        let err = errors
+            .iter()
+            .find(|d| d.code == parse::E0001)
+            .expect("an E0001 diagnostic names the duplicate");
+        assert!(
+            err.message.contains("Duplicate column name 'name'"),
+            "message names the duplicate: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("column C"),
+            "message anchors the later column: {}",
+            err.message
+        );
+        assert!(err.source.contains("dup.xlsx"), "source: {}", err.source);
+    }
+
+    /// A visible sheet with an empty used range is an authoring error, not a
+    /// silent skip: by the §3.1 ruling a visible sheet is a table, and hiding
+    /// a sheet is the documented way to say "not a table". The silent skip
+    /// lost the sheet without any report (audit finding 2026-10-29).
+    #[test]
+    fn test_empty_used_range_sheet_is_an_error_not_a_silent_skip() {
+        let sheet = sheet_xml(&[], 1, "A1:A1");
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(&sheet)), "empty.xlsx");
+        let adapter = ExcelSourceAdapter::default();
+
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert!(
+            diags.has_errors(),
+            "an empty visible sheet must fail the parse"
+        );
+        let errors = diags.errors();
+        let err = errors
+            .iter()
+            .find(|d| d.code == parse::E0001)
+            .expect("an E0001 diagnostic names the empty sheet");
+        assert!(
+            err.message.contains("empty used range"),
+            "message names the empty range: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("Data"),
+            "message names the sheet: {}",
+            err.message
+        );
+    }
+
     /// Gaps in the used range: a missing header cell (B1) is named `col1` by
     /// its absolute grid column, and an entirely absent middle row is skipped
     /// by `skip_empty_rows` — leaving a sheet-row gap between data rows.
@@ -1690,10 +1802,11 @@ mod tests {
         assert_eq!(table.rows[0].fields["id"].value, Value::Int(1));
     }
 
-    /// A sheet with no cells yields an empty range: the sheet contributes no
-    /// table and the document ends up table-less (with a warning, not an error).
+    /// A visible sheet with no cells yields an empty range. Since §3.1 a
+    /// visible sheet is a table, so this is an authoring error — it used to be
+    /// skipped with no diagnostic at all (audit finding 2026-10-29).
     #[test]
-    fn test_handbuilt_xlsx_empty_sheet_yields_no_tables() {
+    fn test_handbuilt_xlsx_empty_sheet_is_an_error() {
         let sheet = concat!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
             r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
@@ -1702,11 +1815,12 @@ mod tests {
         let wb = TempWorkbook::new(&minimal_xlsx(Some(sheet)), "emptysheet.xlsx");
 
         let adapter = ExcelSourceAdapter::default();
-        let doc = adapter
-            .parse_file(wb.path())
-            .expect("empty sheet is not an error");
-
-        assert!(doc.tables.is_empty());
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert!(diags.has_errors(), "an empty visible sheet is an error");
+        assert!(
+            diags.errors().iter().any(|d| d.code == parse::E0001),
+            "the error is E0001"
+        );
     }
 
     /// A workbook whose sheet part is missing from the zip: reading the sheet
