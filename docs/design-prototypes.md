@@ -63,6 +63,22 @@ E1101 (type mismatch), Shop.discount `max` across the four environments
 
 ## III. Open decisions
 
+**Decided 2026-10-30 (under the user's 2026-10-14 delegation, see
+`docs/review/2026-10-30-decisions.md` §1; user may overturn):**
+
+1. **Web UI form — confirmed: extend the existing `cage web` `/status/`.** Already
+   delivered in practice by the 2026-10-20 planner rule interface (data table view +
+   diagnostic filtering + point highlight + upload-replace + one-click validate).
+2. **Cross-table reference linkage — deferred.** The shipped web UI has no structure
+   tree view; the planner's core need (jump to the offending row/column) is already
+   covered by diagnostic point highlight, and schema structure browsing belongs to the
+   editor page. Reopen on real demand.
+3. **Environment heatmap collapse — deferred.** No heatmap view exists; environment
+   differences are already visible via the per-profile/env build cards and the diff
+   section. Reopen on real demand.
+
+The original questions, kept for the record:
+
 1. Do we build a Web UI form (extending `/status/` of the existing `cage web`), or keep
    CLI + MCP as a dual front end and let Web only do the schema editor?
 2. Does the structure tree need cross-table reference highlight linkage (click

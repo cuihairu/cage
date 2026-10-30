@@ -1443,6 +1443,11 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
       4 张截图入库 dist/assets）。**待用户拍板**：Web UI 形态 /
       引用联动 / 环境折叠（见 design-prototypes.md 第三节）。
       commit: df34632（生命周期 + 场景）+ b4315dc（UI 原型）
+      已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)——
+      #1 Web UI 形态确认「扩展既有 cage web」(已被 2026-10-20 规则配置
+      界面落地兑现);#2 引用联动 / #3 环境折叠延后(无结构树/热力图视图,
+      诊断点位高亮 + 构建状态 + diff 已覆盖策划需求);design-prototypes.md
+      §III 已标注裁定
 
 - [x] 文档与实际子命令脱节（来源：用户 2026-10-14）——已交付（2026-10-14
       巡检 PATR1014）：以 `crates/cage-cli/src/main.rs` `enum Commands` 17 个
@@ -1599,6 +1604,11 @@ staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化�
         回归：第二源目录 0500 锁定时命令失败且所有源字节不变（修复前会
         留下半迁移状态，测试先红后绿），migrate 10 例全绿
       - [x] 表三评估与分期（只评估不实现，三项均待用户拍板）：
+        已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)——采纳
+        分期建议:①快照验签一期加载侧可选 --require-signature、二期密钥分发再议;
+        ②LSP 未保存缓冲一期 didChange 落临时文件、内存化延后;
+        ③DB 行数/字节 ceiling 一期、PG 真流式缓行;三项一期均为可选默认关,
+        列下一实施批次
         1) 快照签名与强制验签（报告：高）——现状快照仅同包账本内容一致
         性核对（本轮已定性），验签只覆盖 registry bundle（registry.rs
         :1871-1886）。真实价值是「快照来源可信」，但引入密钥管理（签发
