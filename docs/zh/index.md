@@ -59,6 +59,7 @@ if (typeof window !== 'undefined') {{
 
 [English](/) | 中文
 
+![Cage 配置编译与验证框架架构](/images/architecture-zh.svg)
 
 ## 核心链路
 

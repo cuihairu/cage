@@ -45,6 +45,7 @@ features:
 
 [中文](/zh/) | English
 
+![Cage configuration compiler and validator architecture](/images/architecture-en.svg)
 
 ## Core flow
 

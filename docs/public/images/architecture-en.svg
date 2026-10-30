@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1170" viewBox="0 0 1200 1170" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">Cage · Configuration Compiler &amp; Validator Architecture</title>
+<desc id="desc">Cage compiles scattered, heterogeneous, human-authored game configuration into validated, deterministically built runtime assets. Data flows top-down: authoring sources (Excel/CSV/JSON/YAML/HTTP/MySQL/PostgreSQL/Google Sheets) enter through Source Adapters (cage-source-*, read/parse only, no business validation) into the unified Canonical Model; then the eight-level validation pipeline (L0 Syntax ~ L7 Game Rules), through Normalize/IR to Target Generators (cage-target-*), producing data artifacts (JSON/CSV/MsgPack), code bindings (C#/Python/Lua/TS/JS/C++/Go/Java) and contracts/templates (Protobuf/JSON Schema/FlatBuffers/Template), and finally Manifest/Hash for deterministic builds. Cross-cutting: CLI (check --level / compile / migrate / lsp), first-class diagnostics (error codes + location + fix hints for CLI/Web UI/IDE), Profile (client/server) and declarative data migration (cage migrate). Dashed lines are cross-cutting/control relations, solid lines are data flow.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:30px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke-linejoin:round}.control{stroke-dasharray:7 5}</style>
+<rect width="1200" height="1170" rx="20" fill="#f8fafc"/>
+<text x="40" y="48" class="title" text-anchor="start">Cage · Configuration Compiler &amp; Validator</text>
+<text x="40" y="80" class="body" text-anchor="start">Authoring Sources → Source Adapter → Canonical Model → 8-level validation pipeline → Normalize/IR → Target Generators → Manifest/Hash</text>
+
+<path d="M600 190 V220" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="src-adapter" data-from="sources" data-to="adapters" d="M600 190 V220" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M600 300 V330" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="adapter-model" data-from="adapters" data-to="canonical" d="M600 300 V330" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M600 400 V430" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="model-validate" data-from="canonical" data-to="validation" d="M600 400 V430" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M600 530 V560" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="validate-ir" data-from="validation" data-to="normalize" d="M600 530 V560" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M600 630 V660" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="ir-target" data-from="normalize" data-to="targets" d="M600 630 V660" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M600 740 V770" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="target-output" data-from="targets" data-to="outputs" d="M600 740 V770" class="edge" style="stroke:#7c3aed;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M600 870 V900" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="output-manifest" data-from="outputs" data-to="manifest" d="M600 870 V900" class="edge" style="stroke:#7c3aed;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M1100 150 H1160 V1030 H1100" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="cli-cross" data-from="cli" data-to="cross-cut" d="M1100 150 H1160 V1030 H1100" class="edge control" style="stroke:#c2410c;stroke-width:2" marker-end="url(#arrow)"/>
+
+<g id="sources" data-node="sources"><rect x="60" y="110" width="1080" height="80" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+<text x="80" y="144" class="name" text-anchor="start">Authoring Sources</text>
+<text x="80" y="171" class="body" text-anchor="start">Excel · CSV · JSON · YAML · HTTP API · MySQL · PostgreSQL · Google Sheets (XML / SQLite later)</text>
+</g>
+<g id="adapters" data-node="adapters"><rect x="60" y="220" width="1080" height="80" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="80" y="254" class="name" text-anchor="start">Source Adapters (cage-source-*)</text>
+<text x="80" y="281" class="body" text-anchor="start">read and parse only, no business validation · Schema decoupled from Source, one Schema serves many sources</text>
+</g>
+<g id="canonical" data-node="canonical"><rect x="60" y="330" width="1080" height="70" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="80" y="364" class="name" text-anchor="start">Canonical Model (cage-core)</text>
+<text x="80" y="388" class="body" text-anchor="start">unified model · every input enters one type system</text>
+</g>
+<g id="validation" data-node="validation"><rect x="60" y="430" width="1080" height="100" rx="14" fill="#eef8f5" stroke="#86c9b3" stroke-width="1.5"/>
+<text x="80" y="464" class="name" text-anchor="start">Validation Pipeline (8 levels, cage-core)</text>
+<text x="80" y="495" class="body" text-anchor="start">L0 Syntax → L1 Schema → L2 Type → L3 Value → L4 Table → L5 Reference → L6 Semantic → L7 Game Rules</text>
+<text x="80" y="519" class="body" text-anchor="start">Cross-configuration reference validation: existence + compatibility · reference predicates evaluated semantically (E1410 when unsatisfied)</text>
+</g>
+<g id="normalize" data-node="normalize"><rect x="60" y="560" width="1080" height="70" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="80" y="594" class="name" text-anchor="start">Normalize / IR (cage-core)</text>
+<text x="80" y="618" class="body" text-anchor="start">normalized intermediate representation · data serialization kept separate from code generation</text>
+</g>
+<g id="targets" data-node="targets"><rect x="60" y="660" width="1080" height="80" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="80" y="694" class="name" text-anchor="start">Target Generators (cage-target-*)</text>
+<text x="80" y="721" class="body" text-anchor="start">profiles (client / server) configure targets and field visibility</text>
+</g>
+<g id="outputs" data-node="outputs">
+<rect x="60" y="770" width="345" height="100" rx="14" fill="#faf5ff" stroke="#d8b4fe" stroke-width="1.5"/>
+<text x="80" y="804" class="name" text-anchor="start">Data Artifacts</text>
+<text x="80" y="835" class="body" text-anchor="start">JSON · CSV · MsgPack (deterministic binary)</text>
+<rect x="428" y="770" width="345" height="100" rx="14" fill="#faf5ff" stroke="#d8b4fe" stroke-width="1.5"/>
+<text x="448" y="804" class="name" text-anchor="start">Code Bindings</text>
+<text x="448" y="835" class="body" text-anchor="start">C# · Python · Lua · TypeScript · JavaScript · C++ · Go · Java</text>
+<rect x="796" y="770" width="344" height="100" rx="14" fill="#faf5ff" stroke="#d8b4fe" stroke-width="1.5"/>
+<text x="816" y="804" class="name" text-anchor="start">Contracts &amp; Templates</text>
+<text x="816" y="835" class="body" text-anchor="start">Protobuf .proto · FlatBuffers .fbs · JSON Schema · Template (Tera)</text>
+</g>
+<g id="manifest" data-node="manifest"><rect x="60" y="900" width="1080" height="70" rx="14" fill="#edf5ff" stroke="#93b9e3" stroke-width="1.5"/>
+<text x="80" y="934" class="name" text-anchor="start">Manifest / Hash (deterministic builds)</text>
+<text x="80" y="958" class="body" text-anchor="start">same input → same artifacts/hashes · traceable · rollback-friendly · incremental</text>
+</g>
+
+<g id="cross-cut" data-node="cross-cut"><rect x="60" y="1000" width="1080" height="110" rx="14" fill="#fdf2f8" stroke="#f9a8d4" stroke-width="1.5"/>
+<text x="80" y="1034" class="name" text-anchor="start">Cross-cutting</text>
+<text x="80" y="1065" class="body" text-anchor="start">CLI (cage check --level / compile / migrate / lsp) · Diagnostics as a first-class citizen (error codes + location + fix hints → CLI / Web UI / IDE)</text>
+<text x="80" y="1090" class="body" text-anchor="start">Profile (client / server) · Declarative data migration (cage migrate: rename / fill defaults / drop / widen / remap, dry-run by default)</text>
+</g>
+
+<text x="620" y="210" class="label" text-anchor="middle">read/parse</text>
+<text x="620" y="320" class="label" text-anchor="middle">into model</text>
+<text x="620" y="420" class="label" text-anchor="middle">validate</text>
+<text x="620" y="550" class="label" text-anchor="middle">normalize</text>
+<text x="620" y="650" class="label" text-anchor="middle">generate</text>
+<text x="620" y="760" class="label" text-anchor="middle">artifacts</text>
+<text x="620" y="890" class="label" text-anchor="middle">hash/manifest</text>
+<text x="1045" y="200" class="label" text-anchor="middle" style="fill:#c2410c">cross-cut hook ↓</text>
+<text x="40" y="1145" class="small" text-anchor="start">Dashed: cross-cutting / control relations (CLI, diagnostics, profile, migration) · Solid: data flow · all 14 target kinds implemented</text>
+<text x="40" y="1168" class="small" text-anchor="start">Diagram is the intended contract, grounded in source (cage-core validation &amp; IR · cage-source-* adapters · cage-target-* generators)</text>
+</svg>
