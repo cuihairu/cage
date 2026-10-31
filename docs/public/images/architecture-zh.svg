@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1170" viewBox="0 0 1200 1170" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
 <title id="title">Cage · 配置编译与验证框架架构</title>
-<desc id="desc">Cage 把分散、异构、面向人的游戏配置编译成经过验证、确定性构建的运行时资产。数据流自上而下：编写源（Excel/CSV/JSON/YAML/HTTP/MySQL/PostgreSQL/Google Sheets）经 Source Adapter（cage-source-*，只读解析不做业务校验）进入统一 Canonical Model；随后八级验证流水线（L0 Syntax ~ L7 Game Rules），经 Normalize/IR 交给 Target Generators（cage-target-*），产出数据资产（JSON/CSV/MsgPack）、代码绑定（C#/Python/Lua/TS/JS/C++/Go/Java）与契约/模板（Protobuf/JSON Schema/FlatBuffers/Template），最终生成 Manifest/Hash 实现确定性构建。横切能力：CLI（check --level / compile / migrate / lsp）、诊断一等公民（错误码+定位+修复提示，供 CLI/Web UI/IDE）、Profile（client/server）与声明式数据迁移（cage migrate）。虚线为横切/控制关系，实线为数据流。</desc>
+<desc id="desc">Cage 把分散、异构、面向人的游戏配置编译成经过验证、确定性构建的运行时资产。数据流自上而下：编写源（Excel/CSV/JSON/YAML/HTTP/MySQL/PostgreSQL/Google Sheets）经 Source Adapter（cage-source-*，只读解析不做业务校验）进入统一 Canonical Model；随后八级验证流水线（L0 Syntax ~ L7 Game Rules），经 Normalize/IR 交给 Target Generators（cage-target-*），产出数据资产（JSON/CSV/MsgPack）、代码绑定（C#/Python/Lua/TS/JS/C++/Go/Java）与契约/模板（Protobuf/JSON Schema/FlatBuffers/Template），最终生成 Manifest/Hash 实现确定性构建。横切能力：CLI（check --level / build / migrate / lsp）、诊断一等公民（错误码+定位+修复提示，供 CLI/Web UI/IDE）、Profile（client/server）与声明式数据迁移（cage migrate）。虚线为横切/控制关系，实线为数据流。</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
 <style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:30px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke-linejoin:round}.control{stroke-dasharray:7 5}</style>
 <rect width="1200" height="1170" rx="20" fill="#f8fafc"/>
@@ -67,7 +67,7 @@
 
 <g id="cross-cut" data-node="cross-cut"><rect x="60" y="1000" width="1080" height="110" rx="14" fill="#fdf2f8" stroke="#f9a8d4" stroke-width="1.5"/>
 <text x="80" y="1034" class="name" text-anchor="start">横切能力</text>
-<text x="80" y="1065" class="body" text-anchor="start">CLI（cage check --level / compile / migrate / lsp）· Diagnostics 一等公民（错误码 + 定位 + 修复提示 → CLI / Web UI / IDE）</text>
+<text id="cli" x="80" y="1065" class="body" text-anchor="start">CLI（cage check --level / build / migrate / lsp）· Diagnostics 一等公民（错误码 + 定位 + 修复提示 → CLI / Web UI / IDE）</text>
 <text x="80" y="1090" class="body" text-anchor="start">Profile（client / server）· 声明式数据迁移（cage migrate：rename / fill defaults / drop / widen / remap，默认 dry-run）</text>
 </g>
 

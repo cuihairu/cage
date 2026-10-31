@@ -8,7 +8,7 @@
 
 ## 条目 1:Web UI 形态 / 引用联动 / 环境折叠(design-prototypes.md §III)
 
-**条目来源**:`todo.md:1443`(「待用户拍板:Web UI 形态 / 引用联动 / 环境折叠」)+ `docs/design-prototypes.md:82-88`(§III Open decisions 三条)。
+**条目来源**:`todo.md:1443`(「待用户拍板:Web UI 形态 / 引用联动 / 环境折叠」)+ `docs/design-prototypes.md:82-87`(§III Open decisions 三条)。
 
 **背景(教学性)**:2026-10-12 起本仓给 `cage web` 做过三个 HTML 静态原型(init 问答流程、校验结果可视化),原型只是设计稿、不接代码。设计稿 §III 留了三条待拍板问题:①要不要把 Web 从「只做 Schema 编辑器」扩展成「也能做配置表单/校验结果界面」;②结构树视图里点一个引用(如 `Ref(Item.id)`)要不要跳到被引用的表;③环境差异热力图里,相邻环境值相同时要不要折叠显示。
 
