@@ -1,6 +1,7 @@
 [English](README.md) | [中文](README.zh.md)
 
-<div align="center"><img src="docs/public/logo.svg" width="64" alt="Cage logo" /> <a href="https://cuihairu.github.io/cage/"><img src="https://img.shields.io/badge/docs-docs-blue" alt="docs"></a></div>
+<div align="center"><img src="docs/public/logo.svg" width="64" alt="Cage logo" /> <a href="https://cuihairu.github.io/cage//"><img src="https://img.shields.io/badge/docs-docs-blue" alt="docs"></a> <a href="https://cuihairu.github.io/cage/"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a>
+</div>
 
 ---
 

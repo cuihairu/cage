@@ -1,6 +1,16 @@
 [English](README.md) | [中文](README.zh.md)
 
-<div align="center"><img src="docs/public/logo.svg" width="64" alt="Cage logo" /> <a href="https://cuihairu.github.io/cage/zh/"><img src="https://img.shields.io/badge/docs-文档-blue" alt="docs"></a></div>
+<div align="center">
+
+<img src="docs/public/logo.svg" width="64" alt="Cage logo" />
+
+# Cage
+
+[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/) [![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml) [![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage) [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/zh//) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+**游戏配置编译与验证框架**
+
+English: **Cage is a configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.** <a href="https://cuihairu.github.io/cage/zh/"><img src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue" alt="docs"></a>
+</div>
 
 ---
 
@@ -19,7 +29,6 @@ Authoring Sources → Source Adapters → Canonical Model
 ## 核心能力
 
 - Source Adapter 插件：Excel / CSV / JSON / YAML，以及 HTTP API / MySQL / PostgreSQL / Google Sheets 远程源（后续 XML、SQLite…），只读取解析，不做业务校验
-- Excel 元行约定：规则以 `##` 前缀元行写在工作簿内（`[source.excel]` 预设 / 按工作簿覆盖 / 用户脚本适配器 `cage.excel-meta/1`）——表可自带 schema 声明，派生为可审阅草稿（`cage schema-draft … excel:`）并与被采用 schema 漂移核对（E2208，定位到单元格）；元行绝不泄入构建产物
 - Schema 与 Source 解耦：同一 Schema 可用于多个配置源（类型/必填/默认值/范围/枚举/唯一/引用）
 - 八级验证流水线：Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule，可分级执行（`cage check --level`）
 - 跨配置引用校验：存在性 + 兼容性检查（引用对象存在但类型不合法同样报错；引用谓词按语义求值，不满足报 E1410）
