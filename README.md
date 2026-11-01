@@ -1,16 +1,6 @@
 [English](README.md) | [中文](README.zh.md)
 
-<div align="center">
-
-<img src="docs/public/logo.svg" width="64" alt="Cage logo" />
-
-# Cage
-
-[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/) [![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml) [![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage) [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
-
-**A configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.**
-
-</div>
+<div align="center"><img src="docs/public/logo.svg" width="64" alt="Cage logo" /> <a href="https://cuihairu.github.io/cage/"><img src="https://img.shields.io/badge/docs-docs-blue" alt="docs"></a></div>
 
 ---
 
