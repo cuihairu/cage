@@ -3208,6 +3208,43 @@ print(json.dumps(response, ensure_ascii=False))
         );
     }
 
+    /// Regression: >400 bytes of multi-byte stderr (the byte at offset 400
+    /// falls inside a CJK character) must not panic in the E2205 truncation
+    /// — the diagnostic path truncates at a char boundary.
+    #[cfg(unix)]
+    #[test]
+    fn test_script_failure_truncates_cjk_stderr_at_char_boundary() {
+        if python().is_none() {
+            eprintln!("skip: no python interpreter");
+            return;
+        }
+
+        let root = TempRoot::new("cjk-stderr");
+        root.write_script(
+            "tools/cjk.py",
+            "#!/usr/bin/env python3\nimport sys\nsys.stderr.write('爆' * 300)\nsys.exit(1)\n",
+        );
+        let wb = root.workbook("Data.xlsx");
+
+        let diags = root
+            .adapter("tools/cjk.py", 10)
+            .parse_file(&wb)
+            .unwrap_err();
+        assert!(diags.errors().iter().any(|d| d.code == E2205), "{diags:?}");
+        for d in diags.errors() {
+            if d.code == E2205 {
+                // A panic would have crashed the test. The stderr portion is
+                // truncated to <=400 bytes at a char boundary, still valid
+                // UTF-8, and carries the CJK payload.
+                assert!(d.message.contains("爆"), "lost the stderr payload");
+                // The message is `script <path> exited with <status>: <stderr>`;
+                // the stderr part is capped at 400 bytes, so the whole message
+                // stays well under this bound.
+                assert!(d.message.len() < 700, "stderr not truncated: {:?}", d.message);
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_script_bad_output_is_e2206() {

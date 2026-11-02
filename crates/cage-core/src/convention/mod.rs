@@ -1240,8 +1240,16 @@ pub fn run_script(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr = stderr.trim();
+        // Truncate to 400 bytes at a char boundary: `&str[..400]` would panic
+        // when byte 400 falls inside a multi-byte character (e.g. a script
+        // emitting >400 bytes of CJK stderr), turning a diagnostics path into
+        // a crash.
         let stderr = if stderr.len() > 400 {
-            &stderr[..400]
+            let mut end = 400;
+            while !stderr.is_char_boundary(end) {
+                end -= 1;
+            }
+            &stderr[..end]
         } else {
             stderr
         };
