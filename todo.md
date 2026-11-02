@@ -1,2060 +1,341 @@
 # Cage TODO
 
-> 依据 docs/design.md + docs/需求整理.md。每项可独立验收，完成即勾。
+> 依据 docs/design.md + docs/requirements.md。每项可独立验收，完成即勾。
 
 ## 第一期 MVP
 
 ### T1 工程骨架
+
 - [x] T1.1 Cargo workspace 起（cage-core/source-*/target-*/cli 多 crate + CI）
 - [x] T1.2 Canonical Model（value.rs：Null/Bool/Int/UInt/Float/String/Bytes/Array/Object + Source Location）
 - [x] T1.3 Diagnostics 框架（错误码表 + 全字段诊断 + 多级 Severity + 文本渲染器）
-
 ### T2 Source
+
 - [x] T2.1 JSON Source Adapter（serde 读入 → Canonical Model，保留路径定位）
 - [x] T2.2 YAML Source Adapter（语法错误 E0001 精确到行）
 - [x] T2.3 CSV Source Adapter（表头/行号定位）
 - [x] T2.4 Excel Source Adapter（calamine：sheet/合并单元格/缓存值；错误定位到单元格 G27 式）
-
 ### T3 Schema 与校验
+
 - [x] T3.1 Schema DSL（YAML 定义：type/required/default/enum/min/max/unique/primary_key/reference）
 - [x] T3.2 L1 Schema + L2 Type + L3 Value 校验（E1001/E1002/E1101/E1201 族）
 - [x] T3.3 L4 Table（主键唯一 E1301、组合唯一）
 - [x] T3.4 L5 Reference（E1401 存在性；E1410 谓词：引用对象字段约束）
 - [x] T3.5 L6 Semantic 表达式规则（assert: min_level <= max_level，行级定位）
 - [x] T3.6 `--level` 分级执行
-- [x] T3.7 命名枚举成员资格校验（审计遗留闭环，审计-文档一致性.md 留档第 1 项）：
-      L3 `validate_field_constraints` 对 `type: {kind: Enum, value: 名}` 字段检查
-      顶层 `enums:` 声明的成员资格（同走 E1204，提示 Allowed values）；只查字符串值
-      ——非字符串类型失配归 L2（E1101），悬空枚举名归 L1（E1004），不双重诊断；
-      顺手顺修审计留档第 2 项（schema/mod.rs compatible_with 注释 E1410→E1411）；
-      验收已过：l3_enforces_named_enum_membership 单测（越界成员 E1204 +
-      合法成员通过 + 非字符串仅 E1101）——本轮交付，勾选
-
+- [x] T3.7 命名枚举成员资格校验
 ### T4 Normalize 与 Target
+
 - [x] T4.1 Normalize（数值/布尔归一，确定性 Canonical Representation）
 - [x] T4.2 JSON Target（稳定键序、确定性字节输出）
 - [x] T4.3 CSV Target
 - [x] T4.4 Profile 机制（client/server 配置 + 字段级 targets 可见性过滤）
-
 ### T5 Build 与 CLI
-- [x] T5.1 确定性构建 + Build Manifest（schema_hash/source_hash/content_hash/artifacts）
-- [x] T5.2 CLI：cage check / build / inspect / diff（clap）
-- [x] T5.3 golden 测试：同输入两次构建字节级一致
 
-## 第二阶段（预排）
-- [x] 代码生成器：C#/Python/Lua/TypeScript/JavaScript/C++/Go/Java
-- [x] MsgPack 生成器（2026-10，第二阶段唯一遗留收尾之一，design §23
-      Data Targets）：新 crate `cage-target-msgpack`——Canonical Model →
-      MessagePack 二进制，`format = msgpack`/`messagepack` 进 `cage
-      build` 数据面（json/csv 同面板，`unsupported target format` 对其
-      收口）；编码走 `rmp` 最小形（定值定字节），确定性契约 = 行字段
-      `sort_keys` 名序（默认 true，false 保留源序）+ 嵌套对象键
-      normalize BTreeMap 序 + 非有限浮点编码 nil（NaN 位型跨平台不稳，
-      对齐 JSON target 非有限 → null 规则）+ Bytes 原生 bin 不做
-      base64；options 仅 `sort_keys`；验收：8 单测（手算 golden 字节、
-      两跑逐字节一致、全 Value 族逐字段字节断言、sort_keys 双向、
-      profile 过滤、from_config 三态、trait 面）+ 1 CLI 集成测试
-      （构建产物 golden 字节 + 全量重建同字节 + manifest 记录），
-      workspace 615 全绿
-- [x] Protobuf 生成器（2026-10，第二阶段唯一遗留收尾之二，design §23；
-      与 MsgPack 同批收官）：设计稿无 wire 编码明文口径，拍板 = 输出
-      .proto3 定义文件（schema 驱动、与 C#/Go 代码绑定同族，数据不
-      参与——消费方 protoc + 自有 runtime）；新 crate
-      `cage-target-proto` 进 `cage build`/`cage gen` 代码面
-      （`format = proto`/`protobuf`，`unsupported target format` 对其
-      收口）。映射口径（target.md 存表）：窄整折叠 int32/uint32、
-      int64/uint64、float32/float64 → float/double；object/null/any →
-      google.protobuf.Struct/Value（自由形状，与 C++ std::any 同族）；
-      map 键 int → int64（go/cpp/java 同族）；repeated 元素 / map 值位
-      的 array/map 包 `{字段}Value` 嵌套 message（深度叠后缀）；整数
-      枚举（成员全整数且在 int32 域）进共享 cage_enums.proto + 按需
-      import，缺 0 前置合成 `{Enum}_UNSPECIFIED = 0`、值重复
-      allow_alias，否则字段回退 string 并注释标注；确定性 = 表/字段
-      名序 + 字段号 1..n 名序分配 + 标识符共享去重集合（表先枚举后、
-      冲突追 `_`）+ 文件头锤 schema 哈希；options：package（默认
-      cage.generated）/ enums_file（默认 cage_enums.proto，import 路径
-      随之）。验收：14 单测（产物路径名序、头块、全类型映射、
-      well-known import 按需、枚举三态合成、int32 域外回退、嵌套包装
-      三形态、标识符 sanitize/去重/保留字、确定性两跑、schema 哈希
-      可选、空表、from_config、enums_file 驱动 import）+ 1 CLI 集成
-      测试（gen 产物形状 + 两跑逐字节 + build 同 lane + manifest 记
-      录），workspace 630 全绿；文档 target.md/cli.md/architecture.md/
-      README/需求整理.md 同步。至此第二阶段全部交付
-- [x] JSON Schema 生成器（2026-10，Schema 即资产的链外形态——用户问
-      「JSON Schema 这种也算资产吧，如何管理如何加载」，管理侧由
-      docs/assets.md 收口，加载侧补标准形态导出）：新 crate
-      `cage-target-jsonschema` 进 build/gen 代码面板（`format =
-      jsonschema`/`json-schema`/`json_schema`）。拍板（design
-      §Code Targets 决策记录）：每表一个**自包含** `{table}.schema.json`
-      （无 `$ref`/共享枚举文件——分发场景引用易碎），draft-07 默认、
-      2020-12 经 `options.draft`（唯一失败路径，与 template 同族配置错
-      在 generate 期 exit 2）；枚举一律内联成员名（L2 把 enum 字段类型
-      定为 string，整型字面量只是代码生成元数据——整数值枚举也发字符串
-      枚举，悬空枚举名降级纯 string 由 L1 另行报错）；类型化 Object 与
-      表文档都发 `additionalProperties: false`（校验器「未知键拒绝」同
-      口径）；`map<int, V>` 键发 `propertyNames.pattern` 数字串约束；
-      bytes 仅 draft-07 发 `contentEncoding: base64`（2020-12 已删该
-      关键字）；整值 f64 边界渲染为整数；非有限 min/max 不落盘；内联
-      `enum_values` 整数域在整型字段上渲染数字枚举；跨表引用与语义
-      规则无标准拼写不进文档。确定性 = 表名序 × 固定键插入序
-      （serde_json preserve_order）。验收达成：crate 单测 ×11（文档
-      形状与 required/声明序、标量与约束映射、枚举成员名两态与悬空
-      降级、复合类型四态、2020-12 差异、未知 draft 报错、最小表闭形、
-      确定性两跑、from_config 默认与覆盖）+ CLI 集成 ×2（gen 产物形状
-      + 两跑逐字节 + build 同 lane + manifest 记录；draft-99 exit 2
-      产物零落盘）+ 文档（target.md JSON Schema 节与码表、cli.md、
-      assets.md 转已交付、architecture.md 结构树、design 决策记录、
-      需求整理.md、todo 本条）+ 示例工程 client profile 增第 13 个
-      target（80 产物/83 快照文件全链重验，docs/example.md 与
-      README 同步）——本轮交付，勾选
+- [x] T5.1 确定性构建 + Build Manifest（schema_hash/source_hash/content_hash/artifacts）
+- [x] T5.2 CLI
+- [x] T5.3 golden 测试
+## 第二阶段
+
+- [x] 代码生成器
+- [x] MsgPack 生成器
+  （workspace 615 全绿；8 单测；1 集成）
+- [x] Protobuf 生成器
+  （workspace 630 全绿；14 单测；1 集成）
+- [x] JSON Schema 生成器
+  （docs：docs/assets.md）
 - [x] Plugin SDK + Game Rule Validator 实装（沙箱方案定稿于 design §17.1：进程内 trait 现已实装、动态库 C ABI shim 为第三方分发路线、不可信代码不执行；GameRuleValidator trait + GameRuleRegistry + 内建 power_curve 样例端到端，`cage check --level gamerule` 输出 E1601 行级诊断；动态库装载与插件市场不在本期）
 - [x] Dependency Graph（cage graph：引用图/构建顺序/循环检测）
-- [x] E1403 循环检测接线进校验面（2026-10 点火：此前图 API 的
-      find_cycles 只服务增量/库侧，校验面不报）：L5 逐行引用检查后做
-      schema 级循环检测——`DependencyGraph::from_schema` + `find_cycles`，
-      每环旋转最小表名起头去重（两表互引 A↔B 不再按起点双报）后逐环
-      报一条 `E1403` WARNING（`Circular reference: Item → Kit → Item`），
-      自引用按图契约计环同报；语义拍板 = WARNING 而非 ERROR——环不阻断
-      构建（生成单遍、增量传播 visited 集安全），但断库 API 拓扑序
-      （`topological_sort`/`build_order` 返 Err），ERROR 会误杀合法互引
-      schema（掉落表 ↔ 怪物表）；`warnings_as_errors = true` 升级。
-      验收：core 单测×4（两表环 canonical 消息与 table/source 断言/
-      三表环单告/自环 + 菱形无环静默/升级）+ CLI 集成×1（check 退码 0
-      带 E1403 与 canonical 环路径、warnings_as_errors 退码 1）+
-      validation.md L5 表级引用环节与码表、需求整理.md:67 转已接线
-      ——本轮交付，勾选
-- [x] msgpack source adapter（2026-10 点火之二：registry 条目
-      `data/**.msgpack` 打包后无处重消费——format_fidelity 只认
-      json/yaml/csv/excel，msgpack-only 数据 target 的条目 E1802 拒载）：
-      新 crate `cage-source-msgpack`（rmpv 解码，Cargo workspace 新成员），
-      文件形态 = msgpack target 线格式（裸行对象数组），表名 = 文件名
-      stem（CSV 惯例；registry 侧 manifest 改名兜底 stem 不符）。解码
-      保真拍板 = 浮点按位 / bin → Bytes / 超 i64::MAX 整数保留 UInt
-      （JSON 往返表达不了的三类）；非负整数归一 Int——线格式正数标记
-      不携带符号性（write_sint(7) 与 write_uint(7) 同标记），Int 族列
-      回灌 L2 需要它；空数组产出空表（往返完整）；严格报错 = 尾随
-      字节/截断 E0001、根非数组/行非对象 E0004。CLI 三处接线：
-      load_sources 扩展名清单 + parse_source_files 分派 +
-      format_fidelity msgpack = 5（registry 条目回灌新最高保真度）。
-      验收：crate 单测×7（target→source 往返全字段、数值边界、
-      非有限浮点 nil、空表、形状违规四态、stem 命名与 pk 启发、
-      plugin trait 面）+ CLI 集成×2（msgpack-only 数据 target 条目
-      publish → resolve → build 回灌 0.25 浮点、本地 .msgpack 源
-      build）+ 文档 source.md 新节与 crate 表行、cli.md 保真度序、
-      target.md 重消费注记、architecture.md 树、需求整理.md crate
-      清单——本轮交付，勾选
-- [x] 增量构建（2026-10 收口为三层，docs/build.md 增量构建节）：
-      L1 哈希比对跳过——schema/source/target 指纹与上次 manifest 一致
-      且产物全在盘时整轮跳过（校验仍全量执行）；L2 表级传播（v0.3，
-      见 D2）：`IncrementalPlanner::compute_affected` 按依赖图传播受
-      影响表，未受影响表从磁盘携带，合并 manifest 与全量构建逐字节
-      收敛；L3 target 配置传播（v0.4，本轮交付）：manifest 记录每个
-      target 的配置指纹（`targets`：按 (format, output_dir) 排序的
-      `TargetRecord`，blake3 覆盖 format/output_dir/file_template/
-      options，GENERATOR_VERSION 1.0.0→1.1.0）——指纹变化的 target
-      以完整文档重生成自身产物（target 字节取决于它序列化的每张表），
-      未变 target 保持 L2 传播与携带；移除/改配置 target 的旧产物
-      失败安全删除（只删 prev manifest 记过的路径、且在生成成功之后），
-      旧版 manifest（无 `targets`）一次全量构建即迁移；identity 取
-      (format, output_dir)，共用 output_dir 的 target 保守一起重生。
-      验收达成：tests/incremental.rs L2 端到端 ×2 + L3 ×4（option
-      变更只重生该 target、移除删旧产物、新增只生成新产物、旧版
-      manifest 迁移；前三个断言增量 manifest == 全量 manifest）+
-      manifest `target_records` 单测（排序规范与哈希敏感性），workspace
-      649 全绿 + docs/build.md 三层节——本轮交付，勾选
+- [x] E1403 循环检测接线进校验面
+- [x] msgpack source adapter
+- [x] 增量构建
+  （workspace 649 全绿；docs：docs/build.md）
 - [x] CI 集成（warnings_as_errors、GitHub Actions 模板）
+## 第三阶段
 
-## 第三阶段（预排）
+### W 系列：Web UI / Schema Editor
 
-### W 系列：Web UI / Schema Editor（2026-10 开工，预排落 docs/web.md）
-- [x] W1 编辑器交换模型（core）：`cage-core::edit`——Schema ↔ 编辑器
-      JSON（to_editor_json/from_editor_json，解析失败报 E1701 并铺
-      JSON 路径定位）与确定性 canonical YAML 保存写回/回读
-      （to_canonical_yaml/from_canonical_yaml，同 Schema 同字节、
-      回环幂等）；round-trip 与 E1701 路径测试；与 snapshot
-      schema.json 同一形状；错误码表入 validation.md
-- [x] W2 `cage web` 本地服务（HTTP API）：项目装载（复用 cli 加载链）、
-      GET /api/schema（编辑器 JSON）、POST /api/validate（编辑态校验）、
-      POST /api/schema（canonical YAML 写回）；本地工具不鉴权；
-      集成测试 + README 入口
-- [x] W3 Schema 编辑器前端（docs/public/editor 静态单页，无 node 构建链，
-      编译期嵌入 cage 二进制）：表/枚举树、19 字段类型（Array/Object/
-      Map/Enum 递归）、约束编辑、E 码诊断面板（点诊断定位字段）、保存
-- [x] W4 文档与示例：编辑流程定稿、示例工程 web 冒烟（编辑→校验→
-      保存→cage build 复现）、CI 集成（examples/web-demo + web-smoke.sh
-      + ci.yml web-smoke job + docs/web.md 定稿）
+- [x] W1 编辑器交换模型（core）
+- [x] W2 `cage web` 本地服务（HTTP API）
+- [x] W3 Schema 编辑器前端
+- [x] W4 文档与示例
+  （docs：docs/web.md）
+### 其余
 
-### 其余（预排）
-- [x] Registry（远程配置仓库 + 版本）——R1–R4 收官（2026-10，见下方
-      「R 系列：Configuration Registry」：本地多版本仓库 / `[dependencies]`
-      版本 pin / 远程 http(s) 只读解析 / verify 全册审计 + gc 滚动窗口 +
-      remove 显式移除）；遗留的注册表鉴权与远程发布协议不在本项
-- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）——S1–S9
-      收官（2026-10，见下方「S 系列：Remote Source」：S1 HTTP API 源 /
-      S2 MySQL / PostgreSQL 源 / S3 Google Sheets 源 / S4 确定性与
-      离线语义收口 / S5 错误码接线收口 / S6 文档收口 / S7 分页与限流 /
-      S8 条件 GET 增量拉取 / S9 库表内省 Schema 草稿）
-- [x] 分环境验证 `--env`（2026-10 拍板，design §48，约束覆盖）——已交付，见下方「分环境验证」节
-- [x] Artifact 分发与迁移——全数交付（2026-10 拍板：A 系列注册表分发
-      A1–A4 收官 + M 系列声明式数据迁移 M0–M3 收官，见下方两节；设计
-      定稿 design §46/§47，决策记录随稿——定了什么 / 为什么 / 备选）
+- [x] Registry
+- [x] Remote Source（Google Sheets/MySQL/PostgreSQL/HTTP API）
+- [x] 分环境验证 `--env`
+- [x] Artifact 分发与迁移
+### R 系列：Configuration Registry
 
-### R 系列：Configuration Registry（2026-10 开工，design §29）
+- [x] R1 本地注册表 + 源解析
+  （3 集成）
+- [x] R2 Schema 解析与依赖声明
+  （1 集成）
+- [x] R3 远程 Registry 只读解析
+  （2 集成）
+- [x] R4 回滚与清理
+  （2 集成）
+### S 系列：Remote Source
 
-形态定稿：注册表根 `<registry>/<包>/<版本>/` 为**自校验 snapshot 入口**
-（manifest/schema.json/data/generated/HASHES 逐文件 blake3 账本，与
-`cage snapshot` 同一格式、同一次打包产物即同一字节），包目录另附
-确定性 `index.json`（包名 + 版本序列表：版本/build_id/content_hash/文件数）。
-发布与解析都先过账本校验——「未经校验不入册、未经校验不载入」。
-版本序：点分数字序（1.9 < 1.10）；包/版本名只许 `[A-Za-z0-9._-]`，
-路径穿越类输入直接拒绝。源解析语法 `registry:<包>[@<版本>]`
-（省略版本 = 最高序），消费方在 cage.toml `[registry].path` 声明
-注册表根（相对项目根）；解析成功 = 校验通过 + 解出条目 data/ 目录
-作为源根。注册表字节全路径确定性：同输入 → 同条目 → 同 index。
+- [x] S0 设计定稿
+- [x] S1 HTTP API 源（`cage-source-http`）
+  （2 集成）
+- [x] S2 MySQL / PostgreSQL 源
+  （2 集成）
+- [x] S3 Google Sheets 源（`cage-source-sheets`）
+  （1 集成）
+- [x] S4 确定性与离线语义收口
+- [x] S5 错误码接线收口
+- [x] S6 文档收口
+- [x] S7 增量交付
+- [x] S9 库表内省 Schema 草稿
+### 分环境验证
 
-- [x] R1 本地注册表 + 源解析：
-      `cage-core::registry`（publish/resolve + 确定性 index.json +
-      点分版本序 + 包/版本名合法性校验）；`cage registry publish`
-      （全量构建 → 快照打包 → 账本自校验 → 入册；package 默认
-      project.name、version 默认 project.version；同版本同字节重发
-      幂等 OK，同版本异字节 E1801 版本冲突拒写）；`cage registry
-      list`（包/版本/build_id/content_hash/文件数，确定性序）；
-      source_roots 支持 `registry:` 前缀解析（未接 `[registry].path`
-      、包不存在、版本不存在 → E1802 无法解析；账本校验不过 →
-      E1803 条目校验失败；条目 data/ 按最高保真格式载入 json >
-      yaml > csv > excel，表名以条目 manifest artifact 记录为准）；
-      schema_path 本轮只走文件系统；E1801/E1802/E1803 入错误码表。
-      验收达成：9 core 单测 + 3 CLI 集成测试（发布→列表→latest/
-      pin 解析→构建复现→确定性字节→篡改 E1803→冲突 E1801→错误
-      路径）全绿 + 文档（cli.md/validation.md/architecture.md/
-      design.md §29/index.md）+ 本勾选
-- [x] R2 Schema 解析与依赖声明：`schema_path: registry:<包>[@<版本>]`
-      直接读条目 `schema.json`（发布时的 profile 投影 schema，serde
-      同形回读；缺失/损坏 E1802），`cage web` 对 registry schema 工程
-      拒绝保存（409，schema 归发布方所有）；`[dependencies]` 版本 pin
-      ——比较符 `=` `>` `>=` `<` `<=` 逗号 AND、`^` caret（左起首个
-      非零分量 +1 其后归零）/ `~` tilde（锁定次末位）展开、比较逐分量
-      补零（`>=1.2` 不排除 `1.2.0`）；省略 `@版本` 取满足区间最高版本，
-      显式 `@版本` 必须落在 pin 内，区间无解/越界/非法 pin 均 E1802。
-      验收达成：4 新 core 单测（区间展开/补零满足性/非法规范/pin 解析
-      与门禁）+ 1 新 CLI 集成测试（三版本 pin→1.9.0、caret、@版本
-      冲突 pin、无解区间、非法 pin）+ 1 新 web 集成测试（GET 走注册
-      表解析、POST 409 拒存）全绿 + 文档（cli.md 依赖章节/validation.md
-      /architecture.md/design.md §29/index.md）+ 本勾选
-- [x] R3 远程 Registry 只读解析：`[registry].path` 支持 http(s) 根；
-      协议为匿名 GET 三资源（包 index / 条目账本 / 条目文件，条目
-      字节不可变，鉴权留待后续独立立项）；解析 = 取 index → 与本地
-      同一 `select_version` 选版本 → 按账本逐文件下载并逐一校验
-      blake3（不符 E1803）→ 落 `.cage-cache/registry/<url 指纹>/`
-      项目内缓存 → 过 `verify_snapshot` 信任门才交付；缓存复验干净
-      离线复用（index 有本地副本兜底，不可达且无缓存 E1802）；
-      `cage registry publish/list` 对远程根报 usage 错误（协议无包
-      枚举，发布在本地注册表完成后托管）。验收达成：1 新 core 单测
-      （select_version 纯函数决策表 + cache_key 确定性与隔离）+ 2 新
-      CLI 集成测试（本地静态 HTTP 服务器托管真实注册表：pin→1.9.0、
-      显式 @1.0.0、schema_path 走远程、杀服务器后离线复用、幽灵包/错
-      版本/无解 pin E1802、篡改字节 E1803、死根 E1802、publish/list
-      只读拒绝）全绿 + 文档（cli.md 远程章节/design.md §29 协议/
-      validation.md/architecture.md/index.md）+ 本勾选
-- [x] R4 回滚与清理：多版本共存下的 GC 策略、`cage registry verify`
-      全册校验工具、条目移除/重新发布纪律——`verify_registry`
-      （逐条目重过账本校验 + index 记录与条目账本 build_id/
-      content_hash 交叉核对 + 无 index 记录的孤儿目录报告，E1803
-      逐条列出、只读）；`gc_registry` 滚动窗口（每包保留最新
-      `--keep N` 个版本、下限 1——窗口即回滚面，pin 旧版本的消费方
-      仍解析、被挤出版本 E1802；孤儿一并清扫、有变化才重写 index、
-      dry-run 同一清单不落笔）；`remove_entry` 显式行政移除（版本
-      目录带 index 记录一并删、包 index 保留，同字节重新 publish
-      干净入册，注册表自身绝不隐式改写历史）；`cage registry
-      verify/gc/remove` 子命令（--dry-run，远程根 read-only 拒绝）。
-      验收达成：1 新 core 单测（篡改/账本漂移/孤儿 + gc 窗口与
-      dry-run/keep 下限/移除重发闭环）+ 2 新 CLI 集成测试（verify
-      干净→篡改 E1803→index/账本漂移 E1803→孤儿；gc dry-run 不落
-      笔→默认窗口→keep 1→挤出版本消费方 E1802→remove dry-run/
-      实删/verify 空册/missing E1802→同字节重发入册）+ 远程只读
-      拒绝扩 verify/gc/remove + 文档（cli.md R4 章节/design.md §29/
-      validation.md/architecture.md/index.md）+ 本勾选
+- [x] 分环境约束覆盖 `--env`
+- [x] 环境化出包
+- [x] 未选中环境坏覆盖 lint
+- [x] S8 条件 GET 增量拉取
+### A 系列：Artifact Distribution
 
-### S 系列：Remote Source（2026-10 立项，design §45；S1–S9 全数交付）
+- [x] A0 设计定稿
+- [x] A1 bundle 导出（`cage registry export`）
+- [x] A2 bundle 导入（`cage registry import`）
+- [x] A3 直推（`cage registry push` + auth_env）
+- [x] A4 文档收口
+- [x] A5 压缩容器
+- [x] A6 签名账本（§47 留待实现期：ed25519 抗抵赖签名）
+- [x] A7 §47 留待实现期三项闭账
+### M 系列：Migration
 
-形态定稿：四源（Google Sheets / MySQL / PostgreSQL / HTTP API）只读接入，
-纪律对齐 R 系列——远端字节先落 `.cage-cache/source/<源指纹>/`，缓存
-复用前重过校验门（未经校验不载入）；构建确定性锚在「取到的字节」上
-（source_hash 覆盖解析后的 Canonical Model 内容，远端数据变化 →
-build_id 旋转，manifest 里可见）；凭据只存环境变量名，不进 cage.toml；
-查询只读（装载期 SELECT 白名单 + 运行期只读事务）。错误码 E19xx 族已
-全族注册进 codes.rs 与 validation.md 并全部接线生效（E1901/E1902 随
-S1、E1904/E1905 随 S2、E1903 随 S3）。
+- [x] M0 设计定稿
+- [x] M1 规则模型与解析
+- [x] M2 执行器与报告
+- [x] M3 CLI 与文档收口
+- [x] M3.1 增量交付
+- [x] M3.2 增量交付（§46 留待实现期：schema diff 规则草稿）
+- [x] 迁移与依赖 pin 联动校验
+### G 系列：Template Target
 
-- [x] S0 设计定稿（design.md §45）：四源句法与映射表（table 形式：
-      取数方式 / 行映射 / 类型口径，DECIMAL 走字符串）、确定性锚点与
-      缓存布局、凭据经 env、只读双保险、断网回退语义、E19xx 五行规划、
-      留待实现期清单（增量拉取 / OAuth / 连接池 / 分页 / 内省均不在
-      首期）——本轮交付，勾选
-- [x] S1 HTTP API 源（`cage-source-http`）：`[source_roots]` 直写
-      http(s) URL，GET 响应字节落 `.cage-cache/source/<cache_key>/`
-      后走标准 JSON 解析（形状与本地 JSON 完全一致，无新方言）；共享
-      取数 / 重试 / 缓存键 helper 首落 `cage_core::remote`（cache_key /
-      RetryPolicy / with_retries / http_get，R3 registry 同源复用，cli
-      侧的重复实现摘除）；E1901/E1902 接线生效。验收达成：4 新 core
-      单测（cache_key 确定与隔离、缓存目录派生、重试恢复与预算耗尽、
-      服务端应答不重试）+ 6 新 crate 单测（取数解析并落缓存、401→
-      E1902、404→E1901、死端口→E1901、坏 JSON→E0001 拒载、非 http
-      URL 拒收）+ 2 新 CLI 集成测试（真实静态 HTTP 服务器：取数构建
-      并断言缓存字节、同字节重建 manifest 逐字节一致、远端变更
-      source_hash/build_id 旋转；401/404/死根/坏体的错误码与退出码）
-      全绿 + 文档（design §45 实装状态与 source_hash 口径修正、
-      validation.md E19xx、architecture.md 结构树、source.md HTTP API
-      小节）+ 本勾选
-- [x] S2 MySQL / PostgreSQL 源（`cage-source-db`，两后端同 crate 共享
-      行集映射）：`mysql:<表|具名查询>` / `pg:<同>`，具名查询优先、
-      表名展开 `SELECT *`；装载顺序 spec → 查询解析（E1905）→ SELECT
-      白名单（单条、SELECT 开头，拒分号 / 注释 / FOR UPDATE|SHARE /
-      INTO / CTE）→ dsn_env 解析（E1904）→ 连接——白名单与凭据校验
-      都在任何网络触达之前；会话钉只读（MySQL `SESSION TRANSACTION
-      READ ONLY`、PG `default_transaction_read_only`，双保险第二重）；
-      类型口径 NULL → Null、DECIMAL/NUMERIC 文本保真不走 Float、
-      二进制列 base64、日期时间文本渲染；行序确定：带 `ORDER BY`
-      尊重原序，否则按行序列化形式排序（写实：主键在适配器侧不可知，
-      序列化排序同样满足确定性）；行集 → canonical JSON（键序 = 列序，
-      serde_json preserve_order 与全仓同口径）落 `.cage-cache/source/
-      <scheme+DSN+SQL 指纹>/` → 标准 JSON 解析，与 S1 同一缓存锚与
-      解析链。验收达成：8 新 crate 单测（spec 切分、白名单 13 拒 3 纳、
-      具名查询优先与表名校验、dsn_env 三态、值映射含 u64::MAX 与
-      DECIMAL 文本、行序两向 + pretty JSON 逐字节断言、materialize
-      缓存落盘、load 报错顺序）+ 2 新 CLI 集成测试（无需真实 DB：
-      未声明 / 未设 dsn_env → E1904、非 SELECT 具名查询与非法表名 →
-      E1905 且先于凭据校验、mysql/pg 死端口与坏 DSN → E1901，退出码
-      2）全绿 + 文档（design §45 实装状态与 `[remote.pg]` 句法对齐、
-      validation.md E1904/E1905 转已接线、architecture.md 结构树、
-      source.md MySQL / PostgreSQL 小节与 crate 表行）+ 本勾选
-- [x] S3 Google Sheets 源（`cage-source-sheets`）：`gsheet:<id>/<tab>`
-      走 Sheets API v4 `values` + UNFORMATTED_VALUE（公式缓存值），
-      tab → 表、首行表头同 Excel 惯例（空表头退 col<i>）、空行跳过、
-      短行补 null、tab 自然行序 = 作者承诺序保留；API key 经
-      `[remote.gsheets].credential_env`（写实：service account 需
-      OAuth JWT 交换，留待实现期，todo 原口径「service account / API
-      key 经 env」首签只落 API key）；形状门 E1903 在此接线（非行集 /
-      空表头 / majorDimension 非 ROWS）；API base 显式注入点供测试，
-      CLI 恒走生产 endpoint。验收达成：10 新 crate 单测（spec 切分与
-      id 严格校验、credential 三态、URL 编码、错误码映射且诊断不携
-      key、canonical 映射含 pretty JSON 逐字节断言、形状门六拒、
-      spec/凭据先于网络的 load 顺序、mock 服务器端到端取数映射缓存、
-      403→E1902 / 404 与死端口→E1901 / 坏形状→E1903）+ 1 新 CLI
-      集成测试（未声明 / 未设 credential_env → E1904、坏 spec 与
-      traversal id → E1901，退出码 2）全绿 + 文档（design §45 实装
-      状态与映射表 / E19xx 表 / service account 口径修正、
-      validation.md E1903 转已接线与 Sheets 装载顺序、architecture.md
-      结构树、source.md Google Sheets 小节与 crate 表行 + 后续扩展
-      清单移除）+ 本勾选
-- [x] S4 确定性与离线语义收口：远端变更 → source_hash / build_id 旋转
-      的端到端测试（`remote_source_fetch_build_and_rotate` 随 S1 已锚定
-      ——identical rebuild manifest 逐字节一致 + 数据变更双哈希旋转）；
-      断网缓存回退 + WARNING 诊断（E1906 新码：三适配器传输类失败 →
-      `cage_core::remote::source_cache_fallback` 共享门 → 缓存副本存在
-      则 eprintln warning 并解析副本，404 / 401/403 永不回退——旧字节
-      不掩盖远端删除或访问吊销，DB 的 E1904/E1905 在网络触达前发生同样
-      不回退；回退出的缓存文件走与在线路径同一条标准 JSON 解析无旁路；
-      WARNING 只带 spec / 表名 / URL，凭据永不落日志）；`--no-cache`
-      严格模式（check / build / gen / inspect 四子命令，load_project
-      透传 strict，回退关闭还原硬 E1901）。测试 6 新增——http crate
-      回退 / strict / 404+401 不回退（2）、db materialize 闭包注入
-      回退 / strict / 无缓存原错误（2）、sheets mock server 回退三态
-      （1）、CLI 进程级 build 落缓存 → 杀 server → 离线 build E1906
-      WARNING → `--no-cache` 退码 2 E1901（1），现有测试不改语义全绿，
-      workspace 551（545 + 6）。文档对账：design §45 断网语义段转已
-      收口（仅传输类回退 / E1906 / DB 全传输类口径）、E19xx 表补
-      E1906、实装状态补 S4；validation.md E1906 行 + 三源段落补回退
-      口径；source.md 新增「离线回退与 --no-cache」小节；cli.md 新增
-      `--no-cache` 小节；需求整理.md Remote Source 行更新 S4 已交付
-      + 本勾选
-- [x] S5 错误码接线收口：E1901–E1905 已于 S1 全族注册（`codes.rs` +
-      validation.md）并已全部接线生效（E1901/E1902 随 S1、E1904/E1905
-      随 S2、E1903 随 S3），本项核对全族「预留」标注清零、诊断渲染
-      覆盖四源后收口——已交付：codes.rs E1903/E1904 doc 尾「reserved
-      until」措辞清零（E1906 随 S4 入族时模块头已转全族 wired，本签
-      收尾两处常量注释），全仓 grep E19xx×预留/reserved 零残留；
-      四源错误路径码覆盖系统盘点——HTTP：E1901（传输 / 404 / 其他
-      状态 / 非 http URL）+ E1902 + E0001（坏 JSON 本地同款 parse
-      诊断）+ E9902 + E1906；DB：E1905（spec / 白名单 / 表名）+
-      E1904 + E1901（DSN 非法 / 连接 / 只读 pin / prepare / 查询，
-      mysql.rs / pg.rs 全带码）+ E9902；Sheets：E1901 + E1904 +
-      E1902 + E1903（形状门）+ E9902 + E1906；每条路径既存测试逐码
-      断言（crate 级 err.contains + CLI 进程级 stderr contains），
-      诊断渲染经 load_project Err → `error: {e}` 全覆盖，无吞码路径
-      ——零代码行为变化，纯措辞与文档签。design §45 实装状态补 S5
-      对账详述、todo 勾选、需求整理.md 行同步
-- [x] S6 文档收口：source.md 后续扩展清单转正（注明首期四大远程源已交付）、cli.md 新增 Remote Source 章节（四源语法/特性/错误码对照表 + 离线回退引用）、需求整理.md Remote Source 行同步 S6 已交付、architecture.md 工程结构树三 crate（cage-source-http/db/sheets）早已在列
-- [x] S7 增量交付（§45 留待实现期两项：HTTP 分页协议与限流协商，
-      2026-10 交付）：HTTP 源 GET 后响应带 RFC 8288 `Link:
-      <...>; rel="next"` 头则沿链取页——每页必须 JSON 行数组、页序
-      拼接成合并文档（裸数组 → `Data` 表）落缓存，相对 next 对页 URL
-      按 RFC 3986 解析（`url` 进 workspace 依赖，随 ureq 已在树）、
-      已访问集去重（回环定错）、硬上限 1000 页；首响应无 next 时字节
-      原样返回——单 GET 契约逐字节不变。限流协商：429 带可解析
-      `Retry-After`（delta-seconds 或 RFC 7231 IMF-fixdate，civil →
-      纪元秒走 `days_from_civil` 不引日期库）且 ≤ 30s（`MAX_RATE_LIMIT_WAIT`）
-      时按服务器要求时长退避重试（`FetchFailure::RateLimited` +
-      `RetryClassify::cooldown`，与传输类共用 attempts 预算；`is_transport`
-      更名 `is_retryable`），缺失 / 不可解析 / 超上限即时 `Status(429)`
-      定错不睡长等。`http_get_full` 增 `Link` 头透出（`http_get` 签名
-      不变，registry / sheets 零改动）；分页违规与限流定错不参与离线
-      回退（服务器已应答，与 404/401/403 同列）。验收达成：cage-core
-      单测 ×5（Retry-After 双形态与垃圾值表、HTTP-date 已知纪元锚
-      1970/2015/2020 闰日/2030、冷却映射与可重试分类、限流同一预算）
-      + cage-source-http 单测 ×7 新增（双页合并与缓存合并字节、非数组
-      页定错点名页 URL、回环、页界 enforce 小界注入、限流退避成功、
-      超上限即时定错、无头定错）+ RFC 8288 解析单测 + CLI 集成 ×1
-      （分页源端到端构建 → 两页行全落 → 缓存 = 合并数组 → 同态重建
-      manifest 逐字节一致）+ design §45 S7 决策记录（分页协议选型 /
-      限流协商 / 回退边界）+ source.md / validation.md E1901 行同步
-      ——本轮交付，勾选
-- [x] S9 库表内省 Schema 草稿（2026-10 交付，§45 留待实现期最后一项
-      可实现项）：`cage schema-draft <工程> <spec>... [-o <文件>]`——
-      `mysql:<表>` / `pg:<表>` spec（与 source_roots 同句法，
-      `schema.表` 解析到具名 schema）经只读会话内省
-      `information_schema`（表名绑定为参数、内省 SQL 为 const 且过
-      自家 validate_select 白名单自检），渲染确定性 YAML 草稿：表序 =
-      spec 序、列序 = 声明序、主键来自约束、`NOT NULL → required`；
-      DECIMAL / temporal / JSON / 未知类型行内注释点出拍板项，无主键
-      表落空 `primary_key: []` 加注释（primary_key 是 DSL 必填字段，
-      空列表是合法「无主键」形状且校验跳过 PK 检查）。类型映射最小
-      忠实口径：宽度整型 Int8–Int64 / UInt8–UInt64（unsigned 提升
-      家族）、`tinyint(1)` → Bool（MySQL 惯例）、DECIMAL / temporal /
-      JSON / 文本 → String——与适配器缓存 JSON 的实际形态一致，草稿
-      能在自家管线校验。凭据纪律同 S2（E1904 dsn_env）；表找不到
-      E1901；非 db spec E1905——不新增 E 码。渲染无时间戳（确定性），
-      `-o` 父目录自动创建（同 migrate-draft）。验收达成：
-      cage-source-db 单测 ×15（draft 7：kind 覆盖全家族 / 注释仅在
-      拍板档位 / 异形名引号 / 逐字节形状 / **渲染 YAML 解析回
-      Schema 断言表·主键·required** / 无 PK 空列表 / not_found 码；
-      mysql 4：COLUMN_TYPE 分类 30 档 / 大小写空格钝感 / 白名单自检 /
-      参数绑定；pg 4：data_type 分类 / varchar·numeric 尺寸重组 /
-      白名单自检 / 参数绑定）+ CLI 集成 ×2（五档错误码 E1904/E1905/
-      E1901 mysql+pg 不可达 + 缺 cage.toml / 缺 spec 用法错误）+
-      design §45 S9 决策记录 + source.md / cli.md 同步——本轮交付，
-      勾选
+- [x] G1 模板引擎接入
+  （10 单测）
+- [x] G2 官方模板改写
+- [x] G2b 余量改写
+- [x] G3 自定义模板加载
+  （workspace 534 全绿）
+- [x] G4 过滤器库
+  （workspace 545 全绿）
+- [x] G5 文档收口
+## 第四阶段
 
-### 分环境验证（2026-10 拍板，design §48）
+- [x] D1 边界定稿
+- [x] D2 Dependency Graph 接线
+- [x] D3 Profile 语义化
+- [x] D4 Manifest 强化
+- [x] D5 Configuration Snapshot
+### 验收打磨
 
-游戏配置分环境：同一张表 dev 放宽、prod 收紧。拍板取**约束覆盖**方向
-（用户令，巡检按决策记录口径代定实现细节；线格式实现期裁定为表级侧表
-`env_overrides`，语义与拍板一致、零波及既有约束读取点——裁定与理由
-记录于 design §48）。
+- [x] 错误码全量走查
+  （docs：docs/validation.md）
+- [x] presign 拒绝路径测试补齐
+- [x] CLI presign-map 错误路径端到端
+### L6 表达式引擎实装
 
-- [x] 分环境约束覆盖 `--env`（2026-10 交付）：TableSchema 新增
-      `env_overrides`（环境名 → 字段名 → `FieldOverride` 部分补丁：
-      required/min/max/min_length/max_length/pattern/enum_values/
-      min_items/max_items，未列键保持基线、列出的键整值替换、类型不在
-      补丁里、空补丁与未知字段定错）；`Schema::resolve_env` 在 load 后
-      / 校验与投影前一次性克隆抹补丁，全部校验器（含 E9006 按 resolved
-      required 判定）、代码生成、编辑器往返、哈希零改动；环境名 Schema
-      自声明（`declared_envs` 并集，不在 cage.toml 重复登记），CLI
-      check/build/gen 新增 `--env`（未声明环境与无覆盖 Schema 传
-      `--env` 均 exit 2 用法错误并列出已声明集，不新增 E 码）；
-      manifest 新增 `environment` 字段（基线构建不写该键，
-      generator_version 1.1.0 → 1.2.0），schema_hash 对 resolved
-      Schema 全量哈希 → build_id 随环境轮换，L1/layer-2 增量守卫显式
-      比对环境——换环境永不复用上一环境产物；snapshot / registry
-      publish 暂以基线出包（环境化出包留待）。验收达成：cage-core
-      单测 ×4（declared_envs 并集 / 结构检查拦未知字段与空补丁 /
-      resolve_env 抹补丁且基线不被修改 / 无覆盖环境解析等于基线）+
-      CLI 集成 ×4（同表三套规则基线 E1001、dev 放行、prod
-      E1201/E1204 换档；未声明与无覆盖 exit 2；manifest 记 environment
-      且换环境轮换 build_id、增量按环境失配；dev → prod 增量与全量
-      逐字节收敛）+ design §48 决策记录 + schema.md 线格式节 +
-      cli.md --env 行 + build.md manifest 表与环境守卫 +
-      architecture.md Manifest 13 字段与 Environment 行 +
-      validation.md E9006 环境次序——本轮交付，勾选
-- [x] 环境化出包（2026-10 交付，design §48 遗留清账）：`cage snapshot`
-      与 `cage registry publish` 挂 `--env`（与 check/build/gen 同语义，
-      resolved schema 走全量验证再打包）；快照目录名带 env 段
-      `<profile>-<env>-<build_id[..12]>`（基线不变），包内 manifest 的
-      `environment` 与 resolved 形态 `schema.json` 随包走；E1801 判定
-      面从「同 content_hash」放宽到整包指纹 `build_id + content_hash`
-      （publish 与 import 预检同步）——修复：环境化重打包产物字节相同
-      时旧判定误判 identical no-op，prod 字节永不落地；同版本换环境报
-      E1801 换版本号入册（`0.1.0-prod`，版本词法允许 label 段）；
-      resolve/verify/gc/remove/push 不感知环境（入册即普通字节）；
-      `--env` 与 `snapshot --verify` 互斥。验收达成：core 单测 ×1（同
-      产物异 build_id 冲突 + 真 no-op 回归）+ CLI 集成 ×2（snapshot
-      --env 目录名/manifest/schema.json/回验 + 基线并存；publish --env
-      E1801/入册/幂等/verify 全绿）+ 示例 run.sh 步骤 6/11 实机演示 +
-      example.md/cli.md/design.md 文档同步——本轮交付，勾选
-- [x] 未选中环境坏覆盖 lint（2026-10 交付，design §48 遗留清账）：
-      `Schema::lint_env_overrides` 收集全部结构性坏覆盖（未知字段 /
-      空补丁，报错带 table/env/field 定位），validate 退化为取首条
-      硬错误；CLI 基线路径（不选环境）逐条 `warning:` 提示不阻断，
-      `--env` 路径维持硬错误——坏覆盖不再潜伏到有人 `--env` 才爆。
-      不新增 E 码（装载期纯文本诊断，与 `--env` 结构错误同构）。验收
-      达成：core 单测 ×1（lint 收全多环境问题 + validate 仍硬失败）+
-      CLI 集成 ×1（基线 warning 不阻断 + --env 硬错误 exit 2）——
-      本轮交付，勾选
-- [x] S8 条件 GET 增量拉取（2026-10 交付，design §45 文档级增量）：
-      HTTP 源响应带 `ETag` / `Last-Modified` 时验证器随字节落 sidecar
-      meta（`.cage-cache/source/<key>/<key>.meta.json`）；同 URL 再取
-      先带 `If-None-Match` / `If-Modified-Since` 发条件请求，304 复用
-      缓存字节（meta 不重写），200 双双替换。只有首页 GET 带条件
-      （首页验证器描述整个集合）；meta 无伴生 payload 即按无缓存走
-      普通 GET 重建；`--no-cache`（strict）依然 revalidate——304 是
-      服务器确认缓存，不是缓存自答；304 不经传输失败分类、不触发
-      E1906。行级增量（revision / updated_at）仍留待实现期。验收
-      达成：cage-source-http 单测 ×2（旋转服务器五步：首取无条件
-      落 meta / 二取 INM 304 字节不动 / 轮换 200 落新字节新 meta /
-      下轮带新 ETag / strict 仍 revalidate，服务器计数逐次断言；meta
-      删除按无缓存重建）+ 全绿 gates（fmt / clippy -D warnings /
-      689 测试 / run.sh 实机 exit 0）+ design §45 S8 决策记录 +
-      source.md / cli.md 同步——本轮交付，勾选
-
-### A 系列：Artifact Distribution（2026-10 立项，design §47）
-
-形态定稿：注册表条目的分发走两条路，复用同一账本信任门（未经校验不分发、
-不入册）——① **离线 bundle**：`cage registry export` 产出确定性 tar
-（条目全文件 + HASHES.json + 包 index 摘录，mtime/uid/gid 归零、成员名序，
-同条目 = 同字节），`cage registry import` 先 `verify_snapshot` 再入册
-（坏账本 E2103，同字节幂等 / 异字节 E1801）；② **直推**：
-`cage registry push` 对 http(s) 根逐文件 PUT、条目全成后最后写包 index
-（字节不可变纪律不变），`Authorization: Bearer $TOKEN` 经
-`[registry].auth_env` 环境变量名解析（E1904 同口径：凭据不进 cage.toml、
-不落日志、网络触达前先验缺失）。服务端只文档化约定（任何能收 PUT 的静态
-网关 / nginx WebDAV / CI job 皆可），cage 不实现服务端。决策记录（定了
-什么 / 为什么 / 备选）见 design §47。实现顺序：A 先 M 后（A 复用 R 系列
-在册设施零新概念，M 新模块爬坡）。
-
-- [x] A0 设计定稿（design.md §47）：两条分发路（bundle / 直推）与接口
-      草案（export_bundle / import_bundle / push_entry + 三子命令）、
-      E21xx 五码规划（E2101 传输 / E2102 鉴权 / E2103 账本 / E2104
-      拒写 / E2105 凭据缺失）、能力边界（只动已入册条目、不做服务端 /
-      delta / 签名）、留待实现期清单——本轮交付，勾选
-- [x] A1 bundle 导出（`cage registry export`）：`export_bundle` 确定性
-      tar 打包（成员名序 + mtime/uid/gid 归零 + 0o644，同条目两跑逐字节
-      断言锁定）+ E2101 接线 + codes.rs `distribution` 五码模块（E2102–
-      E2105 预留标注至 A2/A3 接线清零）+ validation.md E21xx 新表节；
-      验收已过：单测（确定性两跑一致 + tar 头归零 + index.json 摘录
-      单条目 / 包·版本·路径逃逸·缺账本四路 E2101）+ CLI 集成测试
-      （publish → export 两包逐字节一致 → `tar::Archive` 成员清单可检 →
-      缺包缺版本 E2101 退出码 1）+ cli.md「bundle 导出」小节——本轮交付，
-      勾选
-- [x] A2 bundle 导入（`cage registry import`）：import_bundle 解包进
-      临时暂存区 → verify_snapshot 信任门 → index 摘录与账本交叉核对
-      （build_id/content_hash/文件数）→ publish 路径入册；--dry-run
-      跑完整门只报告；结构问题/信任门拒绝/摘录漂移一律 E2103（拒绝
-      字节永不接触目标根）、异字节 E1801 复用；tempfile 提升为 core
-      正式依赖（暂存区 RAII 清理）；验收已过：单测×2（干净导入 →
-      verify_registry 全绿 + resolve 可解析 + 字节一致、重导幂等；
-      篡改 E2103 且目标根零字节、假摘要 E2103、异字节 E1801、dry-run
-      不落笔）+ CLI 集成（dry-run 报告不写 → 导入 → 消费方含条目
-      schema 构建通过 → 重导 no-op → 篡改 E2103 → 异字节 E1801）+
-      codes.rs E2103 doc 转接线 + validation.md 转已接线 + cli.md
-      「bundle 导入」小节——本轮交付，勾选
-- [x] A3 直推（`cage registry push` + auth_env）：`remote::http_put`
-      （RetryPolicy 与 http_get 同口径，`send_bytes` 定长发送——`send`
-      走 chunked 静态主机不收；RetryClassify trait 泛化 with_retries，
-      GET/PUT 共用一政策各留失败种类）+ 逐文件 PUT、index 合并远端
-      条目收尾（远端历史永不改写）+ `RegistryConfig.auth_env`（serde
-      default 可选，只存变量名）+ E2102/E2104/E2105 接线；推送语义：
-      `push <project> [pkg[@ver]] --registry <远端根> [--auth-env]`，
-      源 = `[registry].path`（包名缺省 project.name、版本缺省最新），
-      匿名探针 GET（404=全量上传/同 hash 幂等零 PUT/异 hash E1801），
-      Bearer 只随 PUT；验收已过：core 单测×3（顺序断言 GET 匿名+PUT
-      骑 Bearer+index 最后、合并序点分、重推幂等零 PUT；401 E2102
-      fail-fast 且 token 不入错误文本、405 E2104、未设/空 env E2105
-      闭合端口零网络；dry-run 零存零 PUT、异字节 E1801 远端 index
-      未被改写）+ CLI 集成×2（push → 远端根 resolve 复现消费方构建
-      通过 → 重推 no-op → dry-run 零 PUT → E2105 网络前失败；401
-      E2102 / 405 E2104 / 本地路径拒 exit 2）+ design §47 接口块按
-      实装细化 + cli.md「直推远端」小节 + validation.md/codes.rs
-      三码转已接线——本轮交付，勾选
-- [x] A4 文档收口：design §47 加实装状态段（A1–A3 交付、E21xx 五码
-      全接线、接口以实装为准）、validation.md E21xx 全族转已接线
-      （E2101 补 push 传输语义、E2102/E2104/E2105 本系前签转正）、
-      architecture.md 工程树 registry.rs/remote.rs 注释与 Snapshot 行
-      补 A 系列分发、需求整理.md 状态行与 Artifact 分发行转已交付
-      ——本轮交付，A 系列收官，勾选
-- [x] A5 压缩容器（§47 延迟项补齐）：`export_bundle` 增 compression 参数
-      （`BundleCompression::Plain | Zstd`），CLI `--compress zstd`（clap
-      value_parser 只收字面量 zstd，异值参数错误 exit 2）把确定性 tar 原样
-      包进单个 zstd 帧（`zstd::stream::encode_all`，`BUNDLE_ZSTD_LEVEL`
-      钉死级别 19——bundle 是小配置产物比率优先于速度；同 tar+同级别+
-      同库版本 → 同容器字节，两跑逐字节断言锁定）；`import_bundle` 按文件
-      头帧魔数（28 B5 2F FD）嗅探容器、不看扩展名（改名 .tar/.zst 均导入），
-      压缩只在容器层——HASHES.json 账本哈希解压后内容，两种形态过同一
-      信任门；push 不变（推单文件不推 bundle）；依赖 zstd = "0.13" 进
-      workspace.dependencies（cage-core 引用，离线缓存即解）；验收：core
-      单测×2（zstd 导出两跑逐字节一致且解包载荷 == 纯 tar 导出；zstd
-      bundle 导入 verify_registry 全绿、条目字节同源、dry-run 不落笔、
-      改名双向嗅探、截断帧 E2103）+ CLI 集成×2（--compress zstd 两跑一致
-      + 头四字节魔数 + 重导 no-op；--compress gzip exit 2 零落笔）
-      ——本轮交付，勾选
-
-- [x] A6 签名账本（§47 留待实现期：ed25519 抗抵赖签名）：
-      `cage registry keygen -o <file>`（种子只落 `-o` 文件 unix 0600、
-      永不上 stdout；公钥 + 环境变量用法上 stdout）+ `cage registry
-      export --sign --key-env <VAR>`（bundle 落盘字节整体 ed25519 签名 →
-      `<bundle>.sig` 分离式 sidecar，JSON algorithm/public_key/signature）
-      + `cage registry import --verify-sig --key-env <VAR>`（账本信任门
-      之前的签名门——sidecar 随行公钥非信任锚，验证只钉消费方 env 钥匙，
-      缺钥匙不跑、无静默降级）；密钥只走环境变量（base64 32 字节），不进
-      cage.toml、不进日志；E2106（密钥材料不可用）/ E2107（sidecar 缺失
-      畸形、算法不认、验签不过）接线进 codes.rs + validation.md；
-      ed25519-dalek =2.2.0（rand_core feature，离线缓存全链可解）+
-      rand_core 0.6.4（getrandom）+ base64 0.22；验收已过：core 单测×3
-      （签验往返/篡改与他钥拒绝/坏密钥材料 E2106/sidecar 往返与 0600）
-      + CLI 集成×1（keygen→export --sign→import --verify-sig 全流程 +
-      篡改字节/缺 sidecar/他钥 bundle/坏 env 四类拒绝）+ parse 单测
-      （--sign/--verify-sig 与 --key-env clap requires 方向）——本轮
-      交付，勾选
-
-- [x] A7 §47 留待实现期三项闭账（2026-10-10 自行拍板 + presigned 实装，
-      决策记录已进 design §47「A3 批次决策记录」）：① **增量 delta
-      分发 → 拒绝**（push 已逐文件 PUT 粒度足够；`<版本>/<文件>` 路径
-      跨版本从不共享字节无可 delta 基底；CAS = 换协议 = 新协议版本的事，
-      永不静默变更；条目小收益不抵复杂度）；② **S3 presigned 直推 →
-      实装为 provider 无关 `--presign-map`**（拒绝原生 SigV4：凭据保管
-      属于 CI/云角色，cage 不持云密钥；presigned URL 是业界标准委托，
-      S3/GCS/Azure 通吃）；③ **pull-through 缓存代理 → 不实现**（红线：
-      不做服务端产品；读协议天然 CDN 友好——对象不可变、GET 全匿名，
-      任何静态托管/CDN 原样工作）。实装：`parse_presign_map` +
-      `push_entry_presigned`（push 主体重构为 `PushRoute::Direct |
-      Presigned` 共享——探针/合并/E1801/幂等/index 最后 PUT 一字不改，
-      presigned 只换 URL 与鉴权源：无 Bearer、URL 即凭据，index 自带
-      GET/PUT 对故 `index.get` 可省）；coverage 缺口在任何 PUT 之前
-      E2101 失败关闭（不留半条目让 index 指空气）；map 畸形/URL 非绝对
-      http(s)/缺 `index.put` 同 E2101；CLI `registry push` 增
-      `--presign-map <file>`（与 `--registry`/`--auth-env` clap 互斥，
-      `--registry` 转 Option，缺两者报「needs a destination」）；验收
-      已过：core 单测×4（map 解析形态七路 + presigned 全流程序断言
-      GET 首零 Bearer index 末 + 合并点分序 + 重推幂等零 PUT；fresh
-      包跳过 GET + E1801 经 presigned GET 照拦；coverage 缺口零 PUT +
-      dry-run 零 PUT）+ CLI 集成×1（map 端到端：先 gap 零 PUT 后成功
-      推 + 全请求匿名 + 重推 no-op + gap/dry-run 零 PUT + 互斥 exit 2 +
-      无目的地 exit 2）+ design §47 接口块与 E2101 语义补 presign +
-      cli.md「presigned 直推」小节——本轮交付，勾选
-
-### M 系列：Migration（2026-10 立项，design §46）
-
-形态定稿：Schema 演进下的声明式数据迁移——`migrations/` 目录文件名序即
-版本步进链，每段显式声明变换（rename_field / set_default / remove_field /
-widen_type / remap_values / rename_table），`cage migrate` 对 Canonical
-Model 执行、逐表逐行报告、新 schema 回验（check 全绿才算完成）；默认
-dry-run 只报告，`--write` 才对可文本源（JSON/YAML/CSV）落盘，Excel 源
-恒报告不落盘（红线「不做 Excel 编辑器」）；迁移后的注册表条目 = 重跑
-build + publish，不新造通道。决策记录（定了什么 / 为什么 / 备选：diff
-自动推断弃、只报告弃、运行时兼容层弃）见 design §46。
-
-- [x] M0 设计定稿（design.md §46）：能力边界（Canonical Model 层显式
-      变换 / Excel 只报告 / 条目迁移复用 publish）/ 接口草案
-      （MigrationSpec / Step / parse_spec / apply + cage migrate）/
-      E20xx 四码规划（E2001 解析 / E2002 引用 / E2003 变换 / E2004
-      回验）/ 留待实现期清单——本轮交付，勾选
-- [x] M1 规则模型与解析：`cage-core::migrate`（MigrationSpec / Step /
-      parse_spec，版本步进链文件名序）+ E2001/E2002 注册与 validation.md
-      预留标注；实装细化：Step 六变体 wire 格式 = 每步单键映射
-      （`- rename_field: {…}`，未知变换名解析即拒）、serde_yaml 无
-      externally-tagged 枚举支持故 Step 手写 Deserialize（单键映射
-      手工分派，payload 经 serde_yaml::from_value；set_default 的值走
-      yaml_to_value 裸 YAML 转换——canonical Value 是 adjacently
-      tagged serde_yaml 解不了，Bytes/自定义 tag 不支持）；结构自检
-      （from/to 非空且不等、steps 非空）；validate_spec 对 from-schema
-      校验引用（表/字段存在性 + rename 目标撞名）；验收已过：单测×4
-      （六类 Step 全解析顺序保持、目录文件名序链 + 非迁移文件忽略、
-      坏文件六路 E2001——读不到/坏 YAML/空 steps/未知变换/缺 to/
-      from==to、引用校验——表不存在/字段不存在/rename 撞字段/
-      rename_table 撞表与合法改名）+ validation.md E20xx 新表节
-      （E2001/E2002 已接线、E2003/E2004 预留 M2）——本轮交付，勾选
-- [x] M2 执行器与报告：`apply` 对 Canonical Model 变换 + 逐变更报告 +
-      E2003/E2004；实装细化：apply(spec, &mut Document, from_schema)
-      逐步骤原位变换（MigrateReport/StepReport 逐步骤行数），六类语义
-      ——rename_field 保序改名、set_default 只补缺失或 Null 行、
-      remove_field 计实删行、widen_type 方向表（整数/无符号族升序、
-      无符号→有符号跨一步 8→16/16→32/32→64、Int32→Float64 允而
-      Int64→Float64 拒——2^53 精度线）+ 逐行值域校验、remap_values
-      未映射值原样通过、rename_table 表序保持（文档无此表 E2003）；
-      失败即失败整段中止；reverify(doc, to_schema) 借 validation 全栈
-      L0–L6 回验（GameRule 留 CLI check 通道），E2004 附诊断渲染；
-      验收已过：单测×4（六类 Step 变换语义 + 报告计数逐项断言、加宽
-      不安全方向两路/值超域/行缺字段/文档缺表 E2003 + 合法加宽通过、
-      迁移产物回验全绿而未迁移产物 required 缺失 E2004、serde_json
-      序列化两跑逐字节一致）+ validation.md E2003/E2004 转已接线 +
-      codes.rs 两码 doc 转接线——本轮交付，勾选
-- [x] M3 CLI 与文档收口：`cage migrate`（--all/--to/--write，默认
-      dry-run）+ 可写源落盘 / Excel 只报告 + CLI 集成测试（json 工程
-      dry-run → write → check 全绿 → 再跑无变更；excel 工程 E2004
-      路径与报告形态）+ design §46 实装状态 + cli.md migrate 章节 +
-      validation.md E20xx 转已接线 + 需求整理.md 迁移行同步 + 本勾选。
-      实装细化：Commands::Migrate + run_migrate——目录缺失/空链提示
-      nothing to migrate 退出 0，段选择默认首段（显式逐段推进）/ --all
-      全链 / --to <ver> 链前缀（互斥，链外版本退出 2），逐段 apply 后
-      当前 schema 一次回验（E2004 不落盘），CLI 不跑 validate_spec
-      （无历史 from-schema，E2002 留库 API；apply 防线接力——rename
-      目标行内/表级同存即 E2003 拒绝不合并两值）；落盘 write_migrated_
-      sources 按表 source_file 分组、只写本地 source roots 内文本源
-      （Excel 恒报告、registry/远程源只读报告、字节未变跳过 unchanged），
-      JSON/YAML 写 {Table: [rows]}、CSV 单表按 schema 字段声明序渲染
-      （JSON 读取不保文件键序，schema 序是唯一稳定渲染序——第二次
-      --write 起字节恒定）、单元格按读取推断规则反写（整值 Float 带
-      .0 防落回整数分支、数组/对象/Bytes 拒写）；apply 双路径——
-      widen_type 的 current==to（CLI 恒载新 schema）跳方向表只跑值域、
-      current!=to 走方向表，rows_changed 只计真实改变行（Int32→Int64
-      canonical 表示不变 0 行）；验收已过：core 单测×3 增量（幂等重跑
-      0 行字节不变、current==to 双路径、rename 撞名两路 E2003）+
-      CLI 集成×6（dry-run 报告与零字节、write→check 绿→再跑 0 行
-      unchanged、目录缺失 0/坏规则 E2001、--all/--to/链外版本 2、
-      excel E2004 不落盘、excel 成功 skip 报告恒不写）+ parse_migrate
-      单测（默认/--all/--write/--to/互斥）+ design §46 实装状态与
-      实装决策记录（widen 双路径/validate_spec 取舍/幂等/渲染序/多段
-      链回验）+ cli.md migrate 章节与顶部标注 + 需求整理.md 迁移行
-      勾选——本轮交付，勾选；M 系列全数收官
-- [x] M3.1 增量交付（§46 留待实现期两项）：`cage migrate --to latest`
-      （解析为整链、同 `--all`；链上字面 `latest` 版本优先，具体目标赢过
-      符号）+ Excel 报告单元格级定位（`StepReport.affected_locations`——
-      `apply` 对 Excel 表（.xlsx/.xls 后缀判定）采集受影响行 `Row.location`、
-      文本源不采集；CLI 源序渲染 `file | Sheet | Row`，超 8 行折叠
-      `… +K more row(s)`，确定性封顶）；验收已过：core 单测×3 新增
-      （Excel 定位采集源序、幂等重跑零定位、rename_table 全表定位与文本表
-      空）+ CLI 集成×2（Excel 定位行渲染；`--to latest` 与 `--all` 输出
-      逐字节一致 + 字面 latest 链优先）+ parse/封顶单测扩展——本轮交付，
-      勾选
-
-- [x] M3.2 增量交付（§46 留待实现期：schema diff 规则草稿）：
-      `cage migrate-draft <from-schema> <to-schema> --from <ver> --to <ver> [-o file]`
-      —— `migrate::diff` 模块（`diff_schemas` 表/字段名对齐结构 diff +
-      `draft_migration` 机械安全变换成步、歧义项 `# TODO` +
-      `render_draft` 规则稿渲染）；改名从不猜（rename/remap/非加宽换型/
-      枚举增删/删表新表全留 TODO）；UInt 默认值走 canonical 邻接标签
-      形态（`yaml_to_value` mapping 先试标签解码回落 plain；渲染端含
-      UInt 一律发标签形态）规避裸标量回读 Int 族撞 E1101；字符串恒
-      单引号防 `yes`/数字回读翻型；空稿 `steps: []` 由 parse_spec 按
-      E2001 拒绝（全 TODO 稿不可直接运行）；`-o` 父目录自动创建；
-      验收已过：core 单测×7（diff/draft/typed defaults/enum TODO/
-      required 翻转/渲染往返含标签形态/空稿确定性）+ yaml_to_value
-      标签解码单测 + CLI 集成×2（draft→migrate --all --write 全链落盘
-      数据实迁；全 TODO 稿 E2001 拒绝）——本轮交付，勾选
-- [x] 迁移与依赖 pin 联动校验（2026-10 交付，design §46 遗留清账）：
-      `cage migrate` 在选段后、应用规则前过联动门——`schema_path` 来自
-      `registry:<包>[@<版本>]` 且 `[dependencies]` 为该包声明 pin 时，
-      选中链终点（最后一段 `to`，默认单段 / `--to` / `--all` 同判）
-      必须满足 pin，否则 `E1802` 硬错误 exit 2（dry-run 与 `--write`
-      同判，报文点名版本 / pin / 包名）——数据不能迁到工程不认的
-      schema 版本上。本地 schema 无 pin 静默跳过；不新增 E 码（pin
-      违规归 E1802 既有语义）。验收达成：CLI 集成 ×1（发布条目 →
-      消费方窄 pin 拒绝 + 报文断言 → 放宽 pin 同链 dry-run 通过）——
-      本轮交付，勾选
-
-### G 系列：Template Target（2026-10 立项，design §22；G1 随立项交付）
-
-形态定稿：Tera（Jinja 风格，过滤器 / 继承 / 宏）统一官方与用户自定义的
-代码生成面——IR（Schema）整体作模板变量（tables / fields / 类型 /
-描述 / 默认值全部可引用，逐表模板另获当前 `table` 变量，顶层
-`schema_hash`；迭代序 = schema 声明序）；模板文件名即输出文件名模板
-（`{table}.py.tera` 按表名序每表一文件、不含 `{table}` 全局渲染一次，
-沿用 `file_template` 的 `{table}` 占位符口径）；**模板内不写逻辑**——
-命名约定与各语言类型映射 / 默认值字面量做成 Tera filter，决策留 Rust；
-确定性 = 模板名序 × 表名序产物顺序 + Tera workspace 锁版 + 模板随源码
-+ 现有 golden 测试逐字节不变为改写验收锚。与 §23 直渲染的关系：plan →
-render → verify 三层与「决策留 Rust」不变，G2 只换 render 挂点（模板
-文本），原「为什么不是模板引擎」论证在 §23 留档并附决策更新段。
-
-- [x] G1 模板引擎接入（`cage-target-template`）：Tera 实例封装（递归
-      收集 `*.tera`，模板名 = 相对路径，autoescape 关）、IR context
-      桥（schema 全量序列化 + schema_hash + 逐表 table）、文件名映射
-      两渲染形态（逐表 / 全局）、命名约定过滤器首落
-      （snake_case / camelCase / PascalCase，含缩略词与数字边界
-      words 分词）、from_config 读 `options.template_dir`；serde_json
-      preserve_order 显式声明（fields / tables 迭代序 = schema 声明
-      序，不随依赖图特征统一漂移）。验收：10 单测（逐表渲染两表序 +
-      声明序断言、全局模板引用表 / 字段 / 类型 / 枚举、schema_hash
-      暴露、三过滤器、描述与默认值可引用（default 过滤器兜底）、
-      缺目录 / 空目录 / 语法错三路错误通道、from_config、words 边界
-      四组）+ design §22 修订（Target Generator → Template Target，
-      实装状态 G1 交付 / G2–G5 未开工）+ §23 决策更新段（论证留档 +
-      反转理由写实）+ target.md 引用句同步。实现顺序后续四步：
-      引擎接入（本轮）→ 官方模板改写 → 自定义模板加载 → 过滤器库
-- [x] G2 官方模板改写（已交付，7 crate 全数落地）：各语言
-      （C#/Python/Lua/TS/JS/C++/Go/Java，7 crate）生成器 render 层改写
-      为随包官方 `.tera` 模板（crate 内 `templates/` 目录可复制可改 +
-      `include_str!` 编译进二进制保无文件系统时可用）；plan 层决策沉淀
-      为 Rust 过滤器与 context 预计算；**现有测试逐字节不变为验收锚**
-      （输出字节变 = 回滚信号）。引擎新增 `generate_official`：内存
-      模板按传入序注册（artifacts = 传入序 × 表名序，与各生成器既有
-      发射序一致），双 hook 分工——`setup` 一次性注册语言过滤器（纯
-      文本转换，如 `lua_string`）、`extras` 逐 context 合并语言预计算
-      （schema 感知映射 / 唯一名 / 字面量收集），模板只表达文本形状。
-      Lua 首个落地：render_table / render_enums / header / path_for /
-      sorted_tables 摘除，决策进 `lua_extras`（member_fields 名序 +
-      unique_ident、type_label、doc、default_expr、primary_key_lit、
-      emitted_enum_objects），`templates/table.lua.tera` +
-      `enums.lua.tera` 随包，18 测试不改一字全绿（含 lua 运行时回验与
-      确定性）。C# 第二签：render_table / render_enums / header /
-      path_for / sorted_tables 摘除，决策进 `cs_extras`（namespace、
-      summary_head+desc 转义、class_ident、members 名序含可选 `?` 与
-      ref-init 解析、enum-vs-static-class 按全整型判定分流与 backing
-      后缀选择），`templates/table.cs.tera` + `enums.cs.tera` 随包，
-      18 测试不改一字全绿。Python 第三签：render_table / render_enums /
-      header / path_for / sorted_tables 摘除，决策进 `py_extras`
-      （import 面预计算——field/Any/enum 三路按需、dataclass 分组排序
-      plain→defaulted 且成员行整体预拼、IntEnum-vs-plain-class 按全整型
-      判定、IntEnum/字符串桶字面量），`templates/table.py.tera` +
-      `enums.py.tera` 随包，18 测试不改一字全绿。TS/JS 第四签（双形态
-      crate 一笔）：TS 与 JS 两模式 ×6 模板随包（table.{ts,js,d.ts} +
-      enums.{ts,js,d.ts}.tera，.d.ts 走 `dts_path_for` 派生模板名），
-      JS 模式每表 .js+.d.ts 成对发射——引擎「传入序 × 表名序」是模板主序，
-      与旧逐表交错序不同，改为 main/dts 两次 generate_official 再按序
-      zip（两遍走同一表集与 enums 条件，1:1 对齐），路径序测试不改一字
-      仍锁定旧交错序；决策进 `ts_extras`（双 plan 预计算——Local 与
-      InlineImport 两种枚举拼写同备、import type 整行、jsdoc 名称括号
-      与扫描器安全分行判定、default_rows 与 factory_inline 同源、
-      枚举桶字面量 + typedef 行），28 测试不改一字全绿。C++ 第五签：
-      render_table / path_for 摘除（render_enums + header 留
-      `#[cfg(test)]`——`test_render_enums_with_empty_slice` 直调空切片
-      防御边界，测试不改一字），generate 保留共享名分配（结构名先、
-      枚举名后跨文件一致）并预计算枚举头 context；决策进
-      `Self::cpp_extras`（include 面 Needs 收集、`{}` 初始化与
-      optional 分流、banner、双 context 分发），`templates/table.h.tera`
-      + `enums.h.tera` 随包，19 测试不改一字全绿（含 g++ 编译回验）。
-      Go 第六签：render_table / render_enums / header_lines / path_for
-      摘除，generate 重写为 generate_official 调用（table.go.tera 恒在、
-      enums.go.tera 仅在有非空 enum 时注册，file_template / enums_file
-      运行时作模板名，package 闭包捕获传入 extras）；gofmt 对齐数学
-      原样留 Rust——Doc/Cell/Term tabwriter 移植与 go/printer exprList
-      换行分节启发不动，extras 把每个对齐块渲染成最终行（struct_lines /
-      new_lines / 逐枚举 const_lines），模板只表达文件形状；决策进
-      `Self::go_extras`——表侧：sorted_fields 名序、member 唯一 ident、
-      field_go_type / render_default（enum 类型表克隆视图签名零改动）、
-      needs_math 侦测、banner_head（裸名或主键列举）、new_doc 构造器
-      文档行，枚举侧整包返回预计算 context（None 分发；emitted_enums
-      键避开 schema IR 的 enums 键——extras 键不覆盖 IR 键）。
-      `templates/table.go.tera` + `enums.go.tera` 随包（头注释即模板
-      文档），Tera 空白控制逐字节复刻原 Doc 发射序列（header 六行、
-      package 前后空行、math import 按需、banner 单/双行、struct 块与
-      构造器块间空行、逐枚举空行与 type decl 后空行、文件收尾单换行）。
-      验收：go 20 测试不改一字全绿——含路径序（表名序 + enums 收尾）、
-      gofmt 列对齐三形态（多字段 vtab 对齐 / 单字段空格分隔 / 空
-      struct{} 一行壳）、构造器几何均值分节（44 字符 ident）、枚举
-      三桶 backing 与单 spec 行内注释、包级名冲突后缀（表先于枚举）、
-      map 键序与跳项、未解析 enum 回退、确定性两跑一致。Java 第七签：
-      render_table / header 摘除（header 转 `#[cfg(test)]` 支撑遗留
-      renderer），render_enums 转 `#[cfg(test)]`
-      （test_render_enums_skips_unallocated_idents 直调「跳过未分配
-      ident」防御边界），push_javadoc 转 `#[cfg(test)]`（直调空 body
-      边界），path_for / enums_path 保留——generate 重写为
-      generate_official 调用（table.java.tera 恒在、enums.java.tera 仅
-      有非空 enum 时注册），**产物按发射序重 path**（Java file stem =
-      class ident 而非 schema name，引擎按 schema name 替换 {table}，
-      zip 回写 legacy 路径——同 TS 双遍先例零引擎改动）；决策进
-      `Self::java_extras`——表侧：rows 逐字段解析（member 唯一 ident、
-      default 内联、enum_text qualified Holder.Enum 判定——表类与枚举
-      同名走 `Holder.Enum` 免 import）、imports 四路收集（List /
-      ArrayList / Map / HashMap 含嵌套扫描 + holder 枚举 import 去重）
-      字典序排序、banner_head（裸名或主键列举）、members decl
-      （optionality 分组规则 + default 内联 + field_doc），枚举侧整包
-      返回预计算 context（None 分发；`java_enums_context` 三桶 payload
-      int/long/String 判定、integral_literal/string_bucket_value 字面量
-      与 note 预拼 decl 行、单行 javadoc banner、未分配 ident skip 语义
-      保留）。templates/table.java.tera + enums.java.tera 随包（头注释
-      即模板文档），Tera 空白控制逐字节复刻 legacy writeln 序列
-      （package 先 header 后、import 块按需、javadoc 两形态——多行
-      desc 在上单行 head、成员间单空行、空表类体单行闭合、枚举块
-      构造器空行形状、文件尾单换行）。验收：java 20 测试不改一字
-      全绿（含路径序 class ident stem、qualified 免 import、空表壳、
-      枚举三桶与 note、子目录 enums_file、确定性两跑一致）+
-      javac 真机编译回验（edge / sample 样本 javac 全过）。修正三处：
-      模板文件尾补换行（输出收尾 \n 丢失即断言崩）、rows 解析 used
-      集移出循环外（成员唯一性跨表共享）、uninlined_format_args 内联
-- [x] G2b 余量改写（已交付）：Go → Java 逐 crate
-      复制 Lua/C# 模式（每 crate 一笔：模板随包 + extras 提取 + 测试
-      逐字节不变）——六签全数落地（C# / Python / TS-JS / C++ / Go /
-      Java，Lua 首签在 G2 正条），G2 已勾选收口
-- [x] G3 自定义模板加载（已交付）：`format = "template"` 进 CLI——
-      `code_target_items` 开 `Option<CodeTargetItems>` Result 分支
-      （七语言 `Some(Ok(…))` 原样，template 分支走
-      `TemplateTargetGenerator::from_config` + `generate`），build 面
-      板模板错走 `BuildFailure::Io`、gen 面板 eprintln + 退码 2，diff
-      面板经 manifest 天然覆盖无需接线；`template_dir` 默认
-      `.cage/templates/` 相对项目根解析（`options.template_dir` 覆盖），
-      from_config 默认值同步收敛；Tera cause 链展平（`tera_err`），
-      缺目录 / 空目录 / 语法错诊断指到模板文件路径；CLI 测试 5 新增
-      （惯例目录 + options 覆盖 + build/manifest + 缺失两形态 + 语法错
-      + 确定性），workspace 534 全绿
-- [x] G4 过滤器库（已交付）：决策函数成库、模板里不写逻辑——语言
-      无关层恒注册（kebab_case / SCREAMING_CASE 补齐 + field_order
-      字段名序 + generate_with_setup 钩子），语言层各 crate pub
-      register_filters（七语言 {lang}_type + 六语言 {lang}_default，
-      枚举引用带官方分配标识符），CLI options.lang_filters 挂载
-      （未知键渲染前报错），go/cpp allocate_names 零行为提取同源
-      复用；测试 11 新增，workspace 545 全绿，过滤器表进 target.md
-- [x] G5 文档收口（已交付）：target.md Template 小节随 G3/G4 落地
-      （配置样例 / 渲染序约定 / IR 变量表 / 约定+语言过滤器两表 /
-      错误口径）本签复查；需求整理.md 状态行 + 生成器清单 + crate
-      口径补 template；architecture.md 结构树补 cage-target-template；
-      README Target 插件行更新；design §22/§23 对账复查（G1–G4 全数
-      已交付，命名约定与过滤器清单同步 G4 实况），G 系列收口
-
-## 第四阶段（核心模型边界定稿，2026-10 评审驱动）
-
-方向共识：不堆功能，先把「Schema / Canonical Model / IR / Validation
-Context / Dependency Graph / Profile / Snapshot / Manifest」八个概念的边界
-收敛；边界定义（含 IR 不拆独立类型的决策与逐概念现状·差距核对）落
-docs/architecture.md「编译器核心：八个概念的边界」、清单落 docs/build.md。
-
-- [x] D1 边界定稿（架构文档 v0.3 概念表 + 差距核对 + 评审对照修正；build.md
-      Manifest 字段表 / 依赖图现状 / 增量分层 / Snapshot 规划）
-- [x] D2 Dependency Graph 接线：L5 校验产出真实依赖图（cli 构建
-      ValidatedSchema 时以 `reference::DependencyGraph::from_schema` 实装，
-      不再是空占位），增量第二层按 `table_hashes` 比对 + 依赖图传播只重建
-      受影响表（未受影响表从磁盘携带，manifest 与全量构建逐字节收敛，验证
-      见 tests/incremental.rs layer2 用例）；manifest 落 `dependencies` 账
-- [x] D3 Profile 语义化：校验在完整 schema/document 上执行（profile 只
-      裁剪产物视图）、ValidationContext 携带 profile；E9006 冲突实装——
-      结构不可缺字段（required 无默认/主键/唯一约束/引用目标表或字段）
-      被 profile 隐藏报冲突码而非静默过滤，可选字段与整表剔除仍为合法
-      视图；`cage check/build --profile` 与 `cage gen` 均按此语义
-- [x] D4 Manifest 强化：`build_id`（确定性指纹 blake3(profile+三哈希)
-      前 24 位——时间戳方案会破坏确定性构建契约，弃）与
-      `generator_version`（"1.0.0"，布局演进自增）落地；旧 manifest
-      缺字段经 serde(default) 兼容反序列化；确定性/轮换/兼容三测试
-- [x] D5 Configuration Snapshot：`cage snapshot` 打包（manifest/schema.json/
-      data/generated/HASHES 逐文件 blake3 账本）至确定性目录
-      `snapshot/<profile>-<build_id[..12]>`（弃日期命名——破坏确定性契约），
-      构建后自校验；`cage snapshot <dir> --verify` 载入前校验；core 提供
-      verify_snapshot/load 服务器入口（篡改/增删文件均暴露）
-
-### 验收打磨（2026-10-10 巡检批次）
-
-- [x] 错误码全量走查：66 码跨 15 模块，18 码预留未引用、5 码预留但被引用
-      （E0003/E1003/E1005 仅渲染器测试；E1410/E1501 占位发射点不可达），
-      与 docs/validation.md 逐条一致，无文档/代码不匹配
-- [x] presign 拒绝路径测试补齐：core `push_entry_presigned_maps_refusals_to_e2102_and_e2104`
-      （PUT 401→E2102 无 Bearer 快速失败 / PUT 405→E2104 / 探测 401→E2102 仅 1 请求 0 PUT /
-      端口关闭→E2101 含 "presigned index GET"）；PushServer 替身重构为
-      `start_push_server_inner(force_put, force_get)` + `start_push_server_refusing_reads`，
-      修正此前一个从未真正测探测拒绝的误导性子用例
-- [x] CLI presign-map 错误路径端到端：`registry_push_presign_map_end_to_end`
-      （畸形 JSON / 相对 URL / 缺文件均 E2101 退出 2，且全部发生在任何网络接触之前——
-      请求数不变断言）
-
-### L6 表达式引擎实装（2026-10-10 第二批）
-
-- [x] `validation/expr.rs`：单比较断言求值器（裸名/反引号字段引用 + 数字/
-      字符串/布尔字面量，`== != <= >= < >`；数值族 i128 精确、混 Float 走
-      f64；字符串字典序；布尔 false<true）
-- [x] L6 接线：规则预解析（畸形断言/引用未声明字段 → E1004 每规则一次，
-      空表也报），逐行求值（缺失可选字段不表态；不可比类型报 E1501 并
-      点名类型；warning_only 降 WARNING）
-- [x] L5 接线：引用谓词在目标行上求值（同口径），谓词缺陷走预解析
-      E1004；两处占位评估器删除
-- [x] 测试：expr 解析/求值 5 例 + L6 违例/可选缺失/warning/不可比/
-      畸形/空表 6 例 + L5 谓词接受与拒绝翻转 1 例；占位测试改写为
-      真实行为断言
+- [x] `validation/expr.rs`
+- [x] L6 接线
+- [x] L5 接线
+- [x] 测试：expr 解析/求值 5 例 + L6 违例/可选缺失/warning/不可比
 - [x] 文档：validation.md L6 段落与 E1004/E1410/E1501 行、codes.rs
-      三码注释同步
+### 外部/拍板卡点登记
 
-### 外部/拍板卡点登记（2026-10-10 巡检发现）
+- [x] E1404 基数校验接线
+- [x] cage-cli web API 单测补齐（覆盖率 0% → 71.6%）
+### R3 远端完整性防线覆盖
 
-- [x] E1404 基数校验接线（2026-10-10 续批拍板：**源侧语义**。用户令
-      「继续 todo 的 E1404 基数校验接线」即授权开工；目标侧 1:1 读法
-      否决——作默认 `one` 会误杀全部合法 many-to-one 配置）。契约：
-      `one`（默认）与 `optional` 取单值引用，`optional` 容忍 present-null、
-      `one` 下 null 违例；`many` 要求数组并逐元素走 E1401/E1410（含谓词
-      与 compatible_with）；形状不符（数组配 one/optional、标量或 null
-      配 many）报 E1404 并点名改法；未知拼写报 E1004（预解析一次，空表
-      也报，行循环跳过该字段）。接线点：validate_reference 预解析 +
-      行循环分派，validate_single_reference 按元素复用。顺带修复：数组
-      引用字段此前被整值 coerce 成空键查缓存，报出误导性 E1401。测试
-      +3（many 逐元素 / 形状失配三向 / 未知拼写），示例新增
-      Stage.loot_item_ids（many → Item.id）。已知边界：L2 对 present-null
-      一律 E1101（无 optional 旁路），故 one/optional 的 null 分流只在
-      Any/Null 类型字段上可达——L5 层契约自洽，双层防御。
+- [x] registry_remote 新增完整性失败路径测试
+- [x] remote.rs 收尾
+- [x] web.rs handle 接线覆盖（行覆盖 69.79% → 90.57%）
+### migrate/diff.rs 覆盖收口
 
-- [x] cage-cli web API 单测补齐（覆盖率 0% → 71.6%）：api_validate
-      （干净文档通过 / 非 JSON E1701 / 悬空 pk E1004）、api_schema
-      （编辑器文档 + 项目事实 + 无 schema_path 兜底）、api_save
-      （canonical YAML 落盘字节数 / 缺省 schema.yaml + note / 目录与
-      registry: 目标 409 / 坏文档零写入）
+- [x] diff.rs 未覆盖行 84.01% → 96.58%
+### cage-cli main.rs 覆盖收口
 
-### R3 远端完整性防线覆盖（2026-10-10 第三批）
+- [x] main.rs 未覆盖行 84.90% → 94.36% → 98.50%
+- [x] 顺带修复：pack_snapshot 自校验由 debug_assert! 改为硬错误
+- [x] 登记 57 行 → 收口至 49 行（98.5% → 98.7%，全目标口径）
+### cage-core registry.rs 覆盖收口
 
-- [x] registry_remote 新增完整性失败路径测试（「未经校验不载入」红线的
-      真实覆盖，此前 resolve_remote 区域覆盖 29.4%）：篡改载荷 → E1803
-      checksum mismatch 且篡改字节不入缓存、部分缓存条目不过信任门；
-      账本缺 'files' 对象 / 非字符串哈希 → E1803；账本列 "../evil" 逃逸
-      条目 → safe_rel 在任何写入前拒绝（cache 外零落盘）；dead 端口
-      无缓存 → E1802；暖索引缓存 + 坏条目缓存 + 服务器下线 → 索引走
-      离线回落、条目重取干净报 E1802（点名 HASHES.json），绝不半验证
-      载入。workspace 729 → 730。
-- [x] remote.rs 收尾（覆盖率 80.00% → 85.60%）：陈旧缓存自愈（篡改缓存
-      字节 → 下次 resolve 重下并用真字节修复，恰覆盖 remove 分支）、
-      自哈希账本被信任门拒绝（下载循环跳过自条目、原样落盘后 blake3
-      不可自洽 → E1803 "remote entry verification failed (1 problem)"）。
-      剩余未覆盖行 81/124-128/151/155/153 全为 fs 错误闭包（需文件系统
-      破坏才能触发），可达分支已全清。workspace 730 → 731。
-- [x] web.rs handle 接线覆盖（行覆盖 69.79% → 90.57%）：进程内
-      tiny_http 绑定临时端口 + TcpStream 真实请求驱动 handle 循环——
-      API 三端点（schema 文档 / validate / save 落盘）、编辑器页与
-      app.js/app.css 资产（Content-Type 断言）、favicon 与未知路由 404。
-      run_web 无限循环仍归 web-smoke.sh。workspace 731 → 732。
+- [x] registry.rs 覆盖率 96.2% → 99.33%
+- [x] 剩余 18 行收口至 9 行（262 lib 测试全绿）
+### cage-core migrate/mod.rs 覆盖收口
 
-### migrate/diff.rs 覆盖收口（2026-10-10 续批第二项，承接中断批次）
+- [x] migrate/mod.rs 覆盖率 95.1% → 100%（64 → 0 行未覆盖，790 测试全绿）
+### 路线图收尾巡检
 
-- [x] diff.rs 未覆盖行 84.01% → 96.58%：typed_json_value 全类型族
-      （UInt/Int/Float/Bool/String/Null/Array 逐元素 + 负数/错族拒绝 +
-      Bytes 回落 json_to_value）、json_to_value 全 JSON 形状（含
-      u64::MAX 走 UInt）、quote_string（yes/5/撇号转义/制表符放行，
-      换行与控制字符拒绝）、has_unsigned 容器递归、render_draft 全
-      Step 变体线型（rename/set_default 内联/UInt 标签块/数组块/
-      remove/widen/remap 带引号/rename_table + Bytes 无线型降级 TODO）。
-      草稿级补臂：新增必填无默认 TODO、新增可选无默认沉默、
-      RequiredChanged 带不可表示默认 TODO（bad_default 两侧同置才走
-      该臂）、required→optional 无操作。workspace 735 → 741。
+- [x] 环境化出包闭环核对
+  （commit 4e1d4fe73f89）
+- [x] 待办清零：todo 全册无开放功能项
+### cage-target-java 覆盖收口
 
-### cage-cli main.rs 覆盖收口（2026-10-10 续批第三、四项）
+- [x] cage-target-java 覆盖率 95.65% → 99.36%
+### cage-target-cpp 覆盖收口
 
-- [x] main.rs 未覆盖行 84.90% → 94.36% → 98.50%（本轮 177 → 57 行，workspace
-      741 → 764）：第三批覆盖 registry 全 runner 成功/失败臂（list/verify/gc/
-      remove 本地仓走查 + publish 幂等重发 + export/import 往返含 zstd 容器与
-      ed25519 签名门 + push 直推与 presigned 拒绝 + snapshot/verify + gen），
-      均经 mod tests 直调私有 run_*，tiny-http 端口 0 起真实 PUT 服务器。
-      第四批收尾：增量构建三层（table 变更携带未触表工件 → chmod 000 携带
-      回退全量重建 → 目标 output_dir 迁移后陈旧工件 NotFound/不可删双警告臂）、
-      template 目标缺目录/lang_filters 未知语言 → BuildFailure::Io、
-      gen 的 java/cpp/lua 过滤库挂载 + E9006 必填投影冲突 + 未声明 --env、
-      snapshot/publish 打包失败（父路径为文件 / 包目录混入账本外散文件）、
-      数据校验失败、migrate 链空目录/apply E2003/--write 只读源失败与恢复、
-      migrate-draft 加载与写失败臂、pin 联动三态直调、注册表条目加载
-      （缺/坏 schema.json、缺/空 data、裸数组工件按 manifest 恢复表名）、
-      小助手残形（fidelity 全档、未知扩展跳过、无 schema 列序、缺列空单元格、
-      无表头 CSV、lang_filters 四态、describe snapshot/web/schema-draft 变体）。
-- [x] 顺带修复：pack_snapshot 自校验由 debug_assert! 改为硬错误——包目录混入
-      账本外文件时 release 构建此前会静默发放未验证快照，现报
-      "snapshot self-verification failed" 退出 2（测试以散文件触发该臂）。
-- [x] 登记 57 行 → 收口至 49 行（98.5% → 98.7%，全目标口径）。本轮修掉三
-      类：filter_by_profile 的防御性死分支直接删除（retain 后查找恒命中，
-      if-let 改直取）；registry list 的 packages Err 臂（空根单测）；export
-      --sign / import --verify-sig 缺 --key-env 守卫由 std::process::exit(2)
-      改 return 2（clap `requires` 已在解析层拦截，运行时守卫不可经 CLI 触
-      达；等价退出码，单测直调覆盖——export 侧搭最小可导出条目夹具：人工
-      index.json + HASHES.json）；stale 工件删除警告（目录占据 → Is a
-      directory，构建成功仅告警）集成测试补上。余 49 行均登记：15 行 lcov
-      if-let/loop 尾花括号计数伪影（932/933/1177/1321/1582/1870/2022/2228/
-      2308/2377/2439/2533/2785/2834/2885，逻辑行均已覆盖）；21 行 schema-draft
-      的 mysql/pg 内省成功路（§45 外部依赖：需真实数据库，含 -o 写出与
-      stdout 两形态）；5 行 main() Web 分发臂（仅真实二进制可达，归
-      web-smoke.sh）；4 行 snapshot/publish 的 UpToDate 臂（incremental 恒
-      false 的结构死臂，保留 internal 报错兜底）；3 行 keygen 熵源失败臂；
-      1 行 lang_filters match 的 `_ => {}`（字符串 match 必配兜底，未知值
-      已被上游 lang_filters() 拒绝）。
+- [x] cage-target-cpp 覆盖率 52 行未覆盖 → 2 行
+### cage-source-http 覆盖收口
 
-### cage-core registry.rs 覆盖收口（2026-10-10 续批第五项）
-- [x] registry.rs 覆盖率 96.2% → 99.33%（91 → 18 行未覆盖，工作区 97.28% →
-      97.54%，779 测试全绿）。新增 15 个测试：版本需求解析算子臂
-      （`=`、`^0` 全零尾升位、label 基座、`~beta` 拒绝、render_req 的 > / <=）；
-      read_index 的损坏/不可读索引；write_index 的目录创建失败与 index.json
-      被目录占据；publish 的坏包名/坏版本名/篡改包信任门（E1803）/入口路径
-      被文件占据；packages 跳过无索引目录；resolve_entry 报缺失入口目录；
-      import_bundle 的非常规成员路径（`.`，tar 写侧拒 `..`）、重复 index.json、
-      空摘录、前缀外成员、缺骑载账本、摘录虚报文件数（99999 vs 实际）；
-      push_entry 的非 http 远端拒绝 + 黑洞 PUT 服务器打满 3 次传输重试映射
-      E2101；verify_registry 的干净通过（账本一致 continue）、索引记录与账本
-      不一致（E1803）、具名孤儿目录（无索引记录）；gc_registry 的最旧版本
-      回收 + 索引重写计数 + 无变化包跳过；remove_entry 的 dry-run 跳过删除与
-      目录失踪后的纯记录删除；verifying_key_from_env 的空值/非 base64 拒绝；
-      read_bundle_signature 的畸形 sidecar。
-- [x] 剩余 18 行收口至 9 行（262 lib 测试全绿）。原判「脚手架不可达」不成立：
-      新增 push_server_tolerates_misbehaving_clients，用裸 TcpStream 打
-      start_push_server（截断头 EOF、1MB+ 垃圾头触发 >1MiB 截断、短 body
-      EOF、body 跨写续读、DELETE 答 405），黑洞测试加 connect-then-drop
-      客户端补读 EOF 臂。测试服务器读块 4KiB → 256KiB 堆分配（1MB 头截断
-      从 O(n²) 逐读 rescan 降为几次读，15s → 0.7s）。剩余 9 行全部登记：
-      caret_range get_mut 守卫 320-322（bump_at 恒指向 Number，构造性不可达）、
-      presigned map-miss 1277-1279（代码注释自述覆盖检查先于首 PUT）、
-      两处测试服务器 accept 非 WouldBlock 错误臂 2522/3997（需 fd 耗尽，
-      不安全且竞态，登记不可达）、lcov 尾花括号伪未覆盖 2656（if complete
-      的闭合 }，逻辑行已覆盖）。
+- [x] cage-source-http 覆盖率 99.24%
+### validation/mod.rs 覆盖收口
 
-### cage-core migrate/mod.rs 覆盖收口（2026-10-11 续批第六项）
-- [x] migrate/mod.rs 覆盖率 95.1% → 100%（64 → 0 行未覆盖，790 测试全绿）。
-      新增 11 个测试：yaml_to_value 的 Null/Bool/u64
-      溢出/Float 标量、number 与 bool 映射键字符串化、复合键拒绝、显式 YAML
-      tag 拒绝（serde_yaml 会丢未知 `!!` tag，测试直接构造 Tagged 值）；
-      step 必须恰好一个 transform 映射；validate_structure 的空 from/to
-      版本字符串；validate_step 的 widen_type 未知字段（E2002）；
-      parse_migration_dir 的不可读目录（E2001）；WidenType 在 from-schema
-      无类型时 E2003；excel 表的 remove_field 与 widen_type（UInt8→Int16 真
-      表示变更）逐行 sheet-grid 定位记录；RemapValues 对非字符串值与整行缺
-      字段的路径；RenameTable 两名字皆无时 E2003；is_widening 与 widen_value
-      的全秩覆盖（无符号阶梯、无符号→有符号每秩一步、≤32bit 与 Float32 入
-      Float64、溢出拒绝、Null 直通、非数字拒绝）。
+- [x] validation/mod.rs 37 行未覆盖 → 3 行（269 lib 测试全绿，workspace 812）
+### cage-cli web.rs 覆盖收口
 
-### 路线图收尾巡检（2026-10-11）
-- [x] 环境化出包闭环核对：分环境节记的「snapshot / registry publish 暂以基线
-      出包（环境化出包留待）」已被后续批次交付——`cage snapshot --env prod`
-      目录名带 env 段（client-prod-4e1d4fe73f89）、包内 manifest 记
-      environment、schema.json 即该环境规则；`cage registry publish --env prod`
-      入册条目记 environment、同版本换环境走 E1801 冲突。已实机验证
-      （examples/game-config 拷贝 → prod 出包 + 发布，均 exit 0）。该行是
-      当时批次口径，非当前状态。
-- [x] 待办清零：todo 全册无开放功能项（两条 `[ ]` 均为不可达覆盖行登记）。
-      路线图余下「留待后续」四项已于 2026-10-11 续批逐项拍板
-      （design §49）：IDE 支持 / FlatBuffers / 注册表远程发布协议三项立项
-      实装，§45 外部依赖三项登记为卡点并写明解除条件——见本册「路线图
-      四项拍板」节。
-      故转入覆盖率收尾：cage-target-java（62 行）→ cage-target-cpp（56）→
-      cage-source-http（37）→ validation/mod.rs（36）→ web.rs（32）。
-      五项已全部收口（见续批第七至十一项），登记册清零。
+- [x] web.rs 32 行未覆盖 → 14 行（96.53%，390/404，54 bin 测试全绿）
+- [x] 覆盖率收尾登记册全清
+### 路线图四项拍板
 
-### cage-target-java 覆盖收口（2026-10-11 续批第七项）
-- [x] cage-target-java 覆盖率 95.65% → 99.36%（62 → 9 行未覆盖，22 测试
-      全绿）。删除遗留死代码簇：legacy `render_enums` 渲染器（cfg(test)、与
-      `java_enums_context` 全量重复、生产走官方模板）连同其唯一调用者
-      `header` 与 `push_javadoc` 及两个同名遗留测试（约 105 行）；新增
-      `test_enums_context_skips_unallocated_idents`（直接测真实边界：空
-      ident 表下 `emitted_enums` 为空 + 满 ident 表的 ident/payload/banner/
-      members 断言）与 `test_enums_context_string_payload_bucket`（无整数值
-      成员 → String 桶 + em-dash banner）；`java_default_filter_yields_null_
-      for_a_field_without_default` 直测无默认字段过滤器返回 Null。余下 9 行
-      为 `#[ignore]` 的 javac 样例写出器（设计上要求 JDK，不入常测）。
+- [x] 四项逐条裁定完毕
+- [x] I 系列：IDE 支持
+- [x] F 系列：FlatBuffers Target
+- [x] L 系列：注册表远程包枚举
+- [x] §45 外部依赖三项 → 卡点登记
+### B 系列：资产体系
 
-### cage-target-cpp 覆盖收口（2026-10-11 续批第八项）
-- [x] cage-target-cpp 覆盖率 52 行未覆盖 → 2 行（99.82%，1136/1138，22 测试
-      全绿）。删除遗留死代码簇：cfg(test) 的 `render_enums` 渲染器（生产走
-      `cpp_enums_context` + 官方模板、generate 从不调用该形态、原测试仅传空
-      切片故主体 33 行从未执行）连同唯一调用者 cfg(test) `header`（官方模板
-      自带 banner）及 `test_render_enums_with_empty_slice`（约 97 行）。新增
-      三项针对真实生产路径的测试：`test_enums_context_empty_slice`（空枚举
-      集 → 无 include、无 `emitted_enums`，承接被删边界测试的语义）、
-      `test_enum_backing_buckets`（直接钉住 enum_backing 三档 backing
-      int32/int64/uint64 + float 与无值成员被 continue 跳过不扩容）、
-      `test_default_filter_null_without_default`（无默认字段 `note` →
-      CppDefaultFilter 返回 Null）。余下 2 行登记为环境/panic 路：1775
-      `test_generated_headers_compile` 的 g++ 缺失早退（有 g++ 的机器本行
-      必覆盖、本机 g++ 在位故未覆盖，环境条件不可控）与 2039 该测试 g++
-      编译失败时的 panic 消息行（命中即测试本身失败，防御性不可达）。
+- [x] B0 决策记录
+- [x] B1 `cage assets` 资产清单命令
+  （6 单测）
+- [x] B2 完整示例 `examples/asset-workspace/`
+- [x] B3 文档收口
+  （docs：docs/assets.md）
+### D 系列：文档站图表 Mermaid 化
 
-### cage-source-http 覆盖收口（2026-10-11 续批第九项）
-- [x] cage-source-http 覆盖率 99.24%（780/786，37 → 6 行未覆盖，25 测试
-      全绿）。四处测试 HTTP 服务器内逐字节重复的请求头读取循环（412-430 /
-      489-520 / 571-605 / 1048-1094）抽成单一 `read_request_head` 助手
-      （净删约 50 行脚手架），新增 `server_tolerates_misbehaving_clients`
-      用裸 TcpStream 打 start_server：截断头 EOF、>64KiB 无终止符头触发
-      尺寸守卫，两路罐头回复照常落地。新增 6 测试：
-      `page_failure_display_texts`（PageFailure Display 的 Http/BadLink/
-      TooManyPages 三臂原文断言）、`rel_param_only_matches_rel_keys`
-      （非 rel 键参不携带 next）、`read_meta_unreadable_meta_reports_e9902`
-      与 `write_meta_occupied_meta_reports_e9902`（meta 路径被目录占据 →
-      非 NotFound 硬错）、`cache_dir_occupied_by_file_reports_e9902` 与
-      `cache_file_occupied_by_dir_reports_e9902`（缓存槽路径被占 → fetch
-      成功后写缓存 E9902）。余下 6 行登记：4 处 accept 非 WouldBlock 错误
-      臂（436/512/583/1058，需 fd 耗尽，登记不可达）、892 测试助手 panic
-      （命中即测试失败，防御性）、345 let-else 闭合 `}`（lcov 尾花括号
-      伪未覆盖，两处 return false 均已覆盖）。
+- [x] D0 architecture.md 图示 Mermaid 化
+### §45 连接池 / 大表取行落地
 
-### validation/mod.rs 覆盖收口（2026-10-11 续批第十项）
-- [x] validation/mod.rs 37 行未覆盖 → 3 行（269 lib 测试全绿，workspace 812）。
-      新增 7 个测试：validate_with_profile(Some/None) 驱动 ctx 携带 profile 的
-      E9006 门（gen 侧同路径）；check_profile_visibility 对悬空引用目标表
-      跳过（引用检查器 owns 该报告）；reference predicate 畸形 assert 与
-      引用目标表未声明字段的 E1004 两臂；unknown cardinality 拼写 E1004 +
-      行循环跳过该字段不二次报（title 之外断言 message 文本）；cardinality
-      many + null → E1404（one + null 已有既有测试覆盖，收口的是 many 臂）；
-      Bool 字段 vs 数字字面量断言 → E1410 "not evaluable"（Incomparable
-      提示臂）。余下 3 行登记：429 与 1232 为 lcov 尾花括号伪未覆盖（两者
-      所在 if 块体均由既有 E9006/E1410 测试覆盖，仅闭合 } 记 0）；
-      1121 report_reference_cycles 的空环 continue（find_cycles 的
-      path[idx..] 切片恒含起点节点，结构性不可达，防御性保留）。
+- [x] 进程级按 DSN 连接池（`cage-source-db::pool`）
+- [x] 大表取行：mysql `query` 整体缓冲改 `query_iter` 逐行流式
+- [x] 测试先行 + live 验证
+- [x] live 测试钓出真 bug
+- [x] 并发多源裁定不立项
+- [x] 文档：design §45 卡点登记补落地附记、「留待实现期」划线
+### 示例四套环境补齐
 
-### cage-cli web.rs 覆盖收口（2026-10-11 续批第十一项）
-- [x] web.rs 32 行未覆盖 → 14 行（96.53%，390/404，54 bin 测试全绿）。
-      新增 5 个测试：`run_web_rejects_without_a_project_config`（缺
-      cage.toml 早退臂，错误不含 cannot bind）；`run_web_rejects_when_the_
-      port_is_taken`（占位 TcpListener 后 bind 失败，断言错误含
-      `cannot bind 127.0.0.1:{port}:`）；`api_schema_reports_a_missing_schema_
-      file`（schema 路径指向不存在文件 → ok=false + schema 为 null）；
-      `api_save_reports_an_unwritable_target`（chmod 0o444 → 500 + error
-      含 cannot write，unix 限定）；`handle_reports_an_unreadable_post_body`
-      （裸 socket 发 Content-Length: 100 + 5 字节非法 UTF-8 体后 FIN →
-      read_to_string 报 InvalidData → 400 + cannot read request body）。
-      余下 14 行登记：41-55 为 run_web 服务循环（addr 打印 + Ctx 构造 +
-      `for request in server.incoming_requests()`）——进程内单测无法退出
-      该循环（会挂死），属二进制侧路径，由 examples/web-smoke.sh 实机
-      覆盖（编辑 → 校验 → 保存 → build 复现全绿）。另记 tiny_http 0.12
-      行为：EqualReader 对短体静默截断（EOF 返回 Ok(0)）且 Drop 循环
-      等满 Content-Length，故 body 读错误臂只能由非法 UTF-8 驱动，
-      短体/断流均不可达。
-- [x] 覆盖率收尾登记册全清：java（62→9）→ cpp（56→2）→ http（37→6）→
-      validation（37→3）→ web.rs（32→14）。
+- [x] ① schemas 以 `env_overrides` 键声明四套环境
+- [x] ② examples/run.sh 第 3 步改四套 check + 四套 build
+- [x] ③ 文档实测输出同步
+  （commit df808dfaa1cd；docs：docs/example.md）
+- [x] ④ 实测证据
+  （commit 6271d907b39e）
+### 两个功能单
 
-### 路线图四项拍板（2026-10-11 续批第十二项，design §49）
-- [x] 四项逐条裁定完毕（裁定记录见 design §49，每项记「定了什么 /
-      为什么 / 备选 / 边界 / 卡点条件」）：三项立项实装（IDE 支持 →
-      `cage lsp` stdio LSP 零新依赖；FlatBuffers → 定义文件生成，不做
-      wire 编码，与 Protobuf 先例同口径；注册表远程发布协议 → 远程包
-      枚举 `cage registry list --registry`，读协议只读 GET 服务端不
-      实现）、一项卡点（§45 外部依赖三项，理由统一为「依赖外部系统
-      真实状态 + 本仓无真实网络，门禁内不可验证」，并写明解除卡点
-      条件）。裁定与理由见 design §49。
+- [x] 功能 A：`cage init` 交互式脚手架
+  （docs：docs/cli.md）
+- [x] 功能 B：`cage mcp` MCP server（stdio）
+  （12 单测；docs：docs/cli.md）
+- [x] 文档 + UI 单
+  （docs：docs/lifecycle.md）
+- [x] 文档与实际子命令脱节
+  （docs：docs/cli.md）
+- [x] VSCode 插件支持
+  （docs：docs/cli.md）
+## 文档双语
 
-#### 四项拍板状态表
-- [x] I 系列：IDE 支持（`cage lsp`，design §49 拍板）
-      已实装为 `cage lsp <root>`（I1 stdio 帧协议 + I2 诊断映射 + I3
-      文档一并落地）：手写 JSON-RPC 2.0 帧协议（Content-Length 头 +
-      定长体，读写两侧同构，lsp.rs ~300 行含单测），同步单线程、零新
-      依赖、无异步运行时（lsp-types + tokio 会引入两者，帧协议本身只有
-      两行头 + 定长体）。协议子集 = 拍板清单：initialize / initialized
-      / didOpen / didChange / didClose / shutdown / exit + 推送式
-      publishDiagnostics（非拉取式 textDocument/diagnostic）；未知请求
-      → -32601，坏 JSON → -32700，未知通知静默；exit 无前置 shutdown →
-      退出码 1（LSP 规范误用信号）。诊断源 = `validate_project`——
-      check 管线抽出的单一校验入口（run_check 与 lsp 共用，编辑器诊断
-      与 CI 诊断永不分歧），映射为文件级零宽 range（(0,0)-(0,0)，消息体
-      带 E 码 + 真实定位 + hint）推给**每一个**打开的文档（每个打开文档
-      即项目诊断面板；按文件锚定会藏起引用/依赖类跨文件错误，恰是面板
-      存在的意义——口径记录于 design I 段落地记录）。didOpen/didChange
-      全量重校验（拍板边界：不做增量，百表量级毫秒级；编辑器缓冲不虚拟
-      化，诊断的是落盘状态，textDocumentSync 声明 Full 如实反映）；
-      didClose 清该文档面板。env / level 走 initialize 的
-      initializationOptions，缺省 = check 默认（基础环境 / semantic /
-      client profile），坏 level 成为一条 error 诊断而非静默或崩溃。
-      项目载入失败（坏 cage.toml / registry 引用不可解析）同样成为一条
-      error 诊断。验收：lsp.rs 5 项单测（帧往返 / 退出码 / 面板发布 /
-      多文档 / 32601·32700）+ tests/lsp.rs 7 项子进程端到端（真二进制
-      stdio 往返双向断言，跑在真实示例工程与 bad 工程上）；顺带修正
-      design I 段备选里的失实句（「check --json 早已存在」——机器可读
-      诊断实际是库契约与 Web /api/validate，CLI check 从无 --json）。
-- [x] F 系列：FlatBuffers Target（design §49 拍板：定义生成，不做
-      wire 编码）
-      —— F0 类型映射表定稿（design §49：cage 类型 → `.fbs` 全量对照、
-      枚举底型阶梯 byte→ubyte→short→ushort→int→uint→long→ulong、
-      重值枚举整体降级为 string（flatc 无 allow_alias）、`(key)` /
-      `(required)` 归属与 `root_type` 收尾）；F1
-      `cage-target-flatbuffers` 实装（每表一个 `.fbs` + 共享
-      `cage_enums.fbs`，确定性注释、关键字转义（含大小写不敏感）、
-      wrapper 表命名 `{Field}Value` / `{Field}Entry`，6 项单测 +
-      示例工程 `flatbuffers` target 与 run.sh 产物/确定性断言）；
-      F2 文档与 target 口径校正（target.md：FlatBuffers 移出 Data
-      Targets 规划、与 Protobuf 同列定义生成组 + 新增 Target 小节与
-      类型映射表，Data Targets 规划只留 YAML / Binary；cli.md /
-      index.md / architecture.md（14 类 + 目录树 + Mermaid 节点）/
-      example.md（86 产物 / 71 gen / 快照与 registry 真实输出）/
-      双语 README）。
-      wire 编码不做：本环境无 flatc 可作字节级 oracle（`which flatc`
-      → 不存在），确定性二进制由 MessagePack 覆盖。
-- [x] L 系列：注册表远程包枚举（design §49 拍板，发布闭环最后一环）
-      已实装为 `cage registry list --registry <root> --package NAME…
-      [--auth-env VAR] [--json] [path]`（L1）+ 文档与协议约定（L2）。
-      两处口径精化（design L 段落地记录）：枚举来源——只读协议只有逐包
-      index 资源、没有包名总目录（总目录要么服务端要么 push 额外维护
-      根 index，都越线），故远端按 `--package` 点名列（点名即 CI 审计
-      自己发布了什么），不点名报 usage 退出 2；404 渲染 `(no versions)`
-      退出 0（发布前常态）。缓存语义——字面「缓存复用不重取」会让
-      list 汇报陈旧远端状态、制造裁定要避免的「冲突发现越晚越痛」，
-      故取在线取新为真并写 `.cage-cache/registry/<url 指纹>/<pkg>/
-      index.json`（与 R3 resolve 同源同键），传输失败才回退缓存并标注
-      offline（S4 语义）；省略 path 则每次取新不落盘。其余按原裁定：
-      渲染与本地 list 同形状、`--json` 本地/远端同构、Bearer 仅
-      `--auth-env` 指名时随 GET（缺失/为空 → E2105 预网校验、401/403
-      → E2102，只报变量名不报值）、服务端零实现。本地根 list 同步
-      获得 `--json`。验收：tests/registry_remote.rs 远端点名列举 +
-      404 空清单 + 无 --package usage 拒绝 + 离线缓存回退 + E2105 ×1
-      项，5 项全过；cli.md registry 小节与 protocol 段已更新。
-- [x] §45 外部依赖三项 → 卡点登记（需外部输入，不立项）：行级增量
-      需各源数据契约 + 真实 DB；OAuth / mTLS / service account 需 Google
-      托管凭据与 scope 授权；连接池并发需真实 MySQL/PG 压测。三者均
-      触碰「不做服务端产品 / 不持有云密钥 / 测试不可验证不进主干」
-      红线之一，解除卡点条件已写明（design §49 末段）。
-
-### B 系列：资产体系（2026-10-11 用户拍板，design §50）
-形态定稿：四类资产（源数据 / 规则 / 构建规则 / 产物与追溯）全部入
-版本管理 + 异地副本 + 历史快照 + 独立备份四层防线；cage 原生补
-「资产清单」命令（版本化构建与完整性验证存量已覆盖：manifest / 快照
-账本 / registry verify / bundle 签名）。目录学两裁定：rules/ 不设独立
-目录（规则事实源 = schema 文件集 + migrations/，拆目录即两份账）；
-cage.yaml/cage.lock 不改名（cage.toml 已是入口，版本锁定由注册表
-版本 pin + 条目字节不可变承担——锁内容哈希强于锁版本号）。git commit
-不进 manifest（同输入同字节的确定性契约；commit 是历史不是内容），
-由发布工作流记 `<bundle>.commit` sidecar。不做：资产管理平台 / 备份
-调度器 / LFS / 服务端。
-- [x] B0 决策记录（design §50：四分类对账 / 备份四层防线 / 三能力
-      落点 / git commit 裁定 / 不做清单）——本轮交付，勾选
-- [x] B1 `cage assets` 资产清单命令：core 盘点函数（schema 全集 +
-      migrations/ + source_roots 文件集 + cage.toml，逐项 blake3 +
-      大小 + 类别，确定性排序）+ CLI 子命令（文本 / `--json` /
-      `--write <file>` 落基线 / `--check <file>` 复核缺失篡改多余，
-      退出码 1）+ 单测与 CLI 集成测试——本轮交付，勾选（core
-      `assets` 模块 6 单测 + `tests/assets.rs` 8 集成测试；远程 spec
-      不盘点、`build/` `.cage-cache/` 永不入账已测）
-- [x] B2 完整示例 `examples/asset-workspace/`：四类资产俱全的最小
-      工程（sources/ / schemas/ / migrations/ / cage.toml）+
-      `examples/asset-workspace.sh` 资产生命周期一键跑通（盘点 →
-      基线 → check → build 双 profile → snapshot → registry publish →
-      export 签名 bundle + commit sidecar → 恢复演练：干净目录
-      import + verify + 快照重建 diff 字节）+ README（分类 ↔ 目录
-      映射 + 备份四层防线 + 演练步骤）+ CI 防烂腿 job——本轮交付，
-      勾选（8 步全绿：篡改 changed 点名 / server 视图 targets 剔除 /
-      恢复演练字节 diff 一致）
-- [x] B3 文档收口：docs/assets.md 补「资产分类与备份策略」节（链接
-      示例）、docs/cli.md 命令表加 assets、docs/index.md 特性行——
-      本轮交付，勾选
-
-### D 系列：文档站图表 Mermaid 化（2026-10-11 用户令，紧随 B2）
-用户令：cuihairu.github.io/cage/architecture 的 ASCII 图示应替换为
-专业图表。落法：vitepress-plugin-mermaid 与 VitePress 2 alpha 有
-peer 冲突，改只装 `mermaid` 依赖 + 自渲染（config.mts fence 钩子把
-```mermaid 围栏替换为 `<ClientOnly><MermaidDiagram>`，theme/Mermaid.vue
-客户端动态 import 渲染，MutationObserver 监听暗色切换重渲染，
-渲染失败回退源码块）。纯枚举块改表格 / 列表，目录树与错误定位示例
-保留代码块形态。
-- [x] D0 architecture.md 图示 Mermaid 化——本轮交付，勾选（11 张
-      flowchart：核心流程 / 反模式扇出 / 六概念 / Canonical Model /
-      插件模型 / Converter 对比 ×2 / Casino 隐喻 ×2 / 最终架构 /
-      Any Source-Any Target；顺带修正三处过期表述：13 类 target 已
-      实装、最终架构 MsgPack/Protobuf 已实装、目录树 cage-cli 注释
-      补 assets）
-
-### §45 连接池 / 大表取行落地（2026-10-13 巡检批，design §45 卡点解除）
-解除条件在本机满足（MariaDB 11.8 系统服务 + docker PostgreSQL 18），
-按 design §45 登记的解除条件开工；语义零变化，测试先行。
-- [x] 进程级按 DSN 连接池（`cage-source-db::pool`）：mysql 走驱动自带
-      `Pool`（0–8 约束、惰性建池、取用健康检查），postgres 手写 60 行
-      空闲栈池（嵌套安全 / 空闲上限 / 失败弃用不回池），零新依赖；
-      每次取连接照旧钉只读，坏 DSN 永不注册
-- [x] 大表取行：mysql `query` 整体缓冲改 `query_iter` 逐行流式（顺带
-      删除被替代的 `to_row_set`）；pg 简单协议无流式 API，实测维持
-      缓冲并在 design 记录口径
-- [x] 测试先行 + live 验证：池机制 7 项单测（假连接：复用 / 失败弃用 /
-      失败重试 / 空闲上限 / 注册表同键同池 / 坏 DSN 恒报错）；
-      环境门控 live 测试 4 项（`CAGE_DB_TEST_MYSQL_DSN` /
-      `CAGE_DB_TEST_PG_DSN`，无 env 自动跳过）对真实 MariaDB 11.8 +
-      PG 18：类型口径往返（DECIMAL 文本 / bytea base64 / BOOL / NULL）、
-      字节确定性、5 次装载服务端连接计数增量 ≤1（复用实证）、只读钉
-      拒写、内省同池、10 万行压测往返。crate 10 → 36 测试全绿
-- [x] live 测试钓出真 bug：MariaDB 文本协议 temporal 列标 charset 63，
-      DATETIME 被 `map_cell` 当二进制 base64 落缓存（旧路径同样存在）
-      ——违背「dates → Text」纪律；修复为按列类型豁免 temporal 的
-      binary 判定，live 断言钉住
-- [x] 并发多源裁定不立项：装载耗时由 canonical JSON 管线主导、串行
-      毫秒级（实测数据见 design §45 落地附记）；解除条件写明
-- [x] 文档：design §45 卡点登记补落地附记、「留待实现期」划线；
-      source.md S2 节补池化口径
-
-### 示例四套环境补齐（2026-10-12 用户登记单，2026-10-13 落地）
-用户令（2026-10-12）：示例补齐四环境——开发 dev / 测试 test / 灰度
-staging / 正式 prod，四套各实跑 check/build 验证指纹随环境变化，文档
-实测输出同步。验收口径：四套各跑一次 `check` 与 `build --env <name>`
-全部通过；manifest 的 `environment` 字段与指纹随环境变化（换环境即换
-构建）；未知环境仍 exit 2。
-- [x] ① schemas 以 `env_overrides` 键声明四套环境（既有声明机制——
-      `declared_envs()` 取各表键并集，不在 cage.toml 登记）：
-      `Character.nickname` max_length dev 32 → test 24 → staging 20 /
-      prod 必填，`Shop.discount` 上限 dev 0.9 → test 0.7 → staging 0.6
-      → prod 0.5（样例数据最大折扣 0.4，四套都放行）——本轮交付，勾选
-- [x] ② examples/run.sh 第 3 步改四套 check + 四套 build：断言每套
-      manifest `environment` 逐字点名当前环境、四套 build_id/
-      content_hash 两两不同、未知环境 `qa` exit 2 且声明清单含四套
-      ——本轮交付，勾选（15 步全绿）
-- [x] ③ 文档实测输出同步：docs/example.md 完整输出块整块换新（旧
-      `unknown environment 'staging' (declared: dev, prod)` 改实测
-      `unknown environment 'qa' (declared: dev, prod, staging, test)`）、
-      `### cage check --env` 节重写为四套 check + 四套 build 指纹实测；
-      基线/prod 快照与注册表 build_id 因 schema 携带四套 env_overrides
-      轮换（df808dfaa1cd→850ac5e6ac32、b926aded2ac8→55dae1a8e145），
-      全部换实测值；examples/game-config/README.md 同步（顺手把
-      「14 步」改回实况 15 步）——本轮交付，勾选
-- [x] ④ 实测证据：四套 check 全 OK（5 tables, 0 warnings）；四套
-      build 的 manifest `environment` = dev/test/staging/prod，
-      build_id `6271d907b39e`/`fcd7f8107102`/`158f898a3913`/
-      `55dae1a8e145` 两两不同，content_hash 同样逐环境轮换（数据
-      字节不变，约束进生成的 JSON Schema——`Shop.schema.json` 的
-      `maximum` 随环境取 0.9/0.7/0.6/0.5）——本轮交付，勾选
-
-### 两个功能单（2026-10-13 用户登记，本轮落地 A）
-
-- [x] **功能 A：`cage init` 交互式脚手架**——`enum Commands` 挂
-      `Init`（`crates/cage-cli/src/main.rs:76`），实现见
-      `crates/cage-cli/src/init.rs`：全部参数可 flag 传（无 TTY/CI
-      友好），有 TTY 且无 flag 时进问答（目录→项目名→源类型
-      excel/csv/json/yaml/sheets/db/http→环境套 four/none→目标生成器
-      按 `cage-target-*` 实际列 15 个→模板风格→git init→示例表），
-      每题回车默认、`b` 回退、结束前打印待生成清单再确认；生成物 =
-      `cage.toml`（种子= `examples/game-config/cage.toml`，不造第二套
-      配置格式）+ `schemas/item.yaml`（四套 `env_overrides`
-      dev 1000/test 800/staging 600/prod 500）+ `config/Item.*` 示例
-      数据 + `README` + `.gitignore`；excel/sheets/db/http 保留本地
-      文本样例 + 注释好远程源配置段（开箱校验仍绿）；同目录已有
-      `cage.toml`/`schemas/`/`config/`/`README.md`/`.gitignore` 任一
-      项即拒绝（exit 1，列冲突项，不动文件）。单测 14 例（含
-      `b` 回退、无效选项重问、EOF 中止、拒绝覆盖）+ 集成测试
-      `tests/init_scaffold.rs` 9 例。验收实测：flag 模式
-      `cage init /tmp/initdemo --name demo --source csv --envs four
-      --targets json,csv` → `cage check .` OK (1 tables, 0 warnings)
-      + `cage build . --env dev` OK (2 artifacts) 零改动通过；
-      TTY 交互（`script` 模拟真终端，9 题问答 + 清单确认）生成的
-      `proj` 同样 check OK + build OK；`--env qa` 仍 exit 2；同目录
-      重跑 exit 1 且 `cage.toml` 字节未变。README 中英「快速开始」
-      已加 `cage init` 两行；`docs/cli.md` 加 `## init` 节与命令清单
-      补齐（新增 `init`/`graph`/`verify`/`lsp`）
-- [x] **功能 B：`cage mcp` MCP server（stdio）**——`cage mcp --stdio`
-      （官方 rmcp SDK），复用 core：`check_schema`（结构化错误：错误
-      码、file:line、原因、可操作建议）、`list_tables` /
-      `list_fields` / `list_envs`（结构与四套环境差异）、
-      `build_dry_run`（预演不落盘）、`explain_config`（配置项语义与
-      来源，同配置优先级链）；输出一律 JSON 结构化、错误带建议；
-      README 中英加「AI 助手（MCP）」节（claude/其它 MCP 客户端配置
-      片段 + 工具清单）；验收 = MCP 集成测试（initialize → list_tools
-      → ≥3 tool 真调用，含一条故意写错的配置断言 file:line 与建议）
-      + cargo test/clippy 全绿；单 commit 英文简短
-      —— 实现 `crates/cage-cli/src/mcp.rs:1`（server + 6 工具 + 12 单测）、
-      `crates/cage-cli/tests/mcp_server.rs:1`（2 集成测试：initialize →
-      list_tools → 6 次真调用）；`crates/cage-cli/src/main.rs:76` 的
-      `enum Commands` 加 `Mcp` 变体（`main.rs:115`，分发 `main.rs:592`），
-      `generate_target_items` 从 build_project 抽出共享；
-      文档 `README.md:76`/`README.zh.md:76`/`docs/cli.md`（`## mcp` 节）。
-      验收：真跑 server 得 serverInfo.name=cage + tools 6 个；故意写错的
-      工程 `check_schema` 返回 E1101/E1201，定位
-      `config/Item.csv:row 2:price` / `row 1:price` 各带 suggestion；
-      `build_dry_run` written=false、86 artifacts 不落盘；`explain_config`
-      precedence 8 步。门禁全绿：`cargo test --workspace` 925 passed /
-      0 failed、`cargo clippy --workspace --all-targets -- -D warnings` 0
-      error、`cargo fmt --all --check` OK、rustdoc `-D warnings` OK、
-      `bash examples/run.sh`「全部通过」、`asset-workspace.sh`「恢
-      复演练通过」、`web-smoke.sh`「✔ web 冒烟全部通过」、
-      `npm run docs:build` OK、`npm audit --omit=dev` 0 vulnerabilities。
-      commit: f190e4b
-- [x] **文档 + UI 单**——①文档开头「游戏配置的生命周期」：mermaid
-      主流程图（需求改表→check→依赖/registry 解析→目标生成→增量→进
-      游戏/服务）每步标状态流转（草稿/校验失败-带错误码/就绪/已生成/
-      增量命中）+ 失败分支（E18xx 等）+ 同页文字版要点；②逐个子命令
-      按 `main.rs:76 enum Commands` 逐个（用途/何时用/关键参数/生命周期
-      哪一步/可复制示例与真实输出），清单至少含 check/build/schema
-      draft/migrate/LSP/web/init/mcp/verify；③≥5 场景章节（①日常改表
-      迭代 ②新增环境四套 ③CI 集成 ④远程 registry 依赖 ⑤历史库迁移
-      migrate draft→apply）；④UI 设计只出设计不写码：init 问答流程
-      原型 + 校验结果可视化（错误列表/结构树/环境差异）HTML 静态原型
-      放 `docs/design/` 带截图，**原型给用户过目后再实现**；门禁 =
-      文档构建绿 + 链接检查，单 commit 分两（文档图/场景、UI 原型）
-      —— ①`docs/lifecycle.md:1`（主流程图 + 状态流转图 + 文字版 +
-      子命令位置表 + 5 场景）；②`docs/cli.md` 17 个 `## ` 子命令节
-      各加「生命周期」步标（覆盖 enum Commands 全部 17 个顶层变体 +
-      registry 9 个子命令）；③5 场景同 lifecycle.md；④`docs/design/
-      init-wizard.html` + `docs/design/validation-result.html` +
-      4 张截图（init-wizard / validation-result / -tree / -env），
-      索引页 `docs/design-prototypes.md`（含 3 条待拍板）；nav/sidebar
-      加「生命周期」「UI 原型」，README 中英加链接。门禁：
-      `npm run docs:build` 绿（mermaid 两图渲染进资产、无死链、
-      4 张截图入库 dist/assets）。**待用户拍板**：Web UI 形态 /
-      引用联动 / 环境折叠（见 design-prototypes.md 第三节）。
-      commit: df34632（生命周期 + 场景）+ b4315dc（UI 原型）
-      已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)——
-      #1 Web UI 形态确认「扩展既有 cage web」(已被 2026-10-20 规则配置
-      界面落地兑现);#2 引用联动 / #3 环境折叠延后(无结构树/热力图视图,
-      诊断点位高亮 + 构建状态 + diff 已覆盖策划需求);design-prototypes.md
-      §III 已标注裁定
-
-- [x] 文档与实际子命令脱节（来源：用户 2026-10-14）——已交付（2026-10-14
-      巡检 PATR1014）：以 `crates/cage-cli/src/main.rs` `enum Commands` 17 个
-      顶层子命令 + `RegistryCmd` 9 个子命令为权威清单逐个核对四文档面
-      （docs/cli.md / docs/index.md / README.md / README.zh.md）。核对结论：
-      cli.md 17 节齐全且 flags/默认值/退出码与源码逐一相符（抽查 run_verify
-      0/1/2、assets 互斥三模式、registry --keep 默认 3、--port 8765 等），
-      漂移在三处入口面——① README 双语快速开始缺 assets/graph/verify/
-      migrate-draft（zh 另缺 lsp）已补齐一行示例；② index.md 快速开始缺
-      init/mcp/snapshot/web/registry/migrate-draft/schema-draft 已补齐
-      （init 置首）且删掉重复的 `title: Target 插件` 空行、修过时的
-      「IDE 留待后续」（cage lsp 已实装）；③ 过时事实更正：cli.md 快速开始
-      `cage inspect Item` → `cage inspect config/ Item`（path 必填）、
-      README「12 targets / 9 语言」→ 14 target（代码 format 分派表实测
-      3 数据 + 11 代码）/ 8 语言 + proto/fbs/jsonschema 定义文件、
-      architecture.md「全部 12 个 target」→ 14。验收：17 子命令 × 4 文档面
-      覆盖矩阵全非零（grep 复核），`npm run docs:build` 绿。commit: 5823d4a
-- [x] VSCode 插件支持（来源：用户 2026-10-14）——评估 + 薄壳实现已交付
-      （2026-10-14 巡检 7K2M，用户拍板：做薄壳 + VSIX 随 nightly 附件）：
-      `editors/vscode/` 薄壳客户端——`vscode-languageclient` 9.x + ~50 行 TS
-      零 Rust 改动（激活 `workspaceContains:**/cage.toml`，spawn
-      `cage lsp <workspace 根>`，`cage.env`/`cage.level` 设置映射
-      initializationOptions，空 env 不上线）；测试 ×12（行为级
-      activate/deactivate 契约 + 对真实二进制的 LSP 协议握手 E1601 断言 +
-      VSIX 打包断言——期间修掉真 bug：.vscodeignore 的
-      `node_modules/**` 把运行时依赖挡在包外，扩展激活即 MODULE_NOT_FOUND）；
-      CI 三腿——ci.yml/daily.yml editor 门禁（build + compile + test +
-      package）、nightly.yml vsix 产物腿（continue-on-error 同试运行腿
-      理由，publish needs [build, vsix]，资产表注 VSIX 行），.gitignore
-      收口 out//*.vsix；docs/cli.md lsp 节增「VSCode 扩展」小节 +
-      index.md IDE 行同步。验收门禁：扩展 npm test 12/12、全量
-      cargo test --workspace 925/0（CI 文件改动触发全量）、
-      npm run docs:build 绿。commit: 42a8c7b
-  - 关键事实：本仓**已有 `Lsp` 子命令**，这正是编辑器接入的天然入口——**优先评估复用 LSP，而不是新造一套编辑器协议**
-  - 评估要点：LSP 当前实现了哪些能力（补全/跳转/诊断？）；VSCode 插件只做薄壳（启动 LSP + 注册语言）还是需要更多；**成本与收益**
-  - 验收：先出评估结论（含"值不值得做"），经用户拍板（已完成）
-  - **评估结论（2026-10-14 巡检 PATR1014，以 `crates/cage-cli/src/lsp.rs:1` 源码为准）**：
-    ① LSP 现有能力：诊断推送服务器——协议子集 initialize/initialized/didOpen/
-    didChange/didClose/shutdown/exit + `publishDiagnostics` 推送，**无补全/悬停/
-    跳转定义/格式化/重命名**（模块头明确「不做」，需要 schema 语义模型，单独立项）；
-    诊断 = `validate_project` 全量输出（与 `cage check` 同一入口，诊断永不分歧），
-    映射为**文件级零宽 range (0,0)-(0,0)**，消息体带 E 码 + 真实定位 + 修复提示；
-    `env`/`level` 走 initializationOptions；同步单线程、手写帧协议、零新依赖。
-    ② 插件形态拍板建议：**薄壳**——`vscode-languageclient` 官方客户端库 + ~200 行
-    TS（spawn `cage lsp <root>` stdio 子进程、激活条件 `workspaceContains:cage.toml`、
-    设置项映射 initializationOptions），纯客户端零 Rust 改动，问题面板即用。
-    ③ 成本：薄壳半天~一天（新建 `editors/vscode/`，Node 工具链仅构建期，仓库现有
-    node_modules 先例）；VSIX 打包 `vsce package` 可先手动侧载、不上架市场（发布
-    红线同口径：不建正式 Release，走 nightly 或手动分发需用户点头）。
-    ④ 收益：问题面板全量 cage 诊断（E 码 + 定位 + 建议）、错误数徽标、
-    env/level 可切换；与 CI 诊断同源零分歧。
-    ⑤ 主要短板：零宽 range = **无内联波浪线**（squiggle 锚在文件头，定位全靠
-    点开面板条目读消息体）——薄壳不做任何服务端改动时这就是最终体验；要内联
-    需第二步服务端增强（文本源把 Diagnostic 的行信息映射为真实 range，Excel 等
-    非文本源保持文件级），量级比薄壳大。
-    ⑥ **结论：值得做薄壳**（成本低、复用现有 LSP、诊断同源）；内联波浪线服务端
-    增强另评估。拍板（2026-10-14 巡检 7K2M，用户已定）：(a) 做；(b) 只做薄壳；
-    (c) VSIX 随 nightly 附件分发。
-
-
-## 文档双语（2026-10-16 执行单）
-
-- [x] D1 docs 根目录双语配对（用户口径：本轮只做 `docs/` 根目录实质文档，
-      排除 CHANGELOG/LICENSE 类；hello-* 教学仓不做双语）：
-      16 个中文页补对应英文版（14 个走 `<名>.en.md`：architecture / assets /
-      build / cli / design-prototypes / example / index / lifecycle / schema /
-      source / target / ui / validation / web；2 个中文文件名页按约定改用英文名
-      `requirements.md` / `audit-doc-consistency.md`，不改任何已存在文档名）；
-      两份顶部首屏语言切换器（index.md / index.en.md 因 VitePress frontmatter 必须
-      占首行，markdown 切换器只能置于 frontmatter 之后，另在 hero actions 补语言
-      按钮保证首屏可见——唯一豁免）；英文版为真实翻译非占位——命令、路径、代码块、
-      E 码、专有名词原样保留；`requirements.md` 随中文版一并 srcExclude 不入站；
-      站内互链改指 `.en` 路由（跨页锚点丢弃防死链）。门禁 `npm run docs:build` 绿。
-      英文版占位符回归修正：cli / build / lifecycle / target 四份 .en.md 正文里
-      残留的中文占位（`<包>` `<版本>` `<指纹>` `<表|具名查询>` `<workspace 根>`
-      `registry:包@版本` 等 24 处）已改回英文，并逐条对齐代码事实
-      （`Sheet: <name> | Row: <n>` 对 cage-core/src/value/mod.rs:101；
-      `M.<Enum> = { member = value }` 对 cage-target-lua/src/lib.rs:13）。
-      两处中文为有意保留：architecture.en.md 的「In Chinese」对照引块、
-      cli.en.md:606 指向中文 design.md 标题的锚点链（翻译锚点即死链）。
-- [x] D2 design.md（3244 行）处理口径：篇幅过长不硬造劣质翻译，首屏已加
-      「暂无英文译版」标注并指向 architecture / cli 精简版（如实标注优先于造假）
-- [x] D2b design.md 完整英文版（2026-10-17 巡检单开工令）：按 § 章节边界分
-      10 段翻译拼装为 `docs/design.en.md`（源 3247 行 → 译文 2573 行，中文段
-      落英文不硬换行故行数少）；两份首屏语言切换器（design.md 原「暂无译版」
-      注记改为切换器）；126 个围栏代码块逐字节一致、100 标题/49 表行/53 分隔
-      线全对账；命令、路径、E 码、§NN、行内占位符（`<包>`/`<远程根>` 等）
-      按既有英文页口径原样保留；§42 双语展品刻意保留中文一句；
-      `design.en.md` 随中文版一并 srcExclude 不入站。门禁 `npm run docs:build` 绿
-- [x] D3 站点英文导航：英文源文件保留 <name>.en.md，通过 VitePress rewrites
-      统一发布到 /en/ 路由；root 配置中文 nav/sidebar/搜索/大纲/编辑/翻页文案，
-      /en/ 配置对应英文主题文案，并启用 VitePress 原生语言切换器。站内
-      英文互链与 README 站点链接同步改指 /en/，中文首页保留 English 按钮、
-      英文首页保留中文按钮；验收 `npm run docs:build` 绿，构建产物包含
-      14 个 /en/ 页面且英文页出现英文 sidebar/outline 文案
+- [x] D1 docs 根目录双语配对
+- [x] D2 design.md（3244 行）处理口径
+- [x] D2b design.md 完整英文版
+  （docs：docs/design.en.md）
+- [x] D3 站点英文导航
 - [x] D4 docs/design/ 两个 HTML 原型（init-wizard / validation-result）界面文案
-      双语（2026-10-18 按用户 2026-10-14 授权代决）：界面文案保持中文——
-      交互 HTML 与 PNG 截图同源一致（PNG 属设计资产不重渲英文版），对外双语由
-      文档层覆盖（design-prototypes.en.md + design.en.md 已交付）；决定已写入
-      docs/design-prototypes.md「界面文案拍板」节（英文版同节对应）；两原型
-      HTML 本体未改动。如需推翻：改该节并将本条改回未决
-- [x] D4b 子目录缺口核查（2026-10-16 实测，非登记待办）：执行单预期
-      `docs/design/`、`docs/api/` 等子目录还有待配对的 markdown，实测
-      `find docs -mindepth 2 -name '*.md'` = 0——本仓 docs 除根目录 32 个
-      .md 外无任何子目录 markdown（`docs/design/` 仅 2 个 HTML 原型 + 4 张 PNG，
-      `docs/public/` 无 markdown）。故无「下一轮补子目录」的缺口可登记，
-      后续若新增 docs 子目录文档再另立项。
-- [x] D5 README.md 双语收口（另一执行单，本轮只同步 D3 路由）：两处站点链接
-      原先改指 .en 路由，D3 落地后同步为 /en/ 路由（/en/lifecycle、
-      /en/design-prototypes）；`[Requirements]` 仍指向
-      中文页 `docs/%E9%9C%80%E6%B1%82%E6%95%B4%E7%90%86.md`（英文页 `docs/requirements.md`
-      为 srcExclude 底稿，未入站，故不宜链接），如需改为英文页须先解除 srcExclude
-      另立项；设计稿
-      docs/design.md 暂无英文版保持原链；安装输出「安装完成：」是程序输出原文
-      （scripts/install.sh:185 / install.ps1:108），按红线代码块原样保留不译
-- [x] 审核整改（2026-10-18 独立审核，见 docs/review/luna-review-2026-10-18.md）：
-      按审核报告的三张表逐项处理，**先核对再动手**，每项给 file:line 证据。
-      1) 表一「缺陷」：按风险排序修，高风险优先
-      2) 表二「文档与实现不一致」：以代码为准改文档，或明确标注为规划中
-         **禁止为对齐文档去改业务代码**
-      3) 表三「值得补的能力」：只做评估与分期建议，**不实现**（需用户拍板）
-      每完成一项勾掉并写证据；全部测试通过后 commit+push；不 bump 版本号。
-      进度（2026-10-18 首轮）：
-      - [x] 表一#1 增量删除越界：main.rs:2075-2096 拒绝不安全 manifest 路径并
-        回退全量构建；:2197-2205 carry 读取与 :2279-2291 stale 删除前做
-        canonical 根包含性复核；helpers :4219-4234。tests/incremental.rs:640,
-        :686 两个篡改回归（`../` 利用修复前曾实测删除项目根外文件）
-      - [x] 表一#2 Web 边界：web.rs:86-93 请求体 8 MiB / 30s 总预算，
-        :101-147 Host/Origin loopback 校验，:156-197 限长/截止时间读取，
-        :213-230 错误映射 403/413/408；tiny_http socket read timeout 在
-        vendor/tiny_http/src/lib.rs:294-305（仅 cage-cli 启用 Cargo feature，
-        1s socket idle timeout），client.rs:206-215 / web.rs:175-184 将
-        timeout 转 408；web.rs:2003-2026 真实 socket 滞留回归。web.rs 单测及
-        tests/web.rs 13 例（全发 loopback Host）全绿
-      - [x] 表一#3 + 表二#6 快照语义：snapshot/mod.rs:17-22 定性为内容一致性
-        （包内 HASHES.json 是信任根，不认证发布者）；README.zh.md:44 /
-        README.md:42 明确数据与账本同时替换无法识别，发布者认证指向
-        registry 签名 bundle（只解释既有能力，不实现快照验签）
-      - [x] 表二#1-#5 文档对齐（以代码为准，未改业务行为）：README.zh.md:40 /
-        README.md:38 引用谓词 E1410；lifecycle.md:132-133 命令示例与
-        main.rs:292-328 参数定义一致；architecture.md:211 /
-        architecture.en.md:207 环境 lint 与出包状态对应 main.rs:537-548、
-        main.rs:231-240,337-347,2377-2407,2594-2597；validation.md:479 的
-        IDE 状态对应 main.rs:257-264、editors/vscode/src/extension.ts:1-5,29-55；
-        需求整理.md:18 / requirements.md:18 的 CSV/L2 措辞对应
-        validation/mod.rs:450-519
-      - [x] 附带修复：luna-review 两报告加入 srcExclude（文件含 ANSI 控制
-        序列与原始工具记录，Vue 编译器报 "Element is missing end tag"，
-        docs:build 自 ff2bdd9 起实际不可构建；本轮修复后 9.15s 绿）
-      - [x] 表一#4 迁移写回事务性：main.rs:1644-1701 两阶段化——
-        先全量渲染+读回（任一失败零落盘），再逐文件临时文件 + rename
-        原子替换；:1702-1748 替换失败按已写序逆序回滚原字节并报错
-        （"rolled back N earlier write(s)"）。tests/migrate.rs:747 起新增
-        回归：第二源目录 0500 锁定时命令失败且所有源字节不变（修复前会
-        留下半迁移状态，测试先红后绿），migrate 10 例全绿
-      - [x] 表三评估与分期（只评估不实现，三项均待用户拍板）：
-        已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)——采纳
-        分期建议:①快照验签一期加载侧可选 --require-signature、二期密钥分发再议;
-        ②LSP 未保存缓冲一期 didChange 落临时文件、内存化延后;
-        ③DB 行数/字节 ceiling 一期、PG 真流式缓行;三项一期均为可选默认关,
-        列下一实施批次
-        1) 快照签名与强制验签（报告：高）——现状快照仅同包账本内容一致
-        性核对（本轮已定性），验签只覆盖 registry bundle（registry.rs
-        :1871-1886）。真实价值是「快照来源可信」，但引入密钥管理（签发
-        方/存放/轮换）超出单机工具定位。分期建议：一期加载侧可选
-        --require-signature，验签复用 bundle 实现，签名走 registry 现有
-        bundle/presign 路径；二期再议密钥分发。
-        2) LSP 未保存缓冲诊断（报告：中高）——现状从磁盘校验、零宽位置
-        映射（crates/cage-cli/src/lsp.rs:14-23）。价值高但真内存化要改校验管线的文件锚定
-        （loaders 全链），改动面广。分期建议：先做 didChange 缓冲落临时
-        文件的最简实现（零管线改动，语义等价），再评估是否值得内存化。
-        3) DB 行数/字节预算与 PG 流式（报告：中）——
-        crates/cage-source-db/src/pg.rs:160-190 全量缓冲，docs/design.md:3135-3143
-        明确 PG 维持缓冲。评估：行数+字节 ceiling（超限报错）
-        低风险值得做；真流式收益依赖超大表场景，与配置源定位（设计期人
-        工维护规模）不符。分期建议：一期 ceiling 复用 web 8 MiB 预算思
-        路；流式缓行。
-      验收门禁：`cargo fmt --all -- --check`、`cargo clippy --workspace
-      --all-targets -- -D warnings`、`cargo test --workspace`（933 passed）与
-      `npm run docs:build` 全绿；未 bump 版本。
-- [x] 文档时效性清理（2026-10-18 用户令：很多文档已过时）：
-      在本轮审核整改完成之后执行，避免与整改冲突。
-      1) 通读 README / docs，找出与当前代码不符的描述（能力、配置项、命令、路径、版本）
-      2) 以代码为准修正文档；**禁止为对齐文档去改业务代码**
-      3) 已废弃但仍留在文档里的功能，明确标注「已移除」或删除，不要留成"看起来还能用"
-      4) 命令行示例逐条跑一遍，跑不通的改掉或删掉
-      5) 构建通过后 commit+push，回报改动文件清单
-      完成（2026-10-19，两轮）：
-      - 快速开始示例实跑修复（b9fa27a）：README.md / README.zh.md /
-        docs/index.md / docs/index.en.md / docs/cli.md / docs/cli.en.md——
-        PATH 是 cage.toml 所在项目根而非源目录（`cage check config/` 实跑
-        报 no project config found），全部改 `.` + 补 `cd my-game`；
-        registry publish 示例补 `--registry reg/`（init 新项目裸跑 E1802）；
-        gen 语言清单补 template。全部快速开始命令在新鲜 init 项目逐条
-        实跑通过（web/mcp/diff/migrate-draft 含内），schema-draft 需真实
-        数据库（SPECS 必填已验证）
-      - 命令面/配置键扫描：18 个子命令 + 各 flag 与 clap 定义一致
-        （无幻影引用）；cage.toml 键（warnings_as_errors/[remote.<scheme>]/
-        [registry]/[dependencies]）文档齐备；`generate_combined` CLI 未暴露
-        的声称复核仍准确；source.md 后续扩展节（XML/TOML/SQLite/Binary）
-        与实装一致
-      - 补缺（本轮）：docs/web.md / docs/web.en.md W2 清单补请求边界与
-        资源上限条目（Host/Origin loopback 403、8 MiB/413、30s/408、
-        vendor tiny_http 1s idle timeout）——c024549 与 76514b4 已实装但
-        文档未记
+  （docs：docs/design-prototypes.md）
+- [x] D4b 子目录缺口核查
+- [x] D5 README.md 双语收口
+  （docs：docs/requirements.md）
+- [x] 审核整改
+- [x] 表一#1 增量删除越界
+- [x] 表一#2 Web 边界
+- [x] 表一#3 + 表二#6 快照语义
+- [x] 表二#1-#5 文档对齐（以代码为准，未改业务行为）
+- [x] 附带修复：luna-review 两报告加入 srcExclude
+- [x] 表一#4 迁移写回事务性
+- [x] 表三评估与分期
+  （docs：docs/design.md）
+- [x] 文档时效性清理（2026-10-18 用户令：很多文档已过时）
+  （docs：docs/index.md）
+## 规则配置界面
 
-## 规则配置界面（2026-10-20 用户令：策划配置规则没有界面很痛苦，先设计后推进）
+- [x] P0 一键校验界面
+  （docs：docs/web.md）
+- [x] P1 规则表单化编辑
+  （docs：docs/web.md）
+- [x] P1 一键导出
+  （docs：docs/ui.md）
+- [x] P2 版本对比
+  （docs：docs/ui.md）
+- [x] P2 模板库
+  （docs：docs/web.md）
+## 外部评审：Luban 对标
 
-> 定位：让**策划**不碰 CLI/文件也能配规则、跑校验、看结果。复用既有资产：
-> Diagnostics 带 Source Location（T1.3）→ 界面可点位到 表/行/列；错误码表 → 可读诊断面板；
-> editors/vscode 已有规则解析集成 → 复用同一解析口径，不写两套。
->
-> 设计拍板（2026-10-20，已代决）：见 docs/ui.md「策划规则界面」节——入口落
-> `cage web` 既有单服务（不另起 `cage serve` 子命令，依据形态拍板 c 与 W5–W8
-> 已实装面，避免分叉安全边界）；P0 真实增量 = 数据表格视图 + 诊断过滤 +
-> 数据级点位高亮（校验本体 `/api/status` 已有，零新校验逻辑）；「上传」后按
-> 已代决安全策略落地（2026-10-21，五点策略见 docs/ui.md 上传落地记录，
-> 用户可否决回退）；P1 规则编辑挂 W3 编辑器 + 导出复用 build/artifacts；
-> P2 对比复用 /api/diff、模板库为前端静态字典零服务端新面。英文镜像
-> docs/ui.en.md 同步。
+- [x] P0 三源一致性对拍套件
+- [x] P0 可声明游戏规则系统
+  （commit 12c8038）
+- [x] P1 Luban 同题对照五案例测试
+  （commit 6782fbe）
+- [x] 回流-1 Excel 空单元格默认值
+  （commit f889b12）
+- [x] 回流-2 nullable 类型字段
+  （commit 2061110；docs：docs/schema.md）
+- [x] 回流-3 单元格分隔列表
+  （commit e3d49b8；docs：docs/schema.md）
+- [x] 回流-4 数值塔统一
+  （commit 397d098；docs：docs/schema.md）
+- [x] 回流-5 多级表头/嵌套 bean/多行记录/多态
+  （commit e5aacee；docs：docs/design.md）
+- [x] 回流-6 tagged union 类型
+  （commit cd2858c；docs：docs/schema.md）
+## Excel 元行规则承载
 
-- [x] P0 一键校验界面：`cage serve` 子命令起本地 Web（读写仓内规则/配置文件）——
-      上传或选择 Excel/CSV/JSON → 一键 validate → 诊断面板（错误码/严重级过滤、
-      点击诊断跳到表格行列高亮）；诊断数据直接消费 CLI 同款 JSON 输出，零新逻辑
-      （2026-10-20 数据面板落地 + 2026-10-21 上传按已代决五点安全策略落地：
-      只写登记源文件/原子替换/校验不过回滚/拒绝字节不落地/8 MiB 上限沿用；
-      web 单测 37 绿 + 集成 15 绿 + web-smoke 实跑通过；docs/web.md W9/W12，
-      决策记录 docs/ui.md 上传落地记录）
-- [x] P1 规则表单化编辑：校验规则（类型/范围/引用完整性/跨表约束）表格化编辑 +
-      保存回规则文件（格式化由 cage 序列化器统一，界面不手写文件）；改动即时重校验
-      （2026-10-20 落地：表单本体=W3 编辑器已有面，本轮补「即时重校验」开关
-      （默认开，700ms 防抖静默）+ tests/web.rs 集成断言；docs/web.md W10）
-- [x] P1 一键导出：编译产物打包下载（复用 CLI target 输出）
-      （2026-10-20 落地（已代决：不做 zip 端点——产物字节不重算/零新依赖，
-      批量分发走 cage snapshot 包）：状态页产物卡「一键导出」逐文件触发
-      /api/artifact（各自先验哈希）；docs/ui.md P1 落地记录）
-- [x] P2 版本对比：两次规则/数据的诊断与产物 diff 视图
-      （2026-10-20 落地：产物 diff=W8 已实装面（live ↔ 快照，/api/diff 同源）；
-      本轮补诊断对比=会话内两次校验的新增/消失标记（状态页校验面板，
-      tests/web.rs 断言）；已代决不存历史诊断进快照包，docs/ui.md P2 记录）
-- [x] P2 模板库：常用规则模板（数值范围/枚举/外键引用）一键套用，降低策划起步门槛
-      （2026-10-20 落地：编辑器字段区「从模板加字段」下拉，前端静态字典
-      生成字段草稿走既有保存/校验链，零服务端新面；docs/web.md W11）
+- [x] X0 约定解析架构定稿
+  （docs：docs/design.md）
+- [x] X1 约定解析层（内置预设 + 脚本适配器）
+  （12 单测；docs：docs/design.md）
+- [x] X1 跟进
+- [x] X2 schema-draft Excel 内省 + 漂移核对
+  （commit 50bcfe5）
+- [x] X3 与三源对拍合流
+  （commit 9174f28）
+- [x] X4 文档与示例
+  （commit f613ac6；docs：docs/design.md）
+- [x] Excel 日期单元格数据面缺陷
+  （commit 347b690）
+## 代码深审待办（2026-11-01 批次）
 
-#### 外部评审落地：Schema 编辑闭环与 Python 插件（2026-10-22 整理）
-
-来源与全文见 `docs/review/2026-10-22-schema-workbench-python-plugins.md`（含源码核验表与 P0→P3 落地跟踪清单）。推进顺序：**P0 编辑闭环（多文件保存/安全重命名/草稿预检）→ P1 无代码规则设计器 → P2 Python Worker → P3 规则生态**；P0 验收以跟踪清单 P0-6 的策划全流程实测为准，流程不稳不进 P1。
-
-## 外部评审：Luban 对标（2026-10-23）
-
-来源与全文见 `docs/review/2026-10-23-luban-vs-cage-positioning.md`（含 13 项源码核验表 + P0→P2 跟踪节）。
-评审判断：定位差异成立（Luban=配置生产工作流，Cage=配置编译生命周期）；差异化只押三处——统一语义模型、
-可声明游戏规则系统、配置生命周期；AI/MCP 已不是独占优势（Luban 5.x 亦有）。
-落地只立下面三项；Excel 表达力、三类目标总览、l10n、生命周期生产验收作观察项，不抢既有排期。
-
-- [x] P0 三源一致性对拍套件：Excel / CSV / JSON 同一逻辑配置三份 fixture → 编译后规范化
-      IR 逐字节一致；默认值 / 空值 / 显式空串 / 数值边界 / 嵌套对象 / 枚举 / 引用解析逐项
-      断言；诊断定位分别落到「文件+工作表+单元格」「文件+行号」「JSON 路径」。
-      现状：`crates/cage-cli/tests/` 原 24 个集成测试全为单源；本条目已补 `cross_source.rs` 跨源对拍，落地统一模型地基缺口。
-      验收：三源测试跑通 + IR 字节一致断言 + 三类定位断言。
-      证据：crates/cage-cli/tests/cross_source.rs（5 项测试）+ tests/fixtures/cross_source/ 覆盖三源公共核心逐字节一致、默认值、空值/显式空串、数值边界、嵌套 JSON/YAML、枚举、引用解析与三类诊断定位；cargo fmt、clippy -D warnings、相关测试全绿（2026-10-27）。
-
-- [x] P0 可声明游戏规则系统（L7 由 trait 升为规则系统；与 2026-10-22 评审 P1-2 规则
-      AST/可视化构建器的交叉点，必须共用一份语义模型，禁两套规则格式）：规则以数据声明、
-      可组合、可启用禁用、执行顺序确定，诊断可定位到行/字段并可单测；覆盖评审列出的五类
-      跨表语义——技能引用道具须属允许类别、掉落奖励 ID 与数量/权重约束、副本阶段-怪物组-
-      奖励合法关系、客户端字段不得依赖服务端字段、引用环检测。
-      现状：`crates/cage-core/src/validation/rules.rs:23` 仍保留 `trait GameRuleValidator`
-      插件扩展点；`:45/:81` 已升为数据声明规则模型——`RuleConfig`（name/enabled/order/kind/
-      params）+ `RuleKind` 与 `RuleParams`，注册表按 order 排序、disabled 跳过、可组合复用
-      同一语义模型；`:290` `run_skill_item_category`（技能引用道具须属允许类别）与 `:367`
-      `run_reference_cycle`（引用环检测）两条跨表规则已跑通；新增
-      `run_drop_reward`（掉落奖励 ID 与数量/权重约束）、`run_dungeon_stage`
-      （副本阶段-怪物组-奖励合法关系）、`run_client_server_field`（客户端字段
-      不得依赖服务端字段）三条跨表规则，五类齐。
-      验收：五类规则各一条跑通，断言诊断码 + 定位 + 单测；本片已落五类。
-      证据：`crates/cage-core/src/error/codes.rs:122,125` 新增稳定诊断码 E1604（技能引用
-      不被允许类别的道具）与 E1605（跨表引用成环）；`crates/cage-core/src/validation/rules.rs:1089`
-      `skill_item_category_reports_violation_with_field_location`（E1604+行/字段定位，field=item）、
-      `:1146` `skill_item_category_accepts_allowed_scalar_and_array_items`（正例）、`:1196`
-      `disabled_skill_item_category_rule_is_declared_but_skipped`（可禁用）、`:1227`
-      `declarative_rules_run_in_declared_order`（可组合+执行顺序确定）、`:1302`
-      `reference_cycle_reports_closing_edge_with_field_location`（E1605+行/字段定位）、`:1359`
-      `reference_cycle_accepts_acyclic_schema`（正例）、`:1381` `reference_cycle_detects_self_reference`
-      （自引用环）；cargo fmt、clippy -D warnings、cargo test 全绿（2026-10-27）。
-      证据（追加，commit 12c8038）：`crates/cage-core/src/error/codes.rs` gamerule 新增
-      E1606（掉落奖励无效）/E1607（副本阶段关系非法）/E1608（客户端字段依赖服务端）；
-      `crates/cage-core/src/validation/rules.rs:463` `run_drop_reward`、`:550`
-      `run_dungeon_stage`、`:610` `run_client_server_field`；测试 `:1443`
-      `drop_reward_reports_unknown_item_and_invalid_quantity_weight`（E1606，
-      field=item/quantity/weight）、`:1478` `drop_reward_accepts_known_item_and_valid_quantity_weight`
-      （正例）、`:1525` `dungeon_stage_reports_unresolved_group_and_reward`（E1607，
-      field=monsters/reward）、`:1576` `dungeon_stage_accepts_resolved_group_and_reward`
-      （正例）、`:1632` `client_server_field_reports_dependency_on_server_only_table`
-      （E1608，表隐藏）、`:1666` `client_server_field_reports_dependency_on_server_only_field`
-      （E1608，字段隐藏）、`:1707` `client_server_field_accepts_shared_targets`（正例）；
-      cargo fmt、clippy --all-targets 0 warning、cargo test -p cage-core -p cage-cli
-      全绿（2026-10-27）。
-
-- [x] P1 Luban 同题对照五案例测试：技能多层嵌套与继承、副本阶段多波次/怪物组/奖励、
-      带类型标签的多态配置、可选字段+默认值+空值+显式空串、客户端/服务端字段投影；
-      两侧各跑通并记录「未实现 / 实现但行为不同 / 一致但性能不同」三分类结论 + 构建耗时
-      与内存峰值（不以单一速度数字评价整个系统）。
-      现状：已落。`docs/review/luban-five-cases/gen.py` 一键生成同题两套工程（Luban 5.1.0
-      `~/tools/luban/Luban`，Cage `target/debug`），两侧 client/server/all 全跑通；五案例
-      三分类记录入 `docs/review/2026-10-27-luban-cage-five-cases.md`。未实现：Excel 嵌套
-      bean/多行列表/类型标签多态（平表分解 + 外键 workaround）、单元格分隔列表
-      `(list#sep=)`、tagged union。实现但行为不同：nullable 类型只能 `Any`（`Value::Null`
-      只匹配 Null/Any，`crates/cage-core/src/validation/mod.rs:501,514`）；`default` 不作用于
-      空单元格（实测 `level default:1` 100 行 E1101「Expected type: Int32, got: null」，luban
-      `#default` 填充）；E9006 要求被投影隐藏的 required 字段带 `default`（实测 4 个）；Excel
-      整数单元格入 Float32 E1101（40 行实测）；Enum 只接受字符串单元格（250 行实测）。
-      一致：投影字段集/取值完全相同；显式空串与空单元格两侧都坍缩为 null（实测各 30 行）；
-      诊断定位 Cage 带 table/row/col/expected 更精确。测量：Luban 0.84s / 峰值 83.5MB vs
-      Cage debug 0.75-0.82s / 59MB（两侧启动主导，不作系统优劣定论）。
-      验收：五案例对照记录入 docs/review/，缺失能力回流为本仓条目（见下方回流-1..6）。
-      证据（commit 6782fbe）：`docs/review/2026-10-27-luban-cage-five-cases.md`（五案例三分类
-      + 测量 + 源码锚点）、`docs/review/luban-five-cases/gen.py`（自包含生成器，约 600 行，
-      重建全部 xlsx/配置）。
-
-- [x] 回流-1 Excel 空单元格默认值：`FieldSchema.default`（`crates/cage-core/src/schema/mod.rs:217`
-      「applied when absent」）扩展到 Null 单元格——luban `#default` 填空单元格、cage 不填
-      （实测 100 行 E1101），Excel-first 工作流最大差距。
-      现状：已落。`fill_field_defaults`（`crates/cage-core/src/normalize/mod.rs:116`）把 absent
-      与 Null（Excel 空单元格）都填为 schema default，转换复用 `migrate::diff::schema_default`
-      （类型族转换，不可表示的 default 不填、留给 L2 报错）；接线在 `load_project_impl`
-      （`crates/cage-cli/src/main.rs:784`）——build/check/lsp/gen 填充，migrate 传 `false` 保持
-      原始源（from-schema default 不得遮蔽 to-schema `set_default`）。实测五案例工程
-      `level Int32 default:1` 空单元格 100 行全填（与 Luban 计数一致 140）；测试：normalize
-      单测（absent/null 填充、present 保留、不可表示保留、schema 外表不动）+ cross_source
-      `excel_empty_cell_fills_schema_default`（`data-empty-tier.xlsx` fixture，空 tier → `tier: 3`
-      构建成功）；`default:` 无默认值的 `note` 空单元格 E1101 断言不变。
-      证据（commit f889b12）：cargo fmt、clippy 0 warning、全量 cargo test 1000 passed 0 failed
-      （2026-10-27）。
-- [x] 回流-2 nullable 类型字段：`string?`/`int?` 等价物，或「可空字段 Null 匹配其基类型」
-      （`value_matches_type` 只允许 Null↔Null/Any，`crates/cage-core/src/validation/mod.rs:501,514`）。
-      现状：已落（采纳推荐方案：「可空字段 Null 匹配其基类型」，已代决）。`FieldSchema`
-      新增 `nullable: bool`（serde default false，`crates/cage-core/src/schema/mod.rs:222`）；
-      `validate_type` 短路接受 Null（`crates/cage-core/src/validation/mod.rs:452`），类型本身
-      不放宽（nullable String 收 Int 仍 E1101，实测）；非 nullable 字段行为不变（E1101 回归
-      锚点，`common-schema.yaml` 的 `note`）；nullable 引用字段仍按既有 `cardinality` 规则
-      （null 引用需 `optional`，设计不变）。测试：validation 单测两条（nullable 接受
-      null/字符串且拒错型；非 nullable 拒 null）+ cross_source
-      `excel_nullable_field_accepts_empty_cell`（`data-nullable.xlsx` fixture，空 note →
-      `"note": null` 构建成功）；docs/schema.md 与 docs/zh/schema.md 字段约束表同步。
-      证据（commit 2061110）：cargo fmt、clippy 0 warning、全量 cargo test 1003 passed
-      0 failed（2026-10-27）。
-- [x] 回流-3 单元格分隔列表：`(list#sep=,)` 等价物——Excel 单元格 `"a,b"` 解析为数组
-      （calamine 单元格只产出标量，Array 类型无来源面）。
-      证据（commit e3d49b8，已代决 separator 命名，源 Luban `(list#sep=,)`）：
-      `FieldSchema.separator: Option<String>`（schema/mod.rs）；`split_cell_arrays`
-      （normalize/mod.rs，String 单元格按分隔符拆、token trim + `coerce_to_type` 到元素
-      类型，拆不动的整格保持原样由 L2 报出）在 `load_project_impl` 填充默认值前执行
-      （cage-cli/src/main.rs）；单测 `split_cell_arrays_splits_and_coerces_keeps_present_arrays_and_bad_tokens`
-      与 CLI 测试 `excel_separator_cell_splits_into_array`（data-separator.xlsx）；
-      docs/schema.md + docs/zh/schema.md 增 `separator` 行。cargo fmt、clippy 0 warning、
-      全量 cargo test 全绿（2026-10-27）。
-- [x] 回流-4 数值塔统一：Excel 整数值单元格可入 Float 字段（实测 Float32 拒绝 Int 单元格，
-      40 行 E1101）。
-      证据（commit 397d098）：`value_matches_type`（validation/mod.rs）数值塔向上统一——
-      `Int`/`UInt` 值接受于 `Float32`/`Float64` 字段（Excel 整数值单元格加载为 `Int`），
-      反向 `Float` 入整数字段仍拒；单测在 `value_matches_type_covers_every_family` 断言
-      正反两向；CLI 测试 `excel_integer_cell_accepted_in_float_field`（data-int-weight.xlsx，
-      weight 列 2/3 整数单元格，common-schema 的 Float32 weight 下构建成功）；
-      docs/schema.md + docs/zh/schema.md 的 Float 行注明数值塔语义。cargo fmt、clippy
-      0 warning、全量 cargo test 全绿（2026-10-27）。
-- [x] 回流-5 多级表头/嵌套 bean/多行记录/多态（2026-10-23 定位评审最大空缺，五案例再次
-      证实；`crates/cage-source-excel/src/lib.rs:47-54` 仅单行 `header_row`）。
-      设计（commit e5aacee，已代决机制=子列声明行）：docs/design.md §51 Q6 裁定嵌套
-      机制为子列声明行（首个标记单元格为 `+` 的行，每非标记单元格 `<子名>` 在列 C
-      声明其所在列 C 的顶层列的一个子列，Q5 保留——`Object` 仍无类型单元格写法，
-      类型由子列行隐含）；`ColumnMeta.sub_columns`（默认空，严格增量，脚本契约
-      v1 不变）；数据面 `parse_file_with_meta` 行装配查阅子列分组为嵌套
-      `Value::Object`。实现前置未决：五案例 Luban fixture 的 `##var`/`##+`/`##type`
-      标记行位于字段名行及其下，X1 预设领地严格在 `header_row` 之上
-      （`marker_rows` = `0..header_row`）读不到该形状——需先单独裁定领地模型
-      （(a) `##var` 行作数据表头行且领地含其下至首个纯数据行 / (b) 数据表头行在
-      `##var` 行之上），它触碰 Q4「内置预设档从不移动数据表头行」，故留作
-      回流-5 第一个实现决策。多行记录与类型标签多态为后续切片。
-      第一片（2026-10-28）：裁定 (a)——`##var` 行就是数据表头行，marker_rows
-      领地下探到首个纯数据行；理由是 Luban 作者已经把字段名行当表头，(b) 会在
-      同一文件上随是否额外写一行而改变解析结果。触碰 Q4 的结论：内置预设仍不移动
-      `header_row`，只是把领地下界扩展到其下的声明行。实现 `ColumnMeta.sub_columns`、
-      首个标记单元格为 `+` 的子列行识别、`parse_file_with_meta` 的 `Value::Object`
-      装配。证据：`sub_column_row_builds_nested_columns`、
-      `sub_column_row_with_a_second_marker_is_e2201`、
-      `test_luban_nested_bean_assembles_sub_columns_into_object`、
-      `test_luban_nested_bean_with_flat_siblings`、
-      `test_luban_two_nested_beans_in_one_table`、
-      `test_luban_grandchild_nesting_is_an_object`、
-      `test_luban_optional_sub_column_with_default_stays_null`；cargo fmt --check、
-      cargo clippy --workspace --all-targets -- -D warnings、cargo test 全绿。
-      第二片（2026-10-28，多行记录）：`*name` 表头（`##var` 行，`*` 为布局修饰符不
-      属字段名）在 `ColumnMeta.multi_row` 上标记（convention/mod.rs:135-139、
-      decode 的 `header_is_var` 剥离 `*` 并置 multi_row，convention/mod.rs:302-317、
-      332-343）；`##+` 子列行声明列表元素形状；无 `##+` 的 `*name` 列是 E2201
-      （convention/mod.rs:521-533）。数据面 `parse_file_with_meta`：`*name` 列把
-      连续数据行折叠为该列的 `Value::Array`，锚行根字段非空的下一行开新记录，空行
-      跳过不产生杂散元素（cage-source-excel/src/lib.rs:360-527）；行装配按子列回退
-      `Value::Object`（lib.rs:873-935）。证据：
-      `multi_row_var_column_marks_the_column_and_strips_the_star`
-      （crates/cage-core/src/convention/tests.rs:512）、
-      `multi_row_column_without_sub_columns_is_e2201`（:542）、
-      `test_luban_multi_row_folds_contiguous_rows_into_an_array`
-      （crates/cage-source-excel/src/lib.rs:2378）、
-      `test_luban_multi_row_beside_nested_bean_and_flat_fields`（:2447）、
-      `test_luban_multi_row_single_element_and_flush_at_end`（:2497）、
-      `test_luban_multi_row_blank_row_is_a_separator_not_an_element`（:2527）。
-      cargo fmt --check、cargo clippy --workspace --all-targets -- -D warnings
-      0 warning、全量 cargo test 全绿 1023 passed / 0 failed（2026-10-28）。
-      多态（TaggedUnion）已由回流-6 commit cd2858c 覆盖。
-- [x] 回流-6 tagged union 类型：kind + 按分支载荷的类型安全表达（多态配置只能 enum+`Any`
-      负载列，类型安全丢失）。
-      证据（commit cd2858c，已代决 ①代码目标先按运行时形状渲染为通用 map/dict/table，
-      逐语言判别联合为后续项 ②Excel 单格位置载荷映射 = Luban `sep="|"` 语义 ③oneOf
-      不相交性已离线验证）：
-      `FieldType::TaggedUnion(Box<TaggedUnion>)` + `TaggedUnion { tag, branches }`
-      （schema/mod.rs，`#[serde(tag="kind", content="value")]` 契约原样承载）；
-      `value_matches_type` 判别值 + 逐键按分支载荷校验、`type_mismatch_hint` 分支渲染
-      （validation/mod.rs）；`coerce_to_type` 的 TaggedUnion 分支载荷强制 + `split_cell_arrays`
-      单格 `sep="|"` 拆 tag+位置载荷、未知分支/载荷数不符整格保持由 L2 报出（normalize/mod.rs，
-      `load_project_impl` 内于填充默认值前执行）；jsonschema 目标出闭式 `oneOf`（tag 键
-      `const` + `required` + `additionalProperties:false`），其余目标出通用运行时形状；
-      单测 `split_cell_arrays_builds_tagged_union_from_single_cell` 与
-      `value_matches_type_covers_every_family`、CLI 测试
-      `json_tagged_union_object_validates` / `excel_single_cell_tagged_union_splits`
-      （data-union.xlsx）、jsonschema `test_tagged_union_oneof`；
-      docs/schema.md + docs/zh/schema.md 增 TaggedUnion 行。cargo fmt、clippy 0 warning、
-      全量 cargo test 全绿（2026-10-27）。
-
-## Excel 元行规则承载（2026-10-26 用户令：设计重定向）
-
-背景裁定：用户判定「Excel 带规则却要另立一套规则 = 把问题复杂化，是设计问题」。原红线两半拆开处理——
-「不做 Excel 写回/编辑器」保留不变；「Excel 不承载规则」对 Excel-first 工作流不成立，读取侧推翻。
-规则应该写在 Excel 里被吸收，而不是扔掉后在 schema YAML 重写一遍（双份维护必漂移）。
-
-设计讨论（2026-10-26 会话）：元行位置选项 A 头行块 / B `##` 标记行 / C 独立 meta sheet /
-D 单元格内联 DSL（否决：转义地狱）。
-
-设计重定向二号裁定（2026-10-26 11:14 用户令）：**约定必须可配置，不能预设用户的 Excel 格式**。
-A/B/C 降格为内置预设档（用户在 cage.toml 里选，含纯数据档），另加自定义脚本适配器——用户写
-脚本（Python 之类）声明自己的元行怎么读，cage 跑脚本拿结果；不是定死几套格式，而是
-「预设可选 + 脚本自定义」三层：内置预设 / 用户脚本解码 / 标准词汇表管线消费。
-边界（助手建议，待反驳）：脚本只解码「版式与位置」到标准词汇表（type / required / enum /
-range / unique / 描述 / client-server 分组，v1 收口列级局部），不发明新规则语义——跨表引用
-与 L7 游戏规则仍归 schema/校验层，Excel 不做编程语言。向后兼容：无元行 = 纯数据表照旧，
-声明约定的表才启用新解析，存量工程零破坏。
-
-词汇与命名来源基准（2026-10-26 11:53 用户令：不自造词，只用有共识基础的既有术语）：
-① 规则词汇直接沿用 cage Schema DSL 既有字段名（type/required/default/enum/min/max/unique/
-primary_key/reference，T3.1 已定，与 JSON Schema 同名体系，零新词）；② 元行标记借鉴 Luban
-的 `##` 元行约定（##type/##var/##comment 一类，docs/review 2026-10-23 对标已核验）；③ 预设档
-与解析器旋钮命名对齐 pandas `read_excel` 通用参数（header/skiprows/names/usecols/dtype/
-comment/converters，表处理事实标准）。三个来源均为现役主流工具，无生造词。
-
-现状证据：`cage-source-excel/src/lib.rs` 仅 header_row/has_header/eval_formulas/skip_empty_rows
-四旋钮，类型行/注释行被当数据吞掉；Canonical `Value::Array/Object`（cage-core/src/value/mod.rs
-:150-152）与 Schema `FieldType::Array/Object`（schema/mod.rs:305-307）均已存在，瓶颈纯在
-Excel 适配器；`schema-draft` 已有 MySQL/PG 内省出草稿的先例，Excel 内省复用同一
-「内省 → 草稿 → review 采用」理念。
-
-- [x] X0 约定解析架构定稿（阻塞项，先定稿后动代码）：① 内置预设档清单（A 头行块 /
-      B `##` 标记行 / C meta sheet / 纯数据）与 cage.toml 选择语法；② 自定义脚本适配器契约——
-      输入（sheet 网格 + 列坐标 + 配置）、输出（结构化表元数据 JSON，标准词汇表承载，诊断
-      须带单元格坐标），执行载体定稿（默认候选：外部子进程语言无关，Python/Node/PS 均可；
-      备选：内嵌运行时），确定性要求（脚本哈希入 build manifest，同输入同字节）；③ 元行解析
-      失败口径（报错不静默吞，E 码 + 单元格定位，脚本侧与内置侧同口径）；④ 与既有
-      header_row/has_header 旋钮的关系（显式声明启用，非隐式猜测）。
-      产出：docs/design.md 新节 + 脚本契约 JSON Schema + 本条目回填结论。
-      验收：四问各有一个可执行答案，无「待定」残留。
-      （2026-10-27 裁定，四问结论定稿：① 一套语法四种预设档 data/header_block/
-      marker_rows/meta_sheet，`[source.excel]` 显式启用、不自动探测；② 载体=外部子进程
-      JSON 契约 cage.excel-meta/1（内嵌运行时否决），脚本字节 blake3 + 路径 + script_config
-      + 契约版本入源指纹；③ E2201–E2207，两侧同码、列级带 A1 锚点；④ 四旋钮原义原默认，
-      元行区间在 header_row 之上计算，无声明=逐字节照旧。词汇沿用 Schema DSL 11 字段名
-      零新词；v1 收口列级，约定不承载规则语义。docs/design.md §51 + zh §51 +
-      docs/schemas/excel-meta-adapter-v1.schema.json — 落地 4082da8，docs:build 绿）
-
-- [x] X1 约定解析层（内置预设 + 脚本适配器）：内置预设档解析器（A/B/C 各一）+ 脚本适配器
-      运行器（子进程 JSON 契约，超时/崩溃/非法输出 → E 码定位）；两路产出同一结构化表元
-      数据供下游（schema-draft/校验）消费；畸形元行报错定位到单元格（G27 式）；
-      cage-source-sheets 同契约跟进（「同 Excel 惯例」含脚本适配器）。
-      验收：单测——各预设档类型行生成 FieldType、注释行生成描述、枚举行生成 enum；脚本
-      fixture（跨平台可跑）走通子进程契约；脚本崩溃/超时/输出非法三态 E 码；纯数据表
-      字节级回归不变。
-      （2026-10-28 落地 5be24c0：cage-core/src/convention 一套语法四预设档解码器 + 子进程
-      契约运行器（cage.excel-meta/1），E2201–E2207 词汇=Schema 11 字段名；cage-source-excel
-      parse_file_with_meta 两路共出 TableMeta，畸形元行 E2201/E2202 带 A1 锚点；
-      [source.excel] → ProjectConfig.source_excel → CLI 接线含 project_root。验收四条全绿：
-      预设档类型/注释行(##description)/枚举行 12 单测（cage-core 290 绿）；python fixture
-      子进程契约 + 崩溃 E2205/超时 E2204/非法输出 E2206 及 E2202/E2203/E2207
-      （cage-source-excel 34 绿）；无声明=逐字节照旧回归测试绿；fmt/clippy/docs:build 绿。
-      差异记 docs/design.md §51 Q5；cage-source-sheets 同契约后置为下一条。）
-
-- [x] X1 跟进：cage-source-sheets 同契约（「同 Excel 惯例」含脚本适配器）——Sheets 侧无元行
-      承载面（UNFORMATTED_VALUE 纯数据网格），须先裁定声明载体（命名 tab / 首行块 / 脚本），
-      语法与词汇沿用 §51 不新造（§51 Q5 后置裁定）。
-      12abdb0（Q7 裁定）+ 8525da8（[source.sheets] 实现）：同一 §51 预设集，`header_row` 旋钮，
-      meta_sheet = 兄弟 `<tab>.meta` tab（E2207），脚本 = 共享 cage.excel-meta/1 契约；
-      数据面 JSON 级装配（sub_columns 嵌套、multi_row 折叠），无声明逐字节不变。
-
-- [x] X2 schema-draft Excel 内省 + 漂移核对：`cage schema-draft` 支持 Excel 源，从元行生成
-      schema 草稿（作者不再手写第二遍）；草稿采用后编译期与 Excel 元行核对，不一致报新 E 码
-      点名单元格（漂移检测），不再静默以 YAML 为准。
-      验收：带规则行的 Excel 不写 YAML 即可通过 check（派生链路）；元行与已采用 schema 冲突
-      必报错且定位到单元格；draft round-trip 一致。
-      证据（commit 50bcfe5，2026-10-28）：`crates/cage-core/src/convention/derive.rs`
-      （`derive_schema`/`fill_derived`/`drift`/`render_draft`，字段对字段复制，无翻译层）；
-      `load_project_impl` 接线（main.rs：`schema_path` 无 → 派生链路 `fill_derived`；
-      有 → 逐文件 `drift`，`has_errors` 即渲染+Err）；`run_schema_draft` 的 `excel:<rel>` 规格
-      渲染确定性 YAML 草稿；E2208 "Schema Drift"（error/codes.rs）；
-      `project_config_source_tables_map_to_the_container`（回归：`[source.excel]`/`[source.sheets]`
-      表此前被静默忽略，已代决——容器 `SourceConfig` 即契约，扁平 `source_excel` 拼写不存在）；
-      10 个 derive/drift 核心单测（derive_schema_maps_declared_columns_and_registers_enums /
-      derive_multi_row_column_is_array_of_nested_object /
-      derive_collects_declared_primary_key_columns / draft_render_round_trips_to_the_derived_schema /
-      fill_derived_leaves_adopted_tables_alone / drift_type_mismatch_is_e2208_at_the_declaration_cell /
-      drift_ignores_author_added_constraints_and_extra_fields / drift_missing_field_and_missing_table_are_e2208 /
-      drift_primary_key_mismatch_is_e2208 / drift_reference_table_mismatch_is_e2208）；
-      CLI 集成（schema_draft.rs）：`excel_meta_rows_pass_check_without_yaml`（派生链路，无 YAML 通过 check）、
-      `excel_drift_conflict_is_e2208_at_the_cell`（E2208 锚定 `Col: C`/`Row: 2`）、
-      `schema_draft_excel_renders_a_stable_draft`（两次渲染字节一致）；fixture
-      `tests/fixtures/schema_draft/Items.xlsx`（`##var`/`##type`/`##min` 形状）。cargo fmt --check、
-      cargo clippy --workspace --all-targets -- -D warnings 0 warning、全量 cargo test 全绿。
-
-- [x] X3 与三源对拍合流：本系列落地后，「P0 三源一致性对拍套件」的 Excel 份改用元行承载
-      （规则写 Excel，CSV/JSON 侧由 schema 承载），断言规范化 IR 一致——证明「规则放 Excel」
-      与统一模型不冲突。
-      验收：对拍套件绿；元行信息只进 schema/校验面，不泄漏进 IR 数据面。
-      证据（commit 9174f28，2026-10-28）：fixture `tests/fixtures/cross_source/data-meta.xlsx`
-      （Item 表 `##var` 表头 + `##type`/`##min`/`##max`/`##enum`/`##required`/`##reference`
-      元行声明 11 字段，Drop 表 `##var`+`##type`/`##required`；数据行与 data.xlsx 逐格一致）；
-      测试 `excel_meta_rows_carry_rules_and_parity_with_csv_json`（cross_source.rs）：元行 Excel
-      无 schema 构建（派生链路）产出 Item/Drop IR 与 CSV、JSON 份**逐字节一致**；IR 文本
-      零 `##` 泄漏、字段名与数据一致（「元行只进 schema/校验面」）。同套件其余 11 测全绿；
-      cargo fmt --check、cargo clippy --workspace --all-targets -- -D warnings 0 warning、
-      全量 cargo test 全绿。
-
-- [x] X4 文档与示例：docs/zh/source.md Excel 节重写（预设档 + 脚本适配器契约 + 词汇表 +
-      拍板记录）、脚本契约 JSON Schema 发布、examples/game-config 增带元行示例表 + 可跑通的
-      Python 示例解析脚本、README 双语 capabilities 同步；docs/design.md 红线段更新（「不做
-      写回」与「不承载规则」两半的最终口径分开陈述，并记录「约定可配置、不预设用户格式」裁定）。
-      验收：文档双语一致；示例端到端可跑；契约 schema 正反例离线校验通过。
-      证据（commit f613ac6，2026-10-28）：docs/zh/source.md 新增「元行规则约定（design §51）」
-      小节（四预设档表 + `##var`/`##type`/`##min`/`##max`/`##enum`/`##required`/`##default`/
-      `##reference`/`##primary_key`/`##+` 词汇表 + `cage.excel-meta/1` 脚本契约 + 派生/漂移
-      X2 + 拍板记录）；docs/schemas/excel-meta-adapter-v1.schema.json 补 `sub_columns`（递归）/
-      `multi_row`（Luban `*name`）/`TaggedUnion` 分支，Draft202012Validator 离线正反例过
-      （正例 sub_columns+multi_row+TaggedUnion VALID，反例未知列键/未知子列键/标量带 value
-      REJECTED）；examples/game-config 增 `config/Skill.xlsx`（marker_rows：`##var` 表头 +
-      `##type`/`##min`/`##required`/`##primary_key` 元行，Frost Nova tier 显式 1——空单元格
-      默认回填与 migrate `fill=false` 原始源语义冲突，改走 schema 侧 `default: 1` 声明）、
-      `schemas/skill.yaml`（被采用 schema，enum 成员表在 schema 侧）、`tools/excel-meta-demo.py`
-      （`--self-check` 自检，stdout 经 Draft202012Validator 对发布契约校验通过）、cage.toml
-      `[source.excel]` 工作簿覆盖；run.sh 步骤 4 增 Skill 产物断言（元行零泄漏 + tier 带值）、
-      步骤 10 迁移回验、步骤 12 消费方 6 表逐字节对拍；bad/ 副本保持完整（补 Skill.xlsx 与
-      同款 `[source.excel]`，共享 schema 不再产生 "Expected table 'Skill'" 警告）；根 README.md
-      / README.zh.md 各增「Excel 元行约定」capabilities 行；docs/design.md + zh 第 39 节
-      「Excel Editor」红线改两半分述（不做写回=保留，「Excel 不承载规则」=读取侧被 §51 推翻，
-      记录 2026-10-26「约定可配置、不预设用户格式」裁定）；mcp 测试 example 表数 5→6。
-      门禁：cargo fmt --check、cargo clippy --workspace --all-targets -- -D warnings 0 warning、
-      全量 cargo test 全绿、bash examples/run.sh 15 步全过。
-
-- [x] Excel 日期单元格数据面缺陷（2026-10-28 X1 轮发现）：`cell_to_cage_value` 对
-      `Data::DateTime` 走 `format!("{dt:?}")`，产出结构体 dump
-      `ExcelDateTime { value: 44927.0, datetime_type: DateTime, is_1904: false }` 进 IR，
-      而同函数注释声称「Excel serial date -> ISO string」；`DateTimeIso`/`DurationIso`
-      透传字符串反而正确。修复属数据面行为变更（影响既有 IR 字节与快照），须独立裁定
-      渲染口径（ISO-8601? 保留序列号?）与迁移路径，不夹带在 X 系列内。
-      证据（commit 347b690，已代决渲染口径=ISO-8601）：`Data::DateTime` 非 duration 渲染
-      naive ISO-8601（Excel 无时区编码；整秒去小数），duration 格式单元格（`[h]:mm:ss`）
-      渲染 ISO-8601 duration 与 `DurationIso` 透传一致；`cell_to_cage_value` 单测
-      （45943.541→2025-10-13T12:59:02.400、整秒、1.5 天→PT36H0M0.000S）与既有
-      `test_cell_to_cage_value_exotic`（44927→2023-01-01T00:00:00，原钉 Debug dump 的
-      断言一并修正）。裁定理由：代码注释自述契约即 ISO、Luban 输出 naive ISO、与
-      `DateTimeIso`/`DurationIso` 透传口径一致；迁移路径=pre-1.0 且 dump 本非可用值，
-      无既有快照依赖（cargo fmt、clippy 0 warning、cage-source-excel 34 绿，
-      2026-10-28）。
+- [ ] P2-1 远端 HTTP 响应体读取设字节上限（remote.rs:326,490，现 read_to_end 无上限）
+- [ ] P2-2 flatbuffers `(key)` 复查 flatc 类型资格（lib.rs:294-300，非 string/整型单字段主键会产出非法 .fbs）
+- [ ] P3-1 schema/FieldType 递归深度显式护栏（schema/mod.rs:288-371）
+- [ ] P3-2 valid_component 收紧（registry.rs:61-68，拒单 `.` 作包/版本名）
 
 ## 审核发现
 
-- [x] 审核发现：X2 未兑现 §51 Q2/Q5 脚本指纹契约——脚本字节 blake3/解析路径/script_config/契约版本从未汇入 source_hash 或 build_id，改脚本但输出不变时 build_id 不变，违背设计 Q2「编辑脚本或其 config 必改 build_id」承诺（docs/design.md:2647,2689; crates/cage-core/src/manifest/mod.rs:281-311 无任何 script 相关输入）（属实，已修；证据 crates/cage-core/src/convention/mod.rs:250-277; crates/cage-core/src/manifest/mod.rs:96-122,185-215; crates/cage-cli/src/main.rs:2143-2188）
-- [x] 审核发现：drift 对结构形状漂移漏报——嵌套 bean/multi_row 列自身隐含的 Object/Array 类型从不与 adopted 比较，子列递归仅在双方 properties 均 Some 时发生且从不下钻 items，故工作簿声明 bean/multi_row 而 schema 写标量或数组标量时静默通过 E2208（crates/cage-core/src/convention/derive.rs:213-258,397-428）（属实，已修；证据 crates/cage-core/src/convention/derive.rs:379-470）
-- [x] 审核发现：派生 schema 丢弃 bean/multi_row 列自身的 required/default/targets——field_schema/bean_schema 对含子列字段统一走 ..empty_field()，无 YAML 派生链路下 ##required true 声明被静默降级为 false（crates/cage-core/src/convention/derive.rs:89-128）（属实，已修；证据 crates/cage-core/src/convention/derive.rs:89-145）
-- [x] 审核发现：sheets 脚本适配器违反共享契约网格类型——request.grid 对所有单元格调 .text() 致数字/布尔/空格全部序列化为字符串（空格变 "" 而非 null），与契约 Q2「number/string/boolean/null」及 Excel 侧 cell_to_json 的类型保真不一致（crates/cage-source-sheets/src/lib.rs:565-577; docs/design.md:2644）（属实，已修；证据 crates/cage-source-sheets/src/lib.rs:392-398,570-580）
-- [x] 审核发现：Web 状态页仍以 source_extra=None 重算 source_hash，声明脚本适配器时修改脚本或 script_config 会被误报为 fresh（crates/cage-cli/src/web.rs:1019）（属实，已修；证据 crates/cage-cli/src/web.rs:1002-1022,2827-2906; crates/cage-cli/src/main.rs:2150）
-- [x] 审核发现：drift 递归仍只在 adopted properties 存在时下钻，仅用 type: Object / Array<Object> 的常规 schema 会跳过全部子列存在性与类型检查（crates/cage-core/src/convention/derive.rs:467）（属实，已修；证据 crates/cage-core/src/convention/derive.rs:467-532; crates/cage-core/src/convention/tests.rs:1202,1234,1266）
-- [x] 审核发现：脚本指纹把未规范化的 root.join(script) 路径写入 source_hash，同一工程用相对路径与绝对路径构建会得到不同 build_id，破坏同输入同字节承诺（crates/cage-core/src/convention/mod.rs:273）（属实，已修；证据 crates/cage-core/src/convention/mod.rs:1090-1127; crates/cage-core/src/convention/tests.rs:1133）
-- [x] 审核发现：script_config 指纹未做 canonical 键序规范化，仅交换同值配置项顺序就会改变 build_id，与“canonical form”及确定性承诺不符（crates/cage-core/src/convention/mod.rs:270）（属实，已修；证据 crates/cage-core/src/convention/mod.rs:273-305; crates/cage-core/src/convention/tests.rs:1133）
-- [x] 审核发现:无 convention 时同名表头靠 fields.insert 直接覆盖,后列静默覆盖前列,前列值丢失(crates/cage-source-excel/src/lib.rs:440)(属实,已修:flat 路径在 header_groups 为 None 时对 headers 查重,重复名列发 E0001 错误「Duplicate column name ... column C」,整个文件失败而非静默覆盖;证据 crates/cage-source-excel/src/lib.rs:362-390;测试 test_duplicate_header_names_are_an_error_not_a_silent_overwrite crates/cage-source-excel/src/lib.rs:1671);
-- [x] 审核发现:空 used-range 的 sheet 在 range.is_empty() 处被无诊断静默跳过,与读失败会发 E0001 警告不一致(crates/cage-source-excel/src/lib.rs:228)(属实,已修:空 used-range 改发 E0001 错误「has an empty used range」后 continue——用错误而非警告是因为 source 适配器 Ok 路径丢弃 warning,警告等于仍静默,§3.1 口径下可见 sheet 即表,隐藏才是「非表」的表达;证据 crates/cage-source-excel/src/lib.rs:228-245;测试 test_empty_used_range_sheet_is_an_error_not_a_silent_skip crates/cage-source-excel/src/lib.rs:1705、test_handbuilt_xlsx_empty_sheet_is_an_error crates/cage-source-excel/src/lib.rs:1809 原断言旧行为已随行为更新);
-- [x] 审核发现：重复表头查重只覆盖扁平路径，任一结构化列使 header_groups 存在后，重复顶级表头仍会静默覆盖并丢失前列值（crates/cage-source-excel/src/lib.rs:370,446,913,944）（属实，已修；证据 crates/cage-source-excel/src/lib.rs:362-407 查重统一覆盖 flat 与 header_groups 两路径，重复顶级表头发 E0001「Duplicate column name ... column F」；顺带修复 header_groups_at 对宽度≥3 的合并区（如 *waves 跨 D1:F1）拆成同名组的归组缺陷，crates/cage-source-excel/src/lib.rs:891-898；测试 test_duplicate_top_level_headers_are_an_error_in_structural_path crates/cage-source-excel/src/lib.rs:1718，连同既有 test_luban_multi_row_folds_contiguous_rows_into_an_array 等全 workspace 测试通过）
-- [x] 审核发现：结构化路径查重对空 `##var` 单元格（未被合并区覆盖时 name 为空串）也参与查重，两个及以上空顶级表头触发 E0001「Duplicate column name ''」硬失败；而扁平路径 headers_at 对空表头合成唯一 col<N> 名（lib.rs:1068-1072），同布局不会报错——同一张含两列空表头的表在结构化模式下新出现失败、扁平模式下正常，两路径对空表头处理不一致，且此失败为本次提交新引入（此前结构化路径无查重）（属实，已修；证据 crates/cage-source-excel/src/lib.rs:886-897 结构路径空表头合成 col<abs_col>、crates/cage-core/src/convention/mod.rs:507-516 元数据 decode 同规则；测试 test_structural_blank_headers_get_unique_col_fallbacks crates/cage-source-excel/src/lib.rs:1767；连同既有 test_luban_multi_row_folds_contiguous_rows_into_an_array 等全 workspace 测试通过）
-- [x] 审核发现：`docs/review/2026-10-30-decisions.md` 多处行号引用按写入时基线（41f2cdbd）标注，而本 diff 在 `todo.md:1443/1601` 上方插入了「已代决」块（分别 +5 行、+5 行），HEAD 上这些行号已漂移：`todo.md:1601-1617` 现为 1606-1622、`todo.md:1685` 现为 1695、`todo.md:1443` 现为 1443 仍成立；同文件 `docs/design-prototypes.md:64-71` 因上方插入「Decided」块致原 §III 三条下移至 82-88，引用失效（docs/review/2026-10-30-decisions.md:11,33,58）。（属实，已修：docs/review/2026-10-30-decisions.md 的 `docs/design-prototypes.md:64-71`→82-88、`todo.md:1601-1617`→1606-1622、`todo.md:1685`→1695 三处行号更新；证据 commit 4acaf9c）
-- [x] 审核发现：`docs/review/2026-10-30-decisions.md:16` 称引用「`docs/ui.md`『策划规则界面』节」，但 `docs/ui.md` 为英文文档，该节实际标题为「Planner Rule Interface」（docs/ui.md:268），中文标题「策划规则界面」仅存在于 `docs/zh/ui.md:240`；跨语言引用不准确（docs/review/2026-10-30-decisions.md:16）。（属实，已修：docs/review/2026-10-30-decisions.md 该处改引「Planner Rule Interface」节（英文文档实际标题）；证据 commit 4acaf9c）
-- [x] 审核发现：`docs/review/2026-10-30-decisions.md:11` 修复时把 `docs/design-prototypes.md:64-71` 改为 `82-88`，但该文件 HEAD 仅 87 行、行 88 不存在，引用越界；§III 三条 Open decisions（原始问题）实际在 82-87，应引 `82-87`。（属实，已修：docs/review/2026-10-30-decisions.md:11 行号引用改 `82-87`；证据 docs/review/2026-10-30-decisions.md:11）
-- [x] 审核发现：todo.md 新增「跨语言标题」审核发现记录称 "Planner Rule Interface" 节位于 `docs/ui.md:269`，实际该节标题在 `docs/ui.md:268`，行号偏差 1 行。（属实，已修：todo.md:2045 记录改 `docs/ui.md:268`；证据 docs/ui.md:268）
-- [x] 审核发现：新增架构图 SVG（中英两份）称 CLI 子命令含 `compile`（`cage check --level / compile / migrate / lsp`），但 `cage` CLI 实际子命令为 check/build/gen/inspect/assets 等，无 `compile` 子命令，与源码不符（docs/public/images/architecture-en.svg:3,70；docs/public/images/architecture-zh.svg:3,70）。（属实，已修：两份 SVG 的 desc 与 CLI 文本 `compile` 改真实子命令 `build`；证据 crates/cage-cli/src/main.rs:82-340 枚举 Commands（check/build/inspect/assets/gen/diff/graph/verify/snapshot/web/lsp/registry/migrate，无 compile），docs/public/images/architecture-en.svg:3,70）
-- [x] 审核发现：SVG 中 `id="cli-cross"` 的 `data-from="cli"` 引用不存在的节点（图中无 `id="cli"` 元素），而其余箭头的 `data-from` 均指向真实节点，内部元数据引用悬空（docs/public/images/architecture-en.svg:25；docs/public/images/architecture-zh.svg:25）。（属实，已修：两份 SVG CLI 文本加 `id="cli"`，`cli-cross` 的 `data-from="cli"` 现指向真实节点；证据 docs/public/images/architecture-en.svg:25,70）
-- [x] 审核发现：本轮 diff 未见问题（859037e1..HEAD）。（属实，已核实：commit 8469230 仅改 4 个文档文件——两份 SVG 的 compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit 8469230）
-- [x] 审核发现：本轮 diff 未见问题（8469230b..HEAD）。（属实，已核实：commit 03c8a55 仅把 todo.md 上一轮「未见问题（859037e1..HEAD）」记录勾选为 [x]，无其他改动；上一轮记录引用的证据在 HEAD 上均准确——两份 SVG compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit 03c8a55）
-- [x] 审核发现：本轮 diff 未见问题（03c8a554..HEAD）。（属实，已核实：commit b65c8e3 仅把 todo.md 上一轮「未见问题（8469230b..HEAD）」记录勾选为 [x]，无其他改动；上一轮记录引用的证据在 HEAD 上均准确——两份 SVG compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions 记录 docs/review/2026-10-30-decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit b65c8e3）已核实：HEAD=b65c8e3 时 03c8a554..HEAD 仅改 todo.md，且两份 SVG 均为 build 并含 id="cli"，docs/design-prototypes.md:82-87 有效、docs/ui.md:268 确为 Planner Rule Interface 标题。
-- [x] 审核发现：本轮 diff 未见问题（b65c8e3d..HEAD）。（属实，已核实：commit 87f7114 仅把 todo.md 上一轮「未见问题（03c8a554..HEAD）」记录勾选为 [x]，无其他改动；上一轮记录引用的证据在 HEAD 上均准确——两份 SVG compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions 记录 docs/review/2026-10-30-decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit 87f7114）
-- [x] 审核发现：本轮 diff 未见问题（87f71145..HEAD）。（属实，已核实：commit 71c13fd 仅把 todo.md 上一轮「未见问题（b65c8e3d..HEAD）」记录勾选为 [x]，无其他改动；上一轮记录引用的证据在 HEAD 上均准确——两份 SVG compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions 记录 docs/review/2026-10-30-decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit 71c13fd）
-- [x] 审核发现：本轮 diff 未见问题（71c13fda..HEAD）。（属实，已核实：commit 434a92f 仅把 todo.md 上一轮「未见问题（87f71145..HEAD）」记录勾选为 [x]，无其他改动；上一轮记录引用的证据在 HEAD 上均准确——两份 SVG compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions 记录 docs/review/2026-10-30-decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit 434a92f）
-- [x] 审核发现：本轮 diff 未见问题（434a92f..HEAD）。（属实，已核实：commit ce1dee0 仅把 todo.md 上一轮「未见问题（71c13fda..HEAD）」记录勾选为 [x]，无其他改动；上一轮记录引用的证据在 HEAD 上均准确——两份 SVG compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions 记录 docs/review/2026-10-30-decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit ce1dee0）
-- [x] 审核发现：本轮 diff 未见问题（ce1dee0..HEAD）。（属实，已核实：commit 8b53ff6 仅把 todo.md 上一轮「未见问题（434a92f..HEAD）」记录勾选为 [x]，无其他改动；上一轮记录引用的证据在 HEAD 上均准确——两份 SVG compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions 记录 docs/review/2026-10-30-decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit 8b53ff6）
-- [x] 审核发现：本轮 diff 未见问题（8b53ff68..HEAD）。（属实，已核实：commit 0bfc962 新增了一条「本轮 diff 未见问题（ce1dee0..HEAD）」记录（未改动上一行）；该记录引用的证据在 HEAD 上均准确——两份 SVG compile→build 且 cli-cross 的 data-from="cli" 有真实 id="cli" 节点（docs/public/images/architecture-en.svg:3,25,70；architecture-zh.svg:3,25,70）、decisions 记录 docs/review/2026-10-30-decisions.md:11 引 design-prototypes.md:82-87（文件共 87 行，有效）、todo.md 跨语言标题记录改 docs/ui.md:268（该行确为 Planner Rule Interface 节标题）；证据 commit 0bfc962）已核实：HEAD=0bfc962 时 8b53ff68..HEAD 仅改 todo.md，且两份 SVG 均为 build 并含 id="cli"，docs/design-prototypes.md:82-87 有效、docs/ui.md:268 确为 Planner Rule Interface 标题；测试 `cargo test --workspace --locked` exit 0、72 个 test result: ok（含 cage-cli web 15/15），共 1062 passed。
-- [x] 审核发现：新增记录称 commit 0bfc962「仅把上一轮记录勾选为 [x]」，但该提交实际新增了一条审核记录且未改动上一行，陈述与仓库历史不符（todo.md:2058）。（属实，已修：todo.md:2058 已改为准确陈述「commit 0bfc962 新增了一条『本轮 diff 未见问题（ce1dee0..HEAD）』记录（未改动上一行）」；证据：`git show 0bfc962 --stat` 仅 `todo.md +1` 追加、未改既有行，`git show 0bfc962 -- todo.md` 确认新增行为 ce1dee0..HEAD 记录；测试 `cargo test --workspace --locked` 全绿后提交）
-- [x] 审核发现：本轮 diff 未见问题（b8a61e66..HEAD）。（属实，已核实：commit f221c3c 修复 todo.md 中对 0bfc962 的错误描述（原称“仅勾选上一行”，实际为新增一行）；commit 226d6df 将 README.md/README.zh.md 头部从多行居中块精简为单行居中块，移除与正文重复的标题/描述及失效或冗余的 Rust/CI/Codecov/License 徽标，同时改为语言正确的 docs 链接；证据 `git show f221c3c -- todo.md`、`git show 226d6df -- README.md README.zh.md`、`git diff --stat b8a61e6..HEAD` 仅 todo.md/README.md/README.zh.md；docs 链接 https://cuihairu.github.io/cage/ 与 https://cuihairu.github.io/cage/zh/ 均 HTTP 200 且 `lang` 分别为 en-US 与 zh-CN）
+- [x] 审核发现：X2 未兑现 §51 Q2/Q5 脚本指纹契约——脚本字节 blake3/解析路径/script_config/契约版本从未汇入 source_hash 或 build_id，改脚本但输出不变时 build_id 不变，违背设计 Q2「编辑脚本或其 config 必改 build_id」承诺（commit 101d581）
+- [x] 审核发现：drift 对结构形状漂移漏报——嵌套 bean/multi_row 列自身隐含的 Object/Array 类型从不与 adopted 比较，子列递归仅在双方 properties 均 Some 时发生且从不下钻 items，故工作簿声明 bean/multi_row 而 schema 写标量或数组标量时静默通过 E2208（commit 101d581）
+- [x] 审核发现：派生 schema 丢弃 bean/multi_row 列自身的 required/default/targets——field_schema/bean_schema 对含子列字段统一走 ..empty_field()，无 YAML 派生链路下 ##required true 声明被静默降级为 false（commit 101d581）
+- [x] 审核发现：sheets 脚本适配器违反共享契约网格类型——request.grid 对所有单元格调 .text() 致数字/布尔/空格全部序列化为字符串（空格变 "" 而非 null），与契约 Q2「number/string/boolean/null」及 Excel 侧 cell_to_json 的类型保真不一致（commit 101d581）
+- [x] 审核发现：Web 状态页仍以 source_extra=None 重算 source_hash，声明脚本适配器时修改脚本或 script_config 会被误报为 fresh（commit 101d581）
+- [x] 审核发现：drift 递归仍只在 adopted properties 存在时下钻，仅用 type: Object / Array<Object> 的常规 schema 会跳过全部子列存在性与类型检查（commit 101d581）
+- [x] 审核发现：脚本指纹把未规范化的 root.join(script) 路径写入 source_hash，同一工程用相对路径与绝对路径构建会得到不同 build_id，破坏同输入同字节承诺（commit 101d581）
+- [x] 审核发现：script_config 指纹未做 canonical 键序规范化，仅交换同值配置项顺序就会改变 build_id，与“canonical form”及确定性承诺不符（commit 101d581）
+- [x] 审核发现：无 convention 时同名表头靠 fields.insert 直接覆盖,后列静默覆盖前列,前列值丢失（commit 101d581）
+- [x] 审核发现：空 used-range 的 sheet 在 range.is_empty() 处被无诊断静默跳过,与读失败会发 E0001 警告不一致（commit 101d581）
+- [x] 审核发现：重复表头查重只覆盖扁平路径，任一结构化列使 header_groups 存在后，重复顶级表头仍会静默覆盖并丢失前列值（commit 101d581）
+- [x] 审核发现：结构化路径查重对空 `##var` 单元格（未被合并区覆盖时 name 为空串）也参与查重，两个及以上空顶级表头触发 E0001「Duplicate column name ''」硬失败；而扁平路径 headers_at 对空表头合成唯一 col<N> 名（commit 101d581）
+- [x] 审核发现：`docs/review/2026-10-30-decisions.md` 多处行号引用按写入时基线（commit 4acaf9c）
+- [x] 审核发现：`docs/review/2026-10-30-decisions.md:16` 称引用「`docs/ui.md`『策划规则界面』节」，但 `docs/ui.md` 为英文文档，该节实际标题为「Planner Rule Interface」（commit 4acaf9c）
+- [x] 审核发现：`docs/review/2026-10-30-decisions.md:11` 修复时把 `docs/design-prototypes.md:64-71` 改为 `82-88`，但该文件 HEAD 仅 87 行、行 88 不存在，引用越界；§III 三条 Open decisions（原始问题）实际在 82-87，应引 `82-87`（commit 101d581）
+- [x] 审核发现：todo.md 新增「跨语言标题」审核发现记录称 "Planner Rule Interface" 节位于 `docs/ui.md:269`，实际该节标题在 `docs/ui.md:268`，行号偏差 1 行（commit 101d581）
+- [x] 审核发现：新增架构图 SVG（中英两份）称 CLI 子命令含 `compile`（`cage check --level / compile / migrate / lsp`），但 `cage` CLI 实际子命令为 check/build/gen/inspect/assets 等，无 `compile` 子命令，与源码不符（commit 101d581）
+- [x] 审核发现：SVG 中 `id="cli-cross"` 的 `data-from="cli"` 引用不存在的节点（图中无 `id="cli"` 元素），而其余箭头的 `data-from` 均指向真实节点，内部元数据引用悬空（commit 101d581）
+- [x] 审核发现：新增记录称 commit 0bfc962「仅把上一轮记录勾选为 [x]」，但该提交实际新增了一条审核记录且未改动上一行，陈述与仓库历史不符（commit 0bfc962）
+- [x] 审核发现：英文 README.md 顶部一级标题 `# Cage` 与项目简介被移除，现无任何标题/标语，与基线及中文版（仍有 `# Cage`）不一致（commit 101d581）
+- [x] 审核发现：README.md:4 存在两个无内容的空 `<a href="https://cuihairu.github.io/cage//">`（其一 URL 含双斜杠 `cage//`）锚点，为损坏/残留标记（commit 101d581）
+- [x] 审核发现：README.md:5 两个 shield 徽标未套链接且标签错误（`docs-docs-blue`、`docs-blue`，alt 重复为 `docs`），应为单个可点击的 `docs-latest-blue` 文档徽标（commit 101d581）
+- [x] 审核发现：README.zh.md:9 文档徽标重复——既有 `[Docs]` 指向 `/cage/zh/`，又新增 `文档` 徽标同样指向 `/cage/zh/`，冗余且与英文版单徽标设计不一致（commit 101d581）
+- [x] 审核发现：README.zh.md 文件末尾缺少换行符（基线以 `\n` 结尾，现 `[Apache-2.0](LICENSE)` 后无 `\n`）（commit 101d581）
