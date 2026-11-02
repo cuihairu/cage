@@ -339,3 +339,6 @@
 - [x] 审核发现：README.md:5 两个 shield 徽标未套链接且标签错误（`docs-docs-blue`、`docs-blue`，alt 重复为 `docs`），应为单个可点击的 `docs-latest-blue` 文档徽标（commit 101d581）
 - [x] 审核发现：README.zh.md:9 文档徽标重复——既有 `[Docs]` 指向 `/cage/zh/`，又新增 `文档` 徽标同样指向 `/cage/zh/`，冗余且与英文版单徽标设计不一致（commit 101d581）
 - [x] 审核发现：README.zh.md 文件末尾缺少换行符（基线以 `\n` 结尾，现 `[Apache-2.0](LICENSE)` 后无 `\n`）（commit 101d581）
+- [x] 审核发现：`docs/source.md:100-109`（中文版 `docs/zh/source.md` 同）的 Excel 元行「Vocabulary」表漏掉实现已支持的 `##unique`、`##targets`、`##description` 三个关键字（`crates/cage-core/src/convention/mod.rs:871-874` 的 slot_is_set 分支均接受），表题为“Vocabulary”且 design §51 明示 `##description` 为注释行，作者只读 source.md 会以为这三个关键字不存在/被拒，词汇表不完整（docs/source.md:100-109；已补入 docs/source.md:104-107 + docs/zh/source.md:105-108）
+- [x] 审核发现：`docs/review/2026-11-01-code-review.md:50` 称回归测试写入「300 字节『爆』stderr」，实际测试为 `'爆' * 300`（300 个 CJK 字符 = 900 字节），把字符数误记为字节数；触发机制仍成立（字节 400 落在多字节字符内），但报告对测试载荷的描述不准确（docs/review/2026-11-01-code-review.md:50；已改为 `'爆' * 300` 即 900 字节）
+- [x] 审核发现：回归测试 `test_script_failure_truncates_cjk_stderr_at_char_boundary` 以 `d.message.len() < 700` 间接验证截断，未精确断言 stderr 段 ≤400 字节且在字符边界；若修复后续退化把上限从 400 放宽到 500 字节（仍满足 <700）测试不会失败，400 字节截断契约缺少精确的回归断言（crates/cage-source-excel/src/lib.rs:3239-3243；已改为精确统计尾随 `爆` 段并断言 ≤400 字节）

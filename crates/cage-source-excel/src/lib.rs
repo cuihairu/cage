@@ -3236,11 +3236,19 @@ print(json.dumps(response, ensure_ascii=False))
                 // A panic would have crashed the test. The stderr portion is
                 // truncated to <=400 bytes at a char boundary, still valid
                 // UTF-8, and carries the CJK payload.
-                assert!(d.message.contains("爆"), "lost the stderr payload");
-                // The message is `script <path> exited with <status>: <stderr>`;
-                // the stderr part is capped at 400 bytes, so the whole message
-                // stays well under this bound.
-                assert!(d.message.len() < 700, "stderr not truncated: {:?}", d.message);
+                // The message is `script <path> exited with <status>: <stderr>`
+                // with the stderr at the very end. Count the trailing CJK run
+                // (each '爆' is 3 bytes) and assert the segment is <=400 bytes
+                // — a precise cap assertion, unlike a loose whole-message bound
+                // that would not catch a cap relaxed to 500 bytes.
+                let run = d.message.chars().rev().take_while(|c| *c == '爆').count();
+                assert!(run > 0, "lost the stderr payload: {:?}", d.message);
+                let stderr_bytes = run * '爆'.len_utf8();
+                assert!(
+                    stderr_bytes <= 400,
+                    "stderr segment {stderr_bytes}B exceeds the 400B cap: {:?}",
+                    d.message
+                );
             }
         }
     }

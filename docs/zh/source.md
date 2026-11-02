@@ -103,10 +103,13 @@ workbooks = { "Skill.xlsx" = "header_block" }   # 按工作簿文件名的逐簿
 | `##type` | 字段类型 | `Int32` / `String` / `Float32` / `Bool` / `Any` / `Enum<名称>` / `Array<…>` / `Map<k, v>` 或 Schema 类型表达式 |
 | `##min` / `##max` | 数值边界 | 数字文本 |
 | `##enum` | 枚举成员 | 逗号分隔成员名 |
+| `##unique` | 唯一列 | `true` / `false` |
 | `##required` | 必填 | `true` / `false` |
 | `##default` | 默认值 | 与目标类型一致的 JSON 值 |
 | `##reference` | 外键 | `表.字段[:基数]` |
 | `##primary_key` | 主键列 | `true` |
+| `##targets` | 可见 profile | 逗号分隔 profile 名（空 = 全部） |
+| `##description` | 注释行（Q5：注释行即 `##description`） | 自由文本 |
 | `##+` | 子列声明行（回流-5/6） | 每非标记单元格一个子列名；其所在列的顶层列成为嵌套 bean（`*` 前缀 = `multi_row`，无 `##+` 的 `*名` 列是 E2201） |
 
 **脚本适配器**（互斥于 `preset`；`cage.excel-meta/1` 子进程契约）：cage 写一个 JSON

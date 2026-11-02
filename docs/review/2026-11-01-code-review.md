@@ -47,7 +47,7 @@ let stderr = if stderr.len() > 400 {
 
 **触发**：Excel 元行脚本（`cage.excel-meta/1`）退出非零且 stderr > 400 字节、第 400 字节落在一个多字节字符（如中文）内部 → `&str[..400]` panic，把「脚本失败应报 E2205」变成 CLI 崩溃。该路径是库级函数（`cage-source-excel` 适配器在解析期调用），panic 直接上抛。
 
-**修复**：在字符边界回退截断（`is_char_boundary` 回退），并新增回归测试 `test_script_failure_truncates_cjk_stderr_at_char_boundary`（`crates/cage-source-excel/src/lib.rs`，300 字节「爆」stderr → E2205 不 panic、保留 payload）。提交见「⑤ 修复提交」。
+**修复**：在字符边界回退截断（`is_char_boundary` 回退），并新增回归测试 `test_script_failure_truncates_cjk_stderr_at_char_boundary`（`crates/cage-source-excel/src/lib.rs`，`'爆' * 300` 即 300 个 CJK 字符 = 900 字节 stderr → E2205 不 panic、保留 payload，stderr 段 ≤400 字节且在字符边界）。提交见「⑤ 修复提交」。
 
 ### P2-1 远端 HTTP 响应体无上限读取
 

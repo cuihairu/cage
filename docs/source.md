@@ -102,10 +102,13 @@ workbooks = { "Skill.xlsx" = "header_block" }   # per-workbook-file override
 | `##type` | Field type | `Int32` / `String` / `Float32` / `Bool` / `Any` / `Enum<name>` / `Array<…>` / `Map<k, v>` or a Schema type expression |
 | `##min` / `##max` | Numeric bound | numeric text |
 | `##enum` | Enum member | comma-separated member names |
+| `##unique` | Unique column | `true` / `false` |
 | `##required` | Required | `true` / `false` |
 | `##default` | Default value | a JSON value matching the target type |
 | `##reference` | Foreign key | `table.field[:cardinality]` |
 | `##primary_key` | Primary-key column | `true` |
+| `##targets` | Profile visibility | comma-separated profile names (empty = all) |
+| `##description` | Comment row (Q5: the comment row is `##description`) | free text |
 | `##+` | Sub-column declaration row (reflow-5/6) | one sub-column name per non-marker cell; the top-level column it sits in becomes a nested bean (`*` prefix = `multi_row`, a `*name` column without `##+` is E2201) |
 
 **Script adapter** (mutually exclusive with `preset`; `cage.excel-meta/1` subprocess contract): cage writes a JSON request to the script's stdin and reads a JSON response from stdout; the request carries `workbook`/`sheet`/`grid`/`header_row`, the response carries `TableMeta` or diagnostics. Language-agnostic (Python/Node/any executable).
