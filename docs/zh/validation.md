@@ -216,15 +216,12 @@ min_items / max_items   数组元素个数（E1205）
 结果：
 
 ```text
-ERROR E1301
-
-Duplicate primary key:
-
-Item.ID = 10001
-
-Rows:
-    2
-    4
+ERROR E1301 — Duplicate Primary Key
+  Table: Item
+  Row: 4
+  Value: ["10001"]
+  Message: Duplicate primary key
+  Hint: First occurrence at row 2
 ```
 
 还可以检查：
@@ -270,17 +267,13 @@ Schema：
 Cage：
 
 ```text
-ERROR E1401
-
-Monster[20003].DropItemID
-
-Value:
-    99999
-
-Reference:
-    Item.ID
-
-Target does not exist.
+ERROR E1401 — Reference Target Not Found
+  Table: Monster
+  Row: 3
+  Field: DropItemID
+  Value: 99999
+  Message: Referenced target does not exist
+  Hint: No Item with id=99999 found
 ```
 
 ### 引用不应只验证「存在」
@@ -311,14 +304,13 @@ Allowed:
     Consumable
 ```
 
-Reference 的检查面分五类，实装状态：
+Reference 的检查面分四类（行级，加上下面的表级环检查 E1403），实装状态：
 
 ```text
 Existence        存在性          已实装（E1401）
-Type             引用对象类型     已实装（E1411，compatible_with）
 Predicate        谓词约束         已实装（E1410，断言在引用目标行上求值）
 Cardinality      基数            已实装（E1404，源侧口径：one/optional 单值、many 数组逐元素）
-Compatibility    兼容性          已实装（E1411，字段级约束）
+Compatibility    兼容性          已实装（E1411，compatible_with 字段级约束）
 ```
 
 ### 表级引用环（E1403，已实装）
@@ -418,6 +410,14 @@ ERROR E1601 — Game Rule Validation Failed
   Message: Game rule violation: power curve
   Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 ```
+
+除 trait 插件通道外，规则引擎还带一条**声明式**数据驱动通道（经
+`GameRuleRegistry::with_rules` 注册的 `RuleConfig` 条目，design §53）：
+内建规则种类 `skill_item_category` / `reference_cycle` / `drop_reward` /
+`dungeon_stage` / `client_server_field` 产出 `E1604`–`E1608`，由库级测试覆盖。
+它们**尚未接入 `cage check`**——CLI 的 L7 只跑 `GameRuleRegistry::with_builtins()`，
+而该注册表只登记 `PowerCurveValidator` 一个插件——所以今天只有进程内自行组装
+注册表的嵌入方可达。
 
 这样 Cage Core 不需要理解具体游戏业务。执行模型的选型（进程内
 trait → 动态库 → 沙箱）与信任边界见
@@ -576,6 +576,13 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 | `E1601` | 插件校验器报告错误 |
 | `E1602` | 插件未找到（预留） |
 | `E1603` | 插件执行失败（panic、超时等）（预留） |
+| `E1604` | 声明式 `skill_item_category` 规则：技能引用了不允许类别的物品 |
+| `E1605` | 声明式 `reference_cycle` 规则：跨表引用成环 |
+| `E1606` | 声明式 `drop_reward` 规则：掉落引用了未知物品或数量/权重非法 |
+| `E1607` | 声明式 `dungeon_stage` 规则：关卡引用了未知的怪物组或奖励 |
+| `E1608` | 声明式 `client_server_field` 规则：某 profile 可见字段依赖该 profile 不可见的实体 |
+
+E1604-E1608 由**声明式**游戏规则引擎产生（`GameRuleRegistry::with_rules` + `RuleConfig`，design §53）；目前由库级测试覆盖，**尚未接入 `cage check`**——其 L7 今天只通过 `GameRuleRegistry::with_builtins()` 跑内置的 `PowerCurveValidator`（E1601）。
 
 ### Build / Target（生成期）
 
@@ -635,6 +642,19 @@ HTTP 源（`cage-source-http`，design §45 S1）的坏 JSON 不走 E1903——�
 | `E2002` | 迁移规则引用不合法：step 引用的表 / 字段在 from-schema 不存在、rename 目标与现有表 / 字段撞名（已接线） |
 | `E2003` | 迁移步骤对数据不满足：加宽方向不安全（收窄 / 跨族 / Int64·UInt64→Float64 精度丢失）、行值超出加宽目标值域、step 引用的表或行字段文档中不存在——整段失败不静默丢数据（已接线） |
 | `E2004` | 迁移后回验失败：迁移产物在新 schema 下 L0–L6 全栈校验不通过，错误清单随 E2004 一并输出（已接线） |
+
+### Source Convention（Excel 元行约定，X 系列）
+
+| 代码 | 含义 |
+| --- | --- |
+| `E2201` | 约定语法：未知关键字、关键字前出现值、同一列重复关键字、标记单元格形态不可解析、`preset` 与 `script` 同时设置、`has_header` 为 false 时声明 preset、工作簿覆盖歧义（X1） |
+| `E2202` | 约定词表：值解析不进词表——未知类型表达式、非 true/false 的布尔、非值列表的 `enum`、形态错误的 `reference` 单元格（X1） |
+| `E2203` | 脚本无法启动：路径在项目根外、`..` 逃逸、不存在、非文件、spawn 失败（X1） |
+| `E2204` | 脚本超时 `script_timeout_secs`（X1） |
+| `E2205` | 脚本非零退出；stderr 引用并截断（X1） |
+| `E2206` | 脚本输出不可用：非合法 JSON、非契约形态、或契约版本 cage 不认识（X1） |
+| `E2207` | 约定与数据矛盾：声明的列名不在表头行、meta-sheet 名称行不匹配、响应的 `table` 非该表（X1） |
+| `E2208` | Schema 漂移：元行声明与已采用 schema 矛盾——meta 声明的字段缺失或形态不同、或声明的主键不一致（X2）；单元格锚点指明确切声明单元格 |
 
 ### Internal（系统级）
 

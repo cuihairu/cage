@@ -126,7 +126,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   against `examples/game-config` (the schemas/ directory),
   assert that the save envelope round-trips the `sources` index: a stale
   revision is 409-refused naming the changed file, a field edit rewrites
-  exactly `schemas/item.yaml` (the other four files stay byte-identical),
+  exactly `schemas/item.yaml` (the other five files stay byte-identical),
   and the raw document without an index is still refused
 - [x] CI integration: the `web-smoke` job mirrors the example job
   (checkout + toolchain + rust-cache + `bash examples/web-smoke.sh`)
@@ -296,7 +296,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       zero new server surface
 - [x] Tests: integration assertions (`FIELD_TEMPLATES` / foreign-key,
       `markDiagDiff` / `diag-new`) + `node --check` on both page scripts;
-      web unit 32 green / integration 14 green unchanged
+      web unit 44 green / integration 15 green unchanged
 
 ### W12 implemented: table source upload (planner interface P0, 2026-10-21, roadmap in UI facade)
 

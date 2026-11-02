@@ -6,7 +6,7 @@
 
 # Cage
 
-[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/) [![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml) [![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage) [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/zh/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE) <a href="https://cuihairu.github.io/cage/zh/"><img src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue" alt="文档"></a>
+[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/) [![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml) [![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage) [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/zh/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 **游戏配置编译与验证框架**
 
 English: **Cage is a configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.**
@@ -15,7 +15,7 @@ English: **Cage is a configuration compiler and validation framework for game de
 
 ---
 
-Cage 将各种人类可维护的配置源（Excel / CSV / JSON / YAML / …）解析为统一的中间配置模型，经过多层次验证、跨配置引用解析与规范化处理后，按目标平台生成可直接消费的配置资产或代码。
+Cage 将各种人类可维护的配置源（Excel / CSV / JSON / YAML / MessagePack / …）解析为统一的中间配置模型，经过多层次验证、跨配置引用解析与规范化处理后，按目标平台生成可直接消费的配置资产或代码。
 
 它不绑定某一种输入或输出格式：Excel 只是一种输入源，目标是把分散、异构、面向人的配置数据，编译成经过验证、确定性构建的运行时配置资产。
 
@@ -29,7 +29,7 @@ Authoring Sources → Source Adapters → Canonical Model
 
 ## 核心能力
 
-- Source Adapter 插件：Excel / CSV / JSON / YAML，以及 HTTP API / MySQL / PostgreSQL / Google Sheets 远程源（后续 XML、SQLite…），只读取解析，不做业务校验
+- Source Adapter 插件：Excel / CSV / JSON / YAML / MessagePack，以及 HTTP API / MySQL / PostgreSQL / Google Sheets 远程源（后续 XML、SQLite…），只读取解析，不做业务校验
 - Excel 元行约定：规则以 `##` 前缀元行写在工作簿内（`[source.excel]` 预设 / 按工作簿覆盖 / 用户脚本适配器 `cage.excel-meta/1`）——表可自带 schema 声明，派生为可审阅草稿（`cage schema-draft … excel:`）并与被采用 schema 漂移核对（E2208，定位到单元格）；元行绝不泄入构建产物
 - Schema 与 Source 解耦：同一 Schema 可用于多个配置源（类型/必填/默认值/范围/枚举/唯一/引用）
 - 八级验证流水线：Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule，可分级执行（`cage check --level`）

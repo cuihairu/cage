@@ -202,7 +202,7 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 
 | 概念 | 现状 | 差距 / 下一步 |
 | --- | --- | --- |
-| Schema | 已实装：19 种字段类型（含 Map）、引用、唯一约束、字段级 `targets` 可见性 | — |
+| Schema | 已实装：20 种字段类型（含 Map、TaggedUnion）、引用、唯一约束、字段级 `targets` 可见性 | — |
 | Canonical Model | 已实装：value.rs 全类型 + SourceLocation | — |
 | IR | 定界完成（见上） | 派生形状需求出现时拆 Compiled IR |
 | Validation Context | 已实装：validation/mod.rs（schema / document / diagnostics / max_level / profile / reference_cache / warnings_as_errors） | — |
@@ -465,8 +465,8 @@ flowchart TD
 ```
 
 Excel、CSV、YAML、JSON、MySQL / PostgreSQL、HTTP API、Google Sheets
-只是 Source；JSON、CSV、MsgPack、C#、Python、Lua、C++、Go、Java、
-Protobuf Schema、JSON Schema、Template 只是已实装的 Target。
+只是 Source；JSON、CSV、MsgPack、C#、Python、Lua、TypeScript/JavaScript、C++、Go、Java、
+Protobuf Schema、FlatBuffers Schema、JSON Schema、Template 只是已实装的 Target。
 
 真正属于 Cage Core 的，是中间这部分：
 

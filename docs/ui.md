@@ -8,14 +8,16 @@ Web UI is **another facade over the same core**, and the frontend duplicates no 
 semantics; the three disciplines — zero new dependencies, single binary, no node editor
 toolchain — all carry forward.
 
-## Measured Baseline (at the 2026-10-12 Decision)
+## Measured Baseline (at the 2026-10-12 Decision; re-measured 2026-11-02)
 
-- release exe **10.6 MiB** (lto + strip + opt-level=z).
-- editor page 48 KB (index.html 2.0 / app.js 37.6 / app.css 8.4 KB), embedded at compile
-  time via `include_str!` (web.rs), so the single binary carries its own UI.
-- the existing HTTP surface has 6 routes: `GET /`, `/app.js`, `/app.css`,
-  `GET /api/schema`, `POST /api/validate`, `POST /api/schema`; bound to `127.0.0.1`
-  only, no authentication (positioned as a local tool).
+- release exe **12.5 MiB** (lto + strip + opt-level=z).
+- editor page 55 KB (index.html 2.5 / app.js 43.2 / app.css 9.3 KB), embedded at compile
+  time via `include_str!` (web.rs), so the single binary carries its own UI; the
+  status page adds a second embedded pair (`/status/app.js` + `/status/app.css`).
+- the HTTP surface has grown past the original 6 routes (see `web.md` for the W-series):
+  it now serves the editor and status pages plus the `api/*` surface (schema, validate,
+  tables, table, upload, build, artifacts, artifact, snapshots, snapshot, diff, registry,
+  status), bound to `127.0.0.1` only, no authentication (positioned as a local tool).
 - manifest hashing is two-tier: `table_hashes` as a per-table blake3 row fingerprint → a
   per-target canonical fingerprint (sorted by `(format, output_dir)`) → a per-file hash →
   the root `content_hash`; `build_id = blake3(profile + schema_hash + source_hash +
@@ -359,8 +361,8 @@ Endpoint `POST /api/upload?name=NAME` (raw-byte body), recorded in
 docs/web.md W12. Tests: +5 web unit tests (accept and land / bad data
 refused with byte-identical restore / unparseable refused / ghost and
 missing name / double path guard incl. symlink escape) + 1 integration
-end to end (replace, refusal rollback, no temp litter) + web-smoke block
-8 (a real upload round trip).
+end to end (replace, refusal rollback, no temp litter) + web-smoke step
+5 (a real upload round trip).
 
 **P1 landing record (2026-10-20, decided by delegation)**:
 

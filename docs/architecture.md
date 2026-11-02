@@ -198,7 +198,7 @@ Splitting out a separate IR type at this stage would only introduce duplicate sh
 
 | Concept | Current Status | Gap / Next Step |
 | --- | --- | --- |
-| Schema | Implemented: 19 field types (including Map), references, uniqueness constraints, field-level `targets` visibility | — |
+| Schema | Implemented: 20 field types (including Map, TaggedUnion), references, uniqueness constraints, field-level `targets` visibility | — |
 | Canonical Model | Implemented: the full type set in value.rs + SourceLocation | — |
 | IR | Boundary decided (see above) | Split out a Compiled IR once a need for derived shapes appears |
 | Validation Context | Implemented: validation/mod.rs (schema / document / diagnostics / max_level / profile / reference_cache / warnings_as_errors) | — |
@@ -457,7 +457,7 @@ flowchart TD
     A[Any Source] --> M[Canonical Model] --> V[Validate Everything] --> VM[Validated Model] --> T[Any Target]
 ```
 
-Excel, CSV, YAML, JSON, MySQL / PostgreSQL, HTTP API, and Google Sheets are just Sources; JSON, CSV, MsgPack, C#, Python, Lua, C++, Go, Java, Protobuf Schema, JSON Schema, and Template are just the already-implemented Targets.
+Excel, CSV, YAML, JSON, MySQL / PostgreSQL, HTTP API, and Google Sheets are just Sources; JSON, CSV, MsgPack, C#, Python, Lua, TypeScript/JavaScript, C++, Go, Java, Protobuf Schema, FlatBuffers Schema, JSON Schema, and Template are just the already-implemented Targets.
 
 What truly belongs to the Cage Core is this middle part:
 

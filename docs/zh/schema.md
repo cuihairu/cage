@@ -83,7 +83,7 @@ validation）、`cardinality`
 `E1411`）。示例见 `examples/game-config` 的 `Stage.loot_item_ids`
 （`cardinality: many` 引用 `Item.id`）。
 
-## 字段类型（19 种）
+## 字段类型（20 种）
 
 类型一律写成 adjacent-tag 形态 `type: { kind: X }`（带参数的类型在
 `value` 里传参）；小写标量形态（`type: uint32`）**无法解析**：
@@ -111,12 +111,12 @@ validation）、`cardinality`
 | `nullable` | 接受存在的 `null`（如 Excel 空单元格），无需把类型放宽为 `Any`；`nullable` 引用字段应同时用 `cardinality: optional` |
 | `default` | 声明缺省值。构建期**回填**缺失键或存在的 `null`（Excel 空单元格），带缺省值的字段必带值；亦用于 `E9006` 可见性豁免与生成代码的成员初始值 |
 | `min` / `max` | 数值范围（`E1201`） |
-| `min_length` / `max_length` | 字符串长度范围（`E1201`） |
+| `min_length` / `max_length` | 字符串长度范围（`E1202`） |
 | `pattern` | 字符串须匹配的正则（`E1203`）。注意：写 `regex:` 会被当作自定义元数据**静默忽略** |
 | `enum_values` | 内联枚举取值域（`E1204`）。注意：写 `values:` 会被静默忽略；命名枚举走顶层 `enums:` + `{ kind: Enum, value: 名 }` |
 | `min_items` / `max_items` | 数组元素个数范围（`E1205`） |
 | `items` | 数组元素的字段 schema（递归） |
-| `separator` | 把表格标量单元格（Excel/CSV 无法承载数组）按该分隔符拆成 `Array` —— 等价于 Luban 的 `(list#sep=,)`。每个 token 会被 trim 并强制转换到元素类型；某个 token 拆不动时整格保持原样、由类型检查报出。仅对 `Array` 字段有意义 |
+| `separator` | 把表格标量单元格（Excel/CSV 无法承载数组）按该分隔符拆成 `Array` —— 等价于 Luban 的 `(list#sep=,)`。每个 token 会被 trim 并强制转换到元素类型；某个 token 拆不动时整格保持原样、由类型检查报出。对 `Array` 与 `TaggedUnion` 字段均有意义 |
 | `properties` / `additional_properties` | 对象属性 schema 与未知键开关 |
 | `reference` | 跨表引用（`table` + `field`，`E1401`；见上文子键说明） |
 | `targets` | 字段对哪些 profile 可见（空 = 全部；`"*"` 等价空；被隐藏的结构必需字段报 `E9006`） |

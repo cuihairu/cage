@@ -3002,13 +3002,13 @@ wire 编码，见 docs/target.md「Data Targets 与 Code Targets 分离」）。
 cage Schema 的表 / 枚举 / 类型 / 默认值 / 描述全部能机械翻译过去
 （类型映射取最小忠实口径，未知类型退 String，与 schema-draft 草稿
 的类型口径一致）。wire 编码的收益不抵复杂度：一是消费方仍需 .fbs
-（没有定义文件，.bin 是黑盒）；二是自研 flatbuffers builder 约 400 行
+（没有定义文件，.bin 是黑盒）；二是手写 flatbuffers builder 约 400 行
 （vtable / table / vector 布局 + 长度前缀），而**本仓没有 flatc 可作
 对拍基准**，无基准的序列化只能自证；三是配置体量是百表量级的小文本，
 确定性二进制需求已由 MessagePack target 覆盖（确定性字节 + 全仓哈希
 锚点）。定义文件生成 = 完整交付，wire 编码 = 有基准再做。
 
-**备选**：自研 flatbuffers builder 出 `.bin`（无 flatc 对拍、且
+**备选**：手写 flatbuffers builder 出 `.bin`（无 flatc 对拍、且
 仍需 .fbs，收益半段）；只写文档不动代码（太薄——定义文件生成与 proto
 同构，边际成本低）；等社区 crate（`flatbuffers` rust crate 依赖 flatc
 生成代码，等于先要一个生成器，绕不开定义文件）。
@@ -3366,7 +3366,7 @@ script_config = { }               # 任意 TOML 表，原样传给脚本
   标签形式的 `{ kind, value }` 对象（`{ kind: Int32 }`、
   `{ kind: Array, value: { kind: Int32 } }`、`{ kind: Enum, value: Rarity }`、
   `{ kind: Map, value: { key_type: string, value_type: { kind: Int32 } } }`），
-  19 种之一。契约不自造简写：契约与 schema 之间没有翻译步骤，因此不存在
+  20 种之一。契约不自造简写：契约与 schema 之间没有翻译步骤，因此不存在
   两种写法各自漂移的地方。
 
 **确定性：** 汇入 `source_hash` / `build_id` 的源指纹增加四项输入——脚本
@@ -3414,7 +3414,7 @@ E22xx 为源约定族；E10xx–E19xx（校验）、E20xx（迁移）、E21xx（
 本裁定与 X1 实际交付之间的差异，记录在此，使裁定记录与代码不再漂移。
 
 **注释行是 `##description`。** 词汇表就是 Schema 字段名集合，所以注释行
-用 schema 真正拥有的字段声明。`##comment` 报 E2202（未知变体）——cage
+用 schema 真正拥有的字段声明。`##comment` 报 E2201（未知关键字）——cage
 不维护别名表，也不在表中列出的关键词之外新增任何关键词。
 
 **单元格类型记法，仅预设档。** 预设档单元格接受两种写法，都解析进

@@ -52,7 +52,7 @@ Excel Adapter（基于 [calamine](https://crates.io/crates/calamine) 读取 `.xl
 - Cell
 - Row
 - Column
-- Merged Cells（合并单元格回填；仅 `.xlsx`，`.ods` 不做）
+- Merged Cells（合并单元格回填；仅 `.xlsx`/`.xlsm`，`.ods` 不做）
 - Formula（公式缓存值，不重算）
 - Cell Type
 
@@ -127,9 +127,9 @@ workbooks = { "Skill.xlsx" = "header_block" }   # 按工作簿文件名的逐簿
 
 - 以表头行定义列名，行为数据行
 - 定位到表头名 + 行号
-- 解析期做类型推断：`true`/`false`/`yes`/`no` → Bool，整数与浮点文本 →
-  Int/UInt/Float，空单元格 → Null，其余 → String；Schema 在 L2 按目标
-  类型严格校验（数值文本进 String 列会报 `E1101`，引号是 CSV 语法、
+- 解析期做类型推断：`true`/`false`/`yes`/`no`/`on`/`off` → Bool，整数与
+  浮点文本 → Int/UInt/Float，空单元格 → Null，其余 → String；Schema 在 L2
+  按目标类型严格校验（数值文本进 String 列会报 `E1101`，引号是 CSV 语法、
   不改变内容类型）
 
 ### JSON / YAML

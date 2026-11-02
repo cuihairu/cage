@@ -70,7 +70,7 @@ Authoring Sources → Source Adapters → Canonical Model → Validation Pipelin
       （实例恒为成员名）、闭形对象、确定性字节；非 cage 工具链零
       运行时消费，见 design §Code Targets 决策记录）
 - [x] Plugin 面：SourceAdapter / TargetGenerator / GameRuleValidator trait（进程内注册）
-- [x] Game Rule Validator 实装（E1601，`cage check --level gamerule`）
+- [x] Game Rule Validator 实装（E1601，`cage check --level gamerule`；声明式规则引擎——`skill_item_category` / `reference_cycle` / `drop_reward` / `dungeon_stage` / `client_server_field`，E1604-E1608——另以库 API（`GameRuleRegistry::with_rules`）存在，尚未接进 `cage check`，其 L7 只跑 `power_curve` 内建）
 - [x] Dependency Graph（引用图 → 构建顺序/变更影响/循环检测，E1403 已接线 L5）
 - [x] 增量构建（`cage build --incremental`：三层——整轮哈希跳过 / 依赖传播只重建受影响表 / target 配置传播）
 - [x] CI 集成（`warnings_as_errors` 顶层开关 + 仓库自身 CI 门禁）

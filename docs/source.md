@@ -52,7 +52,7 @@ The Excel Adapter (based on [calamine](https://crates.io/crates/calamine) to rea
 - Cell
 - Row
 - Column
-- Merged Cells (merged-cell backfill; `.xlsx` only, not done for `.ods`)
+- Merged Cells (merged-cell backfill; `.xlsx`/`.xlsm`, not done for `.ods`)
 - Formula (cached formula values, not recalculated)
 - Cell Type
 
@@ -76,15 +76,53 @@ Document
   +-- Table: Skill
 ```
 
+#### Excel Meta-Row Convention ([design §51](https://github.com/cuihairu/cage/blob/main/docs/design.md#51-excel-meta-row-convention))
+
+The rules can be **written into the Excel and absorbed**, rather than being thrown away and rewritten in the schema YAML (dual maintenance always drifts). Without a `[source.excel]` declaration the byte stream is read exactly on the baseline (the first non-empty row is the header, no convention rows); once declared, the workbook is parsed per the declared preset. **The convention is configurable and does not presuppose the user's Excel format.**
+
+```toml
+[source.excel]
+preset = "marker_rows"            # data | header_block | marker_rows | meta_sheet
+marker = "##"                      # per built-in preset; must start with '#'
+workbooks = { "Skill.xlsx" = "header_block" }   # per-workbook-file override
+```
+
+| Preset | Territory |
+| --- | --- |
+| `data` | No convention rows; each file is exactly as today (default) |
+| `header_block` | A contiguous run of non-empty rows above the header row is the convention band |
+| `marker_rows` | Marker rows starting with `##`; a `##var` row is the data header row, territory extends down to the first pure-data row below it (Q6 ruling (a)) |
+| `meta_sheet` | A sibling sheet named `<table>.meta`, parsed with the same syntax, first row = column-name row |
+
+**Vocabulary** (marker cells starting with `marker`; one declaration per cell):
+
+| Marker | Declaration | Value shape |
+| --- | --- | --- |
+| `##var` | Field-name row (data header row) | One field name per non-marker cell |
+| `##type` | Field type | `Int32` / `String` / `Float32` / `Bool` / `Any` / `Enum<name>` / `Array<…>` / `Map<k, v>` or a Schema type expression |
+| `##min` / `##max` | Numeric bound | numeric text |
+| `##enum` | Enum member | comma-separated member names |
+| `##required` | Required | `true` / `false` |
+| `##default` | Default value | a JSON value matching the target type |
+| `##reference` | Foreign key | `table.field[:cardinality]` |
+| `##primary_key` | Primary-key column | `true` |
+| `##+` | Sub-column declaration row (reflow-5/6) | one sub-column name per non-marker cell; the top-level column it sits in becomes a nested bean (`*` prefix = `multi_row`, a `*name` column without `##+` is E2201) |
+
+**Script adapter** (mutually exclusive with `preset`; `cage.excel-meta/1` subprocess contract): cage writes a JSON request to the script's stdin and reads a JSON response from stdout; the request carries `workbook`/`sheet`/`grid`/`header_row`, the response carries `TableMeta` or diagnostics. Language-agnostic (Python/Node/any executable).
+
+**Derivation and drift (X2)**: `cage schema-draft <project> excel:<relative-path>` generates a schema draft from the meta rows (the author no longer writes a second copy by hand). Once the project adopts a schema, compile time reconciles against the Excel meta rows — a mismatch reports `E2208` located at the declaring cell, never silently deferring to YAML. With no adopted schema (derivation chain), an Excel carrying rule rows passes `check` without writing YAML.
+
+**Decision record**: 2026-10-26 "no Excel write-back/editor" retained, "Excel does not carry rules" overturned on the read side (rules are absorbed from the Excel); 2026-10-26 11:14 the convention must be configurable, not presupposed; 2026-10-28 Q6 ruling (a) a `##var` row is the data header row and the marker_rows territory extends down to the first pure-data row. Full rulings and the E2201–E2208 code table are in design §51.
+
 ### CSV
 
 - The header row defines the column names; each row is a data row
 - Locations resolve to header name + row number
-- Type inference at parse time: `true`/`false`/`yes`/`no` → Bool, integer and
-  float text → Int/UInt/Float, empty cells → Null, everything else → String;
-  the Schema then strictly validates at L2 against the target type (numeric
-  text into a String column reports `E1101`; quotes are CSV syntax and do not
-  change the content type)
+- Type inference at parse time: `true`/`false`/`yes`/`no`/`on`/`off` → Bool,
+  integer and float text → Int/UInt/Float, empty cells → Null, everything else
+  → String; the Schema then strictly validates at L2 against the target type
+  (numeric text into a String column reports `E1101`; quotes are CSV syntax
+  and do not change the content type)
 
 ### JSON / YAML
 

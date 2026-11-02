@@ -1,13 +1,20 @@
 [English](README.md) | [中文](README.zh.md)
 
 <div align="center">
-  <img src="docs/public/logo.svg" width="64" alt="Cage logo" /> <a href="https://cuihairu.github.io/cage//"></a> <a href="https://cuihairu.github.io/cage/"></a>
-  <img src="https://img.shields.io/badge/docs-docs-blue" alt="docs"> <img src="https://img.shields.io/badge/docs-blue" alt="docs">
+
+<img src="docs/public/logo.svg" width="64" alt="Cage logo" />
+
+# Cage
+
+[![Rust](https://img.shields.io/badge/Rust-cargo-orange.svg)](https://www.rust-lang.org/) [![CI](https://github.com/cuihairu/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/cage/actions/workflows/ci.yml) [![Codecov](https://codecov.io/gh/cuihairu/cage/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/cage) [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://cuihairu.github.io/cage/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+
+**A configuration compiler and validation framework for game development. It transforms heterogeneous authoring data into validated, deterministic runtime artifacts.**
+
 </div>
 
 ---
 
-Cage parses human-maintained configuration sources (Excel / CSV / JSON / YAML / …) into a unified intermediate configuration model, then runs multi-level validation, cross-configuration reference resolution, and normalization, and finally emits ready-to-consume configuration assets or code for each target platform.
+Cage parses human-maintained configuration sources (Excel / CSV / JSON / YAML / MessagePack / …) into a unified intermediate configuration model, then runs multi-level validation, cross-configuration reference resolution, and normalization, and finally emits ready-to-consume configuration assets or code for each target platform.
 
 It is not bound to one input or output format: Excel is just one kind of input source. The goal is to compile scattered, heterogeneous, human-oriented configuration data into validated, deterministically built runtime configuration assets.
 
@@ -21,7 +28,7 @@ Authoring Sources → Source Adapters → Canonical Model
 
 ## Capabilities
 
-- Source adapter plugins: Excel / CSV / JSON / YAML, plus the remote sources HTTP API / MySQL / PostgreSQL / Google Sheets (XML, SQLite, … later); they read and parse only, and do no business-rule validation
+- Source adapter plugins: Excel / CSV / JSON / YAML / MessagePack, plus the remote sources HTTP API / MySQL / PostgreSQL / Google Sheets (XML, SQLite, … later); they read and parse only, and do no business-rule validation
 - Excel meta-row convention: rules written as `##`-prefixed rows inside the workbook (`[source.excel]` preset / per-workbook override / user script adapter `cage.excel-meta/1`) — a table may carry its own schema declaration next to the data, derived into a reviewable draft (`cage schema-draft … excel:`) and drift-checked against an adopted schema (E2208, cell-anchored); meta rows never leak into the built artifacts
 - Schema decoupled from Source: one schema serves multiple configuration sources (types / required / defaults / ranges / enums / uniqueness / references)
 - Eight-level validation pipeline: Parse / Schema / Type / Value / Table / Reference / Semantic / Game Rule, executable level by level (`cage check --level`)
@@ -140,7 +147,7 @@ Download the binary over an anonymous direct link from the rolling [nightly rele
    Expected output (last two lines):
 
    ```text
-   Installed to: /home/<you>/.local/bin/cage
+   安装完成：/home/<you>/.local/bin/cage
    cage 0.1.0
    ```
 
@@ -163,7 +170,7 @@ Download the binary over an anonymous direct link from the rolling [nightly rele
    Expected output (last two lines):
 
    ```text
-   Installed to: C:\Users\<you>\AppData\Local\cage\cage.exe
+   安装完成：C:\Users\<you>\AppData\Local\cage\cage.exe
    cage 0.1.0
    ```
 

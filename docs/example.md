@@ -1,7 +1,7 @@
 
 # Complete Example
 
-The repository permanently hosts an end-to-end example project [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config) — five tables ("Character Growth + Item + Quest + Shop + Stage"), five source formats (CSV / YAML / JSON / Excel / MsgPack), one schema covering common field types and constraint usage, dual profiles (client 14 targets / server 3 targets), per-environment constraint overrides across four environments (`--env dev/test/staging/prod`), snapshot / diff / migration / registry / stdio LSP diagnostics (`cage lsp`), plus a set of bad data that triggers L7 Game Rules and per-environment required fields.
+The repository permanently hosts an end-to-end example project [`examples/game-config/`](https://github.com/cuihairu/cage/tree/main/examples/game-config) — six tables ("Character Growth + Item + Quest + Shop + Skill + Stage"), five source formats (CSV / YAML / JSON / Excel / MsgPack), six schema files covering common field types and constraint usage, dual profiles (client 14 targets / server 3 targets), per-environment constraint overrides across four environments (`--env dev/test/staging/prod`), snapshot / diff / migration / registry / stdio LSP diagnostics (`cage lsp`), plus a set of bad data that triggers L7 Game Rules and per-environment required fields.
 
 All commands and outputs on this page are **real execution results** (run from the repository root), not pseudocode.
 
@@ -20,85 +20,87 @@ The script goes from `cage check` to `cage build` to `cage gen` to `cage migrate
 ==> 构建 cage 可执行文件
 
 
+
 ============================================================
 ==> [1/15] cage check examples/game-config   —— L0-L6 全量校验（好数据应通过）
 ============================================================
 $ cage check examples/game-config
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 
 ============================================================
 ==> [2/15] cage check --level gamerule examples/game-config   —— L7 业务规则（好数据应通过）
 ============================================================
 $ cage check examples/game-config --level gamerule
-cage check: OK (5 tables, 0 warnings, level <= gamerule)
+cage check: OK (6 tables, 0 warnings, level <= gamerule)
 
 ============================================================
 ==> [3/15] 分环境验证 —— --env dev/test/staging/prod 四套放行、未知环境 exit 2
 ============================================================
 $ cage check examples/game-config --env dev
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env test
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env staging
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env prod
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 $ cage build examples/game-config --profile client --env dev
-cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+cage build: OK (profile 'client', 101 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 $ cage build examples/game-config --profile client --env test
-cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+cage build: OK (profile 'client', 101 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 $ cage build examples/game-config --profile client --env staging
-cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+cage build: OK (profile 'client', 101 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 $ cage build examples/game-config --profile client --env prod
-cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
-  dev|6271d907b39e|b74285f8edb1
-  test|fcd7f8107102|a22c71cd3872
-  staging|158f898a3913|04a35a5f73f9
-  prod|55dae1a8e145|f81e230d62e9
+cage build: OK (profile 'client', 101 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+  dev|2bc940793ff9|e99df1d148f1
+  test|e7849d20b623|98f70d574b17
+  staging|49036353ab39|4bd94ab2b44f
+  prod|47e9bd9e3dab|a1642067d800
 $ cage check examples/game-config --env qa   # 期望退出码 2
 error: unknown environment 'qa' (declared: dev, prod, staging, test)
 
 ============================================================
-==> [4/15] cage build --profile client   —— 验证 + 生成全部 14 个 target（5 张表）
+==> [4/15] cage build --profile client   —— 验证 + 生成全部 14 个 target（6 张表）
 ============================================================
 $ cage build examples/game-config --profile client
-cage build: OK (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+cage build: OK (profile 'client', 101 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+Skill.xlsx 元行演示：meta rows 未泄入产物，Frost Nova tier=1
 
 ============================================================
 ==> [5/15] cage build --profile client --incremental   —— 指纹一致 → 跳过重建
 ============================================================
 $ cage build examples/game-config --profile client --incremental
-cage build: up to date (profile 'client', 86 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+cage build: up to date (profile 'client', 101 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 
 ============================================================
 ==> [6/15] cage snapshot --profile client (+ --env prod) + --verify   —— 基线/环境化快照打包与回验
 ============================================================
 $ cage snapshot examples/game-config --profile client
-cage snapshot: OK (profile 'client', 89 files, 86 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-850ac5e6ac32)
+cage snapshot: OK (profile 'client', 104 files, 101 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-5c5c526de3c5)
 $ cage snapshot <dir> --verify
-cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-850ac5e6ac32/ — 88 files checked)
+cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-5c5c526de3c5/ — 103 files checked)
 $ cage snapshot examples/game-config --profile client --env prod   —— 环境化出包（目录名带 env 段）
-cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-55dae1a8e145)
+cage snapshot: OK (profile 'client', env 'prod', 104 files, 101 artifacts, verified, /home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-47e9bd9e3dab)
 $ cage snapshot <prod-dir> --verify
-cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-55dae1a8e145/ — 88 files checked)
+cage snapshot: verified (/home/cui/workspaces/cage/examples/game-config/build/snapshot/client-prod-47e9bd9e3dab/ — 103 files checked)
 
 ============================================================
 ==> [7/15] cage gen --profile client   —— 只生成代码绑定与 JSON Schema（含 proto/fbs 定义）
 ============================================================
 $ cage gen examples/game-config --profile client
-cage gen: OK (profile 'client', 71 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+cage gen: OK (profile 'client', 83 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 
 ============================================================
 ==> [8/15] cage diff build build   —— 同一构建前后比对（确定性：全不变）
 ============================================================
 $ cage diff examples/game-config/build examples/game-config/build
-cage diff: 0 added, 0 removed, 0 changed, 71 unchanged
+cage diff: 0 added, 0 removed, 0 changed, 83 unchanged
 
 ============================================================
 ==> [9/15] cage build --profile server   —— 服务端视图（server-only 字段 internal_note 可见，client 视图剔除）
 ============================================================
 $ cage build examples/game-config --profile server
-cage build: OK (profile 'server', 16 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
+cage build: OK (profile 'server', 19 artifacts, manifest /home/cui/workspaces/cage/examples/game-config/build/manifest.json)
 
 ============================================================
 ==> [10/15] cage migrate --to 0.2.0   —— 声明式迁移 dry-run（不写盘）
@@ -110,40 +112,41 @@ cage migrate: segment 0001_rename_desc.yaml (0.1.0 → 0.2.0)
   would write /home/cui/workspaces/cage/examples/game-config/config/Item.yaml (1 table(s))
   skip /home/cui/workspaces/cage/examples/game-config/config/Quest.xlsx (Excel source: report only — 1 table(s), 3 row(s))
   skip /home/cui/workspaces/cage/examples/game-config/config/Shop.msgpack (not a text source)
+  skip /home/cui/workspaces/cage/examples/game-config/config/Skill.xlsx (Excel source: report only — 1 table(s), 3 row(s))
   would write /home/cui/workspaces/cage/examples/game-config/config/Stage.json (1 table(s))
 cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, nothing written
 
 ============================================================
 ==> [11/15] cage registry publish + list   —— 版本化自校验资产发布到本地仓库（含环境化出包与 E1801）
 ============================================================
-$ cage registry publish examples/game-config --registry /tmp/tmp.Jn5f7l8eVG
-cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id 850ac5e6ac32, content_hash edf7f24417fe)
-$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.Jn5f7l8eVG   # 同版本换环境 → E1801（一版本一包）
-error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id 850ac5e6ac32005bd1d5220a / content_hash edf7f24417fe87bfd50fec7f5d6fc91c7cc955cc4b6cfe0447c0fc879a7357ea — republish under a new version
-$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.Jn5f7l8eVG --version 0.1.0-prod
-cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 89 files, build_id 55dae1a8e145, content_hash f81e230d62e9)
-$ cage registry list --registry /tmp/tmp.Jn5f7l8eVG
-cage registry: 1 package(s) in /tmp/tmp.Jn5f7l8eVG
+$ cage registry publish examples/game-config --registry /tmp/tmp.I6gxk4Iqck
+cage registry: published rpg-demo/0.1.0 (profile 'client', 104 files, build_id 5c5c526de3c5, content_hash c4a7ec46ab43)
+$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.I6gxk4Iqck   # 同版本换环境 → E1801（一版本一包）
+error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id 5c5c526de3c52c008ebb7262 / content_hash c4a7ec46ab430e86eb77fd95ac1c0dd72094b9e69c8afdcd9b171770ff35205d — republish under a new version
+$ cage registry publish examples/game-config --env prod --registry /tmp/tmp.I6gxk4Iqck --version 0.1.0-prod
+cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 104 files, build_id 47e9bd9e3dab, content_hash a1642067d800)
+$ cage registry list --registry /tmp/tmp.I6gxk4Iqck
+cage registry: 1 package(s) in /tmp/tmp.I6gxk4Iqck
 rpg-demo
-  0.1.0        build 850ac5e6ac32  content edf7f24417fe  89 files
-  0.1.0-prod   build 55dae1a8e145  content f81e230d62e9  89 files
+  0.1.0        build 5c5c526de3c5  content c4a7ec46ab43  104 files
+  0.1.0-prod   build 47e9bd9e3dab  content a1642067d800  104 files
 
 ============================================================
 ==> [12/15] 远程分发全链路   —— push 直推 + presigned 直推 + 消费方远端 resolve 构建
 ============================================================
 $ cage registry publish examples/game-config   # 发布进示例本地注册表（push 源）
-cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id 850ac5e6ac32, content_hash edf7f24417fe)
-(本地对象库 A=http://127.0.0.1:32905 直推 / B=http://127.0.0.1:36077 presigned)
-$ cage registry push examples/game-config --registry http://127.0.0.1:32905
-cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:32905 (89 file(s))
-cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:32905 (89 file(s)) — identical, no-op
-$ cage registry push examples/game-config --presign-map /tmp/tmp.sa450hDEAV/presign.json
-cage registry: pushed rpg-demo/0.1.0 → presigned targets (/tmp/tmp.sa450hDEAV/presign.json) (89 file(s))
-$ cage build /tmp/tmp.9ROByJsNlN/consA --profile client   # 消费方直连远端根构建（consA ← 32905）
-cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.9ROByJsNlN/consA/build/manifest.json)
-$ cage build /tmp/tmp.9ROByJsNlN/consB --profile client   # 消费方直连远端根构建（consB ← 36077）
-cage build: OK (profile 'client', 5 artifacts, manifest /tmp/tmp.9ROByJsNlN/consB/build/manifest.json)
-消费方产物与发布方逐字节一致（5 张表 × 2 条分发路）
+cage registry: published rpg-demo/0.1.0 (profile 'client', 104 files, build_id 5c5c526de3c5, content_hash c4a7ec46ab43)
+(本地对象库 A=http://127.0.0.1:39057 直推 / B=http://127.0.0.1:46311 presigned)
+$ cage registry push examples/game-config --registry http://127.0.0.1:39057
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:39057 (104 file(s))
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:39057 (104 file(s)) — identical, no-op
+$ cage registry push examples/game-config --presign-map /tmp/tmp.aVaMKEkDZi/presign.json
+cage registry: pushed rpg-demo/0.1.0 → presigned targets (/tmp/tmp.aVaMKEkDZi/presign.json) (104 file(s))
+$ cage build /tmp/tmp.tYqNXtE0u0/consA --profile client   # 消费方直连远端根构建（consA ← 39057）
+cage build: OK (profile 'client', 6 artifacts, manifest /tmp/tmp.tYqNXtE0u0/consA/build/manifest.json)
+$ cage build /tmp/tmp.tYqNXtE0u0/consB --profile client   # 消费方直连远端根构建（consB ← 46311）
+cage build: OK (profile 'client', 6 artifacts, manifest /tmp/tmp.tYqNXtE0u0/consB/build/manifest.json)
+消费方产物与发布方逐字节一致（6 张表 × 2 条分发路）
 
 ============================================================
 ==> [13/15] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称
@@ -229,12 +232,14 @@ tables:
   Item (5 rows)
   Quest (3 rows)
   Shop (3 rows)
+  Skill (3 rows)
   Stage (3 rows)
 schemas:
   Character (10 fields, primary key: id)
   Item (7 fields, primary key: id)
   Quest (4 fields, primary key: id)
   Shop (3 fields, primary key: id)
+  Skill (5 fields, primary key: id)
   Stage (10 fields, primary key: id)
 
 ============================================================
@@ -329,25 +334,27 @@ $ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501（与 cage
 
 ```text
 examples/game-config/
-├── cage.toml          # 工程配置：client（13 target）/ server（3 target）双 profile
-├── schemas/           # 五个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
+├── cage.toml          # 工程配置：client（14 target）/ server（3 target）双 profile
+├── schemas/           # 六个 schema 文件（按名序合并加载，metadata 取自 character.yaml）
 │   ├── character.yaml # 角色成长：枚举/唯一约束/正则/范围/默认值/保留字字段 class
 │   │                  #   + nickname：env_overrides 四套环境（dev 32 → test 24 → staging 20、prod 必填）
 │   │                  #   + internal_note：targets ["server"]（字段级可见性）
 │   ├── item.yaml      # 道具：整型枚举 + 字符串枚举 + 可选字段
 │   ├── quest.yaml     # 任务：Excel 源、跨表引用、order_by 行排序
 │   ├── shop.yaml      # 商店：MsgPack 源、env_overrides 四套环境（折扣上限 0.9/0.7/0.6/0.5）
+│   ├── skill.yaml     # 技能：Excel 源、元行约定演示（meta rows 不泄入产物）
 │   └── stage.yaml     # 关卡：数组/对象/跨表引用/Map<string, Array<Int32>>
 ├── config/            # 五种源格式（同一 profile 一起加载）
 │   ├── Character.csv  # CSV：文件名即表名
 │   ├── Item.yaml      # YAML：根键 = 表名
 │   ├── Quest.xlsx     # Excel：工作表名即表名（源适配自动发现）
 │   ├── Shop.msgpack   # MsgPack：裸行对象数组，文件名即表名
+│   ├── Skill.xlsx     # Excel：元行约定（[source.excel] preset），meta rows 不泄入产物
 │   └── Stage.json     # JSON：根键 = 表名
 ├── migrations/        # 声明式数据迁移规则（cage migrate dry-run）
 │   └── 0001_rename_desc.yaml   # Item.desc → description（from 0.1.0 → 0.2.0）
 ├── ci/                # CI 参考片段（Jenkinsfile / github-actions.yml / gitlab-ci.yml）
-└── bad/               # 坏数据：完整复制品，attack=500 + 全行无 nickname
+└── bad/               # 坏数据：完整复制品，首行 hp=600 / attack=500 + 全行无 nickname
     ├── cage.toml      # schema_path = "../schemas"（共用同一份 schema）
     └── config/
 ```
@@ -358,14 +365,14 @@ examples/game-config/
 
 ```console
 $ cage check examples/game-config
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 ```
 
 `--level` runs the validation pipeline in tiers, with `gamerule` adding the L7 business rules:
 
 ```console
 $ cage check examples/game-config --level gamerule
-cage check: OK (5 tables, 0 warnings, level <= gamerule)
+cage check: OK (6 tables, 0 warnings, level <= gamerule)
 ```
 
 ### cage check --env — per-environment constraint overrides
@@ -374,13 +381,13 @@ Environments are declared by the schema's `env_overrides` key (design §48); thi
 
 ```console
 $ cage check examples/game-config --env dev
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env test
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env staging
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env prod
-cage check: OK (5 tables, 0 warnings, level <= semantic)
+cage check: OK (6 tables, 0 warnings, level <= semantic)
 $ cage check examples/game-config --env qa
 error: unknown environment 'qa' (declared: dev, prod, staging, test)
 $ echo $?
@@ -394,10 +401,10 @@ $ for env in dev test staging prod; do
 >   cage build examples/game-config --profile client --env $env > /dev/null
 >   python3 -c "import json; m=json.load(open('examples/game-config/build/manifest.json')); print(m['environment']+'|'+m['build_id'][:12]+'|'+m['content_hash'][:12])"
 > done
-dev|6271d907b39e|b74285f8edb1
-test|fcd7f8107102|a22c71cd3872
-staging|158f898a3913|04a35a5f73f9
-prod|55dae1a8e145|f81e230d62e9
+dev|2bc940793ff9|e99df1d148f1
+test|e7849d20b623|98f70d574b17
+staging|49036353ab39|4bd94ab2b44f
+prod|47e9bd9e3dab|a1642067d800
 ```
 
 An unknown environment is a usage error (exit 2), not a new E-code; the environment name goes into the manifest's `environment` field and participates in the incremental fingerprint.
@@ -406,27 +413,27 @@ An unknown environment is a usage error (exit 2), not a new E-code; the environm
 
 ```console
 $ cage build examples/game-config --profile client
-cage build: OK (profile 'client', 86 artifacts, manifest examples/game-config/build/manifest.json)
+cage build: OK (profile 'client', 101 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
-86 artifacts = 15 data files (5 tables × json/csv/msgpack) + 6 proto files (5 tables + shared `cage_enums.proto`) + 6 fbs files (5 tables + shared `cage_enums.fbs`) + 54 code files (8 languages × 5 tables each + 1 enum unit, with the JS form additionally paired with a `.d.ts`) + 5 JSON Schema files (5 tables × `{table}.schema.json`); the manifest lives at `build/manifest.json` and is not counted in the `client/` totals:
+101 artifacts = 18 data files (6 tables × json/csv/msgpack) + 7 proto files (6 tables + shared `cage_enums.proto`) + 7 fbs files (6 tables + shared `cage_enums.fbs`) + 56 code files (8 languages × 6 tables each + 1 enum unit) + 7 additional `.d.ts` pairings (the JS form) + 6 JSON Schema files (6 tables × `{table}.schema.json`); the manifest lives at `build/manifest.json` and is not counted in the `client/` totals:
 
 ```text
 build/client/
-├── json/    Character.json  Item.json  Quest.json  Shop.json  Stage.json
-├── csv/     Character.csv   Item.csv   Quest.csv   Shop.csv   Stage.csv
-├── msgpack/ Character.msgpack  Item.msgpack  Quest.msgpack  Shop.msgpack  Stage.msgpack
-├── proto/   Character.proto Item.proto Quest.proto Shop.proto Stage.proto cage_enums.proto
-├── fbs/     Character.fbs   Item.fbs   Quest.fbs   Shop.fbs   Stage.fbs   cage_enums.fbs
-├── cs/      Character.cs    Item.cs    Quest.cs    Shop.cs    Stage.cs    CageEnums.cs
-├── py/      Character.py    Item.py    Quest.py    Shop.py    Stage.py    cage_enums.py
-├── lua/     Character.lua   Item.lua   Quest.lua   Shop.lua   Stage.lua   cage_enums.lua
-├── ts/      Character.ts    Item.ts    Quest.ts    Shop.ts    Stage.ts    cage_enums.ts
-├── js/      Character.js/.d.ts  Item.js/.d.ts  Quest.js/.d.ts  Shop.js/.d.ts  Stage.js/.d.ts  cage_enums.js/.d.ts
-├── cpp/     Character.h     Item.h     Quest.h     Shop.h     Stage.h     cage_enums.h
-├── go/      Character.go    Item.go    Quest.go    Shop.go    Stage.go    cage_enums.go
-├── java/    Character.java  Item.java  Quest.java  Shop.java  Stage.java  CageEnums.java
-├── jsonschema/ Character.schema.json  Item.schema.json  Quest.schema.json  Shop.schema.json  Stage.schema.json
+├── json/    Character.json  Item.json  Quest.json  Shop.json  Skill.json  Stage.json
+├── csv/     Character.csv   Item.csv   Quest.csv   Shop.csv   Skill.csv   Stage.csv
+├── msgpack/ Character.msgpack  Item.msgpack  Quest.msgpack  Shop.msgpack  Skill.msgpack  Stage.msgpack
+├── proto/   Character.proto Item.proto Quest.proto Shop.proto Skill.proto Stage.proto cage_enums.proto
+├── fbs/     Character.fbs   Item.fbs   Quest.fbs   Shop.fbs   Skill.fbs   Stage.fbs   cage_enums.fbs
+├── cs/      Character.cs    Item.cs    Quest.cs    Shop.cs    Skill.cs    Stage.cs    CageEnums.cs
+├── py/      Character.py    Item.py    Quest.py    Shop.py    Skill.py    Stage.py    cage_enums.py
+├── lua/     Character.lua   Item.lua   Quest.lua   Shop.lua   Skill.lua   Stage.lua   cage_enums.lua
+├── ts/      Character.ts    Item.ts    Quest.ts    Shop.ts    Skill.ts    Stage.ts    cage_enums.ts
+├── js/      Character.js/.d.ts  Item.js/.d.ts  Quest.js/.d.ts  Shop.js/.d.ts  Skill.js/.d.ts  Stage.js/.d.ts  cage_enums.js/.d.ts
+├── cpp/     Character.h     Item.h     Quest.h     Shop.h     Skill.h     Stage.h     cage_enums.h
+├── go/      Character.go    Item.go    Quest.go    Shop.go    Skill.go    Stage.go    cage_enums.go
+├── java/    Character.java  Item.java  Quest.java  Shop.java  Skill.java  Stage.java  CageEnums.java
+├── jsonschema/ Character.schema.json  Item.schema.json  Quest.schema.json  Shop.schema.json  Skill.schema.json  Stage.schema.json
 └── manifest.json
 ```
 
@@ -436,7 +443,7 @@ Determinism spot check: after a full rebuild, msgpack / proto / fbs are byte-ide
 
 ```console
 $ cage build examples/game-config --profile client --incremental
-cage build: up to date (profile 'client', 86 artifacts, manifest examples/game-config/build/manifest.json)
+cage build: up to date (profile 'client', 101 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
 Dual-layer guards — L1 (schema + source fingerprints) and L2 (artifact fingerprints); `environment` participates in the fingerprint, so changing `--env` triggers a rebuild.
@@ -445,11 +452,11 @@ Dual-layer guards — L1 (schema + source fingerprints) and L2 (artifact fingerp
 
 ```console
 $ cage snapshot examples/game-config --profile client
-cage snapshot: OK (profile 'client', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-850ac5e6ac32)
-$ cage snapshot examples/game-config/build/snapshot/client-850ac5e6ac32/ --verify
-cage snapshot: verified (examples/game-config/build/snapshot/client-850ac5e6ac32/ — 88 files checked)
+cage snapshot: OK (profile 'client', 104 files, 101 artifacts, verified, examples/game-config/build/snapshot/client-5c5c526de3c5)
+$ cage snapshot examples/game-config/build/snapshot/client-5c5c526de3c5/ --verify
+cage snapshot: verified (examples/game-config/build/snapshot/client-5c5c526de3c5/ — 103 files checked)
 $ cage snapshot examples/game-config --profile client --env prod
-cage snapshot: OK (profile 'client', env 'prod', 89 files, 86 artifacts, verified, examples/game-config/build/snapshot/client-prod-55dae1a8e145)
+cage snapshot: OK (profile 'client', env 'prod', 104 files, 101 artifacts, verified, examples/game-config/build/snapshot/client-prod-47e9bd9e3dab)
 ```
 
 A snapshot = the profile-projected canonical schema (`schema.json`) + all artifacts + a per-file hash ledger (`HASHES.json`) — self-verifying, rollback-ready, and auditable. `--env` produces an environment-scoped package: `env_overrides` are resolved into the schema before validation and packaging, the directory name carries an env segment (`client-prod-<build_id>`), the `manifest.json` inside records `environment`, and `schema.json` is exactly the prod rules.
@@ -458,7 +465,7 @@ A snapshot = the profile-projected canonical schema (`schema.json`) + all artifa
 
 ```console
 $ cage gen examples/game-config --profile client
-cage gen: OK (profile 'client', 71 artifacts, manifest examples/game-config/build/manifest.json)
+cage gen: OK (profile 'client', 83 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
 It skips the json/csv/msgpack data targets; the code artifacts (including proto/fbs definitions) and the JSON Schema documents are exactly the same as with build.
@@ -467,7 +474,7 @@ It skips the json/csv/msgpack data targets; the code artifacts (including proto/
 
 ```console
 $ cage diff examples/game-config/build examples/game-config/build
-cage diff: 0 added, 0 removed, 0 changed, 65 unchanged
+cage diff: 0 added, 0 removed, 0 changed, 83 unchanged
 ```
 
 Comparing the same build with itself shows no changes at all — determinism is the precondition for trustworthy artifacts.
@@ -476,7 +483,7 @@ Comparing the same build with itself shows no changes at all — determinism is 
 
 ```console
 $ cage build examples/game-config --profile server
-cage build: OK (profile 'server', 16 artifacts, manifest examples/game-config/build/manifest.json)
+cage build: OK (profile 'server', 19 artifacts, manifest examples/game-config/build/manifest.json)
 ```
 
 `Character.internal_note` declares `targets: ["server"]`: all 4 rows in the server view carry the field, while it never appears in the client view (field-level visibility, E9006 ordering-safe).
@@ -491,6 +498,7 @@ cage migrate: segment 0001_rename_desc.yaml (0.1.0 → 0.2.0)
   would write examples/game-config/config/Item.yaml (1 table(s))
   skip examples/game-config/config/Quest.xlsx (Excel source: report only — 1 table(s), 3 row(s))
   skip examples/game-config/config/Shop.msgpack (not a text source)
+  skip examples/game-config/config/Skill.xlsx (Excel source: report only — 1 table(s), 3 row(s))
   would write examples/game-config/config/Stage.json (1 table(s))
 cage migrate: OK (1 segment(s), 3 row(s) migrated, schema 0.1.0) — dry run, nothing written
 ```
@@ -501,16 +509,16 @@ Migration rules are declarative segments on the version chain; dry-run only repo
 
 ```console
 $ cage registry publish examples/game-config --registry /tmp/reg
-cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id 850ac5e6ac32, content_hash edf7f24417fe)
+cage registry: published rpg-demo/0.1.0 (profile 'client', 104 files, build_id 5c5c526de3c5, content_hash c4a7ec46ab43)
 $ cage registry publish examples/game-config --env prod --registry /tmp/reg   # 同版本换环境 → E1801（一版本一包）
-error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id 850ac5e6ac32005bd1d5220a / content_hash edf7f24417fe87bfd50fec7f5d6fc91c7cc955cc4b6cfe0447c0fc879a7357ea — republish under a new version
+error: E1801 registry version conflict: rpg-demo/0.1.0 already published with build_id 5c5c526de3c52c008ebb7262 / content_hash c4a7ec46ab430e86eb77fd95ac1c0dd72094b9e69c8afdcd9b171770ff35205d — republish under a new version
 $ cage registry publish examples/game-config --env prod --registry /tmp/reg --version 0.1.0-prod
-cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 89 files, build_id 55dae1a8e145, content_hash f81e230d62e9)
+cage registry: published rpg-demo/0.1.0-prod (profile 'client', env 'prod', 104 files, build_id 47e9bd9e3dab, content_hash a1642067d800)
 $ cage registry list --registry /tmp/reg
 cage registry: 1 package(s) in /tmp/reg
 rpg-demo
-  0.1.0        build 850ac5e6ac32  content edf7f24417fe  89 files
-  0.1.0-prod   build 55dae1a8e145  content f81e230d62e9  89 files
+  0.1.0        build 5c5c526de3c5  content c4a7ec46ab43  104 files
+  0.1.0-prod   build 47e9bd9e3dab  content a1642067d800  104 files
 ```
 
 The snapshot is registered as the `rpg-demo/0.1.0` entry: self-verifying, addressable, and reclaimable by rolling. `publish --env` produces an environment-scoped package: one version, one package — the same version under a different environment is a different package (schema/manifest both change), E1801 blocks the conflict, and switching to a different version number (`0.1.0-prod`) gets it registered; the `manifest.json` inside the entry records `environment`. For managing schemas as artifacts and consumer-side loading, see the Assets page.
@@ -521,13 +529,13 @@ The example project declares `[registry] path = "reg"` (the artifact directory, 
 
 ```console
 $ cage registry publish examples/game-config                       # 发布进示例本地注册表（push 源）
-cage registry: published rpg-demo/0.1.0 (profile 'client', 89 files, build_id 850ac5e6ac32, content_hash edf7f24417fe)
+cage registry: published rpg-demo/0.1.0 (profile 'client', 104 files, build_id 5c5c526de3c5, content_hash c4a7ec46ab43)
 $ cage registry push examples/game-config --registry http://127.0.0.1:8080   # 直推：匿名探针 + 逐文件 PUT + index 合并收尾
-cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:8080 (89 file(s))
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:8080 (104 file(s))
 $ cage registry push examples/game-config --registry http://127.0.0.1:8080   # 重推同字节 → 幂等零 PUT
-cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:8080 (89 file(s)) — identical, no-op
+cage registry: pushed rpg-demo/0.1.0 → http://127.0.0.1:8080 (104 file(s)) — identical, no-op
 $ cage registry push examples/game-config --presign-map presign.json          # 对象存储直推：URL 表即凭据（无 Bearer）
-cage registry: pushed rpg-demo/0.1.0 → presigned targets (presign.json) (89 file(s))
+cage registry: pushed rpg-demo/0.1.0 → presigned targets (presign.json) (104 file(s))
 ```
 
 The consumer (another project) pulls no source files and builds directly against the remote root — `schema_path` and `source_roots` both point at registry entries, and at build time it first passes the ledger trust gate, then runs the full pipeline:
@@ -545,14 +553,14 @@ path = "http://127.0.0.1:8080"
 
 ```console
 $ cage build ./consumer --profile client
-cage build: OK (profile 'client', 5 artifacts, manifest ./consumer/build/manifest.json)
+cage build: OK (profile 'client', 6 artifacts, manifest ./consumer/build/manifest.json)
 ```
 
-The remote entry is the very same bytes the publisher built, and the consumer's artifacts are **byte-identical** to the publisher's — `run.sh` step 12 asserts exactly this (5 tables × direct-push / presigned, two distribution paths), using a local python3 object-store stand-in to push one copy down each path and start one consumer build for each.
+The remote entry is the very same bytes the publisher built, and the consumer's artifacts are **byte-identical** to the publisher's — `run.sh` step 12 asserts exactly this (6 tables × direct-push / presigned, two distribution paths), using a local python3 object-store stand-in to push one copy down each path and start one consumer build for each.
 
 ### cage check (bad data) — E1601 row-level diagnostics + per-environment E1001
 
-`bad/` differs from the good data in two ways: the first row of `Character.csv` has `attack` changed from 120 to 500, and no row carries a `nickname` column. The built-in power_curve rule requires `attack <= level * 100 + 50`, a cap of 150 at level=1:
+`bad/` differs from the good data in two ways: the first row of `Character.csv` has `hp` changed from 120 to 600 and `attack` from 120 to 500 (so `hp > attack` trips E1501, and `attack` 500 trips the E1601 cap at level 1), and no row carries a `nickname` column. The built-in power_curve rule requires `attack <= level * 100 + 50`, a cap of 150 at level=1:
 
 ```console
 $ cage check examples/game-config/bad --level gamerule
@@ -626,7 +634,7 @@ schemas:
   Item (7 fields, primary key: id)
   Quest (4 fields, primary key: id)
   Shop (3 fields, primary key: id)
-  Stage (9 fields, primary key: id)
+  Stage (10 fields, primary key: id)
 ```
 
 ## Schema Highlights (usage covered by this example)
@@ -803,9 +811,9 @@ Standard JSON Schema (`build/client/jsonschema/Item.schema.json`, excerpt — en
 }
 ```
 
-## 19 Field Types × 8 Languages: Full Mapping Table
+## 20 Field Types × 8 Languages: Full Mapping Table
 
-Field type mapping for code targets (Map is the 19th type, added in v0.2):
+Field type mapping for code targets (20 kinds; Map added in v0.2, TaggedUnion maps like Object):
 
 | FieldType | C# | Python | Lua | TS / JS | C++ | Go | Java |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -825,6 +833,7 @@ Field type mapping for code targets (Map is the 19th type, added in v0.2):
 | Bytes | `byte[]` | `bytes` | `bytes` | `Uint8Array` | `std::vector<std::uint8_t>` | `[]byte` | `byte[]` |
 | Array\<T\> | `IReadOnlyList<T>` | `list[T]` | `array<T>` | `T[]` | `std::vector<T>` | `[]T` | `List<T>` |
 | Object | `IReadOnlyDictionary<string, object?>` | `dict[str, Any]` | `table` | `Record<string, unknown>` | `std::map<std::string, std::any>` | `map[string]any` | `Map<String, Object>` |
+| TaggedUnion | `IReadOnlyDictionary<string, object?>` | `dict[str, Any]` | `table` | `Record<string, unknown>` | `std::map<std::string, std::any>` | `map[string]any` | `Map<String, Object>` |
 | **Map\<K,V\>** | `Dictionary<K, V>` | `dict[K, V]` | `table` (type tag `map<K, V>`) | `Map<K, V>` | `std::unordered_map<K, V>` | `map[K]V` | `HashMap<K, V>` |
 | Enum | enum name (falls back to `string` when unresolved) | enum name | enum name | enum name | enum name (string bucket `std::string_view`) | enum name | enum name |
 | Any | `object?` | `Any` | `any` | `unknown` | `std::any` | `any` | `Object` |

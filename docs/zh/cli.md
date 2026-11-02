@@ -118,10 +118,10 @@ cage check .
 只验证，不生成 Runtime Artifact。可以分级执行：
 
 ```bash
-cage check --level schema       # 只做 Schema 层
-cage check --level reference    # 只做到引用层
-cage check --profile client     # 按 Profile 验证
-cage check --env prod           # 按 Schema 的 prod 环境约束验证
+cage check . --level schema       # 只做 Schema 层
+cage check . --level reference    # 只做到引用层
+cage check . --profile client     # 按 Profile 验证
+cage check . --env prod           # 按 Schema 的 prod 环境约束验证
 ```
 
 `--level` 取值：parse / schema / type / value / table / reference /
@@ -161,8 +161,8 @@ cage gen . --profile server
 cage gen . --env prod    # 按环境约束生成
 ```
 
-只生成代码类产物（C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf，
-另支持 `template` 用户自定义 Tera 模板 target），
+只生成代码类产物（C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf、
+FlatBuffers、JSON Schema，另支持 `template` 用户自定义 Tera 模板 target），
 不跑数据校验：代码生成是 Schema 驱动的，类型与元数据全部来自 Schema，
 不消费配置行数据（源文件仍需可正常加载解析）。Profile 里的数据类
 Target（json/csv/msgpack）会被跳过，需要

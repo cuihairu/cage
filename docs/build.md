@@ -219,6 +219,8 @@ load（manifest + schema + data/generated 产物全量读入映射）
 load configuration
 ```
 
+`HASHES.json` file paths must be relative paths within the snapshot root: absolute paths, parent-directory segments (`..`), and paths that escape the snapshot root after normalization are all rejected. On read, symlink targets are resolved and verified to stay inside the snapshot root; a symlink pointing outside the root is neither verified nor loaded.
+
 On strictness: the per-file ledger comparison checks the full "the file is the ledger and the ledger is the file" integrity; `content_hash` already covers the artifact fingerprint as a whole and is carried in the ledger as a cross-check field. Whole-directory integrity is transitive: tampering with any file, or adding or removing any file, is exposed at verification time.
 
 The snapshot carries its own verification information and does not depend on the build machine's environment. Its division of labor with the runtime-side [Configuration Registry](#configuration-registry) is clear: the former governs the artifact shape, the latter multi-version distribution and rollback.

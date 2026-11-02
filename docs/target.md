@@ -7,7 +7,8 @@ Once validation passes, the pipeline moves into normalization (Normalize), after
 
 The Normalize step in the pipeline performs **representation-layer** normalization, not cross-type conversion:
 
-- String trimming and removal of trailing `\r`;
+- String trimming (leading/trailing whitespace) and removal of carriage returns
+  (`\r`, interior included);
 - Float `-0.0` → `0.0`;
 - Object keys are emitted sorted via `BTreeMap`.
 
@@ -269,7 +270,9 @@ Key generation rules:
 - Determinism: tables in name order, fields in name order; identifiers share one deduplication set
   (table names first, enum names after, appending `_` on conflict); the same Schema always produces
   byte-identical files, and file headers stamp the schema hash recorded in the manifest
-- Attributes: single-field primary key mapping to `string` or an integer scalar → `(key)`;
+- Attributes: single-field primary key → `(key)` (flatc's own type-eligibility rule —
+  string or integer scalar only — is not re-checked by the generator); composite
+  primary keys get no `(key)` and are recorded in the file-header comment only;
   `required` with field type `string` / vector / table → `(required)` (fbs syntax only allows
   non-scalar required); each file ends with `root_type <Table>;`
 - Nested arrays / map value positions land in wrapper tables (`{Field}Value`, suffix stacking with
@@ -387,7 +390,7 @@ Key generation rules:
   enums fall back to `string` with a doc comment noting it
 - Reserved words get an `@` prefix, illegal identifier characters are normalized to `_`, and
   same-named members are deduplicated deterministically
-- Map fields (`Map<K,V>`, the 19th field type): `Dictionary<K, V>` (keys
+- Map fields (`Map<K,V>`, one of the 20 field types): `Dictionary<K, V>` (keys
   string→`string`, int→`long`), value types recursing
   (`map<string, Array<Int32>>` → `Dictionary<string, IReadOnlyList<int>>`); an empty map default
   renders `= new();`, non-empty scalar members render as collection initializers, with keys in

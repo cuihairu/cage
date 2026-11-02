@@ -95,7 +95,7 @@ type compatibility check, yielding `E1411`). See
 `examples/game-config` `Stage.loot_item_ids` for an example
 (`cardinality: many` referencing `Item.id`).
 
-## Field Types (19 kinds)
+## Field Types (20 kinds)
 
 Types are always written in adjacent-tag form `type: { kind: X }` (parameterized
 types pass their parameter in `value`); the lower-case scalar form
@@ -124,12 +124,12 @@ types pass their parameter in `value`); the lower-case scalar form
 | `nullable` | Accepts a present `null` (e.g. an Excel empty cell) without weakening the type to `Any`; a `nullable` reference field should also use `cardinality: optional` |
 | `default` | Declares a default value. **Backfills** a missing key or a present `null` (Excel empty cell) during build, so a field with a default always carries it; also used for the `E9006` visibility exemption and member initial values in generated code |
 | `min` / `max` | Numeric range (`E1201`) |
-| `min_length` / `max_length` | String length range (`E1201`) |
+| `min_length` / `max_length` | String length range (`E1202`) |
 | `pattern` | Regex a string must match (`E1203`). Note: writing `regex:` is treated as custom metadata and **silently ignored** |
 | `enum_values` | Inline enum value domain (`E1204`). Note: writing `values:` is silently ignored; named enums use top-level `enums:` + `{ kind: Enum, value: name }` |
 | `min_items` / `max_items` | Array element count range (`E1205`) |
 | `items` | Field schema for array elements (recursive) |
-| `separator` | Split a scalar table cell (Excel/CSV cannot hold arrays) into an `Array` on this separator — the equivalent of Luban's `(list#sep=,)`. Each token is trimmed and coerced to the element type; a cell that fails to split cleanly is left as-is and the type check reports it. Only meaningful on `Array` fields |
+| `separator` | Split a scalar table cell (Excel/CSV cannot hold arrays) into an `Array` on this separator — the equivalent of Luban's `(list#sep=,)`. Each token is trimmed and coerced to the element type; a cell that fails to split cleanly is left as-is and the type check reports it. Meaningful on `Array` and `TaggedUnion` fields |
 | `properties` / `additional_properties` | Object property schema and unknown-key switch |
 | `reference` | Cross-table reference (`table` + `field`, `E1401`; see the sub-key description above) |
 | `targets` | Which profiles the field is visible to (empty = all; `"*"` is equivalent to empty; a hidden structurally required field reports `E9006`) |

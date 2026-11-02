@@ -8,8 +8,9 @@ starts only after this pending review passes.**
 delegation)**: prototype UI copy stays Chinese — the interactive HTML and the
 PNG screenshots form one consistent artifact (the PNGs are design assets and
 will not be re-rendered in English); bilingual coverage lives at the
-documentation layer (this page and `design.en.md`). To overturn this, edit this
-section and reopen `todo.md` D4.
+documentation layer (this page, mirrored in `/zh/design-prototypes.md`, and the
+English design document `design.md`, mirrored in `/zh/design.md`). To overturn
+this, edit this section and reopen `todo.md` D4.
 
 Sources live in `docs/design/` (this directory is committed with the repo; open it
 in a browser directly and they are interactive):

@@ -217,15 +217,12 @@ Checks the internal consistency of a single table. For example, IDs must be uniq
 Result:
 
 ```text
-ERROR E1301
-
-Duplicate primary key:
-
-Item.ID = 10001
-
-Rows:
-    2
-    4
+ERROR E1301 — Duplicate Primary Key
+  Table: Item
+  Row: 4
+  Value: ["10001"]
+  Message: Duplicate primary key
+  Hint: First occurrence at row 2
 ```
 
 It can also check:
@@ -271,17 +268,13 @@ Schema:
 Cage:
 
 ```text
-ERROR E1401
-
-Monster[20003].DropItemID
-
-Value:
-    99999
-
-Reference:
-    Item.ID
-
-Target does not exist.
+ERROR E1401 — Reference Target Not Found
+  Table: Monster
+  Row: 3
+  Field: DropItemID
+  Value: 99999
+  Message: Referenced target does not exist
+  Hint: No Item with id=99999 found
 ```
 
 ### References Should Not Only Validate Existence
@@ -312,14 +305,14 @@ Allowed:
     Consumable
 ```
 
-The reference check surface breaks into five categories; implementation status:
+The reference check surface breaks into four row-level categories (plus the schema-level
+cycle check E1403 below); implementation status:
 
 ```text
 Existence        存在性          已实装（E1401）
-Type             引用对象类型     已实装（E1411，compatible_with）
 Predicate        谓词约束         已实装（E1410，断言在引用目标行上求值）
 Cardinality      基数            已实装（E1404，源侧口径：one/optional 单值、many 数组逐元素）
-Compatibility    兼容性          已实装（E1411，字段级约束）
+Compatibility    兼容性          已实装（E1411，compatible_with 字段级约束）
 ```
 
 ### Table-Level Reference Cycles (E1403, Implemented)
@@ -422,6 +415,14 @@ ERROR E1601 — Game Rule Validation Failed
   Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 ```
 
+Besides the trait plugin path, the rule engine also carries a **declarative** data-driven channel
+(`RuleConfig` entries registered via `GameRuleRegistry::with_rules`, design §53): the built-in
+rule kinds `skill_item_category` / `reference_cycle` / `drop_reward` / `dungeon_stage` /
+`client_server_field` produce `E1604`–`E1608` and are covered by library tests. They are **not yet
+wired into `cage check`** — the CLI's L7 runs only `GameRuleRegistry::with_builtins()`, which
+registers the `PowerCurveValidator` plugin alone — so today they are reachable only by embedders
+who assemble a registry in-process.
+
 This way Cage Core does not need to understand specific game business. For the execution model
 choice (in-process trait → dynamic library → sandbox) and the trust boundary, see
 Architecture: Security and Isolation; for the full comparison table and the layered decision,
@@ -479,7 +480,7 @@ WARNING
 INFO
 ```
 
-The CLI and Web UI already consume these diagnostics directly; IDE plugin integration is left for later.
+The CLI and Web UI already consume these diagnostics directly; on the IDE side `cage lsp` (stdio Language Server, sharing the check pipeline) and the packaged VSCode extension are integrated.
 
 ## Warning Policy (Implemented)
 
@@ -581,6 +582,13 @@ capability status is marked as it truly is, and the marker is removed once wired
 | `E1601` | Plugin validator reported an error |
 | `E1602` | Plugin not found (reserved) |
 | `E1603` | Plugin execution failed (panic, timeout, etc.) (reserved) |
+| `E1604` | Declarative `skill_item_category` rule: a skill references an item in a disallowed category |
+| `E1605` | Declarative `reference_cycle` rule: a cross-table reference cycle |
+| `E1606` | Declarative `drop_reward` rule: a drop reward references an unknown item or carries an invalid quantity/weight |
+| `E1607` | Declarative `dungeon_stage` rule: a stage references an unknown monster group or reward |
+| `E1608` | Declarative `client_server_field` rule: a field visible to a profile depends on an entity hidden from that profile |
+
+The E1604-E1608 codes are produced by the **declarative** game-rule engine (`GameRuleRegistry::with_rules` + `RuleConfig`, design §53); they are exercised by library tests but are **not yet wired into `cage check`**, whose L7 today runs only the `PowerCurveValidator` builtin (E1601) via `GameRuleRegistry::with_builtins()`.
 
 ### Build / Target (Generation Time)
 
@@ -640,6 +648,19 @@ Bad JSON from the HTTP source (`cage-source-http`, design §45 S1) does not go t
 | `E2002` | Migration rule references invalid: a table / field referenced by a step does not exist in the from-schema, or the rename target collides with an existing table / field name (wired up) |
 | `E2003` | Migration step not satisfied by the data: the widening direction is unsafe (narrowing / cross-family / Int64·UInt64→Float64 precision loss), a row value exceeds the widened target's value domain, or a table or row field referenced by a step does not exist in the document — the whole run fails rather than silently dropping data (wired up) |
 | `E2004` | Post-migration revalidation failed: the migration artifacts do not pass the full L0–L6 stack under the new schema, and the error list is emitted alongside E2004 (wired up) |
+
+### Source Convention (Excel Meta-Row Convention, X Series)
+
+| Code | Meaning |
+| --- | --- |
+| `E2201` | Convention syntax: an unknown keyword, a value before any keyword, a duplicate keyword on one column, a marker cell with an unparseable form, `preset` and `script` both set, a preset declared while `has_header` is false, or an ambiguous workbook override (X1) |
+| `E2202` | Convention vocabulary: a value that does not resolve into the vocabulary — an unknown type expression, a boolean that is not true/false, an `enum` that is not a value list, a malformed `reference` cell (X1) |
+| `E2203` | Script will not start: path outside the project root, `..` escape, not found, not a file, or the spawn failed (X1) |
+| `E2204` | Script exceeded `script_timeout_secs` (X1) |
+| `E2205` | Script exited non-zero; stderr is quoted and truncated (X1) |
+| `E2206` | Script output is unusable: not valid JSON, not the contract shape, or a contract version cage does not know (X1) |
+| `E2207` | Convention contradicts the data: a declared column name not in the header row, a meta-sheet name row that does not match, or a response whose `table` is not the sheet's table (X1) |
+| `E2208` | Schema drift: a meta-row declaration contradicts an adopted schema — a field the meta declares is absent or differently shaped, or the declared primary key differs (X2); the cell anchor names the exact declaration cell |
 
 ### Internal (System Level)
 

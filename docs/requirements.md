@@ -74,7 +74,7 @@ Status as of the 2026-10 code: the MVP is fully delivered, phase two is fully de
       deterministic bytes; zero runtime consumption by non-cage toolchains, see the
       `docs/design.md` §Code Targets decision record)
 - [x] Plugin surface: the SourceAdapter / TargetGenerator / GameRuleValidator traits (registered in-process)
-- [x] Game Rule Validator implemented (E1601, `cage check --level gamerule`)
+- [x] Game Rule Validator implemented (E1601, `cage check --level gamerule`; the declarative rule engine — `skill_item_category` / `reference_cycle` / `drop_reward` / `dungeon_stage` / `client_server_field`, E1604-E1608 — additionally exists as a library API (`GameRuleRegistry::with_rules`) and is not yet wired into `cage check`, whose L7 runs only the `power_curve` builtin)
 - [x] Dependency Graph (reference graph → build order/change impact/cycle detection, E1403 wired into L5)
 - [x] Incremental builds (`cage build --incremental`: three layers — skip the whole run by hash / rebuild only affected tables through dependency propagation / propagate target configuration)
 - [x] CI integration (a top-level `warnings_as_errors` switch + CI gating in the repo itself)

@@ -106,7 +106,7 @@ cage mcp                       # 或让 AI 用 list_envs 看四套差异
 ```yaml
 - run: cage check . --level semantic --env prod
 - run: cage build . --env prod --incremental
-- run: cage verify build/ --profile client
+- run: cage verify build/
 ```
 
 预期：CI 里三步串行——校验、增量构建、产物校验。任一步失败即中断，

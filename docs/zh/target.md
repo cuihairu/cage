@@ -7,7 +7,7 @@
 
 流水线里的 Normalize 做的是**表示层**归一，不是跨型转换：
 
-- 字符串 trim、去除行尾 `\r`；
+- 字符串 trim（首尾空白）、去除回车 `\r`（含行内）；
 - 浮点 `-0.0` → `0.0`；
 - 对象键按 `BTreeMap` 排序输出。
 
@@ -260,8 +260,9 @@ enums_file = "cage_enums.fbs"   # 默认 cage_enums.fbs（include 路径随之�
 - 确定性：表按名序、字段按名序；标识符共享同一去重集合（表名先、
   枚举名后，冲突追加 `_`）；同 Schema 恒产出字节一致的文件，文件头
   锤 manifest 记录的 schema 哈希
-- 属性：单字段主键且映射为 `string` 或整型标量 → `(key)`；`required`
-  且字段类型为 `string` / vector / table → `(required)`（fbs 语法只许
+- 属性：单字段主键 → `(key)`（flatc 自身的类型资格规则——仅 `string`
+  或整型标量——生成器不复检）；复合主键不加 `(key)`，只记录在文件头注释；
+  `required` 且字段类型为 `string` / vector / table → `(required)`（fbs 语法只许
   非标量 required）；每文件以 `root_type <Table>;` 收尾
 - 嵌套数组 / map 值位置落包装 table（`{Field}Value`，深度叠后缀
   `{Field}ValueValue`；map 复合值再包 `{Field}Entry` 承载）
@@ -369,7 +370,7 @@ enums_file = "CageEnums.cs"  # 默认 CageEnums.cs
 - 非必填且无默认值的字段生成可空类型（`string?`）；必填引用类型补空初始化（`= string.Empty;`），保证 `#nullable enable` 下零告警编译
 - Schema default 渲染为初始化字面量（对象/不匹配类型跳过）；未解析枚举回退 `string` 并在 doc 注释标注
 - 保留字加 `@` 前缀，非法标识符字符归一为 `_`，同名成员确定性去重
-- Map 字段（`Map<K,V>`，第 19 种字段类型）：`Dictionary<K, V>`（键
+- Map 字段（`Map<K,V>`，20 种字段类型之一）：`Dictionary<K, V>`（键
   string→`string`、int→`long`），值类型递归（`map<string, Array<Int32>>`
   → `Dictionary<string, IReadOnlyList<int>>`）；空 map 默认值渲染
   `= new();`，非空标量成员渲染集合初始化器，键序确定性排序

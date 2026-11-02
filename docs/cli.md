@@ -132,10 +132,10 @@ cage check .
 Validates only, without generating Runtime Artifacts. Can run per level:
 
 ```bash
-cage check --level schema       # 只做 Schema 层
-cage check --level reference    # 只做到引用层
-cage check --profile client     # 按 Profile 验证
-cage check --env prod           # 按 Schema 的 prod 环境约束验证
+cage check . --level schema       # 只做 Schema 层
+cage check . --level reference    # 只做到引用层
+cage check . --profile client     # 按 Profile 验证
+cage check . --env prod           # 按 Schema 的 prod 环境约束验证
 ```
 
 `--level` values: parse / schema / type / value / table / reference /
@@ -181,7 +181,7 @@ cage gen . --env prod    # 按环境约束生成
 ```
 
 Generates only code-class artifacts (C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java / Protobuf,
-plus the `template` user-defined Tera template target), and runs no data validation:
+FlatBuffers, JSON Schema, plus the `template` user-defined Tera template target), and runs no data validation:
 code generation is Schema-driven — types and metadata all come from the Schema, and
 no configuration row data is consumed (source files still must load and parse
 normally). Data-class targets in the Profile (json/csv/msgpack) are skipped; use
