@@ -1311,6 +1311,9 @@ impl PushRoute<'_> {
                      no write channel — publish locally and host statically)"
                 )
             }
+            crate::remote::PutFailure::TooLarge(n) => {
+                format!("{E2101} push transport failed for {rel_path}: response body too large ({n} bytes)")
+            }
         })
     }
 }

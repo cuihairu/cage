@@ -21,6 +21,13 @@ use std::time::Duration;
 /// source. Absent or unparseable headers are never guessed at.
 pub const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(30);
 
+/// Cap on one remote HTTP response body: 64 MiB. A response larger than
+/// this is refused as [`FetchFailure::TooLarge`] / [`PutFailure::TooLarge`]
+/// rather than buffered without bound — a misconfigured or hostile server
+/// must not exhaust the build's memory. Applied identically to the GET
+/// body and the PUT drain.
+pub const MAX_RESPONSE_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 /// Deterministic local cache key for a remote root or source URL: the
 /// first 12 hex chars of the URL's blake3. Pure — every consumer derives
 /// the same key for the same URL, so one root maps to one cache slot and
@@ -79,6 +86,9 @@ pub enum FetchFailure {
     NotFound(String),
     /// Any other HTTP status (401/403 among them)
     Status(u16),
+    /// Response body exceeded [`MAX_RESPONSE_BODY_BYTES`] — the observed
+    /// length is carried for the error message; not retryable.
+    TooLarge(usize),
 }
 
 impl std::fmt::Display for FetchFailure {
@@ -92,6 +102,10 @@ impl std::fmt::Display for FetchFailure {
                     wait.as_secs()
                 )
             }
+            FetchFailure::TooLarge(n) => write!(
+                f,
+                "response body too large: {n} bytes (cap {MAX_RESPONSE_BODY_BYTES})"
+            ),
             FetchFailure::NotFound(url) => write!(f, "not found: {url}"),
             FetchFailure::Status(code) => write!(f, "http status {code}"),
         }
@@ -314,17 +328,44 @@ fn map_fetch_error(e: ureq::Error, url: &str) -> FetchFailure {
     }
 }
 
+/// One failed bounded body read: either the stream exceeded the cap
+/// (carrying the observed length) or the underlying reader failed.
+#[derive(Debug)]
+enum BodyReadError {
+    TooLarge(usize),
+    Io(std::io::Error),
+}
+
+/// Read at most `cap` bytes from `reader`, detecting an over-cap stream
+/// by reading `cap + 1` bytes: an exactly-`cap` body is accepted, one
+/// byte more is `BodyReadError::TooLarge`. Shared by the GET body and
+/// the PUT drain so both paths enforce [`MAX_RESPONSE_BODY_BYTES`]
+/// identically — the unbounded `read_to_end` is never used directly on
+/// a remote response.
+fn read_bounded(reader: impl Read, cap: usize) -> Result<Vec<u8>, BodyReadError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(cap as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(BodyReadError::Io)?;
+    if bytes.len() > cap {
+        Err(BodyReadError::TooLarge(bytes.len()))
+    } else {
+        Ok(bytes)
+    }
+}
+
 /// Drain one 2xx response: body bytes plus the `Link` / `ETag` /
 /// `Last-Modified` headers the consumers need.
 fn read_response(response: ureq::Response, url: &str) -> Result<HttpGet, FetchFailure> {
     let link = response.header("Link").map(str::to_string);
     let etag = response.header("ETag").map(str::to_string);
     let last_modified = response.header("Last-Modified").map(str::to_string);
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(|e| FetchFailure::Transport(format!("reading {url}: {e}")))?;
+    let bytes =
+        read_bounded(response.into_reader(), MAX_RESPONSE_BODY_BYTES).map_err(|e| match e {
+            BodyReadError::TooLarge(n) => FetchFailure::TooLarge(n),
+            BodyReadError::Io(e) => FetchFailure::Transport(format!("reading {url}: {e}")),
+        })?;
     Ok(HttpGet {
         body: bytes,
         link,
@@ -446,6 +487,9 @@ pub enum PutFailure {
     AuthRejected(u16),
     /// Any other HTTP status — the server refuses (or cannot) store
     WriteRefused(u16),
+    /// Response body exceeded [`MAX_RESPONSE_BODY_BYTES`] — the observed
+    /// length is carried for the error message; not retryable.
+    TooLarge(usize),
 }
 
 impl std::fmt::Display for PutFailure {
@@ -454,6 +498,10 @@ impl std::fmt::Display for PutFailure {
             PutFailure::Transport(e) => write!(f, "transport failure: {e}"),
             PutFailure::AuthRejected(code) => write!(f, "auth rejected: http status {code}"),
             PutFailure::WriteRefused(code) => write!(f, "write refused: http status {code}"),
+            PutFailure::TooLarge(n) => write!(
+                f,
+                "response body too large: {n} bytes (cap {MAX_RESPONSE_BODY_BYTES})"
+            ),
         }
     }
 }
@@ -484,11 +532,12 @@ fn http_put_once(url: &str, token: Option<&str>, body: &[u8]) -> Result<(), PutF
             ureq::Error::Status(code, _) => PutFailure::WriteRefused(code),
             ureq::Error::Transport(t) => PutFailure::Transport(t.to_string()),
         })?;
-    let mut sink = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut sink)
-        .map_err(|e| PutFailure::Transport(format!("reading {url}: {e}")))?;
+    // Drain the (typically empty) response body under the same cap as
+    // the GET path — a refused PUT must not be the unbounded-read leak.
+    read_bounded(response.into_reader(), MAX_RESPONSE_BODY_BYTES).map_err(|e| match e {
+        BodyReadError::TooLarge(n) => PutFailure::TooLarge(n),
+        BodyReadError::Io(e) => PutFailure::Transport(format!("reading {url}: {e}")),
+    })?;
     Ok(())
 }
 
@@ -693,5 +742,57 @@ mod tests {
         );
         assert_eq!(parse_http_date("nope"), None);
         assert_eq!(parse_http_date("Wed, 32 Oct 2015 07:28:00 GMT"), None);
+    }
+
+    #[test]
+    fn read_bounded_accepts_at_cap_and_refuses_over() {
+        // Exactly at the cap → accepted, full bytes returned.
+        let at_cap: Vec<u8> = (0..8u8).collect();
+        assert!(matches!(read_bounded(&at_cap[..], 8), Ok(b) if b == at_cap));
+
+        // Under the cap → accepted.
+        assert!(matches!(read_bounded(&at_cap[..], 16), Ok(b) if b == at_cap));
+
+        // One byte over → TooLarge, observed length carried.
+        let over = vec![9u8; 9];
+        assert!(matches!(
+            read_bounded(&over[..], 8),
+            Err(BodyReadError::TooLarge(9))
+        ));
+
+        // A body much larger than the cap still fails fast with the cap's
+        // overflow detection (reads cap+1, not the whole stream).
+        let huge = vec![0u8; 1024];
+        assert!(matches!(
+            read_bounded(&huge[..], 8),
+            Err(BodyReadError::TooLarge(9))
+        ));
+    }
+
+    #[test]
+    fn read_bounded_propagates_reader_errors() {
+        struct Failing;
+        impl Read for Failing {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "stream reset",
+                ))
+            }
+        }
+        assert!(matches!(
+            read_bounded(Failing, 8),
+            Err(BodyReadError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn display_reports_too_large_on_both_failures() {
+        assert!(FetchFailure::TooLarge(64 * 1024 * 1024 + 1)
+            .to_string()
+            .contains("too large"));
+        assert!(PutFailure::TooLarge(64 * 1024 * 1024 + 1)
+            .to_string()
+            .contains("too large"));
     }
 }

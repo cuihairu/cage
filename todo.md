@@ -308,7 +308,8 @@
   （commit 347b690）
 ## 代码深审待办（2026-11-01 批次）
 
-- [ ] P2-1 远端 HTTP 响应体读取设字节上限（remote.rs:326,490，现 read_to_end 无上限）
+- [x] P2-1 远端 HTTP 响应体读取设字节上限（remote.rs:326,490，现 read_to_end 无上限）
+  （已修：remote.rs 新增 MAX_RESPONSE_BODY_BYTES=64MiB + read_bounded()，GET/PUT 两路共用，FetchFailure/PutFailure 增 TooLarge；cage-core 338 单测全绿，cli/sheets/http 集成全绿）
 - [ ] P2-2 flatbuffers `(key)` 复查 flatc 类型资格（lib.rs:294-300，非 string/整型单字段主键会产出非法 .fbs）
 - [ ] P3-1 schema/FieldType 递归深度显式护栏（schema/mod.rs:288-371）
 - [ ] P3-2 valid_component 收紧（registry.rs:61-68，拒单 `.` 作包/版本名）
@@ -339,6 +340,8 @@
 - [x] 审核发现：README.md:5 两个 shield 徽标未套链接且标签错误（`docs-docs-blue`、`docs-blue`，alt 重复为 `docs`），应为单个可点击的 `docs-latest-blue` 文档徽标（commit 101d581）
 - [x] 审核发现：README.zh.md:9 文档徽标重复——既有 `[Docs]` 指向 `/cage/zh/`，又新增 `文档` 徽标同样指向 `/cage/zh/`，冗余且与英文版单徽标设计不一致（commit 101d581）
 - [x] 审核发现：README.zh.md 文件末尾缺少换行符（基线以 `\n` 结尾，现 `[Apache-2.0](LICENSE)` 后无 `\n`）（commit 101d581）
-- [x] 审核发现：`docs/source.md:100-109`（中文版 `docs/zh/source.md` 同）的 Excel 元行「Vocabulary」表漏掉实现已支持的 `##unique`、`##targets`、`##description` 三个关键字（`crates/cage-core/src/convention/mod.rs:871-874` 的 slot_is_set 分支均接受），表题为“Vocabulary”且 design §51 明示 `##description` 为注释行，作者只读 source.md 会以为这三个关键字不存在/被拒，词汇表不完整（docs/source.md:100-109；已补入 docs/source.md:104-107 + docs/zh/source.md:105-108）
-- [x] 审核发现：`docs/review/2026-11-01-code-review.md:50` 称回归测试写入「300 字节『爆』stderr」，实际测试为 `'爆' * 300`（300 个 CJK 字符 = 900 字节），把字符数误记为字节数；触发机制仍成立（字节 400 落在多字节字符内），但报告对测试载荷的描述不准确（docs/review/2026-11-01-code-review.md:50；已改为 `'爆' * 300` 即 900 字节）
-- [x] 审核发现：回归测试 `test_script_failure_truncates_cjk_stderr_at_char_boundary` 以 `d.message.len() < 700` 间接验证截断，未精确断言 stderr 段 ≤400 字节且在字符边界；若修复后续退化把上限从 400 放宽到 500 字节（仍满足 <700）测试不会失败，400 字节截断契约缺少精确的回归断言（crates/cage-source-excel/src/lib.rs:3239-3243；已改为精确统计尾随 `爆` 段并断言 ≤400 字节）
+- [x] 审核发现：`docs/source.md:100-109`（中文版 `docs/zh/source.md` 同）的 Excel 元行「Vocabulary」表漏掉实现已支持的 `##unique`、`##targets`、`##description` 三个关键字（`crates/cage-core/src/convention/mod.rs:871-874` 的 slot_is_set 分支均接受），表题为“Vocabulary”且 design §51 明示 `##description` 为注释行，作者只读 source.md 会以为这三个关键字不存在/被拒，词汇表不完整（commit 32789d4；已补入 docs/source.md:104-107 + docs/zh/source.md:105-108）
+- [x] 审核发现：`docs/review/2026-11-01-code-review.md:50` 称回归测试写入「300 字节『爆』stderr」，实际测试为 `'爆' * 300`（300 个 CJK 字符 = 900 字节），把字符数误记为字节数；触发机制仍成立（字节 400 落在多字节字符内），但报告对测试载荷的描述不准确（commit 32789d4；已改为 `'爆' * 300` 即 900 字节）
+- [x] 审核发现：回归测试 `test_script_failure_truncates_cjk_stderr_at_char_boundary` 以 `d.message.len() < 700` 间接验证截断，未精确断言 stderr 段 ≤400 字节且在字符边界；若修复后续退化把上限从 400 放宽到 500 字节（仍满足 <700）测试不会失败，400 字节截断契约缺少精确的回归断言（commit 32789d4；已改为精确统计尾随 `爆` 段并断言 ≤400 字节）
+- [ ] 审核发现：docs/source.md:105（docs/zh/source.md:106）新增的 `##unique`「Unique column」词汇行是过度承诺——`ColumnMeta.unique`（crates/cage-core/src/convention/mod.rs:126）被 apply() 写入（mod.rs:906）却从未被读取：derive.rs::field_schema()（crates/cage-core/src/convention/derive.rs:136-148）拷贝了 description/required/default/min/max/enum/reference/targets 但唯独没有 unique，`FieldSchema` 无逐字段唯一槽（唯一性仅在表级 unique_constraints，crates/cage-core/src/schema/mod.rs:144），declared_mismatch() 漂移检查（derive.rs:219-264）也不比较 unique，故 Excel 元行写 `##unique true` 被词汇门控接受（不报 E2201）后静默丢弃，不产生唯一约束、不参与漂移/校验；先前发现「实现已支持的三个关键字」仅凭 mod.rs:871-874 slot_is_set 均接受而成立，对 `##unique` 实为「接受但丢弃」（docs/source.md:105）
+- [ ] 审核发现：docs/source.md:110（docs/zh/source.md:111）`##targets`「(empty = all)」与实现矛盾——parse_list_text()（crates/cage-core/src/convention/mod.rs:941-953）对空列表返回 E2202「is not a value list」，故 `##targets `（关键字后带尾随空格，own 解析为空串）会报错而非「全部 profile」；「empty = all」仅对完全省略该关键字成立（value 为 None、apply 不调用、targets 保持空 Vec），文档措辞会把「留空=全部」误导成「空值=全部」（crates/cage-core/src/convention/mod.rs:948-949）

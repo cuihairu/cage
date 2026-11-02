@@ -117,6 +117,11 @@ pub(crate) fn fetch_remote_index(
                 wait.as_secs()
             ));
         }
+        Err(FetchFailure::TooLarge(n)) => {
+            return Err(format!(
+                "{E2101} cannot read remote index {index_url}: response body too large ({n} bytes)"
+            ));
+        }
         Err(FetchFailure::Status(code)) => {
             return Err(format!(
                 "{E2101} cannot read remote index {index_url}: http status {code}"
