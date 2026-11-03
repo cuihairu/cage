@@ -312,8 +312,10 @@
   （已修：remote.rs 新增 MAX_RESPONSE_BODY_BYTES=64MiB + read_bounded()，GET/PUT 两路共用，FetchFailure/PutFailure 增 TooLarge；cage-core 338 单测全绿，cli/sheets/http 集成全绿）
 - [x] P2-2 flatbuffers `(key)` 复查 flatc 类型资格（lib.rs:294-300，非 string/整型单字段主键会产出非法 .fbs）
   （已修：`key_eligible()` 过滤单字段主键——仅 string/整型/枚举标量保留 `(key)`，其余类型静默丢弃该属性；新增 `test_key_attribute_respects_flatc_type_eligibility`，cage-target-flatbuffers 7 测试全绿）
-- [ ] P3-1 schema/FieldType 递归深度显式护栏（schema/mod.rs:288-371）
-- [ ] P3-2 valid_component 收紧（registry.rs:61-68，拒单 `.` 作包/版本名）
+- [x] P3-1 schema/FieldType 递归深度显式护栏（schema/mod.rs:288-371）
+  （已修：新增 `MAX_FIELD_TYPE_DEPTH=64` + `field_type_depth`，`Schema::validate()` 对超深 Array/Map/Object/TaggedUnion 报 E1004；新增 `schema_rejects_field_type_deeper_than_the_max` 覆盖超限拒绝与恰好达限接受）
+- [x] P3-2 valid_component 收紧（registry.rs:61-68，拒单 `.` 作包/版本名）
+  （已修：`valid_component()` 要求至少一个字母/数字，单 `.`、`-`、`_` 均拒；扩展 `publish_rejects_bad_names_unverifiable_packs_and_blocked_targets` 覆盖单 `.` 包名/版本名与单 `-` 包名）
 
 ## 审核发现
 

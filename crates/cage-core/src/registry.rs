@@ -56,11 +56,14 @@ pub const BUNDLE_ZSTD_LEVEL: i32 = 19;
 /// zstd-wrapped bundle from a plain tar.
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
-/// Valid package/version character set: alphanumerics, dot, dash, underscore.
-/// `..` / `/` / `\` are rejected so names can never escape the registry root.
+/// Valid package/version character set: alphanumerics, dot, dash, underscore,
+/// with at least one alphanumeric character. `..`, `/`, `\`, and a lone `.`
+/// are rejected so names can never escape the registry root or reduce to a
+/// path no-op.
 fn valid_component(name: &str) -> bool {
     !name.is_empty()
         && !name.contains("..")
+        && name.chars().any(|c| c.is_ascii_alphanumeric())
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
@@ -3811,6 +3814,13 @@ mod tests {
         assert!(err.contains("invalid registry package name"), "{err}");
         let err = publish(tmp.path(), "common", "bad version", &snap).unwrap_err();
         assert!(err.contains("invalid registry version"), "{err}");
+        // a lone `.` (or `-` / `_`) is a path no-op, not a package name.
+        let err = publish(tmp.path(), ".", "1.0.0", &snap).unwrap_err();
+        assert!(err.contains("invalid registry package name"), "{err}");
+        let err = publish(tmp.path(), "common", ".", &snap).unwrap_err();
+        assert!(err.contains("invalid registry version"), "{err}");
+        let err = publish(tmp.path(), "-", "1.0.0", &snap).unwrap_err();
+        assert!(err.contains("invalid registry package name"), "{err}");
 
         // a tampered pack fails the publish trust gate
         let snap2 = tmp.path().join("snap2");

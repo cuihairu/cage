@@ -390,6 +390,14 @@ pub struct MapField {
     pub value_type: Box<FieldType>,
 }
 
+/// Maximum nesting depth for a `FieldType` (`Array` / `Map` / `Object` /
+/// `TaggedUnion` recursively nest). A deeper type is refused by
+/// [`Schema::validate`] rather than recursing the schema and the
+/// normalize/generator passes without bound — a maliciously deep schema
+/// must not overflow the stack. 64 is far beyond any realistic data
+/// shape and keeps the recursive walks safely bounded.
+pub const MAX_FIELD_TYPE_DEPTH: usize = 64;
+
 /// Key kinds accepted by [`MapField::key_type`] (wire format: `string` | `int`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -595,6 +603,27 @@ impl Schema {
     pub fn validate(&self) -> crate::diagnostics::Diagnostics {
         let mut diags = crate::diagnostics::Diagnostics::new();
 
+        // FieldType nesting depth guard: recursion through Array / Map /
+        // Object / TaggedUnion is bounded by MAX_FIELD_TYPE_DEPTH.
+        for (table_name, table) in &self.tables {
+            for (field_name, field) in &table.fields {
+                if let Some(depth) = field_type_depth(&field.field_type) {
+                    if depth > MAX_FIELD_TYPE_DEPTH {
+                        diags.add(
+                            crate::diagnostics::Diagnostic::error(
+                                "E1004",
+                                format!(
+                                    "Field '{field_name}' in table '{table_name}' exceeds the \
+                                     maximum nesting depth {MAX_FIELD_TYPE_DEPTH} (found {depth})"
+                                ),
+                            )
+                            .with_source("schema"),
+                        );
+                    }
+                }
+            }
+        }
+
         // Check primary keys exist
         for (table_name, table) in &self.tables {
             for pk in &table.primary_key {
@@ -674,6 +703,35 @@ impl Schema {
         }
 
         diags
+    }
+}
+
+/// The nesting depth of a `FieldType`, or `None` for a scalar/leaf. Depth
+/// counts the number of container levels: `Int32` is 0, `Array<Int32>` is 1,
+/// `Array<Array<Int32>>` is 2, `Object{ x: Array<Int32> }` is 2.
+fn field_type_depth(t: &FieldType) -> Option<usize> {
+    match t {
+        FieldType::Array(inner) => field_type_depth(inner).map_or(Some(1), |d| Some(d + 1)),
+        FieldType::Map(map) => field_type_depth(&map.value_type).map_or(Some(1), |d| Some(d + 1)),
+        FieldType::Object(fields) => {
+            let max = fields
+                .values()
+                .filter_map(field_type_depth)
+                .max()
+                .unwrap_or(0);
+            Some(max + 1)
+        }
+        FieldType::TaggedUnion(union) => {
+            let max = union
+                .branches
+                .values()
+                .flat_map(|branch| branch.values())
+                .filter_map(field_type_depth)
+                .max()
+                .unwrap_or(0);
+            Some(max + 1)
+        }
+        _ => None,
     }
 }
 
@@ -1304,6 +1362,89 @@ enums:
         assert_eq!(id.field_type, FieldType::UInt32);
         assert!(schema.get_field("Item", "ghost").is_none());
         assert!(schema.get_field("Ghost", "id").is_none());
+    }
+
+    /// A `FieldType` nested deeper than `MAX_FIELD_TYPE_DEPTH` is refused by
+    /// `validate` with E1004 — the recursive schema/generator walks never
+    /// see an unbounded nesting depth.
+    #[test]
+    fn schema_rejects_field_type_deeper_than_the_max() {
+        let field = |t: FieldType| FieldSchema {
+            name: "deep".to_string(),
+            field_type: t,
+            description: None,
+            required: false,
+            nullable: false,
+            default: None,
+            min: None,
+            max: None,
+            min_length: None,
+            max_length: None,
+            pattern: None,
+            enum_values: None,
+            min_items: None,
+            max_items: None,
+            items: None,
+            separator: None,
+            properties: None,
+            additional_properties: None,
+            reference: None,
+            targets: Vec::new(),
+            rules: Vec::new(),
+            metadata: IndexMap::new(),
+        };
+        let schema_with = |t: FieldType| {
+            let mut fields = IndexMap::new();
+            fields.insert("deep".to_string(), field(t));
+            let mut tables = IndexMap::new();
+            tables.insert(
+                "T".to_string(),
+                TableSchema {
+                    name: "T".to_string(),
+                    description: None,
+                    primary_key: Vec::new(),
+                    fields,
+                    unique_constraints: Vec::new(),
+                    order_by: None,
+                    targets: Vec::new(),
+                    env_overrides: IndexMap::new(),
+                },
+            );
+            Schema {
+                tables,
+                enums: IndexMap::new(),
+                metadata: None,
+            }
+        };
+        // Build Array<Array<...Array<Int32>...>> with MAX+2 levels.
+        let mut t = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 2) {
+            t = FieldType::Array(Box::new(t));
+        }
+        let schema = schema_with(t);
+        let diags = schema.validate();
+        assert!(
+            diags
+                .errors()
+                .iter()
+                .any(|d| d.code == "E1004" && d.message.contains("nesting depth")),
+            "a too-deep type is E1004: {diags:?}"
+        );
+
+        // Exactly at the limit is accepted.
+        let mut t = FieldType::Int32;
+        for _ in 0..MAX_FIELD_TYPE_DEPTH {
+            t = FieldType::Array(Box::new(t));
+        }
+        let schema = schema_with(t);
+        assert!(
+            !schema
+                .validate()
+                .errors()
+                .iter()
+                .any(|d| d.message.contains("nesting depth")),
+            "at the limit is accepted"
+        );
     }
 
     #[test]
