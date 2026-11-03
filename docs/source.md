@@ -107,7 +107,7 @@ workbooks = { "Skill.xlsx" = "header_block" }   # per-workbook-file override
 | `##default` | Default value | a JSON value matching the target type |
 | `##reference` | Foreign key | `table.field[:cardinality]` |
 | `##primary_key` | Primary-key column | `true` |
-| `##targets` | Profile visibility | comma-separated profile names (empty = all) |
+| `##targets` | Profile visibility | comma-separated profile names (omit the keyword for all profiles) |
 | `##description` | Comment row (Q5: the comment row is `##description`) | free text |
 | `##+` | Sub-column declaration row (reflow-5/6) | one sub-column name per non-marker cell; the top-level column it sits in becomes a nested bean (`*` prefix = `multi_row`, a `*name` column without `##+` is E2201) |
 

@@ -86,8 +86,8 @@ pub enum FetchFailure {
     NotFound(String),
     /// Any other HTTP status (401/403 among them)
     Status(u16),
-    /// Response body exceeded [`MAX_RESPONSE_BODY_BYTES`] — the observed
-    /// length is carried for the error message; not retryable.
+    /// Response body exceeded the byte cap — the cap that was exceeded is
+    /// carried for the error message; not retryable.
     TooLarge(usize),
 }
 
@@ -102,10 +102,7 @@ impl std::fmt::Display for FetchFailure {
                     wait.as_secs()
                 )
             }
-            FetchFailure::TooLarge(n) => write!(
-                f,
-                "response body too large: {n} bytes (cap {MAX_RESPONSE_BODY_BYTES})"
-            ),
+            FetchFailure::TooLarge(n) => write!(f, "response body exceeds the {n} byte cap"),
             FetchFailure::NotFound(url) => write!(f, "not found: {url}"),
             FetchFailure::Status(code) => write!(f, "http status {code}"),
         }
@@ -329,7 +326,8 @@ fn map_fetch_error(e: ureq::Error, url: &str) -> FetchFailure {
 }
 
 /// One failed bounded body read: either the stream exceeded the cap
-/// (carrying the observed length) or the underlying reader failed.
+/// (carrying the cap itself — the real body length is never observed,
+/// because the read stops at `cap + 1`) or the underlying reader failed.
 #[derive(Debug)]
 enum BodyReadError {
     TooLarge(usize),
@@ -349,9 +347,27 @@ fn read_bounded(reader: impl Read, cap: usize) -> Result<Vec<u8>, BodyReadError>
         .read_to_end(&mut bytes)
         .map_err(BodyReadError::Io)?;
     if bytes.len() > cap {
-        Err(BodyReadError::TooLarge(bytes.len()))
+        Err(BodyReadError::TooLarge(cap))
     } else {
         Ok(bytes)
+    }
+}
+
+/// Map a bounded GET body read failure to [`FetchFailure`]: a too-large
+/// body becomes [`FetchFailure::TooLarge`] (carrying the cap), an I/O
+/// failure becomes a transport error naming the URL.
+fn map_fetch_body_err(e: BodyReadError, url: &str) -> FetchFailure {
+    match e {
+        BodyReadError::TooLarge(n) => FetchFailure::TooLarge(n),
+        BodyReadError::Io(e) => FetchFailure::Transport(format!("reading {url}: {e}")),
+    }
+}
+
+/// Map a bounded PUT drain failure to [`PutFailure`] the same way.
+fn map_put_body_err(e: BodyReadError, url: &str) -> PutFailure {
+    match e {
+        BodyReadError::TooLarge(n) => PutFailure::TooLarge(n),
+        BodyReadError::Io(e) => PutFailure::Transport(format!("reading {url}: {e}")),
     }
 }
 
@@ -361,11 +377,8 @@ fn read_response(response: ureq::Response, url: &str) -> Result<HttpGet, FetchFa
     let link = response.header("Link").map(str::to_string);
     let etag = response.header("ETag").map(str::to_string);
     let last_modified = response.header("Last-Modified").map(str::to_string);
-    let bytes =
-        read_bounded(response.into_reader(), MAX_RESPONSE_BODY_BYTES).map_err(|e| match e {
-            BodyReadError::TooLarge(n) => FetchFailure::TooLarge(n),
-            BodyReadError::Io(e) => FetchFailure::Transport(format!("reading {url}: {e}")),
-        })?;
+    let bytes = read_bounded(response.into_reader(), MAX_RESPONSE_BODY_BYTES)
+        .map_err(|e| map_fetch_body_err(e, url))?;
     Ok(HttpGet {
         body: bytes,
         link,
@@ -487,8 +500,8 @@ pub enum PutFailure {
     AuthRejected(u16),
     /// Any other HTTP status — the server refuses (or cannot) store
     WriteRefused(u16),
-    /// Response body exceeded [`MAX_RESPONSE_BODY_BYTES`] — the observed
-    /// length is carried for the error message; not retryable.
+    /// Response body exceeded the byte cap — the cap that was exceeded is
+    /// carried for the error message; not retryable.
     TooLarge(usize),
 }
 
@@ -498,10 +511,7 @@ impl std::fmt::Display for PutFailure {
             PutFailure::Transport(e) => write!(f, "transport failure: {e}"),
             PutFailure::AuthRejected(code) => write!(f, "auth rejected: http status {code}"),
             PutFailure::WriteRefused(code) => write!(f, "write refused: http status {code}"),
-            PutFailure::TooLarge(n) => write!(
-                f,
-                "response body too large: {n} bytes (cap {MAX_RESPONSE_BODY_BYTES})"
-            ),
+            PutFailure::TooLarge(n) => write!(f, "response body exceeds the {n} byte cap"),
         }
     }
 }
@@ -534,10 +544,8 @@ fn http_put_once(url: &str, token: Option<&str>, body: &[u8]) -> Result<(), PutF
         })?;
     // Drain the (typically empty) response body under the same cap as
     // the GET path — a refused PUT must not be the unbounded-read leak.
-    read_bounded(response.into_reader(), MAX_RESPONSE_BODY_BYTES).map_err(|e| match e {
-        BodyReadError::TooLarge(n) => PutFailure::TooLarge(n),
-        BodyReadError::Io(e) => PutFailure::Transport(format!("reading {url}: {e}")),
-    })?;
+    read_bounded(response.into_reader(), MAX_RESPONSE_BODY_BYTES)
+        .map_err(|e| map_put_body_err(e, url))?;
     Ok(())
 }
 
@@ -753,11 +761,13 @@ mod tests {
         // Under the cap → accepted.
         assert!(matches!(read_bounded(&at_cap[..], 16), Ok(b) if b == at_cap));
 
-        // One byte over → TooLarge, observed length carried.
-        let over = vec![9u8; 9];
+        // One byte over → TooLarge carrying the cap (8), not the observed
+        // read count (9): the read stops at cap+1, so the real body length
+        // is never known.
+        let over = [9u8; 9];
         assert!(matches!(
             read_bounded(&over[..], 8),
-            Err(BodyReadError::TooLarge(9))
+            Err(BodyReadError::TooLarge(8))
         ));
 
         // A body much larger than the cap still fails fast with the cap's
@@ -765,7 +775,61 @@ mod tests {
         let huge = vec![0u8; 1024];
         assert!(matches!(
             read_bounded(&huge[..], 8),
-            Err(BodyReadError::TooLarge(9))
+            Err(BodyReadError::TooLarge(8))
+        ));
+    }
+
+    /// The core fail-fast property: a body larger than the cap is refused
+    /// after reading only `cap + 1` bytes, never the whole stream. A
+    /// regression that reads the full body before deciding would break
+    /// this counting assertion.
+    #[test]
+    fn read_bounded_refuses_over_cap_after_cap_plus_one_bytes() {
+        struct Counting {
+            inner: std::io::Cursor<Vec<u8>>,
+            read: usize,
+        }
+        impl Read for Counting {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                self.read += n;
+                Ok(n)
+            }
+        }
+        let mut counting = Counting {
+            inner: std::io::Cursor::new(vec![0u8; 1024]),
+            read: 0,
+        };
+        assert!(matches!(
+            read_bounded(&mut counting, 8),
+            Err(BodyReadError::TooLarge(8))
+        ));
+        assert_eq!(
+            counting.read, 9,
+            "fail fast: only cap+1 bytes are consumed, not the whole stream"
+        );
+    }
+
+    #[test]
+    fn body_err_maps_to_fetch_and_put_failures() {
+        // The mapping is pure and testable without a live ureq response:
+        // TooLarge carries the cap through both failure kinds, an I/O error
+        // becomes a transport error naming the URL.
+        match map_fetch_body_err(BodyReadError::TooLarge(8), "https://x/index.json") {
+            FetchFailure::TooLarge(n) => assert_eq!(n, 8),
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+        match map_put_body_err(BodyReadError::TooLarge(8), "https://x/put") {
+            PutFailure::TooLarge(n) => assert_eq!(n, 8),
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+        assert!(matches!(
+            map_fetch_body_err(BodyReadError::Io(std::io::Error::other("boom")), "https://x/i"),
+            FetchFailure::Transport(e) if e.contains("https://x/i")
+        ));
+        assert!(matches!(
+            map_put_body_err(BodyReadError::Io(std::io::Error::other("boom")), "https://x/p"),
+            PutFailure::Transport(e) if e.contains("https://x/p")
         ));
     }
 
@@ -788,11 +852,11 @@ mod tests {
 
     #[test]
     fn display_reports_too_large_on_both_failures() {
-        assert!(FetchFailure::TooLarge(64 * 1024 * 1024 + 1)
+        assert!(FetchFailure::TooLarge(64 * 1024 * 1024)
             .to_string()
-            .contains("too large"));
-        assert!(PutFailure::TooLarge(64 * 1024 * 1024 + 1)
+            .contains("exceeds the"));
+        assert!(PutFailure::TooLarge(64 * 1024 * 1024)
             .to_string()
-            .contains("too large"));
+            .contains("exceeds the"));
     }
 }

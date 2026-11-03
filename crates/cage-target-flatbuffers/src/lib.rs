@@ -292,11 +292,19 @@ impl FlatbuffersTargetGenerator {
         let mut names: Vec<&String> = table.fields.keys().collect();
         names.sort();
         // (key) attribute: a single-field primary key whose mapped type is
-        // string or an integer scalar — flatc's eligibility rule.
+        // string or an integer scalar — flatc's eligibility rule. A PK of
+        // any other type (float, bool, vector, object, …) drops the `key`
+        // attribute rather than emitting a `.fbs` flatc rejects.
         let key_field = table
             .primary_key
             .first()
             .filter(|_| table.primary_key.len() == 1)
+            .filter(|pk| {
+                table
+                    .fields
+                    .get(*pk)
+                    .is_some_and(|f| key_eligible(&f.field_type))
+            })
             .map(String::as_str);
         for field_name in &names {
             let field = &table.fields[*field_name];
@@ -637,6 +645,28 @@ fn required_eligible(type_text: &str) -> bool {
     type_text == "string" || type_text.starts_with('[')
 }
 
+/// flatc's `(key)` eligibility: the field must be a string or an integer
+/// scalar (the key type needs an ordered binary search). Enums are
+/// integer-backed when eligible and degrade to `string` otherwise — both
+/// mappings are key-valid. Everything else (float, bool, bytes/vector,
+/// array, map, object, union, null, any) is refused so a non-conforming
+/// single-field primary key never emits an attribute flatc rejects.
+fn key_eligible(ft: &FieldType) -> bool {
+    matches!(
+        ft,
+        FieldType::String
+            | FieldType::Int8
+            | FieldType::Int16
+            | FieldType::Int32
+            | FieldType::Int64
+            | FieldType::UInt8
+            | FieldType::UInt16
+            | FieldType::UInt32
+            | FieldType::UInt64
+            | FieldType::Enum(_)
+    )
+}
+
 /// Render a (nested) wrapper table block with its field lines.
 fn render_wrapper_table(name: &str, lines: &[String]) -> String {
     let mut out = String::new();
@@ -859,6 +889,80 @@ enums:
         // a scalar (flatc restricts it to strings and vectors).
         let drop = artifact(&artifacts, "Drop.fbs");
         assert!(drop.contains("  id: long (key);"));
+    }
+
+    #[test]
+    fn test_key_attribute_respects_flatc_type_eligibility() {
+        // A single-field PK whose type is flatc-ineligible (float, bool,
+        // vector) must drop the `key` attribute — emitting `(key)` there
+        // would be rejected by flatc.
+        let gen = FlatbuffersTargetGenerator::default();
+        let float_pk = schema(
+            r"
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Float64 }, required: true }
+enums: {}
+",
+        );
+        let artifacts = gen.generate(&float_pk, None);
+        let t = artifact(&artifacts, "T.fbs");
+        assert!(t.contains("  id: double;"), "no key on a float pk:\n{t}");
+        assert!(!t.contains("(key)"), "float pk must not carry (key):\n{t}");
+
+        let bool_pk = schema(
+            r"
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Bool }, required: true }
+enums: {}
+",
+        );
+        let artifacts = gen.generate(&bool_pk, None);
+        let t = artifact(&artifacts, "T.fbs");
+        assert!(t.contains("  id: bool;"), "no key on a bool pk:\n{t}");
+        assert!(!t.contains("(key)"), "bool pk must not carry (key):\n{t}");
+
+        // A vector pk is not a scalar key either.
+        let vec_pk = schema(
+            r"
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Array, value: { kind: Int32 } }, required: true }
+enums: {}
+",
+        );
+        let artifacts = gen.generate(&vec_pk, None);
+        let t = artifact(&artifacts, "T.fbs");
+        assert!(!t.contains("(key)"), "vector pk must not carry (key):\n{t}");
+
+        // A string pk keeps the key attribute.
+        let str_pk = schema(
+            r"
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: String }, required: true }
+enums: {}
+",
+        );
+        let artifacts = gen.generate(&str_pk, None);
+        let t = artifact(&artifacts, "T.fbs");
+        assert!(
+            t.contains("  id: string (key, required);"),
+            "string pk keeps key:\n{t}"
+        );
     }
 
     #[test]

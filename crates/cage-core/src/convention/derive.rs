@@ -17,7 +17,9 @@
 use super::{ColumnMeta, TableMeta};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::error::codes::source_convention::E2208;
-use crate::schema::{EnumSchema, EnumValue, FieldSchema, FieldType, Schema, TableSchema};
+use crate::schema::{
+    EnumSchema, EnumValue, FieldSchema, FieldType, Schema, TableSchema, UniqueConstraint,
+};
 use crate::value::SourceLocation;
 use indexmap::IndexMap;
 
@@ -153,15 +155,27 @@ pub fn field_schema(name: &str, column: &ColumnMeta) -> FieldSchema {
 pub fn to_table_schema(table_name: &str, meta: &TableMeta) -> TableSchema {
     let mut fields = IndexMap::new();
     let mut primary_key = Vec::new();
+    let mut unique_constraints = Vec::new();
     for (name, column) in &meta.columns {
         if column.primary_key == Some(true) {
             primary_key.push(name.clone());
+        }
+        // `##unique true` declares a per-column uniqueness rule. The Schema
+        // DSL carries uniqueness only at table level (`unique_constraints`),
+        // so a declared unique column becomes a single-field constraint
+        // named after it — the one faithful representation.
+        if column.unique == Some(true) {
+            unique_constraints.push(UniqueConstraint {
+                name: format!("uniq_{name}"),
+                fields: vec![name.clone()],
+            });
         }
         fields.insert(name.clone(), field_schema(name, column));
     }
     TableSchema {
         name: table_name.to_string(),
         primary_key,
+        unique_constraints,
         fields,
         ..empty_table()
     }
@@ -273,6 +287,12 @@ fn declares_primary_key(meta: &TableMeta) -> bool {
     meta.columns.values().any(|c| c.primary_key.is_some())
 }
 
+/// Whether the meta rows name any unique column at all (the drift check
+/// only compares uniqueness when the workbook declared it).
+fn declares_unique(meta: &TableMeta) -> bool {
+    meta.columns.values().any(|c| c.unique.is_some())
+}
+
 /// The source location of a declaration cell: the column letter and row
 /// number the A1 anchor carries.
 fn cell_location(source_file: &str, sheet: &str, cell: &str) -> SourceLocation {
@@ -374,6 +394,58 @@ pub fn drift(
                         "declares primary key [{}] but the schema has [{}]",
                         derived.primary_key.join(", "),
                         adopted_table.primary_key.join(", ")
+                    ),
+                ));
+            }
+        }
+        if declares_unique(meta) {
+            let derived = to_table_schema(table_name, meta);
+            let mut a: Vec<Vec<String>> = derived
+                .unique_constraints
+                .iter()
+                .map(|uc| {
+                    let mut f = uc.fields.clone();
+                    f.sort();
+                    f
+                })
+                .collect();
+            let mut b: Vec<Vec<String>> = adopted_table
+                .unique_constraints
+                .iter()
+                .map(|uc| {
+                    let mut f = uc.fields.clone();
+                    f.sort();
+                    f
+                })
+                .collect();
+            a.sort();
+            b.sort();
+            if a != b {
+                let cell = meta
+                    .columns
+                    .values()
+                    .find(|c| c.unique == Some(true))
+                    .map(|c| c.cell.clone())
+                    .unwrap_or_default();
+                diags.add(drift_diag(
+                    source_file,
+                    &sheet,
+                    table_name,
+                    &cell,
+                    format!(
+                        "declares unique columns [{}] but the schema has [{}]",
+                        derived
+                            .unique_constraints
+                            .iter()
+                            .map(|uc| uc.fields.join(", "))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                        adopted_table
+                            .unique_constraints
+                            .iter()
+                            .map(|uc| uc.fields.join(", "))
+                            .collect::<Vec<_>>()
+                            .join("; ")
                     ),
                 ));
             }

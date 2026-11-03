@@ -108,7 +108,7 @@ workbooks = { "Skill.xlsx" = "header_block" }   # 按工作簿文件名的逐簿
 | `##default` | 默认值 | 与目标类型一致的 JSON 值 |
 | `##reference` | 外键 | `表.字段[:基数]` |
 | `##primary_key` | 主键列 | `true` |
-| `##targets` | 可见 profile | 逗号分隔 profile 名（空 = 全部） |
+| `##targets` | 可见 profile | 逗号分隔 profile 名（省略该关键字 = 全部 profile） |
 | `##description` | 注释行（Q5：注释行即 `##description`） | 自由文本 |
 | `##+` | 子列声明行（回流-5/6） | 每非标记单元格一个子列名；其所在列的顶层列成为嵌套 bean（`*` 前缀 = `multi_row`，无 `##+` 的 `*名` 列是 E2201） |
 

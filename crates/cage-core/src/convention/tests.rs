@@ -681,6 +681,23 @@ fn derive_schema_maps_declared_columns_and_registers_enums() {
     assert_eq!(skill.primary_key, Vec::<String>::new());
 }
 
+/// A `##unique true` declaration becomes a single-field table-level
+/// `unique_constraints` entry (the Schema DSL has no per-field unique slot),
+/// so the keyword is no longer accepted-and-dropped.
+#[test]
+fn derive_unique_column_becomes_table_unique_constraint() {
+    let rows = [
+        &["##type Int32", "##type String"][..],
+        &["##unique true", ""][..],
+        &["id", "name"][..],
+    ];
+    let schema = derive::derive_schema(&metas_of(&rows, 2, &[0, 1]));
+    let skill = schema.tables.get("Skill").expect("table");
+    assert_eq!(skill.unique_constraints.len(), 1);
+    assert_eq!(skill.unique_constraints[0].name, "uniq_id");
+    assert_eq!(skill.unique_constraints[0].fields, ["id"]);
+}
+
 /// A `multi_row` column with `##+` sub-columns derives to an `Array` of a
 /// nested `Object` whose `properties` carry the sub-columns (回流-5/6).
 #[test]
@@ -766,6 +783,55 @@ fn derive_collects_declared_primary_key_columns() {
     assert_eq!(
         schema.tables["Skill"].primary_key,
         ["id"].map(String::from).to_vec()
+    );
+}
+
+/// A `##unique true` column's table-level unique constraint is part of the
+/// drift contract: a schema missing or naming a different column is E2208.
+#[test]
+fn drift_unique_mismatch_is_e2208() {
+    let rows = [
+        &["##type Int32", "##type String"][..],
+        &["##unique true", ""][..],
+        &["id", "name"][..],
+    ];
+    let metas = metas_of(&rows, 2, &[0, 1]);
+    let mut adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            (
+                "name".to_string(),
+                declared_field("name", FieldType::String),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    // Missing → drift.
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert!(
+        diags.errors().iter().any(|d| d.message.contains("unique")),
+        "a missing unique constraint is drift: {diags:?}"
+    );
+
+    // A matching constraint clears it.
+    adopted
+        .tables
+        .get_mut("Skill")
+        .expect("skill")
+        .unique_constraints
+        .push(crate::schema::UniqueConstraint {
+            name: "uniq_id".to_string(),
+            fields: vec!["id".to_string()],
+        });
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert!(
+        !diags
+            .errors()
+            .iter()
+            .any(|d| d.message.contains("unique columns")),
+        "a matching unique constraint is not drift: {diags:?}"
     );
 }
 

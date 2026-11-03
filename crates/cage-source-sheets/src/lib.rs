@@ -278,7 +278,7 @@ fn failure_brief(failure: &FetchFailure) -> String {
         FetchFailure::RateLimited(_) => "rate limited".to_string(),
         FetchFailure::NotFound(_) => "not found".to_string(),
         FetchFailure::Status(code) => format!("http {code}"),
-        FetchFailure::TooLarge(n) => format!("body too large ({n} bytes)"),
+        FetchFailure::TooLarge(n) => format!("body exceeds the {n} byte cap"),
     }
 }
 

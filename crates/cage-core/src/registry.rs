@@ -1312,7 +1312,9 @@ impl PushRoute<'_> {
                 )
             }
             crate::remote::PutFailure::TooLarge(n) => {
-                format!("{E2101} push transport failed for {rel_path}: response body too large ({n} bytes)")
+                format!(
+                    "{E2101} push transport failed for {rel_path}: response body exceeds the {n} byte cap"
+                )
             }
         })
     }
