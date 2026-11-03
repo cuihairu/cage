@@ -358,7 +358,7 @@
 
 ## 漏洞扫描遗留（2026-11-03 全舰队扫描，源 scratch/vuln-scan-*.md）
 
-- [ ] VULN-CAGE-001 [高危 9.1/7.5/7.3/—·RUSTSEC-2026-0369/0429/0367/0368] zip 8.6.0→9.0.0【跨大版本需改代码】：patched 仅 ≥9.0.0，涉及 zip API 变更需适配（calamine 链路引入）；验收：cargo audit 上述 4 个 ID 清零 + cargo test 绿（cargo test --workspace）
+- [x] VULN-CAGE-001 [高危 9.1/7.5/7.3/—·RUSTSEC-2026-0369/0429/0367/0368] zip 8.6.0→9.0.0【跨大版本需改代码】：patched 仅 ≥9.0.0，涉及 zip API 变更需适配（calamine 链路引入）；验收：cargo audit 上述 4 个 ID 清零 + cargo test 绿（已修：calamine 0.36→0.38 使 zip 升至 9.3.0，Cargo.toml:60；cargo audit 4 个目标 ID 清零，cargo test --workspace 全绿）
 
 - [x] 审核发现：`docs/source.md:100-109`（中文版 `docs/zh/source.md` 同）的 Excel 元行「Vocabulary」表漏掉实现已支持的 `##unique`、`##targets`、`##description` 三个关键字（`crates/cage-core/src/convention/mod.rs:871-874` 的 slot_is_set 分支均接受），表题为“Vocabulary”且 design §51 明示 `##description` 为注释行，作者只读 source.md 会以为这三个关键字不存在/被拒，词汇表不完整（docs/source.md:100-109；已补入 docs/source.md:104-107 + docs/zh/source.md:105-108）
 - [x] 审核发现：`docs/review/2026-11-01-code-review.md:50` 称回归测试写入「300 字节『爆』stderr」，实际测试为 `'爆' * 300`（300 个 CJK 字符 = 900 字节），把字符数误记为字节数；触发机制仍成立（字节 400 落在多字节字符内），但报告对测试载荷的描述不准确（docs/review/2026-11-01-code-review.md:50；已改为 `'爆' * 300` 即 900 字节）
