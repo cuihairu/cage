@@ -710,29 +710,54 @@ impl Schema {
 /// counts the number of container levels: `Int32` is 0, `Array<Int32>` is 1,
 /// `Array<Array<Int32>>` is 2, `Object{ x: Array<Int32> }` is 2.
 fn field_type_depth(t: &FieldType) -> Option<usize> {
-    match t {
-        FieldType::Array(inner) => field_type_depth(inner).map_or(Some(1), |d| Some(d + 1)),
-        FieldType::Map(map) => field_type_depth(&map.value_type).map_or(Some(1), |d| Some(d + 1)),
-        FieldType::Object(fields) => {
-            let max = fields
-                .values()
-                .filter_map(field_type_depth)
-                .max()
-                .unwrap_or(0);
-            Some(max + 1)
+    fn walk(t: &FieldType, ancestors: usize) -> Option<usize> {
+        match t {
+            FieldType::Array(inner) => {
+                if ancestors + 1 > MAX_FIELD_TYPE_DEPTH {
+                    return Some(MAX_FIELD_TYPE_DEPTH + 1);
+                }
+                match walk(inner, ancestors + 1) {
+                    Some(d) => Some((d + 1).min(MAX_FIELD_TYPE_DEPTH + 1)),
+                    None => Some(1),
+                }
+            }
+            FieldType::Map(map) => {
+                if ancestors + 1 > MAX_FIELD_TYPE_DEPTH {
+                    return Some(MAX_FIELD_TYPE_DEPTH + 1);
+                }
+                match walk(&map.value_type, ancestors + 1) {
+                    Some(d) => Some((d + 1).min(MAX_FIELD_TYPE_DEPTH + 1)),
+                    None => Some(1),
+                }
+            }
+            FieldType::Object(fields) => {
+                if ancestors + 1 > MAX_FIELD_TYPE_DEPTH {
+                    return Some(MAX_FIELD_TYPE_DEPTH + 1);
+                }
+                let max = fields
+                    .values()
+                    .filter_map(|f| walk(f, ancestors + 1))
+                    .max()
+                    .unwrap_or(0);
+                Some((max + 1).min(MAX_FIELD_TYPE_DEPTH + 1))
+            }
+            FieldType::TaggedUnion(union) => {
+                if ancestors + 1 > MAX_FIELD_TYPE_DEPTH {
+                    return Some(MAX_FIELD_TYPE_DEPTH + 1);
+                }
+                let max = union
+                    .branches
+                    .values()
+                    .flat_map(|branch| branch.values())
+                    .filter_map(|f| walk(f, ancestors + 1))
+                    .max()
+                    .unwrap_or(0);
+                Some((max + 1).min(MAX_FIELD_TYPE_DEPTH + 1))
+            }
+            _ => None,
         }
-        FieldType::TaggedUnion(union) => {
-            let max = union
-                .branches
-                .values()
-                .flat_map(|branch| branch.values())
-                .filter_map(field_type_depth)
-                .max()
-                .unwrap_or(0);
-            Some(max + 1)
-        }
-        _ => None,
     }
+    walk(t, 0)
 }
 
 impl Default for Schema {
@@ -1364,12 +1389,9 @@ enums:
         assert!(schema.get_field("Ghost", "id").is_none());
     }
 
-    /// A `FieldType` nested deeper than `MAX_FIELD_TYPE_DEPTH` is refused by
-    /// `validate` with E1004 — the recursive schema/generator walks never
-    /// see an unbounded nesting depth.
-    #[test]
-    fn schema_rejects_field_type_deeper_than_the_max() {
-        let field = |t: FieldType| FieldSchema {
+    /// A one-field table whose sole field carries the given type.
+    fn schema_with_one_field(t: FieldType) -> Schema {
+        let field = FieldSchema {
             name: "deep".to_string(),
             field_type: t,
             description: None,
@@ -1393,35 +1415,40 @@ enums:
             rules: Vec::new(),
             metadata: IndexMap::new(),
         };
-        let schema_with = |t: FieldType| {
-            let mut fields = IndexMap::new();
-            fields.insert("deep".to_string(), field(t));
-            let mut tables = IndexMap::new();
-            tables.insert(
-                "T".to_string(),
-                TableSchema {
-                    name: "T".to_string(),
-                    description: None,
-                    primary_key: Vec::new(),
-                    fields,
-                    unique_constraints: Vec::new(),
-                    order_by: None,
-                    targets: Vec::new(),
-                    env_overrides: IndexMap::new(),
-                },
-            );
-            Schema {
-                tables,
-                enums: IndexMap::new(),
-                metadata: None,
-            }
-        };
+        let mut fields = IndexMap::new();
+        fields.insert("deep".to_string(), field);
+        let mut tables = IndexMap::new();
+        tables.insert(
+            "T".to_string(),
+            TableSchema {
+                name: "T".to_string(),
+                description: None,
+                primary_key: Vec::new(),
+                fields,
+                unique_constraints: Vec::new(),
+                order_by: None,
+                targets: Vec::new(),
+                env_overrides: IndexMap::new(),
+            },
+        );
+        Schema {
+            tables,
+            enums: IndexMap::new(),
+            metadata: None,
+        }
+    }
+
+    /// A `FieldType` nested deeper than `MAX_FIELD_TYPE_DEPTH` is refused by
+    /// `validate` with E1004 — the recursive schema/generator walks never
+    /// see an unbounded nesting depth.
+    #[test]
+    fn schema_rejects_field_type_deeper_than_the_max() {
         // Build Array<Array<...Array<Int32>...>> with MAX+2 levels.
         let mut t = FieldType::Int32;
         for _ in 0..(MAX_FIELD_TYPE_DEPTH + 2) {
             t = FieldType::Array(Box::new(t));
         }
-        let schema = schema_with(t);
+        let schema = schema_with_one_field(t);
         let diags = schema.validate();
         assert!(
             diags
@@ -1436,7 +1463,7 @@ enums:
         for _ in 0..MAX_FIELD_TYPE_DEPTH {
             t = FieldType::Array(Box::new(t));
         }
-        let schema = schema_with(t);
+        let schema = schema_with_one_field(t);
         assert!(
             !schema
                 .validate()
@@ -1445,6 +1472,31 @@ enums:
                 .any(|d| d.message.contains("nesting depth")),
             "at the limit is accepted"
         );
+    }
+
+    /// The depth probe itself must not overflow the stack on a
+    /// maliciously deep type: the walk short-circuits at
+    /// `MAX_FIELD_TYPE_DEPTH` instead of recursing with the input depth,
+    /// so even a type nested thousands of times beyond the cap is refused
+    /// with E1004 rather than crashing the process. (An unbounded probe
+    /// would recurse ~200k frames and overflow the test stack before
+    /// `validate` could report anything.)
+    #[test]
+    fn schema_depth_probe_short_circuits_on_a_huge_type() {
+        let mut t = FieldType::Int32;
+        for _ in 0..200_000 {
+            t = FieldType::Array(Box::new(t));
+        }
+        let schema = schema_with_one_field(t);
+        let diags = schema.validate();
+        assert!(
+            diags
+                .errors()
+                .iter()
+                .any(|d| d.code == "E1004" && d.message.contains("nesting depth")),
+            "a huge type is refused, not a crash: {diags:?}"
+        );
+        std::mem::forget(schema);
     }
 
     #[test]

@@ -963,6 +963,31 @@ enums: {}
             t.contains("  id: string (key, required);"),
             "string pk keeps key:\n{t}"
         );
+
+        let enum_pk = schema(
+            r"
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Enum, value: Status }
+      }
+enums:
+  Status:
+    name: Status
+    values:
+      - { name: Active, value: 1 }
+      - { name: Inactive, value: 2 }
+",
+        );
+        let artifacts = gen.generate(&enum_pk, None);
+        let t = artifact(&artifacts, "T.fbs");
+        assert!(
+            t.contains("  id: Status (key);"),
+            "integer-backed enum pk keeps key:\n{t}"
+        );
+        assert!(t.contains("include \"cage_enums.fbs\";"));
     }
 
     #[test]

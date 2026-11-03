@@ -281,16 +281,25 @@ fn field_type_label(t: &FieldType) -> String {
     serde_json::to_string(t).unwrap_or_else(|_| "?".to_string())
 }
 
-/// Whether the meta rows name any primary key at all (the drift check only
-/// compares the primary key when the workbook declared one).
+/// Whether the meta rows declare any primary key at all (the drift check
+/// only compares the primary key when the workbook declared it). Only an
+/// explicit `##primary_key true` is a declaration: `##primary_key false`
+/// is the author opting out and must not trip the drift check (a
+/// `Some(false)` slot would otherwise enter the branch yet derive an empty
+/// key list and misreport a workbook that never claimed a key).
 fn declares_primary_key(meta: &TableMeta) -> bool {
-    meta.columns.values().any(|c| c.primary_key.is_some())
+    meta.columns.values().any(|c| c.primary_key == Some(true))
 }
 
-/// Whether the meta rows name any unique column at all (the drift check
-/// only compares uniqueness when the workbook declared it).
+/// Whether the meta rows declare any unique column at all (the drift check
+/// only compares uniqueness when the workbook declared it). Only an
+/// explicit `##unique true` is a declaration: `##unique false` is the
+/// author opting out and must not trip the drift check — otherwise a
+/// workbook that never claimed the column unique (yet the adopted schema
+/// holds a unique constraint) would be misreported as
+/// "declares unique columns [] but the schema has [...]".
 fn declares_unique(meta: &TableMeta) -> bool {
-    meta.columns.values().any(|c| c.unique.is_some())
+    meta.columns.values().any(|c| c.unique == Some(true))
 }
 
 /// The source location of a declaration cell: the column letter and row

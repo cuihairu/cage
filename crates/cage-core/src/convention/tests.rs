@@ -835,6 +835,84 @@ fn drift_unique_mismatch_is_e2208() {
     );
 }
 
+/// An explicit `##unique false` is the author opting out, not a
+/// declaration: the drift check must not enter the unique branch (which
+/// would derive an empty `unique_constraints` and misreport a workbook
+/// that never claimed the column unique as
+/// "declares unique columns [] but the schema has [...]"). The adopted
+/// schema holds a unique constraint on a column the workbook never marked
+/// — that is the author's own schema-side constraint, not drift.
+#[test]
+fn drift_unique_false_is_not_a_declaration() {
+    let rows = [
+        &["##type Int32", "##type String"][..],
+        &["##unique false", ""][..],
+        &["id", "name"][..],
+    ];
+    let metas = metas_of(&rows, 2, &[0, 1]);
+    let mut adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            (
+                "name".to_string(),
+                declared_field("name", FieldType::String),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    // The schema carries a unique constraint the workbook never declared.
+    adopted
+        .tables
+        .get_mut("Skill")
+        .expect("skill")
+        .unique_constraints
+        .push(crate::schema::UniqueConstraint {
+            name: "uniq_id".to_string(),
+            fields: vec!["id".to_string()],
+        });
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert!(
+        !diags.errors().iter().any(|d| d.message.contains("unique")),
+        "##unique false is an opt-out, not a declaration: {diags:?}"
+    );
+}
+
+/// The same opt-out rule applies to the primary key: an explicit
+/// `##primary_key false` must not enter the primary-key drift branch
+/// either, so a schema-side primary key the workbook never claimed is the
+/// author's own and is not drift.
+#[test]
+fn drift_primary_key_false_is_not_a_declaration() {
+    let rows = [
+        &["##type Int32", "String"][..],
+        &["##primary_key false", ""][..],
+        &["id", "name"][..],
+    ];
+    let metas = metas_of(&rows, 2, &[0, 1]);
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            (
+                "name".to_string(),
+                declared_field("name", FieldType::String),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        vec!["id".to_string()],
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    assert!(
+        !diags
+            .errors()
+            .iter()
+            .any(|d| d.message.contains("primary key")),
+        "##primary_key false is an opt-out, not a declaration: {diags:?}"
+    );
+}
+
 /// `render_draft` output re-parses to the exact derived schema (the
 /// round-trip acceptance): the body is the Schema's own serde, the header
 /// is comments only.
