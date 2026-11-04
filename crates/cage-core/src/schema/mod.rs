@@ -283,10 +283,11 @@ pub struct FieldSchema {
 }
 
 /// Field type system
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value")]
 pub enum FieldType {
     /// Null type
+    #[default]
     Null,
     /// Boolean type
     Bool,
@@ -407,6 +408,68 @@ pub enum MapKeyType {
     /// Signed-integer keys, stored as numeric strings in the data model
     /// (`"42"`, `"-7"`); non-numeric keys are rejected at L2.
     Int,
+}
+
+/// Iterative `Drop` for [`FieldType`].
+///
+/// The derived `Drop` recursively frees `Array(Box<FieldType>)` /
+/// `Map(Box<FieldType>)` / `Object(...)` / `TaggedUnion(...)`. A schema
+/// type nested past the depth cap (which `validate` and the bounded
+/// deserializers refuse) would otherwise overflow the stack *when the value
+/// goes out of scope*, even though validation already rejected it. An
+/// explicit worklist flattens the container spine so teardown stays bounded.
+///
+/// Because `FieldType` has a custom `Drop`, an emptied container shell (all
+/// children already peeled onto the worklist) would otherwise re-enter this
+/// `Drop` on its own implicit drop and recurse forever — so a node with no
+/// owned `FieldType` children is released immediately without peeling.
+impl Drop for FieldType {
+    fn drop(&mut self) {
+        // A leaf, or a container whose direct children are all already
+        // Null/empty, owns nothing to peel. Returning here is essential:
+        // the implicit drop of such a node must not re-enter this worklist.
+        let trivial = match self {
+            FieldType::Array(inner) => matches!(**inner, FieldType::Null),
+            FieldType::Map(map) => matches!(*map.value_type, FieldType::Null),
+            FieldType::Object(fields) => fields.is_empty(),
+            FieldType::TaggedUnion(tu) => tu.branches.is_empty(),
+            _ => true,
+        };
+        if trivial {
+            return;
+        }
+        // Peel the spine iteratively: each node's owned children are moved
+        // onto the worklist, and the emptied shell is dropped on the next
+        // loop iteration (where `trivial` is now true and returns at once).
+        let mut work: Vec<FieldType> = Vec::new();
+        work.push(std::mem::take(self));
+        while let Some(mut node) = work.pop() {
+            match &mut node {
+                FieldType::Array(inner) => {
+                    work.push(std::mem::replace(&mut **inner, FieldType::Null));
+                }
+                FieldType::Map(map) => {
+                    work.push(std::mem::replace(&mut *map.value_type, FieldType::Null));
+                }
+                FieldType::Object(fields) => {
+                    work.extend(std::mem::take(fields).into_values());
+                }
+                FieldType::TaggedUnion(tu) => {
+                    let tu = std::mem::replace(
+                        &mut **tu,
+                        TaggedUnion {
+                            tag: String::new(),
+                            branches: IndexMap::new(),
+                        },
+                    );
+                    for (_bk, branch) in tu.branches {
+                        work.extend(branch.into_values());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl FieldType {
@@ -614,7 +677,7 @@ impl Schema {
                                 "E1004",
                                 format!(
                                     "Field '{field_name}' in table '{table_name}' exceeds the \
-                                     maximum nesting depth {MAX_FIELD_TYPE_DEPTH} (found {depth})"
+                                     maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
                                 ),
                             )
                             .with_source("schema"),
@@ -1489,14 +1552,29 @@ enums:
         }
         let schema = schema_with_one_field(t);
         let diags = schema.validate();
+        let msg = diags
+            .errors()
+            .iter()
+            .find(|d| d.code == "E1004" && d.message.contains("nesting depth"))
+            .expect("a huge type is refused, not a crash")
+            .message
+            .clone();
+        // The diagnostic must not carry the short-circuit sentinel (65) as if
+        // it were the real depth — that would mislead an operator debugging a
+        // 200k-deep type into thinking the value is only one level over.
         assert!(
-            diags
-                .errors()
-                .iter()
-                .any(|d| d.code == "E1004" && d.message.contains("nesting depth")),
-            "a huge type is refused, not a crash: {diags:?}"
+            !msg.contains("found 65"),
+            "E1004 must not report the sentinel depth: {msg}"
         );
-        std::mem::forget(schema);
+        assert!(
+            msg.contains(&format!("maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}")),
+            "E1004 names the cap: {msg}"
+        );
+        // Drop the (adversarial) schema for real: the iterative `Drop` must
+        // release the 200k-deep spine without overflowing the stack. This is
+        // the regression the old `mem::forget` masked — a test that leaks the
+        // value never proves the lifecycle is safe end to end.
+        drop(schema);
     }
 
     #[test]
