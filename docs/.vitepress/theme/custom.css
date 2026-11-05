@@ -112,13 +112,11 @@ code {
 
 
 /* 正文列宽：默认主题 .VPDoc.has-aside .content-container 上限 43rem（688px），
-   宽表格与 /example 的完整示例展示不全；放宽到 1100px。
-   页面总宽沿用 --vp-layout-max-width（90rem），只动正文列这一处上限。 */
-.VPDoc.has-aside .content-container {
-  max-width: 1100px;
-}
+   宽表格与 /example 的完整示例展示不全；统一由下方 fleet-wide 规则放宽到
+   960px（!important 压过默认主题带 scoped 属性的规则），此处不再单独设限。 */
 
-/* 宽表格在窄视口横向滚动，避免内容被裁切 */
+/* 宽表格在窄视口横向滚动，避免内容被裁切；宽代码块则换行不滚动——
+   代码逐行可读优先，表格保列结构优先，两种宽内容策略刻意不同。 */
 .vp-doc table {
   display: block;
   overflow-x: auto;
