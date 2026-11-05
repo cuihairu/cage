@@ -283,7 +283,7 @@ pub struct FieldSchema {
 }
 
 /// Field type system
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(tag = "kind", content = "value")]
 pub enum FieldType {
     /// Null type
@@ -472,7 +472,491 @@ impl Drop for FieldType {
     }
 }
 
+impl Clone for FieldType {
+    /// Iterative `Clone`.
+    ///
+    /// The derived `Clone` recursively copies `Array(Box<FieldType>)` /
+    /// `Map(Box<FieldType>)` / `Object(...)` / `TaggedUnion(...)`. A type
+    /// nested past the depth cap would otherwise overflow the stack during
+    /// the copy, mirroring the `Drop` problem this type already solved. An
+    /// explicit task stack performs the same copy without unbounded
+    /// recursion: leaves are pushed onto a result stack, and container
+    /// assemblers pop their children back off in declaration order.
+    fn clone(&self) -> Self {
+        enum Task<'a> {
+            Visit(&'a FieldType),
+            AssembleArray,
+            AssembleMap(&'a MapField),
+            AssembleObject(&'a IndexMap<String, FieldType>),
+            AssembleTaggedUnion(&'a TaggedUnion),
+        }
+        let mut tasks: Vec<Task> = vec![Task::Visit(self)];
+        let mut results: Vec<FieldType> = Vec::new();
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Visit(t) => match t {
+                    FieldType::Array(inner) => {
+                        tasks.push(Task::AssembleArray);
+                        tasks.push(Task::Visit(inner));
+                    }
+                    FieldType::Map(map) => {
+                        tasks.push(Task::AssembleMap(map));
+                        tasks.push(Task::Visit(&map.value_type));
+                    }
+                    FieldType::Object(fields) => {
+                        tasks.push(Task::AssembleObject(fields));
+                        for f in fields.values() {
+                            tasks.push(Task::Visit(f));
+                        }
+                    }
+                    FieldType::TaggedUnion(tu) => {
+                        tasks.push(Task::AssembleTaggedUnion(tu));
+                        for branch in tu.branches.values() {
+                            for f in branch.values() {
+                                tasks.push(Task::Visit(f));
+                            }
+                        }
+                    }
+                    FieldType::Null => results.push(FieldType::Null),
+                    FieldType::Bool => results.push(FieldType::Bool),
+                    FieldType::Int8 => results.push(FieldType::Int8),
+                    FieldType::Int16 => results.push(FieldType::Int16),
+                    FieldType::Int32 => results.push(FieldType::Int32),
+                    FieldType::Int64 => results.push(FieldType::Int64),
+                    FieldType::UInt8 => results.push(FieldType::UInt8),
+                    FieldType::UInt16 => results.push(FieldType::UInt16),
+                    FieldType::UInt32 => results.push(FieldType::UInt32),
+                    FieldType::UInt64 => results.push(FieldType::UInt64),
+                    FieldType::Float32 => results.push(FieldType::Float32),
+                    FieldType::Float64 => results.push(FieldType::Float64),
+                    FieldType::String => results.push(FieldType::String),
+                    FieldType::Bytes => results.push(FieldType::Bytes),
+                    FieldType::Any => results.push(FieldType::Any),
+                    FieldType::Enum(name) => {
+                        results.push(FieldType::Enum(name.clone()));
+                    }
+                },
+                Task::AssembleArray => {
+                    let inner = results.pop().expect("array child is on the stack");
+                    results.push(FieldType::Array(Box::new(inner)));
+                }
+                Task::AssembleMap(map) => {
+                    let value = results.pop().expect("map value is on the stack");
+                    results.push(FieldType::Map(MapField {
+                        key_type: map.key_type,
+                        value_type: Box::new(value),
+                    }));
+                }
+                Task::AssembleObject(fields) => {
+                    let mut built = IndexMap::with_capacity(fields.len());
+                    for (name, _) in fields {
+                        let value = results.pop().expect("object child is on the stack");
+                        built.insert(name.clone(), value);
+                    }
+                    results.push(FieldType::Object(built));
+                }
+                Task::AssembleTaggedUnion(tu) => {
+                    let mut built = IndexMap::with_capacity(tu.branches.len());
+                    for (branch_name, branch) in &tu.branches {
+                        let mut fields = IndexMap::with_capacity(branch.len());
+                        for (name, _) in branch {
+                            let value = results.pop().expect("tagged-union child is on the stack");
+                            fields.insert(name.clone(), value);
+                        }
+                        built.insert(branch_name.clone(), fields);
+                    }
+                    results.push(FieldType::TaggedUnion(Box::new(TaggedUnion {
+                        tag: tu.tag.clone(),
+                        branches: built,
+                    })));
+                }
+            }
+        }
+        results.pop().expect("a clone yields exactly one root")
+    }
+}
+
+impl std::fmt::Debug for FieldType {
+    /// Iterative `Debug`.
+    ///
+    /// The derived `Debug` recursively formats `Array(Box<FieldType>)` /
+    /// `Map(Box<FieldType>)` / `Object(...)` / `TaggedUnion(...)`, which
+    /// overflows on a type nested past the depth cap. This writes the same
+    /// shape as the derive (variant names and nested fields) using an explicit
+    /// worklist so deep types render in bounded stack.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+
+        enum Piece<'a> {
+            Type(&'a FieldType),
+            Literal(&'static str),
+            Quoted(&'a str),
+        }
+        fn fmt_map<'a>(fields: &'a IndexMap<String, FieldType>, pieces: &mut Vec<Piece<'a>>) {
+            // Output `{ "name": <type>, ... }`. The worklist pops in reverse,
+            // so push the pieces that should print *last* first. For fields
+            // a,b (output `a: A, b: B}`), push order is: `}` (closes the map),
+            // then the *last* field's group, then a comma that follows the
+            // previous field when printed, then the earlier field's group,
+            // and finally `{`.
+            pieces.push(Piece::Literal("}"));
+            for (i, (name, field)) in fields.iter().enumerate().rev() {
+                pieces.push(Piece::Type(field));
+                pieces.push(Piece::Literal(": "));
+                pieces.push(Piece::Quoted(name));
+                if i > 0 {
+                    pieces.push(Piece::Literal(", "));
+                }
+            }
+            pieces.push(Piece::Literal("{ "));
+        }
+        let mut pieces: Vec<Piece> = vec![Piece::Type(self)];
+        let mut out = String::new();
+        while let Some(piece) = pieces.pop() {
+            match piece {
+                Piece::Type(t) => match t {
+                    FieldType::Null => out.push_str("Null"),
+                    FieldType::Bool => out.push_str("Bool"),
+                    FieldType::Int8 => out.push_str("Int8"),
+                    FieldType::Int16 => out.push_str("Int16"),
+                    FieldType::Int32 => out.push_str("Int32"),
+                    FieldType::Int64 => out.push_str("Int64"),
+                    FieldType::UInt8 => out.push_str("UInt8"),
+                    FieldType::UInt16 => out.push_str("UInt16"),
+                    FieldType::UInt32 => out.push_str("UInt32"),
+                    FieldType::UInt64 => out.push_str("UInt64"),
+                    FieldType::Float32 => out.push_str("Float32"),
+                    FieldType::Float64 => out.push_str("Float64"),
+                    FieldType::String => out.push_str("String"),
+                    FieldType::Bytes => out.push_str("Bytes"),
+                    FieldType::Any => out.push_str("Any"),
+                    FieldType::Enum(name) => {
+                        out.push_str("Enum(");
+                        write!(out, "{name:?}").expect("writing to String cannot fail");
+                        out.push(')');
+                    }
+                    FieldType::Array(inner) => {
+                        out.push_str("Array(");
+                        pieces.push(Piece::Literal(")"));
+                        pieces.push(Piece::Type(inner));
+                    }
+                    FieldType::Map(map) => {
+                        out.push_str("Map(MapField { key_type: ");
+                        write!(out, "{:?}, value_type: ", map.key_type)
+                            .expect("writing to String cannot fail");
+                        pieces.push(Piece::Literal(" })"));
+                        pieces.push(Piece::Type(&map.value_type));
+                    }
+                    FieldType::Object(fields) => {
+                        out.push_str("Object(");
+                        // LIFO: push `)` first so it pops after the map closes.
+                        pieces.push(Piece::Literal(")"));
+                        fmt_map(fields, &mut pieces);
+                    }
+                    FieldType::TaggedUnion(tu) => {
+                        out.push_str("TaggedUnion(TaggedUnion { tag: ");
+                        write!(out, "{:?}, branches: ", tu.tag)
+                            .expect("writing to String cannot fail");
+                        pieces.push(Piece::Literal(" })"));
+                        // branches: `IndexMap<String, IndexMap<String, FieldType>>`
+                        pieces.push(Piece::Literal("}"));
+                        for (i, (branch_name, branch)) in tu.branches.iter().rev().enumerate() {
+                            if i > 0 {
+                                pieces.push(Piece::Literal(", "));
+                            }
+                            fmt_map(branch, &mut pieces);
+                            pieces.push(Piece::Literal(": "));
+                            pieces.push(Piece::Quoted(branch_name));
+                        }
+                        pieces.push(Piece::Literal("{ "));
+                    }
+                },
+                Piece::Literal(s) => out.push_str(s),
+                Piece::Quoted(s) => {
+                    write!(out, "{s:?}").expect("writing to String cannot fail");
+                }
+            }
+        }
+        f.write_str(&out)
+    }
+}
+
+impl PartialEq for FieldType {
+    /// Iterative structural equality.
+    ///
+    /// The derived `PartialEq` recursively compares `Array(Box<FieldType>)` /
+    /// `Map(Box<FieldType>)` / `Object(...)` / `TaggedUnion(...)`, which
+    /// overflows on a type nested past the depth cap. This walks both sides
+    /// with an explicit worklist so equality of deep types stays bounded.
+    fn eq(&self, other: &Self) -> bool {
+        enum Frame<'a> {
+            Pair(&'a FieldType, &'a FieldType),
+            TaggedUnion(&'a TaggedUnion, &'a TaggedUnion),
+        }
+        let mut stack: Vec<Frame> = vec![Frame::Pair(self, other)];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Pair(a, b) => match (a, b) {
+                    (FieldType::Null, FieldType::Null)
+                    | (FieldType::Bool, FieldType::Bool)
+                    | (FieldType::Int8, FieldType::Int8)
+                    | (FieldType::Int16, FieldType::Int16)
+                    | (FieldType::Int32, FieldType::Int32)
+                    | (FieldType::Int64, FieldType::Int64)
+                    | (FieldType::UInt8, FieldType::UInt8)
+                    | (FieldType::UInt16, FieldType::UInt16)
+                    | (FieldType::UInt32, FieldType::UInt32)
+                    | (FieldType::UInt64, FieldType::UInt64)
+                    | (FieldType::Float32, FieldType::Float32)
+                    | (FieldType::Float64, FieldType::Float64)
+                    | (FieldType::String, FieldType::String)
+                    | (FieldType::Bytes, FieldType::Bytes)
+                    | (FieldType::Any, FieldType::Any) => {}
+                    (FieldType::Enum(x), FieldType::Enum(y)) => {
+                        if x != y {
+                            return false;
+                        }
+                    }
+                    (FieldType::Array(x), FieldType::Array(y)) => {
+                        stack.push(Frame::Pair(x, y));
+                    }
+                    (FieldType::Map(x), FieldType::Map(y)) => {
+                        if x.key_type != y.key_type {
+                            return false;
+                        }
+                        stack.push(Frame::Pair(&x.value_type, &y.value_type));
+                    }
+                    (FieldType::Object(x), FieldType::Object(y)) => {
+                        if x.len() != y.len() {
+                            return false;
+                        }
+                        for (name, xv) in x {
+                            match y.get(name) {
+                                Some(yv) => stack.push(Frame::Pair(xv, yv)),
+                                None => return false,
+                            }
+                        }
+                    }
+                    (FieldType::TaggedUnion(x), FieldType::TaggedUnion(y)) => {
+                        if x.tag != y.tag || x.branches.len() != y.branches.len() {
+                            return false;
+                        }
+                        stack.push(Frame::TaggedUnion(x, y));
+                    }
+                    _ => return false,
+                },
+                Frame::TaggedUnion(x, y) => {
+                    for (branch_name, xb) in &x.branches {
+                        let Some(yb) = y.branches.get(branch_name) else {
+                            return false;
+                        };
+                        if xb.len() != yb.len() {
+                            return false;
+                        }
+                        for (name, xv) in xb {
+                            match yb.get(name) {
+                                Some(yv) => stack.push(Frame::Pair(xv, yv)),
+                                None => return false,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
+impl Eq for FieldType {}
+
+fn tagged_wire(kind: &str, value: serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Object(
+        [
+            (
+                "kind".to_string(),
+                serde_json::Value::String(kind.to_string()),
+            ),
+            ("value".to_string(), value),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+fn scalar_wire(t: &FieldType) -> serde_json::Value {
+    let kind = match t {
+        FieldType::Null => "Null",
+        FieldType::Bool => "Bool",
+        FieldType::Int8 => "Int8",
+        FieldType::Int16 => "Int16",
+        FieldType::Int32 => "Int32",
+        FieldType::Int64 => "Int64",
+        FieldType::UInt8 => "UInt8",
+        FieldType::UInt16 => "UInt16",
+        FieldType::UInt32 => "UInt32",
+        FieldType::UInt64 => "UInt64",
+        FieldType::Float32 => "Float32",
+        FieldType::Float64 => "Float64",
+        FieldType::String => "String",
+        FieldType::Bytes => "Bytes",
+        FieldType::Any => "Any",
+        FieldType::Enum(name) => {
+            let mut wire = serde_json::Map::new();
+            wire.insert(
+                "kind".to_string(),
+                serde_json::Value::String("Enum".to_string()),
+            );
+            wire.insert("value".to_string(), serde_json::Value::String(name.clone()));
+            return serde_json::Value::Object(wire);
+        }
+        _ => unreachable!("container variants are handled by the serializer"),
+    };
+    let mut wire = serde_json::Map::new();
+    wire.insert(
+        "kind".to_string(),
+        serde_json::Value::String(kind.to_string()),
+    );
+    serde_json::Value::Object(wire)
+}
+
+enum SerializeFrame<'a> {
+    Visit(&'a FieldType),
+    /// Finish an `Array` whose child is already on the value stack.
+    FinishArray,
+    /// Finish a `Map` whose `value_type` is already on the stack.
+    FinishMap(&'a MapField),
+    /// Finish an `Object` with the given fields (in order).
+    FinishObject(&'a IndexMap<String, FieldType>),
+    /// Finish a `TaggedUnion` with the given branches (in order).
+    FinishUnion(&'a TaggedUnion),
+}
+
+impl Serialize for FieldType {
+    /// Iterative `Serialize` into the same adjacent-tagged wire format the
+    /// derive produced (`{ kind: <variant>, value: <payload> }`).
+    ///
+    /// The derived `Serialize` recurses through `Array` / `Map` / `Object` /
+    /// `TaggedUnion` and would overflow on a type nested past the depth cap.
+    /// This flattens the container spine into a `serde_json::Value` tree with
+    /// an explicit worklist, then hands the tree to serde — the tree itself is
+    /// a plain `Value` whose serialization is also bounded (it contains no
+    /// `FieldType` recursion, only JSON scalars/arrays/objects).
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Reject an over-cap type instead of building a nested JSON tree and
+        // overflowing deep inside serde. Valid types (<= MAX depth) serialize
+        // through the iterative builder below.
+        if let Some(measure) = field_type_depth(self) {
+            if measure.depth > MAX_FIELD_TYPE_DEPTH {
+                return Err(serde::ser::Error::custom(format!(
+                    "field type exceeds the maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
+                )));
+            }
+        }
+        let mut frames: Vec<SerializeFrame> = vec![SerializeFrame::Visit(self)];
+        let mut values: Vec<serde_json::Value> = Vec::new();
+        while let Some(frame) = frames.pop() {
+            match frame {
+                SerializeFrame::Visit(t) => match t {
+                    FieldType::Array(inner) => {
+                        frames.push(SerializeFrame::FinishArray);
+                        frames.push(SerializeFrame::Visit(inner));
+                    }
+                    FieldType::Map(map) => {
+                        frames.push(SerializeFrame::FinishMap(map));
+                        frames.push(SerializeFrame::Visit(&map.value_type));
+                    }
+                    FieldType::Object(fields) => {
+                        frames.push(SerializeFrame::FinishObject(fields));
+                        for field in fields.values() {
+                            frames.push(SerializeFrame::Visit(field));
+                        }
+                    }
+                    FieldType::TaggedUnion(tu) => {
+                        frames.push(SerializeFrame::FinishUnion(tu));
+                        for branch in tu.branches.values() {
+                            for field in branch.values() {
+                                frames.push(SerializeFrame::Visit(field));
+                            }
+                        }
+                    }
+                    other => values.push(scalar_wire(other)),
+                },
+                SerializeFrame::FinishArray => {
+                    let inner = values.pop().expect("array child on the stack");
+                    values.push(tagged_wire("Array", inner));
+                }
+                SerializeFrame::FinishMap(map) => {
+                    let value = values.pop().expect("map value on the stack");
+                    let mut obj = serde_json::Map::new();
+                    obj.insert(
+                        "key_type".to_string(),
+                        serde_json::Value::String(
+                            match map.key_type {
+                                MapKeyType::String => "string",
+                                MapKeyType::Int => "int",
+                            }
+                            .to_string(),
+                        ),
+                    );
+                    obj.insert("value_type".to_string(), value);
+                    values.push(tagged_wire("Map", serde_json::Value::Object(obj)));
+                }
+                SerializeFrame::FinishObject(fields) => {
+                    let mut obj = serde_json::Map::new();
+                    // Children were pushed in declaration order, so popped in
+                    // reverse. Pop into a Vec then rebuild in order.
+                    let count = fields.len();
+                    let mut children = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        children.push(values.pop().expect("object child on the stack"));
+                    }
+                    for ((name, _), child) in fields.iter().zip(children.iter()) {
+                        obj.insert(name.clone(), child.clone());
+                    }
+                    values.push(tagged_wire("Object", serde_json::Value::Object(obj)));
+                }
+                SerializeFrame::FinishUnion(tu) => {
+                    let mut branches = serde_json::Map::new();
+                    for (branch_name, branch) in &tu.branches {
+                        let count = branch.len();
+                        let mut children = Vec::with_capacity(count);
+                        for _ in 0..count {
+                            children.push(values.pop().expect("union child on the stack"));
+                        }
+                        let mut branch_obj = serde_json::Map::new();
+                        for ((name, _), child) in branch.iter().zip(children.iter()) {
+                            branch_obj.insert(name.clone(), child.clone());
+                        }
+                        branches.insert(branch_name.clone(), serde_json::Value::Object(branch_obj));
+                    }
+                    let mut value = serde_json::Map::new();
+                    value.insert("tag".to_string(), serde_json::Value::String(tu.tag.clone()));
+                    value.insert("branches".to_string(), serde_json::Value::Object(branches));
+                    values.push(tagged_wire("TaggedUnion", serde_json::Value::Object(value)));
+                }
+            }
+        }
+        values
+            .pop()
+            .expect("serialize yields exactly one root")
+            .serialize(serializer)
+    }
+}
+
 impl FieldType {
+    /// Take ownership of this value, leaving `FieldType::Null` behind.
+    ///
+    /// `FieldType` has a custom iterative `Drop`, so Rust's E0509 prevents
+    /// matching by value and moving a child out of `Array` / `Map` / `Object` /
+    /// `TaggedUnion` / `Enum`. Existing code that needs the owned value should
+    /// first call this helper, then match the returned value or clone its child.
+    pub fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
+
     /// Whether this is any numeric type
     pub fn is_numeric(&self) -> bool {
         matches!(
@@ -670,17 +1154,31 @@ impl Schema {
         // Object / TaggedUnion is bounded by MAX_FIELD_TYPE_DEPTH.
         for (table_name, table) in &self.tables {
             for (field_name, field) in &table.fields {
-                if let Some(depth) = field_type_depth(&field.field_type) {
-                    if depth > MAX_FIELD_TYPE_DEPTH {
-                        diags.add(
-                            crate::diagnostics::Diagnostic::error(
-                                "E1004",
-                                format!(
-                                    "Field '{field_name}' in table '{table_name}' exceeds the \
-                                     maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
-                                ),
+                if let Some(measure) = field_type_depth(&field.field_type) {
+                    if measure.depth > MAX_FIELD_TYPE_DEPTH {
+                        // A saturated probe means the real depth is far past
+                        // the cap (e.g. a hand-built 200k-deep type): name
+                        // the cap without pretending to know the depth. A
+                        // non-saturated depth of exactly MAX+1 is a real,
+                        // one-over-the-cap authoring mistake — report it so
+                        // the operator can tell "one level over" from a
+                        // pathological type.
+                        let msg = if measure.saturated {
+                            format!(
+                                "Field '{field_name}' in table '{table_name}' exceeds the \
+                                 maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
                             )
-                            .with_source("schema"),
+                        } else {
+                            format!(
+                                "Field '{field_name}' in table '{table_name}' has nesting \
+                                 depth {} which exceeds the maximum nesting depth limit of \
+                                 {MAX_FIELD_TYPE_DEPTH}",
+                                measure.depth
+                            )
+                        };
+                        diags.add(
+                            crate::diagnostics::Diagnostic::error("E1004", msg)
+                                .with_source("schema"),
                         );
                     }
                 }
@@ -769,53 +1267,131 @@ impl Schema {
     }
 }
 
-/// The nesting depth of a `FieldType`, or `None` for a scalar/leaf. Depth
-/// counts the number of container levels: `Int32` is 0, `Array<Int32>` is 1,
-/// `Array<Array<Int32>>` is 2, `Object{ x: Array<Int32> }` is 2.
-fn field_type_depth(t: &FieldType) -> Option<usize> {
-    fn walk(t: &FieldType, ancestors: usize) -> Option<usize> {
+/// A depth measurement of a [`FieldType`]. `depth` counts the number of
+/// container levels (`Int32` is 0, `Array<Int32>` is 1,
+/// `Array<Array<Int32>>` is 2, `Object{ x: Array<Int32> }` is 2), but only
+/// up to the first level past [`MAX_FIELD_TYPE_DEPTH`]. Beyond that the walk
+/// short-circuits and reports `MAX_FIELD_TYPE_DEPTH + 1` with `saturated` set,
+/// so a call on a pathologically deep type stays stack-bounded instead of
+/// recursing thousands of frames.
+struct DepthMeasure {
+    /// The nesting depth, or `MAX_FIELD_TYPE_DEPTH + 1` when `saturated`.
+    depth: usize,
+    /// Whether the walk short-circuited at the cap. When set, `depth` is a
+    /// sentinel rather than the real depth, so callers must not report it as
+    /// if it were measured.
+    saturated: bool,
+}
+
+/// Measure the nesting depth of a `FieldType`. Returns `None` for a
+/// scalar/leaf; otherwise the measure, saturated past the cap.
+fn field_type_depth(t: &FieldType) -> Option<DepthMeasure> {
+    fn walk(t: &FieldType, ancestors: usize) -> Option<DepthMeasure> {
         match t {
             FieldType::Array(inner) => {
-                if ancestors + 1 > MAX_FIELD_TYPE_DEPTH {
-                    return Some(MAX_FIELD_TYPE_DEPTH + 1);
+                // The current node is the (ancestors + 1)-th container. A
+                // node MAX+1 or MAX+2 deep is still measured precisely so a
+                // one-or-two-over-the-cap authoring mistake is reported with
+                // its real depth; only a node MAX+3 deep and beyond (the
+                // pathologically deep case) saturates. The recursion therefore
+                // never descends more than a few frames past the cap.
+                if ancestors > MAX_FIELD_TYPE_DEPTH + 1 {
+                    return Some(DepthMeasure {
+                        depth: MAX_FIELD_TYPE_DEPTH + 1,
+                        saturated: true,
+                    });
                 }
                 match walk(inner, ancestors + 1) {
-                    Some(d) => Some((d + 1).min(MAX_FIELD_TYPE_DEPTH + 1)),
-                    None => Some(1),
+                    Some(d) if d.saturated => Some(DepthMeasure {
+                        depth: MAX_FIELD_TYPE_DEPTH + 1,
+                        saturated: true,
+                    }),
+                    Some(d) => Some(DepthMeasure {
+                        depth: d.depth + 1,
+                        saturated: false,
+                    }),
+                    None => Some(DepthMeasure {
+                        depth: 1,
+                        saturated: false,
+                    }),
                 }
             }
             FieldType::Map(map) => {
-                if ancestors + 1 > MAX_FIELD_TYPE_DEPTH {
-                    return Some(MAX_FIELD_TYPE_DEPTH + 1);
+                if ancestors > MAX_FIELD_TYPE_DEPTH + 1 {
+                    return Some(DepthMeasure {
+                        depth: MAX_FIELD_TYPE_DEPTH + 1,
+                        saturated: true,
+                    });
                 }
                 match walk(&map.value_type, ancestors + 1) {
-                    Some(d) => Some((d + 1).min(MAX_FIELD_TYPE_DEPTH + 1)),
-                    None => Some(1),
+                    Some(d) if d.saturated => Some(DepthMeasure {
+                        depth: MAX_FIELD_TYPE_DEPTH + 1,
+                        saturated: true,
+                    }),
+                    Some(d) => Some(DepthMeasure {
+                        depth: d.depth + 1,
+                        saturated: false,
+                    }),
+                    None => Some(DepthMeasure {
+                        depth: 1,
+                        saturated: false,
+                    }),
                 }
             }
             FieldType::Object(fields) => {
-                if ancestors + 1 > MAX_FIELD_TYPE_DEPTH {
-                    return Some(MAX_FIELD_TYPE_DEPTH + 1);
+                if ancestors > MAX_FIELD_TYPE_DEPTH + 1 {
+                    return Some(DepthMeasure {
+                        depth: MAX_FIELD_TYPE_DEPTH + 1,
+                        saturated: true,
+                    });
                 }
-                let max = fields
-                    .values()
-                    .filter_map(|f| walk(f, ancestors + 1))
-                    .max()
-                    .unwrap_or(0);
-                Some((max + 1).min(MAX_FIELD_TYPE_DEPTH + 1))
+                let mut max = 0usize;
+                let mut saturated = false;
+                for m in fields.values().filter_map(|f| walk(f, ancestors + 1)) {
+                    if m.saturated {
+                        saturated = true;
+                        break;
+                    }
+                    max = max.max(m.depth);
+                }
+                Some(DepthMeasure {
+                    depth: if saturated {
+                        MAX_FIELD_TYPE_DEPTH + 1
+                    } else {
+                        max + 1
+                    },
+                    saturated,
+                })
             }
             FieldType::TaggedUnion(union) => {
-                if ancestors + 1 > MAX_FIELD_TYPE_DEPTH {
-                    return Some(MAX_FIELD_TYPE_DEPTH + 1);
+                if ancestors > MAX_FIELD_TYPE_DEPTH + 1 {
+                    return Some(DepthMeasure {
+                        depth: MAX_FIELD_TYPE_DEPTH + 1,
+                        saturated: true,
+                    });
                 }
-                let max = union
+                let mut max = 0usize;
+                let mut saturated = false;
+                for m in union
                     .branches
                     .values()
                     .flat_map(|branch| branch.values())
                     .filter_map(|f| walk(f, ancestors + 1))
-                    .max()
-                    .unwrap_or(0);
-                Some((max + 1).min(MAX_FIELD_TYPE_DEPTH + 1))
+                {
+                    if m.saturated {
+                        saturated = true;
+                        break;
+                    }
+                    max = max.max(m.depth);
+                }
+                Some(DepthMeasure {
+                    depth: if saturated {
+                        MAX_FIELD_TYPE_DEPTH + 1
+                    } else {
+                        max + 1
+                    },
+                    saturated,
+                })
             }
             _ => None,
         }
@@ -1513,12 +2089,23 @@ enums:
         }
         let schema = schema_with_one_field(t);
         let diags = schema.validate();
+        let msg = diags
+            .errors()
+            .iter()
+            .find(|d| d.code == "E1004" && d.message.contains("nesting depth"))
+            .map(|d| d.message.clone())
+            .expect("a too-deep type is E1004");
+        // A depth of MAX+2 is still within one probe of the cap (the walk
+        // only saturates past MAX+1), so the real depth is reported.
         assert!(
-            diags
-                .errors()
-                .iter()
-                .any(|d| d.code == "E1004" && d.message.contains("nesting depth")),
-            "a too-deep type is E1004: {diags:?}"
+            msg.contains(&format!("depth {}", MAX_FIELD_TYPE_DEPTH + 2)),
+            "the real marginal depth is named: {msg}"
+        );
+        assert!(
+            msg.contains(&format!(
+                "maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
+            )),
+            "E1004 names the cap: {msg}"
         );
 
         // Exactly at the limit is accepted.
@@ -1534,6 +2121,26 @@ enums:
                 .iter()
                 .any(|d| d.message.contains("nesting depth")),
             "at the limit is accepted"
+        );
+
+        // One level over the cap is a real, non-saturated measurement: the
+        // walk reports MAX+1 as the measured depth (distinguishable from a
+        // pathologically deep type that saturates).
+        let mut t = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 1) {
+            t = FieldType::Array(Box::new(t));
+        }
+        let schema = schema_with_one_field(t);
+        let diags = schema.validate();
+        let msg = diags
+            .errors()
+            .iter()
+            .find(|d| d.code == "E1004" && d.message.contains("nesting depth"))
+            .map(|d| d.message.clone())
+            .expect("one-over-the-cap is E1004");
+        assert!(
+            msg.contains(&format!("depth {}", MAX_FIELD_TYPE_DEPTH + 1)),
+            "one level over the cap reports its real depth: {msg}"
         );
     }
 
@@ -1561,13 +2168,16 @@ enums:
             .clone();
         // The diagnostic must not carry the short-circuit sentinel (65) as if
         // it were the real depth — that would mislead an operator debugging a
-        // 200k-deep type into thinking the value is only one level over.
+        // 200k-deep type into thinking the value is only one level over. The
+        // saturated probe omits any depth figure entirely.
         assert!(
-            !msg.contains("found 65"),
-            "E1004 must not report the sentinel depth: {msg}"
+            !msg.contains("has nesting depth"),
+            "a saturated probe must not name a (sentinel) depth: {msg}"
         );
         assert!(
-            msg.contains(&format!("maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}")),
+            msg.contains(&format!(
+                "maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
+            )),
             "E1004 names the cap: {msg}"
         );
         // Drop the (adversarial) schema for real: the iterative `Drop` must
@@ -1575,6 +2185,53 @@ enums:
         // the regression the old `mem::forget` masked — a test that leaks the
         // value never proves the lifecycle is safe end to end.
         drop(schema);
+    }
+
+    /// The derived `Clone` / `PartialEq` / `Debug` / `Serialize` recursed
+    /// through `Array` / `Map` / `Object` / `TaggedUnion` and overflowed on a
+    /// type nested past the depth cap. `Clone` / `PartialEq` / `Debug` now walk
+    /// the spine with an explicit worklist, and `Serialize` refuses an
+    /// over-cap type rather than recursing — so a hand-built 200k-deep type
+    /// survives a full round of clone, compare, debug, and a *refused*
+    /// serialize (drop is covered by the probe test above).
+    #[test]
+    fn huge_field_type_survives_clone_eq_debug_and_serialize() {
+        let mut t = FieldType::Int32;
+        for _ in 0..200_000 {
+            t = FieldType::Array(Box::new(t));
+        }
+        let cloned = t.clone();
+        assert!(t == cloned, "iterative PartialEq handles a huge type");
+        let _ = format!("{t:?}");
+        let err = serde_json::to_string(&t)
+            .expect_err("Serialize refuses an over-cap type instead of recursing");
+        assert!(
+            err.to_string().contains("nesting depth limit"),
+            "the refusal names the cap: {err}"
+        );
+        drop(cloned);
+        drop(t);
+    }
+
+    /// The custom iterative `Drop` means Rust refuses by-value moves out of
+    /// the container variants (E0509). `FieldType::take` is the documented
+    /// migration path for code that needs to *move the whole value out* of a
+    /// `&mut` slot (e.g. evicting a field from an `IndexMap`) — it swaps the
+    /// default `Null` in, returning the owned value without a by-value match.
+    #[test]
+    fn field_type_take_is_the_migration_path_for_e0509() {
+        let mut map = IndexMap::new();
+        map.insert(
+            "a".to_string(),
+            FieldType::Array(Box::new(FieldType::Int32)),
+        );
+        let owned = map.get_mut("a").expect("present").take();
+        assert_eq!(
+            map["a"],
+            FieldType::Null,
+            "the slot is reset to the default"
+        );
+        assert_eq!(owned, FieldType::Array(Box::new(FieldType::Int32)));
     }
 
     #[test]
