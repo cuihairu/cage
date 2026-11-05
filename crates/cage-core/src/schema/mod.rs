@@ -283,8 +283,7 @@ pub struct FieldSchema {
 }
 
 /// Field type system
-#[derive(Default, Deserialize)]
-#[serde(tag = "kind", content = "value")]
+#[derive(Default)]
 pub enum FieldType {
     /// Null type
     #[default]
@@ -367,6 +366,151 @@ pub enum FieldType {
     Enum(String),
     /// Any value
     Any,
+}
+
+/// Mirror of [`FieldType`] used only to drive the derived `Deserialize`.
+///
+/// `FieldType` cannot derive `Deserialize` directly because a type nested
+/// past [`MAX_FIELD_TYPE_DEPTH`] must be refused, but serde's derive has no
+/// depth knob. This mirror keeps the exact derived parsing semantics
+/// (including YAML `kind: Null` matching the `Null` variant) while the
+/// conversion in [`FieldType::deserialize`] enforces the cap.
+#[derive(Deserialize)]
+#[serde(tag = "kind", content = "value")]
+enum FieldTypeDe {
+    Null,
+    Bool,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    Float32,
+    Float64,
+    String,
+    Bytes,
+    Array(Box<FieldTypeDe>),
+    Object(IndexMap<String, FieldTypeDe>),
+    TaggedUnion(Box<TaggedUnionDe>),
+    Map(MapFieldDe),
+    Enum(String),
+    Any,
+}
+
+#[derive(Deserialize)]
+struct TaggedUnionDe {
+    tag: String,
+    branches: IndexMap<String, IndexMap<String, FieldTypeDe>>,
+}
+
+#[derive(Deserialize)]
+struct MapFieldDe {
+    key_type: MapKeyType,
+    value_type: Box<FieldTypeDe>,
+}
+
+impl<'de> serde::Deserialize<'de> for FieldType {
+    /// Bounded `Deserialize`.
+    ///
+    /// The derived `Deserialize` recursively descends `Array` / `Map` /
+    /// `Object` / `TaggedUnion` with no depth limit beyond serde's own ~128
+    /// recursion guard, which is asymmetric with the iterative `Serialize`
+    /// that refuses a type deeper than [`MAX_FIELD_TYPE_DEPTH`]. Parsing goes
+    /// through [`FieldTypeDe`] (exact derived semantics), then the conversion
+    /// enforces the same cap the serializer reports — so a value either
+    /// round-trips or is refused on both sides. The conversion recursion is
+    /// bounded by the cap (never more than a few frames past it), so a
+    /// pathologically deep input is refused instead of overflowing.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+        let de = FieldTypeDe::deserialize(deserializer)?;
+        FieldType::from_de(de, 0).map_err(D::Error::custom)
+    }
+}
+
+impl FieldType {
+    /// Convert a parsed [`FieldTypeDe`] into a [`FieldType`], enforcing the
+    /// nesting cap. The recursion is bounded by [`MAX_FIELD_TYPE_DEPTH`]: a
+    /// node past the cap returns an error before descending further.
+    fn from_de(value: FieldTypeDe, depth: usize) -> Result<Self, String> {
+        match value {
+            FieldTypeDe::Null => Ok(FieldType::Null),
+            FieldTypeDe::Bool => Ok(FieldType::Bool),
+            FieldTypeDe::Int8 => Ok(FieldType::Int8),
+            FieldTypeDe::Int16 => Ok(FieldType::Int16),
+            FieldTypeDe::Int32 => Ok(FieldType::Int32),
+            FieldTypeDe::Int64 => Ok(FieldType::Int64),
+            FieldTypeDe::UInt8 => Ok(FieldType::UInt8),
+            FieldTypeDe::UInt16 => Ok(FieldType::UInt16),
+            FieldTypeDe::UInt32 => Ok(FieldType::UInt32),
+            FieldTypeDe::UInt64 => Ok(FieldType::UInt64),
+            FieldTypeDe::Float32 => Ok(FieldType::Float32),
+            FieldTypeDe::Float64 => Ok(FieldType::Float64),
+            FieldTypeDe::String => Ok(FieldType::String),
+            FieldTypeDe::Bytes => Ok(FieldType::Bytes),
+            FieldTypeDe::Any => Ok(FieldType::Any),
+            FieldTypeDe::Enum(name) => Ok(FieldType::Enum(name)),
+            FieldTypeDe::Array(inner) => {
+                if depth + 1 > MAX_FIELD_TYPE_DEPTH {
+                    return Err(format!(
+                        "field type exceeds the maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
+                    ));
+                }
+                Ok(FieldType::Array(Box::new(FieldType::from_de(
+                    *inner,
+                    depth + 1,
+                )?)))
+            }
+            FieldTypeDe::Map(map) => {
+                if depth + 1 > MAX_FIELD_TYPE_DEPTH {
+                    return Err(format!(
+                        "field type exceeds the maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
+                    ));
+                }
+                Ok(FieldType::Map(MapField {
+                    key_type: map.key_type,
+                    value_type: Box::new(FieldType::from_de(*map.value_type, depth + 1)?),
+                }))
+            }
+            FieldTypeDe::Object(fields) => {
+                if depth + 1 > MAX_FIELD_TYPE_DEPTH {
+                    return Err(format!(
+                        "field type exceeds the maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
+                    ));
+                }
+                let mut out = IndexMap::new();
+                for (name, field) in fields {
+                    out.insert(name, FieldType::from_de(field, depth + 1)?);
+                }
+                Ok(FieldType::Object(out))
+            }
+            FieldTypeDe::TaggedUnion(tu) => {
+                if depth + 1 > MAX_FIELD_TYPE_DEPTH {
+                    return Err(format!(
+                        "field type exceeds the maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
+                    ));
+                }
+                let mut branches = IndexMap::new();
+                for (name, branch) in tu.branches {
+                    let mut fields = IndexMap::new();
+                    for (fname, field) in branch {
+                        fields.insert(fname, FieldType::from_de(field, depth + 1)?);
+                    }
+                    branches.insert(name, fields);
+                }
+                Ok(FieldType::TaggedUnion(Box::new(TaggedUnion {
+                    tag: tu.tag,
+                    branches,
+                })))
+            }
+        }
+    }
 }
 
 /// Tagged-union payload: the discriminant key plus one field-type map per
@@ -585,6 +729,49 @@ impl std::fmt::Debug for FieldType {
     /// shape as the derive (variant names and nested fields) using an explicit
     /// worklist so deep types render in bounded stack.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A type nested past the depth cap is refused by `validate` and only
+        // reaches `Debug` in a pathological/hand-built case. Recursing with
+        // the standard `debug_*` builders would overflow the stack there, so
+        // that case falls back to an iterative compact renderer. A normal
+        // (at-or-under-cap) type uses the builders, which reproduces the
+        // derived `Debug` byte-for-byte — including `{:#?}` alternation.
+        if field_type_depth(self).is_some_and(|m| m.depth > MAX_FIELD_TYPE_DEPTH) {
+            return self.fmt_deep(f);
+        }
+        match self {
+            FieldType::Null => f.write_str("Null"),
+            FieldType::Bool => f.write_str("Bool"),
+            FieldType::Int8 => f.write_str("Int8"),
+            FieldType::Int16 => f.write_str("Int16"),
+            FieldType::Int32 => f.write_str("Int32"),
+            FieldType::Int64 => f.write_str("Int64"),
+            FieldType::UInt8 => f.write_str("UInt8"),
+            FieldType::UInt16 => f.write_str("UInt16"),
+            FieldType::UInt32 => f.write_str("UInt32"),
+            FieldType::UInt64 => f.write_str("UInt64"),
+            FieldType::Float32 => f.write_str("Float32"),
+            FieldType::Float64 => f.write_str("Float64"),
+            FieldType::String => f.write_str("String"),
+            FieldType::Bytes => f.write_str("Bytes"),
+            FieldType::Any => f.write_str("Any"),
+            FieldType::Enum(name) => f.debug_tuple("Enum").field(name).finish(),
+            FieldType::Array(inner) => f.debug_tuple("Array").field(inner).finish(),
+            FieldType::Map(map) => f.debug_tuple("Map").field(map).finish(),
+            FieldType::Object(fields) => f.debug_tuple("Object").field(fields).finish(),
+            FieldType::TaggedUnion(tu) => f.debug_tuple("TaggedUnion").field(tu).finish(),
+        }
+    }
+}
+
+impl FieldType {
+    /// Bounded-stack `Debug` for a type nested past [`MAX_FIELD_TYPE_DEPTH`].
+    ///
+    /// The standard `debug_*` builders recurse once per container level and
+    /// would overflow on a pathologically deep type. This renders the same
+    /// compact shape (variant names and nested fields) with an explicit
+    /// worklist, sacrificing `{:#?}` alternation for a type that `validate`
+    /// refuses anyway.
+    fn fmt_deep(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use std::fmt::Write as _;
 
         enum Piece<'a> {
@@ -593,12 +780,8 @@ impl std::fmt::Debug for FieldType {
             Quoted(&'a str),
         }
         fn fmt_map<'a>(fields: &'a IndexMap<String, FieldType>, pieces: &mut Vec<Piece<'a>>) {
-            // Output `{ "name": <type>, ... }`. The worklist pops in reverse,
-            // so push the pieces that should print *last* first. For fields
-            // a,b (output `a: A, b: B}`), push order is: `}` (closes the map),
-            // then the *last* field's group, then a comma that follows the
-            // previous field when printed, then the earlier field's group,
-            // and finally `{`.
+            // Output `{"name": <type>, ...}`. The worklist pops in reverse, so
+            // push the pieces that should print *last* first.
             pieces.push(Piece::Literal("}"));
             for (i, (name, field)) in fields.iter().enumerate().rev() {
                 pieces.push(Piece::Type(field));
@@ -608,7 +791,7 @@ impl std::fmt::Debug for FieldType {
                     pieces.push(Piece::Literal(", "));
                 }
             }
-            pieces.push(Piece::Literal("{ "));
+            pieces.push(Piece::Literal("{"));
         }
         let mut pieces: Vec<Piece> = vec![Piece::Type(self)];
         let mut out = String::new();
@@ -649,7 +832,6 @@ impl std::fmt::Debug for FieldType {
                     }
                     FieldType::Object(fields) => {
                         out.push_str("Object(");
-                        // LIFO: push `)` first so it pops after the map closes.
                         pieces.push(Piece::Literal(")"));
                         fmt_map(fields, &mut pieces);
                     }
@@ -658,7 +840,6 @@ impl std::fmt::Debug for FieldType {
                         write!(out, "{:?}, branches: ", tu.tag)
                             .expect("writing to String cannot fail");
                         pieces.push(Piece::Literal(" })"));
-                        // branches: `IndexMap<String, IndexMap<String, FieldType>>`
                         pieces.push(Piece::Literal("}"));
                         for (i, (branch_name, branch)) in tu.branches.iter().rev().enumerate() {
                             if i > 0 {
@@ -668,7 +849,7 @@ impl std::fmt::Debug for FieldType {
                             pieces.push(Piece::Literal(": "));
                             pieces.push(Piece::Quoted(branch_name));
                         }
-                        pieces.push(Piece::Literal("{ "));
+                        pieces.push(Piece::Literal("{"));
                     }
                 },
                 Piece::Literal(s) => out.push_str(s),
@@ -913,8 +1094,8 @@ impl Serialize for FieldType {
                     for _ in 0..count {
                         children.push(values.pop().expect("object child on the stack"));
                     }
-                    for ((name, _), child) in fields.iter().zip(children.iter()) {
-                        obj.insert(name.clone(), child.clone());
+                    for ((name, _), child) in fields.iter().zip(children.into_iter()) {
+                        obj.insert(name.clone(), child);
                     }
                     values.push(tagged_wire("Object", serde_json::Value::Object(obj)));
                 }
@@ -927,8 +1108,8 @@ impl Serialize for FieldType {
                             children.push(values.pop().expect("union child on the stack"));
                         }
                         let mut branch_obj = serde_json::Map::new();
-                        for ((name, _), child) in branch.iter().zip(children.iter()) {
-                            branch_obj.insert(name.clone(), child.clone());
+                        for ((name, _), child) in branch.iter().zip(children.into_iter()) {
+                            branch_obj.insert(name.clone(), child);
                         }
                         branches.insert(branch_name.clone(), serde_json::Value::Object(branch_obj));
                     }
@@ -952,7 +1133,11 @@ impl FieldType {
     /// `FieldType` has a custom iterative `Drop`, so Rust's E0509 prevents
     /// matching by value and moving a child out of `Array` / `Map` / `Object` /
     /// `TaggedUnion` / `Enum`. Existing code that needs the owned value should
-    /// first call this helper, then match the returned value or clone its child.
+    /// first call this helper to move the whole value out (the slot is reset
+    /// to `Null`). The returned value still implements the custom `Drop`, so a
+    /// by-value match that would move a child out of a container variant is
+    /// still rejected by E0509 — to extract a child, clone it out (or match on
+    /// a borrowed `&mut` slot after this helper has emptied the spine).
     pub fn take(&mut self) -> Self {
         std::mem::take(self)
     }
@@ -1270,10 +1455,12 @@ impl Schema {
 /// A depth measurement of a [`FieldType`]. `depth` counts the number of
 /// container levels (`Int32` is 0, `Array<Int32>` is 1,
 /// `Array<Array<Int32>>` is 2, `Object{ x: Array<Int32> }` is 2), but only
-/// up to the first level past [`MAX_FIELD_TYPE_DEPTH`]. Beyond that the walk
-/// short-circuits and reports `MAX_FIELD_TYPE_DEPTH + 1` with `saturated` set,
-/// so a call on a pathologically deep type stays stack-bounded instead of
-/// recursing thousands of frames.
+/// up to the first level past [`MAX_FIELD_TYPE_DEPTH`]. A node one or two
+/// levels over the cap is still measured precisely (so an authoring mistake
+/// just past the cap is reported with its real depth); a node three or more
+/// levels past the cap short-circuits and reports `MAX_FIELD_TYPE_DEPTH + 1`
+/// with `saturated` set, so a call on a pathologically deep type stays
+/// stack-bounded instead of recursing thousands of frames.
 struct DepthMeasure {
     /// The nesting depth, or `MAX_FIELD_TYPE_DEPTH + 1` when `saturated`.
     depth: usize,
@@ -2232,6 +2419,144 @@ enums:
             "the slot is reset to the default"
         );
         assert_eq!(owned, FieldType::Array(Box::new(FieldType::Int32)));
+    }
+
+    /// The iterative `Debug` must reproduce the derived `Debug` byte-for-byte
+    /// for an at-or-under-cap type — including the compact `{ "a": ... }`
+    /// spacing (no leading space after `{`), the empty-map `{}` shape, and
+    /// `{:#?}` pretty alternation. Downstream snapshots and diagnostics that
+    /// pin `{:?}` / `{:#?}` strings must not drift from the derive.
+    #[test]
+    fn debug_matches_the_derived_shape_for_compact_and_pretty() {
+        let mut fields = IndexMap::new();
+        fields.insert("a".to_string(), FieldType::Int32);
+        fields.insert(
+            "b".to_string(),
+            FieldType::Array(Box::new(FieldType::String)),
+        );
+        let object = FieldType::Object(fields);
+        assert_eq!(
+            format!("{object:?}"),
+            "Object({\"a\": Int32, \"b\": Array(String)})"
+        );
+        assert_eq!(
+            format!("{object:#?}"),
+            "Object(\n    {\n        \"a\": Int32,\n        \"b\": Array(\n            String,\n        ),\n    },\n)"
+        );
+        assert_eq!(
+            format!("{:?}", FieldType::Object(IndexMap::new())),
+            "Object({})"
+        );
+        assert_eq!(
+            format!("{:#?}", FieldType::Object(IndexMap::new())),
+            "Object(\n    {},\n)"
+        );
+
+        let mut branches = IndexMap::new();
+        let mut dmg = IndexMap::new();
+        dmg.insert("amount".to_string(), FieldType::Int32);
+        branches.insert("Damage".to_string(), dmg);
+        let tu = FieldType::TaggedUnion(Box::new(TaggedUnion {
+            tag: "$type".to_string(),
+            branches,
+        }));
+        assert_eq!(
+            format!("{tu:?}"),
+            "TaggedUnion(TaggedUnion { tag: \"$type\", branches: {\"Damage\": {\"amount\": Int32}} })"
+        );
+        // A type nested past the cap still renders (bounded stack) even if it
+        // is an over-cap value the validator would refuse; it must not crash.
+        let mut t = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 3) {
+            t = FieldType::Array(Box::new(t));
+        }
+        let _ = format!("{t:?}");
+    }
+
+    /// The iterative `Serialize` must emit `Object` / `TaggedUnion` keys in
+    /// declaration order and without a `preserve_order` dependency: the crate
+    /// enables `serde_json/preserve_order` itself, so the wire format is
+    /// stable even when compiled in isolation (or if a consumer does not
+    /// re-enable the feature). Also the child values are moved out of the
+    /// work stack, not deep-cloned (no O(n) copies per node).
+    #[test]
+    fn serialize_object_and_union_keys_stay_in_declaration_order() {
+        let mut fields = IndexMap::new();
+        fields.insert("zz".to_string(), FieldType::Int32);
+        fields.insert("aa".to_string(), FieldType::String);
+        fields.insert(
+            "mm".to_string(),
+            FieldType::Array(Box::new(FieldType::Int32)),
+        );
+        let object = FieldType::Object(fields);
+        let wire = serde_json::to_string(&object).expect("serialize object");
+        assert_eq!(
+            wire,
+            r#"{"kind":"Object","value":{"zz":{"kind":"Int32"},"aa":{"kind":"String"},"mm":{"kind":"Array","value":{"kind":"Int32"}}}}"#
+        );
+
+        let mut branches = IndexMap::new();
+        let mut heal = IndexMap::new();
+        heal.insert("duration".to_string(), FieldType::Float32);
+        branches.insert("Heal".to_string(), heal);
+        let mut dmg = IndexMap::new();
+        dmg.insert("amount".to_string(), FieldType::Int32);
+        branches.insert("Damage".to_string(), dmg);
+        let tu = FieldType::TaggedUnion(Box::new(TaggedUnion {
+            tag: "$type".to_string(),
+            branches,
+        }));
+        let wire = serde_json::to_string(&tu).expect("serialize union");
+        assert_eq!(
+            wire,
+            r#"{"kind":"TaggedUnion","value":{"tag":"$type","branches":{"Heal":{"duration":{"kind":"Float32"}},"Damage":{"amount":{"kind":"Int32"}}}}}"#
+        );
+    }
+
+    /// A type nested past [`MAX_FIELD_TYPE_DEPTH`] must be refused by both
+    /// `Serialize` and `Deserialize` — a value either round-trips or is
+    /// rejected on both sides. Before the bounded `Deserialize`, a depth
+    /// 65..~127 type could be `from_str`'d (serde's own ~128 recursion guard)
+    /// yet rejected by `to_string`, an asymmetry.
+    #[test]
+    fn deserialize_refuses_a_type_deeper_than_the_cap() {
+        // At the cap: accepted on both sides.
+        let mut at = FieldType::Int32;
+        for _ in 0..MAX_FIELD_TYPE_DEPTH {
+            at = FieldType::Array(Box::new(at));
+        }
+        let wire = serde_yaml::to_string(&at).expect("at-cap serializes");
+        let back: FieldType = serde_yaml::from_str(&wire).expect("at-cap parses");
+        assert_eq!(back, at);
+
+        // One over the cap: refused by `Serialize` (E1004-style error) and now
+        // refused by `Deserialize` too.
+        let mut over = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 1) {
+            over = FieldType::Array(Box::new(over));
+        }
+        assert!(
+            serde_yaml::to_string(&over).is_err(),
+            "over-cap must not serialize"
+        );
+        // Build the over-cap YAML shape directly (serialize refuses it): an
+        // `Array` spine of `MAX + 1` levels wrapping `Int32`.
+        let mut v = serde_yaml::to_value(FieldType::Int32).unwrap();
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 1) {
+            v = serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
+                (
+                    serde_yaml::Value::String("kind".into()),
+                    serde_yaml::Value::String("Array".into()),
+                ),
+                (serde_yaml::Value::String("value".into()), v),
+            ]));
+        }
+        let over_wire = serde_yaml::to_string(&v).unwrap();
+        let err = serde_yaml::from_str::<FieldType>(&over_wire).expect_err("over-cap refuses");
+        assert!(
+            err.to_string().contains("nesting depth limit"),
+            "the refusal names the cap: {err}"
+        );
     }
 
     #[test]
