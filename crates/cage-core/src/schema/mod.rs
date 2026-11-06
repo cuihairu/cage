@@ -392,24 +392,66 @@ enum FieldTypeDe {
     Float64,
     String,
     Bytes,
-    Array(Box<FieldTypeDe>),
-    Object(IndexMap<String, FieldTypeDe>),
+    Array(Box<BoundedFieldTypeDe>),
+    Object(IndexMap<String, BoundedFieldTypeDe>),
     TaggedUnion(Box<TaggedUnionDe>),
     Map(MapFieldDe),
     Enum(String),
     Any,
 }
 
+/// Deserializes one `FieldTypeDe` layer at a time, refusing descent once the
+/// schema cap is reached. The derived mirror cannot express a depth-aware
+/// seed, so the thread-local depth is bounded by `MAX_FIELD_TYPE_DEPTH` and
+/// is always restored by `DepthGuard`, including error paths.
+struct BoundedFieldTypeDe(FieldTypeDe);
+
+thread_local! {
+    static FIELD_TYPE_DESERIALIZE_DEPTH: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+struct DepthGuard;
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        FIELD_TYPE_DESERIALIZE_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_sub(1));
+        });
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BoundedFieldTypeDe {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        FIELD_TYPE_DESERIALIZE_DEPTH.with(|depth| {
+            let current = depth.get();
+            if current >= MAX_FIELD_TYPE_DEPTH {
+                return Err(D::Error::custom(format!(
+                    "field type exceeds the maximum nesting depth limit of {MAX_FIELD_TYPE_DEPTH}"
+                )));
+            }
+            depth.set(current + 1);
+            let _guard = DepthGuard;
+            FieldTypeDe::deserialize(deserializer).map(Self)
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct TaggedUnionDe {
     tag: String,
-    branches: IndexMap<String, IndexMap<String, FieldTypeDe>>,
+    branches: IndexMap<String, IndexMap<String, BoundedFieldTypeDe>>,
 }
 
 #[derive(Deserialize)]
 struct MapFieldDe {
     key_type: MapKeyType,
-    value_type: Box<FieldTypeDe>,
+    value_type: Box<BoundedFieldTypeDe>,
 }
 
 impl<'de> serde::Deserialize<'de> for FieldType {
@@ -419,16 +461,18 @@ impl<'de> serde::Deserialize<'de> for FieldType {
     /// `Object` / `TaggedUnion` with no depth limit beyond serde's own ~128
     /// recursion guard, which is asymmetric with the iterative `Serialize`
     /// that refuses a type deeper than [`MAX_FIELD_TYPE_DEPTH`]. Parsing goes
-    /// through [`FieldTypeDe`] (exact derived semantics), then the conversion
+    /// through [`FieldTypeDe`] (exact derived semantics) whose recursive
+    /// children are wrapped in [`BoundedFieldTypeDe`], refusing descent past
+    /// [`MAX_FIELD_TYPE_DEPTH`] during the parse itself; the conversion
     /// enforces the same cap the serializer reports — so a value either
-    /// round-trips or is refused on both sides. The conversion recursion is
-    /// bounded by the cap (never more than a few frames past it), so a
-    /// pathologically deep input is refused instead of overflowing.
+    /// round-trips or is refused on both sides, and a pathologically deep
+    /// input is refused instead of overflowing.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         use serde::de::Error as _;
+        FIELD_TYPE_DESERIALIZE_DEPTH.with(|depth| depth.set(0));
         let de = FieldTypeDe::deserialize(deserializer)?;
         FieldType::from_de(de, 0).map_err(D::Error::custom)
     }
@@ -463,7 +507,7 @@ impl FieldType {
                     ));
                 }
                 Ok(FieldType::Array(Box::new(FieldType::from_de(
-                    *inner,
+                    inner.0,
                     depth + 1,
                 )?)))
             }
@@ -475,7 +519,7 @@ impl FieldType {
                 }
                 Ok(FieldType::Map(MapField {
                     key_type: map.key_type,
-                    value_type: Box::new(FieldType::from_de(*map.value_type, depth + 1)?),
+                    value_type: Box::new(FieldType::from_de(map.value_type.0, depth + 1)?),
                 }))
             }
             FieldTypeDe::Object(fields) => {
@@ -486,7 +530,7 @@ impl FieldType {
                 }
                 let mut out = IndexMap::new();
                 for (name, field) in fields {
-                    out.insert(name, FieldType::from_de(field, depth + 1)?);
+                    out.insert(name, FieldType::from_de(field.0, depth + 1)?);
                 }
                 Ok(FieldType::Object(out))
             }
@@ -500,7 +544,7 @@ impl FieldType {
                 for (name, branch) in tu.branches {
                     let mut fields = IndexMap::new();
                     for (fname, field) in branch {
-                        fields.insert(fname, FieldType::from_de(field, depth + 1)?);
+                        fields.insert(fname, FieldType::from_de(field.0, depth + 1)?);
                     }
                     branches.insert(name, fields);
                 }
