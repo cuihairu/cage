@@ -1138,7 +1138,7 @@ impl Serialize for FieldType {
                     for _ in 0..count {
                         children.push(values.pop().expect("object child on the stack"));
                     }
-                    for ((name, _), child) in fields.iter().zip(children.into_iter()) {
+                    for ((name, _), child) in fields.iter().zip(children) {
                         obj.insert(name.clone(), child);
                     }
                     values.push(tagged_wire("Object", serde_json::Value::Object(obj)));
@@ -1152,7 +1152,7 @@ impl Serialize for FieldType {
                             children.push(values.pop().expect("union child on the stack"));
                         }
                         let mut branch_obj = serde_json::Map::new();
-                        for ((name, _), child) in branch.iter().zip(children.into_iter()) {
+                        for ((name, _), child) in branch.iter().zip(children) {
                             branch_obj.insert(name.clone(), child);
                         }
                         branches.insert(branch_name.clone(), serde_json::Value::Object(branch_obj));
