@@ -391,3 +391,60 @@
 - [x] 审核发现：本轮复审 f7f96995..HEAD 未发现新增问题——既有 6 条开放发现均复现属实（Debug 空白/`{:#?}` 忽略 todo.md:385、Serialize 键序依赖 preserve_order :386、FinishObject/Union 子值 clone 浪费 :387、超限序列化拒绝致往返不对称 :388、take() 文档误导 :389、DepthMeasure 文档矛盾 :390）；另逐帧推演新迭代式 Clone/PartialEq/Eq（crates/cage-core/src/schema/mod.rs:475-770）正确无缺陷，E1004 消息分支与 custom.css 去重亦无问题 — 属实：上述 6 条均已修复并勾选；cargo test --workspace 全绿（cage-core lib 351 项）
 - [x] 审核发现：深度上限在递归反序列化完整的 FieldTypeDe 之后才检查，通过 serde_json::from_value 传入 10000 层嵌套时会先栈溢出并终止进程，无法安全拒绝超限输入（crates/cage-core/src/schema/mod.rs:432） — 属实：反序列化改为在每层 `BoundedFieldTypeDe` 入口限深（`MAX_FIELD_TYPE_DEPTH`），超限即拒绝，不再先解析完整 `FieldTypeDe`；`from_str` 10000 层与借用 `Value` 10000 层均安全返回深度错误（tests/field_type_depth.rs 4/4 全绿）
 - [ ] 审核发现：`serde_json::from_value` 按值消费 10000 层 `Value` 时，serde_json `Value` 的递归 Drop 仍会先爆栈，cage-core 无法在 `from_value` 内部拦截已消费 `Value` 的析构 — BLOCKED（复核 2026-11-06：所缺条件仍缺——serde_json 最新 1.0.154 仍无迭代式 `Value` Drop 或按值安全入口；上游 serde-rs/json#440 仍 open）
+- [ ] 审核发现：`value` 位于 `kind` 之前时，serde 在调用限深包装器前递归缓冲整个字段值，借用 10000 层 `serde_json::Value` 反序列化会栈溢出并终止进程，限深护栏可被合法键序绕过（crates/cage-core/src/schema/mod.rs:386）。
+
+## 源码分层分析 2026-11-07
+
+### 抽象层清单
+
+- [ ] APP-001 应用接口层：把 CLI/HTTP/MCP/LSP 请求分发给共享编译管线，不重写校验或生成逻辑（`crates/cage-cli/src/main.rs:575`）。
+- [ ] APP-002 工程装载层：解析 `cage.toml`、schema、本地/远程源与 registry pin，产出编译输入（`crates/cage-cli/src/main.rs:787`）。
+- [ ] APP-003 核心模型层：用格式无关的 `Schema`、`Value`、`Document` 承载结构化配置与位置元数据（`crates/cage-core/src/schema/mod.rs:9`、`crates/cage-core/src/value/mod.rs:134`）。
+- [ ] APP-004 归一化层：把源数据转换成 schema 声明的类型视图，处理默认值和单元格数组（`crates/cage-core/src/normalize/mod.rs:116`）。
+- [ ] APP-005 校验层：按 L0-L7 执行结构、类型、约束、引用、语义和游戏规则检查（`crates/cage-core/src/validation/mod.rs:168`）。
+- [ ] APP-006 构建与分发层：哈希/增量重建、写 manifest、打包自校验快照、发布 registry 和远端 PUT（`crates/cage-cli/src/main.rs:2184`、`crates/cage-core/src/registry.rs:528`）。
+- [ ] APP-007 目标生成层：把 schema/document 分发到数据、代码绑定、契约和模板生成器（`crates/cage-cli/src/main.rs:3727`）。
+- [ ] APP-008 源接入层：把文件、数据库行集、HTTP payload 和 Sheets 行集解析成 canonical document（`crates/cage-source-excel/src/lib.rs:54`）。
+- [ ] APP-009 治理与诊断层：资产基线、声明式迁移/schema diff 和统一诊断模型跨接口复用（`crates/cage-core/src/assets/mod.rs:86`、`crates/cage-core/src/diagnostics/mod.rs:13`）。
+
+### 超大文件候选
+
+- [ ] LAY-001 [P1] 拆分 `crates/cage-cli/src/main.rs`（7572 行）——CLI 定义、项目装载、校验、构建、快照、注册表、迁移、目标分发和测试挤在同一入口（`crates/cage-cli/src/main.rs:83`、`crates/cage-cli/src/main.rs:2184`）。
+- [ ] LAY-002 [P1] 拆分 `crates/cage-core/src/registry.rs`（4208 行）——包模型、版本语义、发布/解析、bundle/签名和 push 路由集中在一个文件（`crates/cage-core/src/registry.rs:39`、`crates/cage-core/src/registry.rs:528`）。
+- [ ] LAY-003 [P1] 拆分 `crates/cage-core/src/validation/mod.rs`（4105 行）——级别枚举、八个校验器、共享规则和测试同文件（`crates/cage-core/src/validation/mod.rs:22`、`crates/cage-core/src/validation/mod.rs:157`）。
+- [ ] LAY-004 [P1] 拆分 `crates/cage-cli/src/web.rs`（3646 行）——HTTP 循环、路由、安全边界、API handler、嵌入 UI 和测试集中（`crates/cage-cli/src/web.rs:61`、`crates/cage-cli/src/web.rs:49`）。
+- [ ] LAY-005 [P1] 拆分 `crates/cage-source-excel/src/lib.rs`（3315 行）——工作簿打开、meta 约定、单元格/类型转换和适配器在同一 lib（`crates/cage-source-excel/src/lib.rs:54`、`crates/cage-source-excel/src/lib.rs:95`）。
+- [ ] LAY-006 [P1] 拆分 `crates/cage-core/src/schema/mod.rs`（2895 行）——schema/table/field 模型、解析、定界和测试同文件（`crates/cage-core/src/schema/mod.rs:9`、`crates/cage-core/src/schema/mod.rs:133`）。
+- [ ] LAY-007 [P1] 拆分 `crates/cage-core/src/migrate/mod.rs`（2275 行）——spec/step 模型、解析校验、执行器、报告回验和测试集中（`crates/cage-core/src/migrate/mod.rs:35`、`crates/cage-core/src/migrate/mod.rs:513`）。
+- [ ] LAY-008 [P2] 拆分 `crates/cage-target-java/src/lib.rs`（2191 行）——Java 类型映射、成员生成、保留字策略、模板填充和测试集中（`crates/cage-target-java/src/lib.rs:71`）。
+- [ ] LAY-009 [P2] 拆分 `crates/cage-target-go/src/lib.rs`（2164 行）——Go 类型/默认值/包名/导出规则与生成器测试集中（`crates/cage-target-go/src/lib.rs:71`）。
+- [ ] LAY-010 [P2] 拆分 `crates/cage-target-ts/src/lib.rs`（2114 行）——TS/JS 语法、类型映射、运行时形态与生成器测试集中（`crates/cage-target-ts/src/lib.rs:82`）。
+- [ ] LAY-011 [P2] 拆分 `crates/cage-target-cpp/src/lib.rs`（2041 行）——C++ 类型映射、命名、头文件渲染和测试集中（`crates/cage-target-cpp/src/lib.rs:69`）。
+- [ ] LAY-012 [P2] 拆分 `crates/cage-core/src/validation/rules.rs`（1738 行）——声明式游戏规则实现与规则测试挤进校验 crate 的 rules 文件（`crates/cage-core/src/validation/rules.rs`）。
+- [ ] LAY-013 [P2] 拆分 `crates/cage-core/src/manifest/mod.rs`（1609 行）——BuildManifest、增量记录、cage.toml schema 和生成器在一个文件（`crates/cage-core/src/manifest/mod.rs:9`、`crates/cage-core/src/manifest/mod.rs:523`）。
+- [ ] LAY-014 [P2] 拆分 `crates/cage-source-sheets/src/lib.rs`（1540 行）——Sheets API 调用、分页、值转换、约定和错误集中（`crates/cage-source-sheets/src/lib.rs:298`）。
+- [ ] LAY-015 [P2] 拆分 `crates/cage-core/src/normalize/mod.rs`（1459 行）——递归规范、类型收敛、默认值/数组拆分与测试集中（`crates/cage-core/src/normalize/mod.rs:116`）。
+- [ ] LAY-016 [P2] 拆分 `crates/cage-core/src/convention/tests.rs`（1438 行）——Excel/Sheets 约定行为测试集中成单测试文件（`crates/cage-core/src/convention/tests.rs`）。
+- [ ] LAY-017 [P2] 拆分 `crates/cage-core/src/convention/mod.rs`（1445 行）——meta 解码、类型文本、脚本执行和响应协议集中（`crates/cage-core/src/convention/mod.rs:165`、`crates/cage-core/src/convention/mod.rs:1144`）。
+- [ ] LAY-018 [P3] 拆分 `crates/cage-cli/tests/cli_paths.rs`（1385 行）——CLI 路径/安全场景共享常量与多组集成测试集中（`crates/cage-cli/tests/cli_paths.rs:37`）。
+- [ ] LAY-019 [P2] 拆分 `crates/cage-target-cs/src/lib.rs`（1355 行）——C# 类型、默认值、命名与生成器测试集中（`crates/cage-target-cs/src/lib.rs:53`）。
+- [ ] LAY-020 [P2] 拆分 `crates/cage-target-py/src/lib.rs`（1321 行）——Python 类型、默认值、过滤器与生成器测试集中（`crates/cage-target-py/src/lib.rs:56`）。
+- [ ] LAY-021 [P2] 拆分 `crates/cage-source-http/src/lib.rs`（1302 行）——分页、重试、内容类型、缓存 JSON 与测试集中（`crates/cage-source-http/src/lib.rs:45`、`crates/cage-source-http/src/lib.rs:133`）。
+- [ ] LAY-022 [P2] 拆分 `crates/cage-target-lua/src/lib.rs`（1295 行）——Lua 类型/默认值/转义和生成器测试集中（`crates/cage-target-lua/src/lib.rs:59`）。
+- [ ] LAY-023 [P3] 拆分 `crates/cage-cli/tests/registry.rs`（1265 行）——注册表集成场景、辅助 fixture 与多个 push/import 用例集中（`crates/cage-cli/tests/registry.rs:61`）。
+- [ ] LAY-024 [P2] 拆分 `crates/cage-core/src/reference/mod.rs`（1247 行）——引用解析、依赖图、增量规划和测试集中（`crates/cage-core/src/reference/mod.rs:9`、`crates/cage-core/src/reference/mod.rs:240`）。
+- [ ] LAY-025 [P2] 拆分 `crates/cage-core/src/migrate/diff.rs`（1220 行）——schema diff、规则起草和测试集中（`crates/cage-core/src/migrate/diff.rs:88`、`crates/cage-core/src/migrate/diff.rs:110`）。
+- [ ] LAY-026 [P2] 拆分 `crates/cage-cli/src/mcp.rs`（1211 行）——工具 schema、执行体、错误解释和测试集中（`crates/cage-cli/src/mcp.rs:135`、`crates/cage-cli/src/mcp.rs:270`）。
+- [ ] LAY-027 [P3] 拆分 `docs/public/editor/app.js`（1155 行）——schema 状态、渲染、校验、构建/产物/快照/注册表 UI 事件集中（`docs/public/editor/app.js:37`）。
+- [ ] LAY-028 [P2] 拆分 `crates/cage-cli/src/init.rs`（1135 行）——交互问答、项目 scaffold 和配置生成集中（`crates/cage-cli/src/init.rs`）。
+- [ ] LAY-029 [P3] 拆分 `crates/cage-cli/tests/web.rs`（1111 行）——Web API 集成 fixture、HTTP 驱动和多面用例集中（`crates/cage-cli/tests/web.rs:174`）。
+- [ ] LAY-030 [P3] 拆分 `crates/cage-target-flatbuffers/src/lib.rs`（1100 行）——fbs 类型/服务声明、模板渲染和测试集中（`crates/cage-target-flatbuffers/src/lib.rs:145`）。
+- [ ] LAY-031 [P3] 拆分 `crates/cage-target-proto/src/lib.rs`（1015 行）——proto 类型映射、消息渲染和测试集中（`crates/cage-target-proto/src/lib.rs:128`）。
+
+### 目录/分类不合理处
+
+- [ ] CAT-001 `crates/cage-cli/src/main.rs` 中的 `load_project_impl`、`build_project`、`generate_target_items` 和 registry CLI 流程属于可独立编译职责，但与 clap 定义混在 bin crate 入口（`crates/cage-cli/src/main.rs:787`、`crates/cage-cli/src/main.rs:2184`）。
+- [ ] CAT-002 `crates/cage-core/src/registry.rs` 兼有本地文件 registry、bundle 传输、签名校验和 HTTP push；bundle/push 是分发传输语义，registry 是包解析语义（`crates/cage-core/src/registry.rs:777`、`crates/cage-core/src/registry.rs:1078`）。
+- [ ] CAT-003 `crates/cage-core/src/manifest/mod.rs` 同时定义运行账本和 `ProjectConfig`/`TargetConfig` 配置 schema；两者的变更周期与消费者不同（`crates/cage-core/src/manifest/mod.rs:9`、`crates/cage-core/src/manifest/mod.rs:523`）。
+- [ ] CAT-004 `crates/cage-core/src/convention/tests.rs` 与 `convention/mod.rs` 都是超大文件；生产逻辑和跨格式约定测试可按 Excel/Sheets 场景分组（`crates/cage-core/src/convention/mod.rs:165`、`crates/cage-core/src/convention/tests.rs`）。
+- [ ] CAT-005 `docs/public/editor/app.js` 同时承担文档站示例资源和 CLI 编译期内嵌编辑器 UI，状态/视图/API 更新缺少源码级模块边界（`docs/public/editor/app.js:37`、`crates/cage-cli/src/web.rs:49`）。

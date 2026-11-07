@@ -223,6 +223,13 @@ Splitting out a separate IR type at this stage would only introduce duplicate sh
 
 ## Plugin Model
 
+For the implementation-side responsibility map, glossary, and split rationale,
+see [Source Layer Analysis](./source-layer-analysis.md) and
+[Glossary](./glossary.md). The layer analysis separates
+application interfaces, project loading, core model, normalization, validation,
+build/distribution, target generation, source ingestion, and
+governance/diagnostics.
+
 Cage's core should stay as stable as possible:
 
 ```mermaid
