@@ -461,7 +461,7 @@ impl<'de> serde::Deserialize<'de> for FieldType {
     /// `Object` / `TaggedUnion` with no depth limit beyond serde's own ~128
     /// recursion guard, which is asymmetric with the iterative `Serialize`
     /// that refuses a type deeper than [`MAX_FIELD_TYPE_DEPTH`]. Parsing goes
-    /// through [`FieldTypeDe`] (exact derived semantics) whose recursive
+    /// through `FieldTypeDe` (exact derived semantics) whose recursive
     /// children are wrapped in [`BoundedFieldTypeDe`], refusing descent past
     /// [`MAX_FIELD_TYPE_DEPTH`] during the parse itself; the conversion
     /// enforces the same cap the serializer reports — so a value either
@@ -2358,7 +2358,7 @@ enums:
         // walk reports MAX+1 as the measured depth (distinguishable from a
         // pathologically deep type that saturates).
         let mut t = FieldType::Int32;
-        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 1) {
+        for _ in 0..=MAX_FIELD_TYPE_DEPTH {
             t = FieldType::Array(Box::new(t));
         }
         let schema = schema_with_one_field(t);
@@ -2576,7 +2576,7 @@ enums:
         // One over the cap: refused by `Serialize` (E1004-style error) and now
         // refused by `Deserialize` too.
         let mut over = FieldType::Int32;
-        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 1) {
+        for _ in 0..=MAX_FIELD_TYPE_DEPTH {
             over = FieldType::Array(Box::new(over));
         }
         assert!(
@@ -2586,7 +2586,7 @@ enums:
         // Build the over-cap YAML shape directly (serialize refuses it): an
         // `Array` spine of `MAX + 1` levels wrapping `Int32`.
         let mut v = serde_yaml::to_value(FieldType::Int32).unwrap();
-        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 1) {
+        for _ in 0..=MAX_FIELD_TYPE_DEPTH {
             v = serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
                 (
                     serde_yaml::Value::String("kind".into()),
