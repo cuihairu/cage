@@ -462,7 +462,7 @@ impl<'de> serde::Deserialize<'de> for FieldType {
     /// recursion guard, which is asymmetric with the iterative `Serialize`
     /// that refuses a type deeper than [`MAX_FIELD_TYPE_DEPTH`]. Parsing goes
     /// through `FieldTypeDe` (exact derived semantics) whose recursive
-    /// children are wrapped in [`BoundedFieldTypeDe`], refusing descent past
+    /// children are wrapped in `BoundedFieldTypeDe`, refusing descent past
     /// [`MAX_FIELD_TYPE_DEPTH`] during the parse itself; the conversion
     /// enforces the same cap the serializer reports — so a value either
     /// round-trips or is refused on both sides, and a pathologically deep
