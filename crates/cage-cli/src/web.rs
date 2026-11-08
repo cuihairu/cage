@@ -3557,6 +3557,14 @@ output_dir = "build/client/json"
             ))
         }
     }
+    /// Reader that fails with a plain I/O error — a connection dying
+    /// mid-body is not a timeout, it is a malformed request.
+    struct BrokenReader;
+    impl std::io::Read for BrokenReader {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "gone"))
+        }
+    }
 
     /// The body cap and the read budget are both enforced
     /// (review 2026-10-18 表一#2).
@@ -3605,6 +3613,16 @@ output_dir = "build/client/json"
                 std::time::Instant::now() + std::time::Duration::from_secs(1)
             ),
             Err(BodyRead::TooSlow)
+        );
+
+        // A non-timeout I/O failure is not a timeout: the body is invalid.
+        assert_eq!(
+            read_body_with(
+                &mut BrokenReader,
+                1024,
+                std::time::Instant::now() + std::time::Duration::from_secs(1)
+            ),
+            Err(BodyRead::Invalid)
         );
     }
 

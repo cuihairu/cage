@@ -571,4 +571,50 @@ mod uncovered_paths {
             fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
         }
     }
+
+    /// A fragment that is not UTF-8 refuses to load with the file named.
+    #[test]
+    fn non_utf8_fragment_is_a_named_load_error() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("schemas")).unwrap();
+        fs::write(dir.path().join("schemas/broken.yaml"), [0xff, 0xfe, b'a']).unwrap();
+        let err = load_schema_indexed(dir.path(), &dir.path().join("schemas"))
+            .expect_err("non-UTF-8 refused");
+        assert!(err.contains("is not UTF-8"), "{err}");
+        assert!(err.contains("broken.yaml"), "{err}");
+    }
+
+    /// Enum and metadata fragments merge into the merged schema and the
+    /// index; an enum removal and a metadata edit route back to the file
+    /// that owns them.
+    #[test]
+    fn fragment_enums_metadata_and_removals_route_to_their_owner() {
+        let dir = TempDir::new().unwrap();
+        write_main_fragment(&dir);
+        fs::write(
+            dir.path().join("schemas/extra.yaml"),
+            "metadata:\n  version: \"9\"\nenums:\n  Rarity:\n    name: Rarity\n    values:\n      - { name: common }\ntables: {}\n",
+        )
+        .unwrap();
+        let (merged, index) = load(&dir);
+        assert!(index.enums.contains_key("Rarity"), "{:?}", index.enums);
+        assert_eq!(merged.enums["Rarity"].name, "Rarity");
+        // extra.yaml sorts before main.yaml: the first metadata seen owns it.
+        assert_eq!(index.metadata.as_deref(), Some("schemas/extra.yaml"));
+
+        let mut edited = merged;
+        edited.enums.shift_remove("Rarity");
+        edited.metadata = Some(cage_core::schema::SchemaMetadata {
+            version: "2".to_string(),
+            description: None,
+            author: None,
+        });
+        let out = save_schema_incremental(dir.path(), &dir.path().join("schemas"), &edited, &index)
+            .expect("save");
+        // The metadata edit and the enum removal share the owner fragment.
+        assert_eq!(out.written, ["schemas/extra.yaml"]);
+        let extra = fs::read_to_string(dir.path().join("schemas/extra.yaml")).unwrap();
+        assert!(extra.contains("version: '2'"), "{extra}");
+        assert!(!extra.contains("Rarity"), "{extra}");
+    }
 }

@@ -1217,4 +1217,58 @@ enums: {}
         )));
         assert!(!draft.todos.iter().any(|t| t.contains("`Item.old_req`")));
     }
+
+    /// The YAML block renderer walks every value family: scalars render
+    /// bare, containers nest two columns deeper, and a value that cannot
+    /// survive quoting (control characters) refuses the whole block.
+    #[test]
+    fn value_to_yaml_block_renders_every_family() {
+        assert_eq!(value_to_yaml_block(&V::Null, 0).as_deref(), Some("null\n"));
+        assert_eq!(
+            value_to_yaml_block(&V::Bool(true), 0).as_deref(),
+            Some("true\n")
+        );
+        assert_eq!(
+            value_to_yaml_block(&V::Bool(false), 0).as_deref(),
+            Some("false\n")
+        );
+        assert_eq!(value_to_yaml_block(&V::Int(-5), 0).as_deref(), Some("-5\n"));
+        assert_eq!(value_to_yaml_block(&V::UInt(7), 0).as_deref(), Some("7\n"));
+        let float = value_to_yaml_block(&V::Float(0.5), 0).expect("float renders");
+        assert!(float.starts_with("0.5") && float.ends_with('\n'), "{float}");
+        assert_eq!(
+            value_to_yaml_block(&V::String("it's".into()), 0).as_deref(),
+            Some("'it''s'\n")
+        );
+        // Bytes have no YAML scalar form; control characters cannot quote.
+        assert_eq!(value_to_yaml_block(&V::Bytes(vec![1]), 0), None);
+        assert_eq!(value_to_yaml_block(&V::String("a\nb".into()), 0), None);
+
+        // Array of scalars keeps `- item` on one line.
+        let arr = V::Array(vec![V::Int(1), V::String("x".into())]);
+        assert_eq!(
+            value_to_yaml_block(&arr, 0).as_deref(),
+            Some("- 1\n- 'x'\n")
+        );
+        // Nested containers take the two-space `-\n` form.
+        let nested = V::Array(vec![V::Array(vec![V::Int(2)])]);
+        assert_eq!(
+            value_to_yaml_block(&nested, 0).as_deref(),
+            Some("-\n  - 2\n")
+        );
+        // Object: scalar members inline, container members nest.
+        let mut map = indexmap::IndexMap::new();
+        map.insert("plain".to_string(), V::String("v".into()));
+        map.insert("deep".to_string(), V::Array(vec![V::Int(3)]));
+        let obj = V::Object(map);
+        assert_eq!(
+            value_to_yaml_block(&obj, 2).as_deref(),
+            Some("  'plain': 'v'\n  'deep':\n    - 3\n")
+        );
+        // Padding shifts the container keys, not the first scalar level.
+        assert_eq!(
+            value_to_yaml_block(&V::Array(vec![V::Int(1)]), 2).as_deref(),
+            Some("  - 1\n")
+        );
+    }
 }
