@@ -3365,4 +3365,231 @@ enums: {}
             "container variants must not reach scalar_wire"
         );
     }
+
+    /// `from_de` enforces the nesting cap on every container family
+    /// independently — a hand-built chain one past the cap is refused by
+    /// Array, Map, Object and `TaggedUnion` alike (the parse guard is a
+    /// separate layer; this is the conversion's own contract).
+    #[test]
+    fn from_de_enforces_the_cap_on_every_container_independently() {
+        let leaf = || BoundedFieldTypeDe(FieldTypeDe::Int32);
+        let chains: Vec<FieldTypeDe> = vec![
+            {
+                let mut v = leaf();
+                for _ in 0..=MAX_FIELD_TYPE_DEPTH {
+                    v = BoundedFieldTypeDe(FieldTypeDe::Array(Box::new(v)));
+                }
+                v.0
+            },
+            {
+                let mut v = leaf();
+                for _ in 0..=MAX_FIELD_TYPE_DEPTH {
+                    v = BoundedFieldTypeDe(FieldTypeDe::Map(MapFieldDe {
+                        key_type: MapKeyType::String,
+                        value_type: Box::new(v),
+                    }));
+                }
+                v.0
+            },
+            {
+                let mut v = leaf();
+                for _ in 0..=MAX_FIELD_TYPE_DEPTH {
+                    let mut fields = IndexMap::new();
+                    fields.insert("f".to_string(), v);
+                    v = BoundedFieldTypeDe(FieldTypeDe::Object(fields));
+                }
+                v.0
+            },
+            {
+                let mut v = leaf();
+                for _ in 0..=MAX_FIELD_TYPE_DEPTH {
+                    let mut branch = IndexMap::new();
+                    branch.insert("f".to_string(), v);
+                    let mut branches = IndexMap::new();
+                    branches.insert("B".to_string(), branch);
+                    v = BoundedFieldTypeDe(FieldTypeDe::TaggedUnion(Box::new(TaggedUnionDe {
+                        tag: "$t".to_string(),
+                        branches,
+                    })));
+                }
+                v.0
+            },
+        ];
+        for chain in chains {
+            let err = FieldType::from_de(chain, 0).expect_err("over-cap refused");
+            assert!(err.contains("nesting depth"), "{err}");
+        }
+    }
+
+    /// The iterative `Debug` fallback renders every scalar leaf and folds
+    /// multi-entry objects and unions with the `", "` separator — the arms
+    /// the derived builder would never reach on a type past the cap.
+    #[test]
+    fn field_type_debug_fallback_renders_scalars_and_separators() {
+        let deep_with = |leaf: FieldType| {
+            let mut t = leaf;
+            for _ in 0..MAX_FIELD_TYPE_DEPTH + 5 {
+                t = FieldType::Array(Box::new(t));
+            }
+            t
+        };
+        let scalars: Vec<(FieldType, &str)> = vec![
+            (FieldType::Null, "Null"),
+            (FieldType::Bool, "Bool"),
+            (FieldType::Int8, "Int8"),
+            (FieldType::Int16, "Int16"),
+            (FieldType::Int32, "Int32"),
+            (FieldType::Int64, "Int64"),
+            (FieldType::UInt8, "UInt8"),
+            (FieldType::UInt16, "UInt16"),
+            (FieldType::UInt32, "UInt32"),
+            (FieldType::UInt64, "UInt64"),
+            (FieldType::Float32, "Float32"),
+            (FieldType::Float64, "Float64"),
+            (FieldType::String, "String"),
+            (FieldType::Bytes, "Bytes"),
+            (FieldType::Any, "Any"),
+        ];
+        for (leaf, name) in scalars {
+            let rendered = format!("{:?}", deep_with(leaf));
+            assert!(rendered.contains("Array("), "{name}: {rendered}");
+            assert!(rendered.contains(name), "{rendered}");
+        }
+
+        // Two-entry maps and unions hit the separator line.
+        let mut obj = IndexMap::new();
+        obj.insert("a".to_string(), FieldType::Int32);
+        obj.insert("b".to_string(), FieldType::Bool);
+        let obj_deep = deep_with(FieldType::Object(obj));
+        let rendered = format!("{obj_deep:?}");
+        assert!(
+            rendered.contains("{\"a\": Int32, \"b\": Bool}"),
+            "{rendered}"
+        );
+
+        let mut leaf = IndexMap::new();
+        leaf.insert("x".to_string(), FieldType::Int32);
+        let mut leaf2 = IndexMap::new();
+        leaf2.insert("y".to_string(), FieldType::Bool);
+        let mut branches = IndexMap::new();
+        branches.insert("A".to_string(), leaf);
+        branches.insert("B".to_string(), leaf2);
+        let union = FieldType::TaggedUnion(Box::new(TaggedUnion {
+            tag: "$t".to_string(),
+            branches,
+        }));
+        let rendered = format!("{:?}", deep_with(union));
+        assert!(
+            rendered.contains("\"A\": {\"x\": Int32}, \"B\": {\"y\": Bool}"),
+            "{rendered}"
+        );
+    }
+
+    /// Structural equality refuses an object whose key sets differ at the
+    /// same length — the missing-key arm of the iterative walk.
+    #[test]
+    fn field_type_eq_rejects_an_object_missing_a_key() {
+        let mut left = IndexMap::new();
+        left.insert("a".to_string(), FieldType::Int32);
+        left.insert("b".to_string(), FieldType::Bool);
+        let mut right = IndexMap::new();
+        right.insert("a".to_string(), FieldType::Int32);
+        right.insert("c".to_string(), FieldType::Bool);
+        assert_ne!(
+            FieldType::Object(left),
+            FieldType::Object(right),
+            "same length, different keys"
+        );
+    }
+
+    /// A reference to a table's nonexistent field is reported (the
+    /// unknown-table arm already is).
+    #[test]
+    fn validate_reports_a_reference_to_an_unknown_field() {
+        let field = |name: &str, t: FieldType, reference: Option<ReferenceSchema>| FieldSchema {
+            name: name.to_string(),
+            field_type: t,
+            description: None,
+            required: false,
+            nullable: false,
+            default: None,
+            min: None,
+            max: None,
+            min_length: None,
+            max_length: None,
+            pattern: None,
+            enum_values: None,
+            min_items: None,
+            max_items: None,
+            items: None,
+            separator: None,
+            properties: None,
+            additional_properties: None,
+            reference,
+            targets: Vec::new(),
+            rules: Vec::new(),
+            metadata: IndexMap::new(),
+        };
+        let table = |name: &str, pk: &str, fields: IndexMap<String, FieldSchema>| TableSchema {
+            name: name.to_string(),
+            description: None,
+            primary_key: vec![pk.to_string()],
+            fields,
+            unique_constraints: Vec::new(),
+            order_by: None,
+            targets: Vec::new(),
+            env_overrides: IndexMap::new(),
+        };
+        let mut owner = IndexMap::new();
+        owner.insert("id".to_string(), field("id", FieldType::Int32, None));
+        let mut ref_fields = IndexMap::new();
+        ref_fields.insert(
+            "owner".to_string(),
+            field(
+                "owner",
+                FieldType::Int32,
+                Some(ReferenceSchema {
+                    table: "Item".to_string(),
+                    field: "ghost".to_string(),
+                    predicate: None,
+                    cardinality: "one".to_string(),
+                    compatible_with: None,
+                }),
+            ),
+        );
+        let mut schema = Schema::new();
+        schema
+            .tables
+            .insert("Item".to_string(), table("Item", "id", owner));
+        schema
+            .tables
+            .insert("Owner".to_string(), table("Owner", "owner", ref_fields));
+        let diags = schema.validate();
+        assert!(
+            diags.iter().any(|d| d.code == "E1004"
+                && d.message.contains("unknown field 'ghost' in table 'Item'")),
+            "reference to a missing field reported: {diags:?}"
+        );
+    }
+
+    /// The depth probe measures a union branch nested past its immediate
+    /// leaf — the branch walk contributes its real depth to the union's
+    /// measure without saturating.
+    #[test]
+    fn field_type_depth_measures_a_deep_union_branch() {
+        let mut branch = IndexMap::new();
+        branch.insert(
+            "x".to_string(),
+            FieldType::Array(Box::new(FieldType::Array(Box::new(FieldType::Int32)))),
+        );
+        let mut branches = IndexMap::new();
+        branches.insert("A".to_string(), branch);
+        let union = FieldType::TaggedUnion(Box::new(TaggedUnion {
+            tag: "$t".to_string(),
+            branches,
+        }));
+        let m = field_type_depth(&union).expect("union is a container");
+        assert_eq!(m.depth, 3);
+        assert!(!m.saturated);
+    }
 }

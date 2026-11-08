@@ -1575,4 +1575,67 @@ print(json.dumps({
         assert!(err.contains("E1903"), "{err}");
         assert!(err.contains("blank header row"), "{err}");
     }
+
+    /// The per-cell and per-value conversion helpers cover every JSON
+    /// variant — null, float (non-i64 number), arrays/objects falling to
+    /// the text form, and the non-empty probe's false/true split.
+    #[test]
+    fn cell_and_value_helpers_cover_every_variant() {
+        assert_eq!(cell_to_cellvalue(&serde_json::Value::Null), CellValue::Null);
+        assert_eq!(
+            cell_to_cellvalue(&serde_json::json!(1.5)),
+            CellValue::Float(1.5)
+        );
+        assert_eq!(
+            cell_to_cellvalue(&serde_json::json!([1])),
+            CellValue::Str("[1]".to_string())
+        );
+        assert_eq!(
+            cell_to_cellvalue(&serde_json::json!({"a": 1})),
+            CellValue::Str("{\"a\":1}".to_string())
+        );
+        assert_eq!(
+            render_cell(&serde_json::Value::Null),
+            serde_json::Value::Null
+        );
+
+        assert!(!value_nonempty(&serde_json::Value::Null));
+        assert!(!value_nonempty(&serde_json::json!("")));
+        assert!(!value_nonempty(&serde_json::json!([])));
+        assert!(!value_nonempty(&serde_json::json!({})));
+        assert!(value_nonempty(&serde_json::json!(0)));
+        assert!(value_nonempty(&serde_json::json!("x")));
+        assert!(value_nonempty(&serde_json::json!([1])));
+        assert!(value_nonempty(&serde_json::json!({"a": 1})));
+    }
+
+    /// The convention meta resolver answers the data preset with the
+    /// default metadata and refuses the meta_sheet preset when the
+    /// companion meta grid was not fetched.
+    #[test]
+    fn resolve_meta_handles_data_preset_and_missing_meta_grid() {
+        let grid: Grid = vec![vec![
+            CellValue::Str("id".to_string()),
+            CellValue::Str("name".to_string()),
+        ]];
+        let root = std::path::Path::new(".");
+        let (meta, start) =
+            resolve_meta(&grid, 0, &conv(Preset::Data, 0), root, "T", "S", "W", None)
+                .expect("data preset resolves");
+        assert_eq!(start, 1);
+        assert_eq!(meta.header_row, 0);
+
+        let err = resolve_meta(
+            &grid,
+            0,
+            &conv(Preset::MetaSheet, 0),
+            root,
+            "T",
+            "S",
+            "W",
+            None,
+        )
+        .expect_err("meta grid required");
+        assert!(err.contains("E2201"), "{err}");
+    }
 }
