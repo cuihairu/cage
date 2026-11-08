@@ -1984,3 +1984,101 @@ fn drift_compares_sub_column_children_and_items_shape() {
         "{msgs:?}"
     );
 }
+
+#[test]
+fn cell_text_covers_every_variant() {
+    assert_eq!(CellValue::Null.text(), "");
+    assert_eq!(CellValue::Bool(true).text(), "true");
+    assert_eq!(CellValue::Int(-3).text(), "-3");
+    assert_eq!(CellValue::Float(1.5).text(), "1.5");
+    assert_eq!(CellValue::Str("  x ".into()).text(), "x");
+}
+
+#[test]
+fn a1_helpers_convert_and_reject() {
+    assert_eq!(a1_column("G27"), Some(6));
+    assert_eq!(a1_row("G27"), Some(26));
+    assert_eq!(a1_column("A1"), Some(0));
+    assert_eq!(a1_column("not-a1"), None);
+    assert_eq!(a1_row(""), None);
+}
+
+#[test]
+fn reference_text_parses_and_rejects() {
+    let ok = parse_reference_text("Item.owner").expect("defaults to one");
+    assert_eq!(ok.table, "Item");
+    assert_eq!(ok.field, "owner");
+    assert_eq!(ok.cardinality, "one");
+    let many = parse_reference_text("Shop.item:many").expect("many");
+    assert_eq!(many.cardinality, "many");
+    assert!(parse_reference_text("Item.owner:sideways")
+        .unwrap_err()
+        .contains("cardinality"));
+    assert!(parse_reference_text("no-dot")
+        .unwrap_err()
+        .contains("no '.'"));
+    assert!(parse_reference_text(".x")
+        .unwrap_err()
+        .contains("Table.field"));
+    assert!(parse_reference_text("Item.")
+        .unwrap_err()
+        .contains("Table.field"));
+}
+
+#[test]
+fn list_text_rejects_an_all_empty_value() {
+    assert!(parse_list_text(",")
+        .unwrap_err()
+        .contains("not a value list"));
+    assert_eq!(
+        parse_list_text("x, y"),
+        Ok(vec!["x".to_string(), "y".to_string()])
+    );
+}
+
+#[test]
+fn canonical_json_sorts_object_keys_recursively() {
+    let rendered: JsonValue =
+        serde_json::json!({"z": 1, "a": {"y": 2, "b": [3, {"d": 4, "c": 5}]}});
+    let s = canonical_json(&rendered);
+    let first_a = s.find("\"a\"").expect("a key present");
+    let first_z = s.find("\"z\"").expect("z key present");
+    assert!(first_a < first_z, "{s}");
+    let inner_b = s.find("\"b\"").expect("b key present");
+    let inner_y = s.find("\"y\"").expect("y key present");
+    assert!(inner_b < inner_y, "{s}");
+}
+
+#[test]
+fn preset_for_script_and_empty_script_validate() {
+    let scripted = ExcelConvention {
+        script: Some("tools/gen.py".to_string()),
+        ..ExcelConvention::default()
+    };
+    assert!(scripted.preset_for("anything.xlsx").is_data());
+    assert!(scripted.uses_script());
+
+    let empty = ExcelConvention {
+        script: Some(String::new()),
+        ..ExcelConvention::default()
+    };
+    let err = empty.validate().expect_err("empty script refused");
+    assert!(err.contains("script must not be empty"), "{err}");
+}
+
+#[test]
+fn script_contract_read_failure_is_e2203() {
+    // A script path that is a directory resolves, then the read fails.
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(root.path().join("tools/dir")).expect("dir");
+    let cfg = ExcelConvention {
+        script: Some("tools/dir".to_string()),
+        ..ExcelConvention::default()
+    };
+    let diags = script_fingerprint(root.path(), &cfg).expect_err("read refused");
+    assert!(
+        diags.errors().iter().any(|d| d.message.contains("E2203")),
+        "{:?}",
+        diags.errors()
+    );
+}

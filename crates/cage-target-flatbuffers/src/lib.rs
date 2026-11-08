@@ -1203,4 +1203,30 @@ enums:
         assert!(t.contains("table nestedValue {"), "{t}");
         assert!(t.contains("key: long; value: bool;"), "{t}");
     }
+
+    /// Collections nested past the first level are hosted in wrapper
+    /// tables: the inner `items:` / `key:` lines render into their own
+    /// tables, and the outer field names the wrapper.
+    #[test]
+    fn nested_collections_render_wrapper_tables() {
+        let s = schema(
+            r"
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      deep: { name: deep, type: { kind: Array, value: { kind: Map, value: { key_type: int, value_type: { kind: Array, value: { kind: String } } } } } }
+      deepmap: { name: deepmap, type: { kind: Map, value: { key_type: int, value_type: { kind: Array, value: { kind: String } } } } }
+enums: {}
+",
+        );
+        let artifacts = FlatbuffersTargetGenerator::default().generate(&s, Some("hash"));
+        let t = artifact(&artifacts, "T.fbs");
+        assert!(t.contains("deepValue"), "{t}");
+        assert!(t.contains("deepmapValue"), "{t}");
+        assert!(t.contains("key: long;"), "{t}");
+        assert!(t.contains("items: [string];"), "{t}");
+    }
 }
