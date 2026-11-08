@@ -1044,7 +1044,7 @@ impl ExcelSourceAdapter {
                 row.iter()
                     .enumerate()
                     .map(|(col_idx, cell)| {
-                        Self::cell_to_contract_value(Self::resolve_cell(
+                        ExcelSourceAdapter::cell_to_contract_value(Self::resolve_cell(
                             range,
                             merge_anchors,
                             row_idx,
@@ -3130,6 +3130,182 @@ print(json.dumps(response, ensure_ascii=False))
         let d = &diags.errors()[0];
         assert_eq!(d.code, E2201);
         assert!(d.message.contains("has_header = false"), "{}", d.message);
+    }
+
+    /// An incoherent convention declaration (a marker that is not a `#`
+    /// word) is refused once per workbook, before any sheet is opened.
+    #[test]
+    fn test_incoherent_convention_is_refused_before_any_sheet_is_read() {
+        let wb = skill_workbook();
+        let adapter = ExcelSourceAdapter {
+            convention: Some(ExcelConvention {
+                preset: Preset::MarkerRows,
+                marker: "x".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert_eq!(diags.errors().len(), 1, "{:?}", diags.errors());
+        let d = &diags.errors()[0];
+        assert_eq!(d.code, E2201);
+        assert!(
+            d.message.contains("marker must start with '#'"),
+            "{}",
+            d.message
+        );
+    }
+
+    /// The meta-sheet preset needs the sibling `<sheet>.meta` part; a
+    /// workbook that names the convention but ships only the data sheet is
+    /// a workbook-level E2201 naming the missing sibling.
+    #[test]
+    fn test_meta_sheet_preset_without_the_sibling_is_e2201() {
+        let sheet = sheet_xml(&[&["id", "name"][..], &["1", "sword"][..]], 1, "A1:B2");
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(&sheet)), "lonely.xlsx");
+        let adapter = ExcelSourceAdapter {
+            convention: Some(ExcelConvention {
+                preset: Preset::MetaSheet,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert_eq!(diags.errors().len(), 1, "{:?}", diags.errors());
+        let d = &diags.errors()[0];
+        assert_eq!(d.code, E2201);
+        assert!(
+            d.message.contains("Data.meta") && d.message.contains("could not be read"),
+            "{}",
+            d.message
+        );
+    }
+
+    /// A script adapter without the project root cannot resolve the script
+    /// path, so the sheet is refused with E2203 instead of silently
+    /// falling back to a built-in preset.
+    #[test]
+    fn test_script_convention_without_project_root_is_e2203() {
+        let wb = skill_workbook();
+        let adapter = ExcelSourceAdapter {
+            convention: Some(ExcelConvention {
+                script: Some("tools/contract.py".to_string()),
+                ..Default::default()
+            }),
+            project_root: None,
+            ..Default::default()
+        };
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        assert_eq!(diags.errors().len(), 1, "{:?}", diags.errors());
+        let d = &diags.errors()[0];
+        assert_eq!(d.code, E2203);
+        assert!(d.message.contains("project root"), "{}", d.message);
+    }
+
+    /// The contract cell mapping keeps raw values without type inference:
+    /// non-finite floats and sheet errors render as their text form, dates
+    /// keep the data plane's rendering.
+    #[test]
+    fn test_contract_value_maps_exotic_cells_without_panic() {
+        use calamine::{ExcelDateTime, ExcelDateTimeType};
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_contract_value(&Data::Empty),
+            CellValue::Null
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_contract_value(&Data::Bool(true)),
+            CellValue::Bool(true)
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_contract_value(&Data::Int(-7)),
+            CellValue::Int(-7)
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_contract_value(&Data::Float(2.5)),
+            CellValue::Float(2.5)
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_contract_value(&Data::Float(f64::NAN)),
+            CellValue::Str("NaN".to_string())
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_contract_value(&Data::Float(f64::INFINITY)),
+            CellValue::Str("inf".to_string())
+        );
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_contract_value(&Data::String("sword".into())),
+            CellValue::Str("sword".into())
+        );
+        let dt = ExcelDateTime::new(44927.0, ExcelDateTimeType::DateTime, true);
+        assert_eq!(
+            ExcelSourceAdapter::cell_to_contract_value(&Data::DateTime(dt)),
+            CellValue::Str(format!("{dt:?}"))
+        );
+    }
+
+    /// A data row wider than the `##var` declaration row: the stray cell
+    /// lands in a generated `col<n>` named for its absolute column, exactly
+    /// like a blank header — it is neither dropped nor a crash.
+    #[test]
+    fn test_data_row_wider_than_the_declaration_gets_a_col_fallback() {
+        let sheet = sheet_xml(
+            &[
+                &["##var", "id", "name"][..],
+                &["##type", "Int32", "String"][..],
+                &["", "1", "sword", "stray"][..],
+            ],
+            1,
+            "A1:D3",
+        );
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(&sheet)), "wide.xlsx");
+        let adapter = ExcelSourceAdapter {
+            convention: Some(ExcelConvention {
+                preset: Preset::MarkerRows,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (doc, _) = adapter
+            .parse_file_with_meta(wb.path())
+            .expect("extra trailing cells are tolerated");
+        let table = doc.tables.get("Data").expect("table decoded");
+        assert_eq!(table.rows.len(), 1);
+        let row = &table.rows[0];
+        assert_eq!(
+            row.fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["id", "name", "col3"],
+            "the stray cell keeps a generated absolute-column name"
+        );
+        assert_eq!(row.fields["id"].value, Value::Int(1));
+        assert_eq!(row.fields["name"].value, Value::String("sword".into()));
+        assert_eq!(row.fields["col3"].value, Value::String("stray".into()));
+    }
+
+    /// A declared header row beyond the sheet's height means every visible
+    /// row is a declaration row without a keyword — a per-cell E2201, not a
+    /// silent empty table.
+    #[test]
+    fn test_header_row_beyond_the_sheet_reports_keywordless_rows() {
+        let sheet = sheet_xml(&[&["id", "name"][..], &["1", "sword"][..]], 1, "A1:B2");
+        let wb = TempWorkbook::new(&minimal_xlsx(Some(&sheet)), "short.xlsx");
+        let adapter = ExcelSourceAdapter {
+            header_row: 10,
+            convention: Some(ExcelConvention {
+                preset: Preset::MarkerRows,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let diags = adapter.parse_file(wb.path()).unwrap_err();
+        for d in diags.errors() {
+            assert_eq!(d.code, E2201, "{}", d.message);
+            assert!(
+                d.message.contains("appears before any keyword cell"),
+                "{}",
+                d.message
+            );
+        }
+        assert_eq!(diags.errors().len(), 4, "one per non-empty cell");
     }
 
     /// A declared script name that is not a file inside the root is refused.
