@@ -4052,6 +4052,369 @@ output_dir = "build/client/json"
         assert_eq!(v["ok"], serde_json::json!(false));
         assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()));
     }
+    /// A project whose `Ctx` carries no build profiles: the status and
+    /// table panels answer 500 naming the gap instead of guessing a
+    /// profile that does not exist.
+    #[test]
+    fn api_status_and_table_refuse_a_profile_free_project() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut ctx = ctx_in(&dir, None);
+        ctx.config.profiles.clear();
+
+        let (status, doc) = api_status(&ctx, "");
+        assert_eq!(status, 500);
+        assert_eq!(doc["ok"], serde_json::json!(false));
+        assert_eq!(
+            doc["error"],
+            serde_json::json!("no build profile is configured")
+        );
+
+        let (status, doc) = api_table(&ctx, "name=Item");
+        assert_eq!(status, 500);
+        assert_eq!(
+            doc["error"],
+            serde_json::json!("no build profile is configured")
+        );
+    }
+
+    /// A `Ctx` that names a profile the disk cannot back: the panel load
+    /// fails and the error surfaces as a 400. On a healthy project, a row
+    /// missing an optional column renders that cell as null instead of
+    /// dropping the column.
+    #[test]
+    fn api_table_reports_a_failed_panel_load_and_null_cells() {
+        // Panel load failure: the profile exists in the Ctx only.
+        let dir = TempDir::new().expect("tempdir");
+        let mut ctx = ctx_in(&dir, Some("schema.yaml"));
+        ctx.config.profiles.insert(
+            "client".to_string(),
+            cage_core::manifest::BuildProfile {
+                name: "client".to_string(),
+                targets: Vec::new(),
+                description: None,
+                variables: indexmap::IndexMap::new(),
+            },
+        );
+        let (status, doc) = api_table(&ctx, "name=Item");
+        assert_eq!(status, 400, "{doc}");
+        assert_eq!(doc["ok"], serde_json::json!(false));
+        let err = doc["error"].as_str().expect("load error");
+        assert!(err.contains("cage.toml") || !err.is_empty(), "{err}");
+
+        // Null cells: a row without the optional `name` field.
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        fs::write(
+            dir.path().join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}, {"id": 2}]}"#,
+        )
+        .expect("rewrite source");
+        let (status, doc) = api_table(&ctx, "name=Item&profile=client");
+        assert_eq!(status, 200, "{doc}");
+        let rows = doc["rows"].as_array().expect("rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["cells"]["name"], serde_json::json!("Sword"));
+        assert!(
+            rows[1]["cells"]["name"].is_null(),
+            "absent optional renders null: {}",
+            rows[1]
+        );
+    }
+
+    /// Multi-file save with an unwritable source directory reports Io as
+    /// a 500; a single-file save with an echoed index that does not list
+    /// the target skips the conflict check and still saves.
+    #[test]
+    fn api_save_reports_io_failures_and_tolerates_unrelated_indexes() {
+        // Io: the source directory denies writes (and re-admits them on
+        // the way out so the tempdir can be removed).
+        let dir = TempDir::new().expect("tempdir");
+        multi_file_project(&dir);
+        let ctx = ctx_in(&dir, Some("schemas"));
+        let schemas = dir.path().join("schemas");
+        let writable = fs::metadata(&schemas).expect("stat").permissions();
+        let mut perms = writable.clone();
+        perms.set_readonly(true);
+        fs::set_permissions(&schemas, perms).expect("chmod");
+
+        let (envelope, _, _) = edited_envelope(&dir, |doc| {
+            doc["tables"]["Item"]["fields"]["id"]["min"] = serde_json::json!(1);
+        });
+        let (status, payload) = api_save(&ctx, &envelope);
+        fs::set_permissions(&schemas, writable).expect("chmod back");
+        assert_eq!(status, 500, "{payload}");
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        let err = payload["error"].as_str().expect("io error");
+        assert!(err.contains("schemas"), "{err}");
+
+        // Unrelated index: the echoed sources list another file, so no
+        // conflict applies and the plain save proceeds.
+        let dir = TempDir::new().expect("tempdir");
+        fs::write(
+            dir.path().join("schema.yaml"),
+            "tables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      \
+             id: { name: id, type: { kind: Int32 }, required: true }\nenums: {}\n",
+        )
+        .expect("write schema");
+        fs::write(
+            dir.path().join("other.yaml"),
+            "enums: {}\ntables:\n  Shop:\n    name: Shop\n    primary_key: [id]\n    fields:\n      \
+             id: { name: id, type: { kind: Int32 }, required: true }\n",
+        )
+        .expect("write other");
+        let (_, other_index) =
+            crate::schema_save::load_schema_indexed(dir.path(), &dir.path().join("other.yaml"))
+                .expect("other loads");
+        let (merged, _) =
+            crate::schema_save::load_schema_indexed(dir.path(), &dir.path().join("schema.yaml"))
+                .expect("schema loads");
+        let mut doc = to_editor_json(&merged);
+        doc["tables"]["Item"]["fields"]["id"]["max"] = serde_json::json!(9);
+        let envelope = serde_json::json!({
+            "schema": doc,
+            "sources": other_index.to_json(),
+        });
+        let ctx = ctx_in(&dir, Some("schema.yaml"));
+        let (status, payload) = api_save(
+            &ctx,
+            &serde_json::to_string(&envelope).expect("envelope serializes"),
+        );
+        assert_eq!(status, 200, "{payload}");
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        let saved = fs::read_to_string(dir.path().join("schema.yaml")).expect("saved");
+        assert!(saved.contains("max: 9"), "{saved}");
+    }
+
+    /// Uploads whose table's source file cannot be resolved inside the
+    /// configured roots are refused before anything is touched: a symlink
+    /// escaping the project, and a file loaded from a root the Ctx does
+    /// not list.
+    #[test]
+    fn api_upload_refuses_targets_that_escape_the_configured_roots() {
+        // Symlink escape: the source resolves to a path outside the root.
+        let dir = TempDir::new().expect("tempdir");
+        let outside = TempDir::new().expect("outside tempdir");
+        let outside_file = outside.path().join("elsewhere.json");
+        fs::write(&outside_file, r#"{"Item": [{"id": 1}]}"#).expect("write outside");
+        let ctx = demo_ctx(&dir);
+        fs::remove_file(dir.path().join("config/item.json")).expect("drop original");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, dir.path().join("config/item.json"))
+            .expect("symlink");
+        let (status, doc) = api_upload(&ctx, "name=Item&profile=client", b"[1]");
+        assert_eq!(status, 400, "{doc}");
+        let err = doc["error"].as_str().expect("escape error");
+        assert!(err.contains("outside the project"), "{err}");
+
+        // Root mismatch: the disk config feeds the table from `data/`,
+        // but the Ctx only knows `config/` — outside every root it lists.
+        let dir = TempDir::new().expect("tempdir");
+        fs::write(
+            dir.path().join("cage.toml"),
+            "output_dir = \"build\"\nschema_path = \"schema.yaml\"\n\n[source_roots]\n\
+             main = \"config\"\nextra = \"data\"\n\n[project]\nname = \"demo\"\n\n\
+             [profiles.client]\nname = \"client\"\n\n[[profiles.client.targets]]\n\
+             format = \"json\"\noutput_dir = \"build/client/json\"\n",
+        )
+        .expect("write config");
+        fs::write(
+            dir.path().join("schema.yaml"),
+            "tables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      \
+             id: { name: id, type: { kind: Int32 }, required: true }\nenums: {}\n",
+        )
+        .expect("write schema");
+        fs::create_dir_all(dir.path().join("config")).expect("mkdir config");
+        fs::write(dir.path().join("config/keep.json"), r#"{"Note": []}"#).expect("write keep");
+        fs::create_dir_all(dir.path().join("data")).expect("mkdir data");
+        fs::write(
+            dir.path().join("data/item.json"),
+            r#"{"Item": [{"id": 1}]}"#,
+        )
+        .expect("write data");
+
+        let mut config = ProjectConfig::default();
+        config.project.name = "demo".to_string();
+        config.schema_path = Some("schema.yaml".to_string());
+        config
+            .source_roots
+            .insert("main".to_string(), "config".to_string());
+        let mut profiles = indexmap::IndexMap::new();
+        profiles.insert(
+            "client".to_string(),
+            cage_core::manifest::BuildProfile {
+                name: "client".to_string(),
+                targets: Vec::new(),
+                description: None,
+                variables: indexmap::IndexMap::new(),
+            },
+        );
+        config.profiles = profiles;
+        let ctx = Ctx {
+            root: dir.path().to_path_buf(),
+            config,
+        };
+        let (status, doc) = api_upload(&ctx, "name=Item&profile=client", b"[1]");
+        assert_eq!(status, 400, "{doc}");
+        let err = doc["error"].as_str().expect("root error");
+        assert!(
+            err.contains("outside every configured source root"),
+            "{err}"
+        );
+    }
+
+    /// A snapshot pack whose ledger disagrees with its bytes is listed
+    /// with `verified: false` and the concrete problems — the page never
+    /// claims a clean pack it did not just check.
+    #[test]
+    fn api_snapshots_reports_a_corrupt_pack() {
+        let dir = TempDir::new().expect("tempdir");
+        let pack = dir.path().join("build/snapshot/junk");
+        fs::create_dir_all(&pack).expect("mkdir pack");
+        fs::write(
+            pack.join("HASHES.json"),
+            r#"{"files": {"extra.txt": "deadbeef"}}"#,
+        )
+        .expect("write ledger");
+        fs::write(pack.join("extra.txt"), b"payload").expect("write payload");
+
+        let ctx = ctx_in(&dir, None);
+        let (status, doc) = api_snapshots(&ctx);
+        assert_eq!(status, 200, "{doc}");
+        assert_eq!(doc["ok"], serde_json::json!(true));
+        let packs = doc["snapshots"].as_array().expect("snapshots");
+        assert_eq!(packs.len(), 1, "{doc}");
+        assert_eq!(packs[0]["name"], serde_json::json!("junk"));
+        assert_eq!(packs[0]["verified"], serde_json::json!(false));
+        let problems = packs[0]["problems"].as_array().expect("problems");
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.as_str().unwrap_or("").contains("hash mismatch")),
+            "{problems:?}"
+        );
+    }
+
+    /// POST /api/snapshot surfaces build failures by their kind: a broken
+    /// schema is a validation report (200), an unwritable output
+    /// directory is an I/O failure (400).
+    #[test]
+    fn api_snapshot_reports_validation_and_io_failures() {
+        // Validation: a row drops the required primary key field.
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        fs::write(
+            dir.path().join("config/item.json"),
+            r#"{"Item": [{"name": "x"}]}"#,
+        )
+        .expect("break source");
+        let (status, doc) = api_snapshot(&ctx, r#"{"profile": "client"}"#);
+        assert_eq!(status, 200, "{doc}");
+        assert_eq!(doc["ok"], serde_json::json!(false));
+        assert!(
+            doc["diagnostics"]["items"]
+                .as_array()
+                .expect("diagnostics items")
+                .iter()
+                .any(|d| d["code"] == serde_json::json!("E1001")),
+            "{doc}"
+        );
+
+        // Io: the output directory exists as a file.
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
+        fs::write(dir.path().join("build"), b"not a dir").expect("block output");
+        let (status, doc) = api_snapshot(&ctx, r#"{"profile": "client"}"#);
+        assert_eq!(status, 400, "{doc}");
+        assert_eq!(doc["ok"], serde_json::json!(false));
+        let err = doc["error"].as_str().expect("io error");
+        assert!(!err.is_empty(), "{err}");
+    }
+
+    /// GET /api/diff refuses paths that escape the root, targets without
+    /// a readable manifest, and folds added/removed artifacts into the
+    /// affected targets.
+    #[test]
+    fn api_diff_refuses_escapes_and_missing_manifests_and_reports_moves() {
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = ctx_in(&dir, None);
+
+        // Baseline path resolving outside the root.
+        let outside = TempDir::new().expect("outside tempdir");
+        let outside_file = outside.path().join("elsewhere.json");
+        fs::write(&outside_file, b"{}").expect("write outside");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, dir.path().join("bad")).expect("symlink");
+        let (status, doc) = api_diff(&ctx, "from=bad&to=build");
+        assert_eq!(status, 400, "{doc}");
+        let err = doc["error"].as_str().expect("escape error");
+        assert!(err.contains("outside project root"), "{err}");
+
+        let manifest_json = |artifacts: serde_json::Value| {
+            serde_json::json!({
+                "project": "demo",
+                "profile": "client",
+                "cage_version": "0",
+                "schema_hash": "a",
+                "source_hash": "b",
+                "content_hash": "c",
+                "targets": [{"format": "csv", "output_dir": "out", "hash": "h"}],
+                "artifacts": artifacts,
+            })
+        };
+
+        // Target without a manifest: canonicalized, then refused.
+        fs::create_dir_all(dir.path().join("from")).expect("mkdir from");
+        fs::write(
+            dir.path().join("from/manifest.json"),
+            manifest_json(serde_json::json!({})).to_string(),
+        )
+        .expect("write base manifest");
+        fs::create_dir_all(dir.path().join("to")).expect("mkdir to");
+        let (status, doc) = api_diff(&ctx, "from=from&to=to");
+        assert_eq!(status, 400, "{doc}");
+        let err = doc["error"].as_str().expect("missing manifest error");
+        assert!(err.contains("target 'to'"), "{err}");
+
+        // Added + removed artifacts fold into the touched target.
+        let artifact_json = |path: &str| {
+            serde_json::json!({
+                "path": path,
+                "hash": "deadbeef",
+                "size": 3,
+                "format": "csv",
+                "table": "Item",
+                "encoding": "utf-8",
+            })
+        };
+        fs::write(
+            dir.path().join("from/manifest.json"),
+            manifest_json(serde_json::json!({"out/old.csv": artifact_json("out/old.csv")}))
+                .to_string(),
+        )
+        .expect("rewrite base manifest");
+        fs::write(
+            dir.path().join("to/manifest.json"),
+            manifest_json(serde_json::json!({"out/new.json": artifact_json("out/new.json")}))
+                .to_string(),
+        )
+        .expect("write new manifest");
+        let (status, doc) = api_diff(&ctx, "from=from&to=to");
+        assert_eq!(status, 200, "{doc}");
+        assert_eq!(doc["ok"], serde_json::json!(true));
+        assert!(
+            doc["changed_tables"].as_array().expect("tables").is_empty(),
+            "table hashes equal: {doc}"
+        );
+        let removed = doc["files"]["removed"].as_array().expect("removed");
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0]["path"], serde_json::json!("out/old.csv"));
+        let added = doc["files"]["added"].as_array().expect("added");
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0]["path"], serde_json::json!("out/new.json"));
+        let affected = doc["affected_targets"].as_array().expect("targets");
+        assert_eq!(affected.len(), 1);
+        assert_eq!(affected[0], serde_json::json!("out"));
+    }
 }
 #[cfg(test)]
 impl Ctx {
