@@ -1209,6 +1209,92 @@ mod tests {
         }
     }
 
+    /// 表格源的定位串：有行号给 `:row N`，行上的列追加 `:col`；无行号
+    /// 时裸列名也单独成立（文本源无行记录的场景）。
+    #[test]
+    fn diag_location_renders_row_then_column() {
+        let d = cage_core::Diagnostic {
+            code: "E1201".to_string(),
+            source: "config/Item.xlsx".to_string(),
+            location: Some(cage_core::SourceLocation {
+                row: Some(3),
+                column: Some("C".to_string()),
+                ..cage_core::SourceLocation::new("config/Item.xlsx")
+            }),
+            ..empty_diag()
+        };
+        let v = diag_json(&d);
+        assert_eq!(
+            v["where"],
+            json!("config/Item.xlsx:row 3:C"),
+            "row then column: {v}"
+        );
+
+        let d = cage_core::Diagnostic {
+            code: "E1201".to_string(),
+            source: "config/Item.xlsx".to_string(),
+            location: Some(cage_core::SourceLocation {
+                column: Some("D".to_string()),
+                ..cage_core::SourceLocation::new("config/Item.xlsx")
+            }),
+            ..empty_diag()
+        };
+        let v = diag_json(&d);
+        assert_eq!(v["where"], json!("config/Item.xlsx:D"), "bare column: {v}");
+    }
+
+    /// `[registry]` / `[remote.*]` 的实际值进入解释输出，section 过滤
+    /// 同样成立。
+    #[test]
+    fn explain_config_reports_registry_and_remote_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        write_min_project(&root);
+        std::fs::write(
+            root.join("cage.toml"),
+            "schema_path = \"schemas\"\n[project]\nname = \"dry\"\n[source_roots]\nmain = \"config\"\n[profiles.client]\nname = \"client\"\ntargets = [{ format = \"json\", output_dir = \"build/client/json\" }]\n[registry]\npath = \"vendor/reg\"\nauth_env = \"CAGE_REG_TOKEN\"\n[remote.sheets]\ncredential_env = \"CAGE_SHEETS_KEY\"\n[remote.mysql]\ndsn_env = \"CAGE_MYSQL_URL\"\nqueries = { top = \"SELECT id FROM Item\" }\n",
+        )
+        .unwrap();
+
+        let v = run_explain_config(root.to_str().unwrap(), None).expect("loads");
+        assert_eq!(v["registry"]["path"], json!("vendor/reg"));
+        assert_eq!(v["registry"]["auth_env"], json!("CAGE_REG_TOKEN"));
+        // remote 是带 name 的数组（IndexMap 保序展开）
+        let remotes = v["remote"].as_array().expect("remote list");
+        let sheets = remotes
+            .iter()
+            .find(|r| r["name"] == json!("sheets"))
+            .expect("sheets entry");
+        assert_eq!(sheets["credential_env"], json!("CAGE_SHEETS_KEY"));
+        let mysql = remotes
+            .iter()
+            .find(|r| r["name"] == json!("mysql"))
+            .expect("mysql entry");
+        assert_eq!(mysql["dsn_env"], json!("CAGE_MYSQL_URL"));
+        assert_eq!(mysql["queries"], json!({ "top": "SELECT id FROM Item" }));
+
+        let v = run_explain_config(root.to_str().unwrap(), Some("remote")).expect("section");
+        assert_eq!(v["section"], json!("remote"));
+        assert!(v["value"].as_array().is_some_and(|a| !a.is_empty()));
+    }
+
+    /// target 格式没人认识时 dry run 在生成阶段报 Io 失败（校验已放行，
+    /// 生成器拒收）。
+    #[test]
+    fn build_dry_run_unknown_target_format_is_io_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        write_min_project(&root);
+        std::fs::write(
+            root.join("cage.toml"),
+            "schema_path = \"schemas\"\n[project]\nname = \"dry\"\n[source_roots]\nmain = \"config\"\n[profiles.client]\nname = \"client\"\ntargets = [{ format = \"parquet\", output_dir = \"build/client/parquet\" }]\n",
+        )
+        .unwrap();
+        let err = run_build_dry_run(root.to_str().unwrap(), "client", None, "semantic", false)
+            .expect_err("unknown format refused");
+        assert!(err.contains("unsupported target format 'parquet'"), "{err}");
+    }
+
     #[test]
     fn list_fields_without_table_lists_all_tables() {
         let v = run_list_fields(example_project().to_str().unwrap(), None, false).expect("loads");

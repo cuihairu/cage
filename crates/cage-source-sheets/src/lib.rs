@@ -1537,4 +1537,42 @@ print(json.dumps({
         );
         let _ = bytes;
     }
+
+    /// Every `FetchFailure` kind renders URL-free: the API key rides the
+    /// query string, so no failure text may echo the URL.
+    #[test]
+    fn failure_brief_names_every_kind_without_the_url() {
+        let url = "http://127.0.0.1:1/?key=secret";
+        assert_eq!(
+            failure_brief(&FetchFailure::Transport(format!("dial {url}"))),
+            "transport failure"
+        );
+        assert_eq!(
+            failure_brief(&FetchFailure::RateLimited(Duration::from_secs(9))),
+            "rate limited"
+        );
+        assert_eq!(
+            failure_brief(&FetchFailure::NotFound(url.to_string())),
+            "not found"
+        );
+        assert_eq!(failure_brief(&FetchFailure::Status(503)), "http 503");
+        assert_eq!(
+            failure_brief(&FetchFailure::TooLarge(1024)),
+            "body exceeds the 1024 byte cap"
+        );
+    }
+
+    /// A payload without a usable header row is not a row set: the reject
+    /// names the missing index, and an empty header row is blank.
+    #[test]
+    fn plain_rows_without_a_header_row_is_e1903() {
+        let err = plain_rows_canonical("Levels", &[], 0).expect_err("no rows at all");
+        assert!(err.contains("E1903"), "{err}");
+        assert!(err.contains("no header row at index 0"), "{err}");
+
+        let err = plain_rows_canonical("Levels", &[serde_json::json!([])], 0)
+            .expect_err("empty header row");
+        assert!(err.contains("E1903"), "{err}");
+        assert!(err.contains("blank header row"), "{err}");
+    }
 }

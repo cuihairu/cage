@@ -271,3 +271,120 @@ pub(crate) fn resolve_remote(
     }
     Ok(cache_entry)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serve one canned HTTP response on an ephemeral loopback port and
+    /// return the base URL. The answering thread is detached and answers
+    /// every request with the same response — retried fetches reconnect,
+    /// so a one-shot server would leave them facing a refused port.
+    fn serve_one(status: u16, extra_headers: &[(&str, &str)], body: Vec<u8>) -> String {
+        let server = tiny_http::Server::http(("127.0.0.1", 0)).expect("bind loopback");
+        let url = format!("http://{}", server.server_addr().to_ip().expect("addr"));
+        let headers: Vec<(String, String)> = extra_headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        std::thread::spawn(move || loop {
+            let Ok(request) = server.recv() else { return };
+            let mut response =
+                tiny_http::Response::from_data(body.clone()).with_status_code(status);
+            for (name, value) in &headers {
+                response.add_header(
+                    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes())
+                        .expect("static header"),
+                );
+            }
+            let _ = request.respond(response);
+        });
+        url
+    }
+
+    #[test]
+    fn missing_auth_env_is_e2105_before_any_contact() {
+        // A name nothing else in the process sets: resolution must fail
+        // on the missing env var, never reach the network.
+        let name = "CAGE_TEST_AUTH_ABSENT_REMOTE_RS";
+        let err = fetch_remote_index(None, "http://127.0.0.1:1", "pkg", Some(name))
+            .expect_err("missing credential refused");
+        assert!(err.contains("E2105"), "{err}");
+        assert!(
+            err.contains(name),
+            "error names the env var, not the token: {err}"
+        );
+    }
+
+    #[test]
+    fn empty_auth_env_is_e2105() {
+        let name = "CAGE_TEST_AUTH_EMPTY_REMOTE_RS";
+        std::env::set_var(name, "");
+        let err = fetch_remote_index(None, "http://127.0.0.1:1", "pkg", Some(name))
+            .expect_err("empty credential refused");
+        assert!(err.contains("E2105"), "{err}");
+        assert!(err.contains("is empty"), "{err}");
+    }
+
+    #[test]
+    fn index_404_yields_an_empty_ledger() {
+        let url = serve_one(404, &[], b"gone".to_vec());
+        let (index, from_cache) =
+            fetch_remote_index(None, &url, "pkg", None).expect("404 is an empty ledger");
+        assert_eq!(index.package, "pkg");
+        assert_eq!(index.entries.len(), 0);
+        assert!(!from_cache);
+    }
+
+    #[test]
+    fn index_401_is_e2102() {
+        let url = serve_one(401, &[], b"denied".to_vec());
+        let err = fetch_remote_index(None, &url, "pkg", None).expect_err("401 refused");
+        assert!(err.contains("E2102"), "{err}");
+        assert!(err.contains("401"), "{err}");
+    }
+
+    #[test]
+    fn index_500_is_e2101() {
+        let url = serve_one(500, &[], b"boom".to_vec());
+        let err = fetch_remote_index(None, &url, "pkg", None).expect_err("500 refused");
+        assert!(err.contains("E2101"), "{err}");
+        assert!(err.contains("500"), "{err}");
+    }
+
+    #[test]
+    fn rate_limited_index_reports_the_wait() {
+        // Retry-After the policy honors → a few 1 s retries before the
+        // final E2101 names the negotiated wait.
+        let url = serve_one(429, &[("Retry-After", "1")], b"slow down".to_vec());
+        let err = fetch_remote_index(None, &url, "pkg", None).expect_err("429 refused");
+        assert!(err.contains("E2101"), "{err}");
+        assert!(err.contains("rate limited"), "{err}");
+    }
+
+    #[test]
+    fn oversized_index_body_is_e2101() {
+        // One byte over the 64 MiB cap — the read stops at cap + 1, so
+        // the full body never has to transfer.
+        let cap = cage_core::remote::MAX_RESPONSE_BODY_BYTES;
+        let url = serve_one(200, &[], vec![b'a'; cap + 1]);
+        let err = fetch_remote_index(None, &url, "pkg", None).expect_err("cap enforced");
+        assert!(err.contains("E2101"), "{err}");
+        assert!(
+            err.contains(&format!("exceeds the {cap} byte cap")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn dead_root_without_a_cache_is_e2101() {
+        // Bind, note the port, drop: the address now refuses connections.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("probe bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(listener);
+        let err = fetch_remote_index(None, &url, "pkg", None).expect_err("dead root");
+        assert!(err.contains("E2101"), "{err}");
+        assert!(err.contains("transport failure"), "{err}");
+        assert!(err.contains("no cached copy"), "{err}");
+    }
+}
