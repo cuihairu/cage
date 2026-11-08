@@ -127,30 +127,32 @@ fn web_command_refuses_a_root_without_config() {
 
 /// Push one raw HTTP request at the running server and return the reply.
 /// The very first request can land while the serve loop is still spinning
-/// up (the banner precedes the accept loop), so early failures retry.
+/// up (the banner precedes the accept loop): the connection layer then
+/// answers with a bare 500 that is not the route's verdict, or nothing at
+/// all. The faces answer 200 when healthy, so only a 200 ends the retry;
+/// anything else is kept as `last` for the assertion message.
 fn http_get(port: u16, path: &str) -> String {
     let request =
         format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     let mut last = String::new();
     for _ in 0..25 {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(mut client) => {
-                client
-                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                    .unwrap();
-                if client.write_all(request.as_bytes()).is_err() {
-                    continue;
-                }
-                let mut reply = Vec::new();
-                match client.read_to_end(&mut reply) {
-                    Ok(_) if !reply.is_empty() => {
-                        return String::from_utf8_lossy(&reply).into_owned();
-                    }
-                    _ => last = String::from_utf8_lossy(&reply).into_owned(),
-                }
+        if let Ok(mut client) = TcpStream::connect(("127.0.0.1", port)) {
+            client
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            if client.write_all(request.as_bytes()).is_err() {
+                continue;
             }
-            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            let mut reply = Vec::new();
+            if client.read_to_end(&mut reply).is_ok() && !reply.is_empty() {
+                let reply = String::from_utf8_lossy(&reply).into_owned();
+                if reply.starts_with("HTTP/1.1 200") {
+                    return reply;
+                }
+                last = reply;
+            }
         }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
     last
 }
@@ -173,11 +175,12 @@ fn web_command_serves_the_faces_until_killed() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn cage web");
-    let banner = BufReader::new(child.stdout.take().expect("piped stdout"))
-        .lines()
-        .next()
-        .expect("banner line")
-        .expect("banner read");
+    // The banner pipe must stay open for the child's whole lifetime: the
+    // server prints a second line ("Ctrl+C to stop") after the banner, and
+    // a closed read end would EPIPE-panic the child mid-startup.
+    let mut banner_pipe = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut banner = String::new();
+    banner_pipe.read_line(&mut banner).expect("banner read");
     assert!(
         banner.contains(&format!("http://127.0.0.1:{port}")),
         "banner names the bound port: {banner}"
@@ -201,6 +204,7 @@ fn web_command_serves_the_faces_until_killed() {
 
     child.kill().expect("kill serve loop");
     child.wait().expect("reap");
+    drop(banner_pipe);
 }
 
 // --------------------------------------------------------------- graph ---
@@ -420,9 +424,8 @@ enums: {}
 fn schema_draft_excel_without_meta_rows_is_e2201() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(concat!(
-        "../cage-source-excel/tests/fixtures/merged_cells.xlsx"
-    ));
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../cage-source-excel/tests/fixtures/merged_cells.xlsx");
     fs::create_dir_all(root.join("config")).unwrap();
     fs::copy(&fixture, root.join("config/Plain.xlsx")).unwrap();
     write(

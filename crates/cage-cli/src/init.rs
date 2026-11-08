@@ -967,9 +967,7 @@ mod tests {
             let mut input: Vec<&str> = vec![""; k];
             input.push("b");
             // The previous question is re-asked (1 line), then steps k..7.
-            for _ in 0..(9 - k) {
-                input.push("");
-            }
+            input.extend(std::iter::repeat_n("", 9 - k));
             input.push("y");
             let opts = dialog_answers(&input)
                 .unwrap_or_else(|| panic!("back from step {k} still confirms"));
