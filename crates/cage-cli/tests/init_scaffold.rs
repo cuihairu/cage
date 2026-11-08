@@ -262,3 +262,47 @@ fn git_flag_initializes_a_repo() {
         );
     }
 }
+
+/// A failing `git init` (a `.git` that is a plain file makes git exit
+/// non-zero) warns but keeps the scaffold: files already exist.
+#[test]
+fn failed_git_init_warns_and_keeps_the_scaffold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("broken");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(".git"), "not a git dir").unwrap();
+    let out = run_cage(&["init", dir.to_str().unwrap(), "--name", "broken", "--git"]);
+    assert_code(&out, 0, "scaffold survives a failing git init");
+    assert!(dir.join("cage.toml").is_file(), "files are kept");
+    let err = stderr(&out);
+    assert!(err.contains("警告"), "stderr:\n{err}");
+    assert!(
+        err.contains("git init 退出码") || err.contains("无法执行"),
+        "the warning names the git failure:\n{err}"
+    );
+}
+
+/// A PATH without git makes the `git init` spawn itself fail — the same
+/// warn-and-keep contract, from the spawn error arm.
+#[test]
+fn missing_git_binary_warns_and_keeps_the_scaffold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let empty_path = tmp.path().join("bin");
+    fs::create_dir_all(&empty_path).unwrap();
+    let dir = tmp.path().join("nogit");
+    let out = Command::new(env!("CARGO_BIN_EXE_cage"))
+        .args(["init", dir.to_str().unwrap(), "--name", "nogit", "--git"])
+        .env("PATH", empty_path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.join("cage.toml").is_file(), "files are kept");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("无法执行 git init"), "stderr:\n{err}");
+}

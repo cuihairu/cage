@@ -951,6 +951,46 @@ mod tests {
         assert!(dialog_answers(&["", "", "", "", "", "", "", "", "n"]).is_none());
     }
 
+    /// Stepping back from every question re-asks the previous one and still
+    /// reaches a confirmed plan — one test per origin step, so a broken
+    /// back-edge names its step by the resulting options.
+    #[test]
+    fn dialog_back_from_every_step_still_confirms() {
+        // Step 0 (dir) has nothing before it: back re-asks the dir itself.
+        let opts = dialog_answers(&["b", ".", "", "", "", "", "", "", "", "y"])
+            .expect("back at dir re-asks");
+        assert_eq!(opts.dir, PathBuf::from("."));
+
+        // Steps 1..7: k default answers, then `b` at step k, then the
+        // re-asked previous question plus the rest, then confirm.
+        for k in 1..8usize {
+            let mut input: Vec<&str> = vec![""; k];
+            input.push("b");
+            // The previous question is re-asked (1 line), then steps k..7.
+            for _ in 0..(9 - k) {
+                input.push("");
+            }
+            input.push("y");
+            let opts = dialog_answers(&input)
+                .unwrap_or_else(|| panic!("back from step {k} still confirms"));
+            assert_eq!(opts.dir, PathBuf::from("."), "step {k}");
+            assert_eq!(opts.source, SourceKind::Json, "step {k}");
+            assert_eq!(opts.targets, vec!["json", "csv"], "step {k}");
+        }
+    }
+
+    /// A script that runs dry aborts from every step, not only early ones.
+    #[test]
+    fn dialog_eof_aborts_from_every_step() {
+        for k in 0..8usize {
+            let input: Vec<&str> = vec![""; k];
+            assert!(
+                dialog_answers(&input).is_none(),
+                "eof after {k} answers aborts"
+            );
+        }
+    }
+
     #[test]
     fn dialog_eof_aborts() {
         // A script that runs dry mid-dialog aborts instead of looping.
