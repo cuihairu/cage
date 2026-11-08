@@ -221,6 +221,7 @@ fn map_cell(column: &mysql::Column, value: &Value) -> DbValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mysql::Column;
 
     #[test]
     fn classify_maps_the_column_type_families() {
@@ -293,6 +294,114 @@ mod tests {
         // possible) and carry the placeholder for the name.
         assert!(DRAFT_COLUMNS_SQL.matches('?').count() == 2);
         assert!(DRAFT_PRIMARY_KEY_SQL.matches('?').count() == 2);
+    }
+
+    /// Every `map_cell` branch, driven by driver-constructed `Column`
+    /// metadata — the same wire shapes a live server produces.
+    #[test]
+    fn map_cell_maps_the_wire_values_per_type() {
+        // NULL short-circuits before any type dispatch.
+        let col = Column::new(ColumnType::MYSQL_TYPE_LONG);
+        assert_eq!(map_cell(&col, &Value::NULL), DbValue::Null);
+
+        // Typed numerics ride the value variants regardless of column type.
+        let any = Column::new(ColumnType::MYSQL_TYPE_VARCHAR);
+        assert_eq!(map_cell(&any, &Value::Int(-5)), DbValue::Int(-5));
+        assert_eq!(map_cell(&any, &Value::UInt(9)), DbValue::UInt(9));
+        assert_eq!(map_cell(&any, &Value::Float(0.5)), DbValue::Float(0.5));
+        assert_eq!(map_cell(&any, &Value::Double(2.5)), DbValue::Float(2.5));
+
+        // DECIMAL stays textual — no float round-trip.
+        let decimal = Column::new(ColumnType::MYSQL_TYPE_NEWDECIMAL);
+        assert_eq!(
+            map_cell(&decimal, &Value::Bytes(b"9.99".to_vec())),
+            DbValue::Decimal("9.99".into())
+        );
+
+        // DATE / YEAR reduce to the ISO date.
+        let date = Column::new(ColumnType::MYSQL_TYPE_DATE);
+        assert_eq!(
+            map_cell(&date, &Value::Date(2026, 11, 8, 0, 0, 0, 0)),
+            DbValue::Text("2026-11-08".into())
+        );
+        let year = Column::new(ColumnType::MYSQL_TYPE_YEAR);
+        assert_eq!(
+            map_cell(&year, &Value::Date(2026, 1, 2, 0, 0, 0, 0)),
+            DbValue::Text("2026-01-02".into())
+        );
+
+        // DATETIME / TIMESTAMP / NEWDATE carry the time part; microseconds
+        // render only when nonzero.
+        let datetime = Column::new(ColumnType::MYSQL_TYPE_DATETIME);
+        assert_eq!(
+            map_cell(&datetime, &Value::Date(2026, 11, 8, 7, 5, 3, 0)),
+            DbValue::Text("2026-11-08 07:05:03".into())
+        );
+        assert_eq!(
+            map_cell(&datetime, &Value::Date(2026, 11, 8, 7, 5, 3, 42)),
+            DbValue::Text("2026-11-08 07:05:03.000042".into())
+        );
+        let timestamp = Column::new(ColumnType::MYSQL_TYPE_TIMESTAMP);
+        assert_eq!(
+            map_cell(&timestamp, &Value::Date(2026, 11, 8, 23, 59, 59, 1)),
+            DbValue::Text("2026-11-08 23:59:59.000001".into())
+        );
+
+        // TIME folds days into hours and keeps the sign.
+        let time = Column::new(ColumnType::MYSQL_TYPE_TIME);
+        assert_eq!(
+            map_cell(&time, &Value::Time(false, 1, 2, 3, 4, 0)),
+            DbValue::Text("26:03:04".into())
+        );
+        assert_eq!(
+            map_cell(&time, &Value::Time(true, 0, 1, 2, 3, 5)),
+            DbValue::Text("-01:02:03.000005".into())
+        );
+
+        // charset 63 (binary collation) marks raw bytes; the BLOB family
+        // and BIT / GEOMETRY are binary at any charset; textual bytes
+        // stay text.
+        let binary = Column::new(ColumnType::MYSQL_TYPE_VARCHAR).with_character_set(63);
+        assert_eq!(
+            map_cell(&binary, &Value::Bytes(vec![0xff, 0x00])),
+            DbValue::Bytes(vec![0xff, 0x00])
+        );
+        let blob = Column::new(ColumnType::MYSQL_TYPE_BLOB);
+        assert_eq!(
+            map_cell(&blob, &Value::Bytes(vec![1, 2])),
+            DbValue::Bytes(vec![1, 2])
+        );
+        let bit = Column::new(ColumnType::MYSQL_TYPE_BIT);
+        assert_eq!(
+            map_cell(&bit, &Value::Bytes(vec![7])),
+            DbValue::Bytes(vec![7])
+        );
+        let geometry = Column::new(ColumnType::MYSQL_TYPE_GEOMETRY);
+        assert_eq!(
+            map_cell(&geometry, &Value::Bytes(vec![9])),
+            DbValue::Bytes(vec![9])
+        );
+        let text_col = Column::new(ColumnType::MYSQL_TYPE_VARCHAR);
+        assert_eq!(
+            map_cell(&text_col, &Value::Bytes("sword".as_bytes().to_vec())),
+            DbValue::Text("sword".into())
+        );
+
+        // Unmapped (type, value) pairs land as Null — the Schema has the
+        // last word anyway.
+        assert_eq!(
+            map_cell(&text_col, &Value::Time(false, 0, 0, 0, 0, 0)),
+            DbValue::Null
+        );
+    }
+
+    /// Lossy decode is the binary-path escape hatch: invalid UTF-8 in a
+    /// text-typed column never aborts the load.
+    #[test]
+    fn utf8_replaces_invalid_bytes_without_panicking() {
+        assert_eq!(utf8(&[0x73, 0x77]), "sw");
+        // One replacement character per undecodable byte.
+        assert_eq!(utf8(&[0xff, 0xfe]), "\u{fffd}\u{fffd}");
     }
 }
 

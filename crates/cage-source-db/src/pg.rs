@@ -315,6 +315,63 @@ mod tests {
         assert!(DRAFT_COLUMNS_SQL.matches("$1").count() == 1);
         assert!(DRAFT_COLUMNS_SQL.matches("$2").count() == 1);
     }
+
+    /// Every `map_text` branch: bools, integer widths, the unsigned OID,
+    /// floats (NaN has no JSON number — carried as text), NUMERIC as
+    /// verbatim text, hex bytea with a text fallback, and the pass-through.
+    #[test]
+    fn map_text_parses_the_wire_text_per_type() {
+        assert_eq!(map_text(&Type::BOOL, "t"), DbValue::Bool(true));
+        assert_eq!(map_text(&Type::BOOL, "f"), DbValue::Bool(false));
+        assert_eq!(map_text(&Type::BOOL, "true"), DbValue::Bool(true));
+        assert_eq!(map_text(&Type::INT2, "-7"), DbValue::Int(-7));
+        assert_eq!(map_text(&Type::INT4, "42"), DbValue::Int(42));
+        assert_eq!(
+            map_text(&Type::INT8, "9999999999"),
+            DbValue::Int(9_999_999_999)
+        );
+        // Malformed integer text stays text — the Schema re-parses.
+        assert_eq!(map_text(&Type::INT4, "soon"), DbValue::Text("soon".into()));
+        assert_eq!(
+            map_text(&Type::OID, "18446744073709551615"),
+            DbValue::UInt(u64::MAX)
+        );
+        assert_eq!(map_text(&Type::OID, "-1"), DbValue::Text("-1".into()));
+        assert_eq!(map_text(&Type::FLOAT4, "0.5"), DbValue::Float(0.5));
+        assert_eq!(map_text(&Type::FLOAT8, "2.5"), DbValue::Float(2.5));
+        // NaN parses as a float (parity with the wire value); malformed
+        // text falls back to the verbatim string.
+        assert!(matches!(
+            map_text(&Type::FLOAT8, "NaN"),
+            DbValue::Float(f) if f.is_nan()
+        ));
+        assert_eq!(
+            map_text(&Type::FLOAT8, "soon"),
+            DbValue::Text("soon".into())
+        );
+        assert_eq!(
+            map_text(&Type::NUMERIC, "9.99"),
+            DbValue::Decimal("9.99".into())
+        );
+        assert_eq!(
+            map_text(&Type::BYTEA, "\\xdeadbeef"),
+            DbValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef])
+        );
+        // Text that never was hex bytea passes through as text.
+        assert_eq!(map_text(&Type::BYTEA, "zz"), DbValue::Text("zz".into()));
+        assert_eq!(
+            map_text(&Type::VARCHAR, "hello"),
+            DbValue::Text("hello".into())
+        );
+    }
+
+    #[test]
+    fn hex_to_bytes_rejects_malformed_payloads() {
+        assert!(hex_to_bytes("de01").is_err(), "missing the \\x prefix");
+        assert!(hex_to_bytes("\\xabc").is_err(), "odd nibble count");
+        assert!(hex_to_bytes("\\xzz").is_err(), "non-hex digits");
+        assert_eq!(hex_to_bytes("\\x").unwrap(), Vec::<u8>::new());
+    }
 }
 
 /// Live-server tests (design §45 落地 2026-10-13): they run only when

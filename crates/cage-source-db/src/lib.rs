@@ -628,4 +628,36 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("connect refused"), "{err}");
     }
+
+    /// JSON has no number for NaN / infinity: those cells serialize as
+    /// null rather than failing the write.
+    #[test]
+    fn to_json_maps_non_finite_floats_to_null() {
+        assert_eq!(DbValue::Float(f64::NAN).to_json(), serde_json::Value::Null);
+        assert_eq!(
+            DbValue::Float(f64::INFINITY).to_json(),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            DbValue::Float(2.5).to_json(),
+            serde_json::json!(2.5)
+        );
+    }
+
+    #[test]
+    fn split_qualified_separates_schema_and_bare_name() {
+        assert_eq!(
+            split_qualified("db.items"),
+            (Some("db".to_string()), "items")
+        );
+        assert_eq!(split_qualified("items"), (None, "items"));
+        // One split only — a second dot stays in the bare name.
+        assert_eq!(split_qualified("a.b.c"), (Some("a".to_string()), "b.c"));
+    }
+
+    #[test]
+    fn introspect_rejects_unknown_schemes() {
+        let err = introspect("sqlite", "sqlite://x", "t").unwrap_err();
+        assert!(err.contains("E1905"), "{err}");
+    }
 }
