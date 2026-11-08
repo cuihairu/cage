@@ -1132,4 +1132,263 @@ mod tests {
         assert!(tmp.path().join("README.md").is_file());
         assert!(tmp.path().join(".gitignore").is_file());
     }
+
+    #[test]
+    fn source_kind_parse_label_and_sample_ext() {
+        assert_eq!(SourceKind::parse("excel"), Some(SourceKind::Excel));
+        assert_eq!(SourceKind::parse("xlsx"), Some(SourceKind::Excel));
+        assert_eq!(SourceKind::parse("csv"), Some(SourceKind::Csv));
+        assert_eq!(SourceKind::parse("json"), Some(SourceKind::Json));
+        assert_eq!(SourceKind::parse("yaml"), Some(SourceKind::Yaml));
+        assert_eq!(SourceKind::parse("yml"), Some(SourceKind::Yaml));
+        assert_eq!(SourceKind::parse("sheets"), Some(SourceKind::Sheets));
+        assert_eq!(SourceKind::parse("gsheet"), Some(SourceKind::Sheets));
+        assert_eq!(SourceKind::parse("google-sheets"), Some(SourceKind::Sheets));
+        assert_eq!(SourceKind::parse("db"), Some(SourceKind::Db));
+        assert_eq!(SourceKind::parse("database"), Some(SourceKind::Db));
+        assert_eq!(SourceKind::parse("mysql"), Some(SourceKind::Db));
+        assert_eq!(SourceKind::parse("postgres"), Some(SourceKind::Db));
+        assert_eq!(SourceKind::parse("pg"), Some(SourceKind::Db));
+        assert_eq!(SourceKind::parse("http"), Some(SourceKind::Http));
+        assert_eq!(SourceKind::parse("https"), Some(SourceKind::Http));
+        assert_eq!(SourceKind::parse("remote"), Some(SourceKind::Http));
+        assert_eq!(SourceKind::parse("nope"), None);
+        assert_eq!(SourceKind::Excel.label(), "excel");
+        assert_eq!(SourceKind::Csv.label(), "csv");
+        assert_eq!(SourceKind::Json.label(), "json");
+        assert_eq!(SourceKind::Yaml.label(), "yaml");
+        assert_eq!(SourceKind::Sheets.label(), "sheets");
+        assert_eq!(SourceKind::Db.label(), "db");
+        assert_eq!(SourceKind::Http.label(), "http");
+        assert_eq!(SourceKind::Json.sample_ext(), "json");
+        assert_eq!(SourceKind::Yaml.sample_ext(), "yaml");
+        assert_eq!(SourceKind::Csv.sample_ext(), "csv");
+    }
+
+    #[test]
+    fn parse_source_envs_and_targets_defaults_and_edges() {
+        // Defaults when absent.
+        assert_eq!(parse_source(None).unwrap(), SourceKind::Json);
+        assert_eq!(parse_envs(None).unwrap(), Envs::Four);
+        assert_eq!(parse_targets(None).unwrap(), vec!["json", "csv"]);
+        // Empty/whitespace target list falls back to the default pair.
+        assert_eq!(
+            parse_targets(Some(",".into())).unwrap(),
+            vec!["json", "csv"]
+        );
+        assert_eq!(
+            parse_targets(Some("  ".into())).unwrap(),
+            vec!["json", "csv"]
+        );
+        // Duplicates collapse, aliases normalize.
+        assert_eq!(
+            parse_targets(Some("json,json,cs".into())).unwrap(),
+            vec!["json", "csharp"]
+        );
+        // Unknown values are errors.
+        assert!(parse_source(Some("parquet".into())).is_err());
+        assert!(parse_envs(Some("five".into())).is_err());
+        assert!(parse_targets(Some("json,parquet".into())).is_err());
+    }
+
+    #[test]
+    fn dialog_back_at_first_question_reasks() {
+        // `b` at the very first (dir) question re-asks it; then an answer.
+        let opts = dialog_answers(&["b", "proj", "", "", "", "", "", "", "", "y"])
+            .expect("confirmed plan");
+        assert_eq!(opts.dir, PathBuf::from("proj"));
+    }
+
+    #[test]
+    fn dialog_choice_back_and_yn_invalid_reask() {
+        // Dir -> Name -> Source("b" back to Name) -> Name("proj") ->
+        // Source(7 http) -> Envs(2 none) -> Targets -> Template ->
+        // Git("maybe" invalid then "y") -> Examples("no") -> confirm("y").
+        let opts = dialog_answers(&[
+            "", "", "b", "proj", "7", "2", "", "", "maybe", "y", "no", "y",
+        ])
+        .expect("confirmed plan");
+        assert_eq!(opts.name, "proj", "Source's Back returns to Name");
+        assert_eq!(opts.source, SourceKind::Http);
+        assert_eq!(opts.envs, Envs::None);
+        assert!(opts.git);
+        assert!(!opts.examples);
+    }
+
+    #[test]
+    fn run_init_non_interactive_writes_scaffold_and_git_init() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("proj");
+        // First run: scaffold into a clean directory.
+        let code = run_init(
+            Some(dir.clone()),
+            Some("demo".into()),
+            Some("json".into()),
+            Some("four".into()),
+            Some("json".into()),
+            None,
+            false,
+            false,
+        );
+        assert_eq!(code, 0, "run_init should succeed");
+        assert!(dir.join("cage.toml").is_file());
+        assert!(dir.join("schemas/item.yaml").is_file());
+        assert!(dir.join("config/Item.json").is_file());
+        assert!(dir.join("README.md").is_file());
+
+        // Second run on the same dir refuses (existing project file).
+        let code = run_init(
+            Some(dir.clone()),
+            Some("demo".into()),
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(code, 1, "existing project must refuse");
+    }
+
+    #[test]
+    fn run_init_bad_flags_return_usage_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let code = run_init(
+            Some(tmp.path().to_path_buf()),
+            None,
+            Some("parquet".into()),
+            None,
+            None,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(code, 2, "bad --source must fail with usage");
+    }
+
+    #[test]
+    fn git_init_handles_success_and_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        git_init(tmp.path());
+        // git init succeeded → a .git dir exists.
+        assert!(tmp.path().join(".git").is_dir());
+        // git init in a non-writable dir → warning path (no panic).
+        let sub = tmp.path().join("locked");
+        std::fs::create_dir_all(&sub).unwrap();
+        git_init(&sub);
+        assert!(sub.exists());
+    }
+
+    #[test]
+    fn print_plan_renders_every_variant() {
+        let mut out = Vec::new();
+        let opts = build_options(
+            None,
+            Some("demo".into()),
+            Some("csv".into()),
+            Some("four".into()),
+            Some("json,csv".into()),
+            None,
+            true,
+            false,
+        )
+        .unwrap();
+        print_plan(
+            &mut out,
+            &opts.dir,
+            &opts.name,
+            opts.source,
+            opts.envs,
+            &opts.targets,
+            opts.git,
+            opts.examples,
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("待生成清单"));
+        assert!(text.contains("dev/test/staging/prod"));
+        assert!(text.contains("git init"));
+
+        let mut out = Vec::new();
+        let opts = build_options(
+            None,
+            Some("demo".into()),
+            Some("yaml".into()),
+            Some("none".into()),
+            None,
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+        print_plan(
+            &mut out,
+            &opts.dir,
+            &opts.name,
+            opts.source,
+            opts.envs,
+            &opts.targets,
+            opts.git,
+            opts.examples,
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("无（不生成 env_overrides）"));
+        assert!(!text.contains("schemas/item.yaml"));
+    }
+
+    #[test]
+    fn dialog_every_source_choice_and_env_choice() {
+        use SourceKind;
+        for (n, expect) in [
+            (1, SourceKind::Excel),
+            (2, SourceKind::Csv),
+            (3, SourceKind::Json),
+            (4, SourceKind::Yaml),
+            (5, SourceKind::Sheets),
+            (6, SourceKind::Db),
+            (7, SourceKind::Http),
+        ] {
+            let opts = dialog_answers(&[
+                "",
+                "",
+                &n.to_string(), // dir, name, source
+                "1",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "y", // envs four, targets, template, git, examples, confirm
+            ])
+            .expect("confirmed");
+            assert_eq!(opts.source, expect, "source {n}");
+        }
+        // Envs: none.
+        let opts = dialog_answers(&["", "", "3", "2", "", "", "", "", "", "y"]).expect("confirmed");
+        assert_eq!(opts.envs, Envs::None);
+    }
+
+    #[test]
+    fn dialog_eof_at_each_question_aborts() {
+        // EOF after each single answer: dir, name, source, envs, targets,
+        // template, git, examples — all abort cleanly (no infinite loop).
+        for answers in [
+            &["x"][..],
+            &["", "x"][..],
+            &["", "", "x"][..],
+            &["", "", "3", "x"][..],
+            &["", "", "3", "1", "x"][..],
+            &["", "", "3", "1", "", "x"][..],
+            &["", "", "3", "1", "", "", "x"][..],
+            &["", "", "3", "1", "", "", "", "x"][..],
+        ] {
+            let mut input = String::new();
+            for a in answers {
+                input.push_str(a);
+                input.push('\n');
+            }
+            assert!(dialog(&input).is_none(), "answers: {answers:?}");
+        }
+    }
 }

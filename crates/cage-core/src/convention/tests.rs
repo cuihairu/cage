@@ -1436,3 +1436,550 @@ fn drift_reports_missing_child_in_regular_object_type_schema() {
         err.message
     );
 }
+
+/// Territory selection for each preset: `marker_rows` with a `##var` header
+/// scans from row 0 to the first pure-data row; without one it scans the
+/// rows above the header; `header_block` walks up through the contiguous
+/// non-empty block; `data`/`meta_sheet` carry no in-grid territory.
+#[test]
+fn convention_territory_preset_shapes() {
+    let var_rows = [
+        &["##type Int32", "String"][..],
+        &["##var", "id", "name"][..],
+        &["##description", "武器名", "备注"][..],
+        &["1", "sword", "x"][..],
+    ];
+    let (rows, data_start) =
+        convention_territory(&grid(&var_rows), 1, DEFAULT_MARKER, Preset::MarkerRows);
+    assert_eq!(rows, [0, 1, 2]);
+    assert_eq!(data_start, 3);
+
+    let plain_rows = [
+        &["##type Int32", "String"][..],
+        &["id", "name"][..],
+        &["1", "x"][..],
+    ];
+    let (rows, data_start) =
+        convention_territory(&grid(&plain_rows), 1, DEFAULT_MARKER, Preset::MarkerRows);
+    assert_eq!(rows, [0]);
+    assert_eq!(data_start, 2);
+
+    let block_rows = [
+        &["", ""][..],
+        &["##type Int32", "String"][..],
+        &["id", "name"][..],
+        &["1", "x"][..],
+    ];
+    let (rows, data_start) =
+        convention_territory(&grid(&block_rows), 2, DEFAULT_MARKER, Preset::HeaderBlock);
+    assert_eq!(rows, [1]);
+    assert_eq!(data_start, 3);
+
+    let (rows, data_start) =
+        convention_territory(&grid(&plain_rows), 1, DEFAULT_MARKER, Preset::Data);
+    assert!(rows.is_empty());
+    assert_eq!(data_start, 2);
+    let (rows, data_start) =
+        convention_territory(&grid(&plain_rows), 1, DEFAULT_MARKER, Preset::MetaSheet);
+    assert!(rows.is_empty());
+    assert_eq!(data_start, 2);
+}
+
+/// A `##+` cell with no column in the header row at that column is E2201
+/// (anchored), and a repeated sub-column name under the same parent is
+/// E2201 (anchored).
+#[test]
+fn sub_column_no_parent_and_duplicate_are_e2201() {
+    let no_parent = [
+        &["##var", "id"][..],
+        &["##+", "", "atk"][..],
+        &["id", "name"][..],
+    ];
+    let diags = decode(
+        &grid(&no_parent),
+        0,
+        &[1],
+        0,
+        0,
+        DEFAULT_MARKER,
+        &HashSet::new(),
+        "config/Skill.xlsx",
+        "Skill",
+    )
+    .expect_err("no parent is E2201");
+    assert!(
+        diags
+            .errors()
+            .iter()
+            .any(|d| d.code == E2201 && d.message.contains("has no column in the header row")),
+        "{diags:?}"
+    );
+
+    let dup = [
+        &["##var", "weapon", "weapon"][..],
+        &["##+", "atk", "atk"][..],
+        &["id", "weapon"][..],
+    ];
+    let diags = decode(
+        &grid(&dup),
+        0,
+        &[1],
+        0,
+        0,
+        DEFAULT_MARKER,
+        &HashSet::new(),
+        "config/Skill.xlsx",
+        "Skill",
+    )
+    .expect_err("duplicate sub-column is E2201");
+    assert!(
+        diags
+            .errors()
+            .iter()
+            .any(|d| d.code == E2201 && d.message.contains("declared twice")),
+        "{diags:?}"
+    );
+}
+
+/// `parse_response` gates every malformed script answer with the right code
+/// (E2206 for shape, E2207 for identity, E2202 for vocabulary).
+#[test]
+fn parse_response_gates_malformed_answers() {
+    let headers = ["id", "name"].map(String::from).to_vec();
+    let ok =
+        |v: serde_json::Value| parse_response(&v, "Skill", &headers, "config/Skill.xlsx", "Skill");
+
+    let cases = [
+        (serde_json::json!([1, 2]), E2206),
+        (serde_json::json!({"header_row": 0, "columns": {}}), E2206),
+        (serde_json::json!({"table": "Skill", "columns": {}}), E2206),
+        (
+            serde_json::json!({"table": "Skill", "header_row": 0}),
+            E2206,
+        ),
+        (
+            serde_json::json!({"table": "Skill", "header_row": 0, "columns": {}}),
+            E2206,
+        ),
+    ];
+    for (v, code) in cases {
+        let err = ok(v).unwrap_err();
+        assert!(
+            err.errors().iter().any(|d| d.code == code),
+            "{err:?} for {code}"
+        );
+    }
+
+    let wrong_table = serde_json::json!({
+        "table": "Other", "header_row": 0,
+        "columns": {"id": {"cell": "A1", "type": {"kind": "Int32"}}}
+    });
+    assert!(ok(wrong_table)
+        .unwrap_err()
+        .errors()
+        .iter()
+        .any(|d| d.code == E2207));
+
+    let bad_a1 = serde_json::json!({
+        "table": "Skill", "header_row": 0,
+        "columns": {"id": {"cell": "1A", "type": {"kind": "Int32"}}}
+    });
+    assert!(ok(bad_a1)
+        .unwrap_err()
+        .errors()
+        .iter()
+        .any(|d| d.code == E2206));
+
+    let sub_cols = serde_json::json!({
+        "table": "Skill", "header_row": 0,
+        "columns": {"id": {"cell": "A1", "type": {"kind": "Int32"},
+                    "sub_columns": {"x": {"cell": "B1"}}}}
+    });
+    assert!(ok(sub_cols)
+        .unwrap_err()
+        .errors()
+        .iter()
+        .any(|d| d.code == E2206));
+
+    let multi = serde_json::json!({
+        "table": "Skill", "header_row": 0,
+        "columns": {"id": {"cell": "A1", "type": {"kind": "Int32"}, "multi_row": true}}
+    });
+    assert!(ok(multi)
+        .unwrap_err()
+        .errors()
+        .iter()
+        .any(|d| d.code == E2206));
+
+    let not_in_header = serde_json::json!({
+        "table": "Skill", "header_row": 0,
+        "columns": {"ghost": {"cell": "A1", "type": {"kind": "Int32"}}}
+    });
+    assert!(ok(not_in_header)
+        .unwrap_err()
+        .errors()
+        .iter()
+        .any(|d| d.code == E2207));
+
+    let invented = serde_json::json!({
+        "table": "Skill", "header_row": 0,
+        "columns": {"id": {"cell": "A1", "type": {"kind": "Int32"}, "note": "invented"}}
+    });
+    assert!(ok(invented)
+        .unwrap_err()
+        .errors()
+        .iter()
+        .any(|d| d.code == E2202));
+
+    let good = serde_json::json!({
+        "table": "Skill", "header_row": 0,
+        "columns": {
+            "id": {"cell": "A1", "type": {"kind": "Int32"}, "required": true},
+            "name": {"cell": "B1", "type": {"kind": "String"}, "description": "武器名"}
+        }
+    });
+    let meta = ok(good).expect("valid answer");
+    assert_eq!(meta.header_row, 0);
+    assert_eq!(meta.columns["id"].field_type, Some(FieldType::Int32));
+    assert_eq!(meta.columns["id"].required, Some(true));
+    assert_eq!(meta.columns["name"].description.as_deref(), Some("武器名"));
+}
+
+/// `resolve_script` refuses absolute paths, `.`/`..` segments, missing
+/// files, symlinks escaping the root, and non-file targets — all E2203 —
+/// and returns the canonical path for a good relative script.
+#[test]
+fn resolve_script_rejects_unsafe_paths() {
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(root.path().join("tools")).expect("tools");
+    let script = root.path().join("tools/echo.py");
+    std::fs::write(&script, "#!/bin/sh\necho ok\n").expect("script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&script).expect("meta").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod");
+    }
+
+    let bad = [
+        "/abs/meta.py",
+        "tools/../tools/echo.py",
+        "./tools/echo.py",
+        "tools/absent.py",
+        "tools",
+    ];
+    for rel in bad {
+        let err = resolve_script(root.path(), rel).unwrap_err();
+        assert!(
+            err.errors().iter().any(|d| d.code == E2203),
+            "{rel}: {err:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("meta.py"), "#!/bin/sh\necho ok\n")
+            .expect("outside script");
+        let link = root.path().join("escape.py");
+        std::os::unix::fs::symlink(outside.path().join("meta.py"), &link).expect("symlink");
+        let err = resolve_script(root.path(), "escape.py").unwrap_err();
+        assert!(
+            err.errors()
+                .iter()
+                .any(|d| d.code == E2203 && d.message.contains("symlink")),
+            "{err:?}"
+        );
+    }
+
+    let resolved = resolve_script(root.path(), "tools/echo.py").expect("good script");
+    assert!(resolved.is_file());
+    assert!(resolved.starts_with(root.path()));
+}
+
+// ---- run_script: real subprocess paths (python3 fixture scripts) ----
+
+fn python3_available() -> bool {
+    std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn write_script(root: &std::path::Path, rel: &str, body: &str) {
+    let path = root.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("script dir");
+    }
+    std::fs::write(&path, body).expect("write script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).expect("chmod");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn run_script_round_trips_and_gates_output() {
+    if !python3_available() {
+        eprintln!("skip: no python3");
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_script(
+        tmp.path(),
+        "tools/echo.py",
+        "#!/usr/bin/env python3\nimport json, sys\nreq = json.load(sys.stdin)\nprint(json.dumps({\"contract\": \"cage.excel-meta/1\", \"echo\": req}))\n",
+    );
+    let ok = run_script(
+        tmp.path(),
+        "tools/echo.py",
+        &[],
+        Duration::from_secs(5),
+        &serde_json::json!({"x": 1}),
+    )
+    .expect("round-trip");
+    assert_eq!(ok["contract"], "cage.excel-meta/1");
+    assert_eq!(ok["echo"]["x"], 1);
+
+    write_script(
+        tmp.path(),
+        "tools/bad.py",
+        "#!/usr/bin/env python3\nprint('not json')\n",
+    );
+    let err = run_script(
+        tmp.path(),
+        "tools/bad.py",
+        &[],
+        Duration::from_secs(5),
+        &serde_json::json!({}),
+    )
+    .expect_err("invalid JSON");
+    assert!(err.errors().iter().any(|d| d.code == E2206), "{err:?}");
+
+    write_script(
+        tmp.path(),
+        "tools/contract.py",
+        "#!/usr/bin/env python3\nprint('{\"contract\": \"cage.excel-meta/9\"}')\n",
+    );
+    let err = run_script(
+        tmp.path(),
+        "tools/contract.py",
+        &[],
+        Duration::from_secs(5),
+        &serde_json::json!({}),
+    )
+    .expect_err("contract mismatch");
+    assert!(err.errors().iter().any(|d| d.code == E2206), "{err:?}");
+
+    write_script(
+        tmp.path(),
+        "tools/fail.py",
+        "#!/usr/bin/env python3\nimport sys\nsys.stderr.write('boom')\nsys.exit(3)\n",
+    );
+    let err = run_script(
+        tmp.path(),
+        "tools/fail.py",
+        &[],
+        Duration::from_secs(5),
+        &serde_json::json!({}),
+    )
+    .expect_err("non-zero exit");
+    assert!(
+        err.errors()
+            .iter()
+            .any(|d| d.code == E2205 && d.message.contains("boom")),
+        "{err:?}"
+    );
+
+    write_script(
+        tmp.path(),
+        "tools/slow.py",
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
+    );
+    let err = run_script(
+        tmp.path(),
+        "tools/slow.py",
+        &[],
+        Duration::from_millis(300),
+        &serde_json::json!({}),
+    )
+    .expect_err("timeout");
+    assert!(err.errors().iter().any(|d| d.code == E2204), "{err:?}");
+}
+
+#[test]
+#[cfg(unix)]
+fn run_script_reports_broken_pipe_and_spawn_failure() {
+    if !python3_available() {
+        eprintln!("skip: no python3");
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_script(
+        tmp.path(),
+        "tools/exit.py",
+        "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n",
+    );
+    let err = run_script(
+        tmp.path(),
+        "tools/exit.py",
+        &[],
+        Duration::from_secs(5),
+        &serde_json::json!({"payload": "x".repeat(65536)}),
+    )
+    .expect_err("broken pipe or quick exit");
+    assert!(
+        err.errors()
+            .iter()
+            .any(|d| d.code == E2205 || d.code == E2206 || d.code == E2203),
+        "{err:?}"
+    );
+
+    write_script(
+        tmp.path(),
+        "tools/noexec.py",
+        "#!/usr/bin/env python3\nprint('{}')\n",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = tmp.path().join("tools/noexec.py");
+        let mut perms = std::fs::metadata(&path).expect("meta").permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path, perms).expect("chmod");
+    }
+    let err = run_script(
+        tmp.path(),
+        "tools/noexec.py",
+        &[],
+        Duration::from_secs(5),
+        &serde_json::json!({}),
+    )
+    .expect_err("spawn failure");
+    assert!(err.errors().iter().any(|d| d.code == E2203), "{err:?}");
+}
+
+/// The drift check reports every declared-vs-adopted mismatch arm:
+/// default, enum values, min, max, and a declared reference the schema
+/// does not carry.
+#[test]
+fn drift_reports_default_enum_min_max_and_missing_reference() {
+    // Declared: default 10, enum [a,b], min 0, max 999, reference Item.id.
+    let rows = [
+        &["##type Int32", "String", "String", "String", "String"][..],
+        &[
+            "##default 10",
+            "##enum a,b",
+            "##min 0",
+            "##max 999",
+            "##reference Item.id",
+        ][..],
+        &["id", "name", "score", "level", "icon"][..],
+    ];
+    let metas = metas_of(&rows, 2, &[0, 1]);
+    // Adopted schema matches nothing the workbook declares (different
+    // default, no enum, different min/max, no reference).
+    let mut adopted_id = declared_field("id", FieldType::Int32);
+    adopted_id.default = Some(serde_json::json!(99));
+    let mut adopted_name = declared_field("name", FieldType::String);
+    adopted_name.enum_values = Some(vec!["x".to_string()]);
+    let mut adopted_score = declared_field("score", FieldType::Int32);
+    adopted_score.min = Some(1.0);
+    let mut adopted_level = declared_field("level", FieldType::Int32);
+    adopted_level.max = Some(1.0);
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), adopted_id),
+            ("name".to_string(), adopted_name),
+            ("score".to_string(), adopted_score),
+            ("level".to_string(), adopted_level),
+            (
+                "icon".to_string(),
+                declared_field("icon", FieldType::String),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    let errs = diags.errors();
+    let msgs: Vec<&str> = errs.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("declares a default")),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("declares enum values")),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("declares a min")),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("declares a max")),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("declares a reference")),
+        "{msgs:?}"
+    );
+}
+
+/// The drift check descends into sub-columns and compares each child
+/// against the adopted `Object` properties, including the `items`
+/// spelling for `multi_row` arrays.
+#[test]
+fn drift_compares_sub_column_children_and_items_shape() {
+    use crate::schema::FieldType;
+
+    // A `multi_row` bean with a sub-column whose declared type drifts.
+    let rows = [
+        &["##type Object", ""][..],
+        &["##+", ""][..],
+        &["weapon", "name"][..],
+        &["##type Int32", "String"][..],
+        &["##default 5", ""][..],
+    ];
+    let metas = metas_of(&rows, 2, &[0, 1]);
+    // The `+` row marks `weapon` as a multi-row bean; the derived shape
+    // is `Array<Object>`.
+    let mut adopted = adopt_one_table(
+        [(
+            "weapon".to_string(),
+            declared_field(
+                "weapon",
+                FieldType::Array(Box::new(FieldType::Object(IndexMap::new()))),
+            ),
+        )]
+        .into_iter()
+        .collect(),
+        Vec::new(),
+    );
+    // Adopted `name` child (under items) has a different type than the
+    // declared Int32 → drift. `id` matches the declared default (5).
+    if let FieldType::Array(inner) = &mut adopted.tables["Skill"].fields["weapon"].field_type {
+        if let FieldType::Object(props) = inner.as_mut() {
+            props.insert("name".to_string(), FieldType::String);
+            props.insert("id".to_string(), FieldType::Int32);
+        }
+    }
+    let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
+    let msgs: Vec<&str> = diags.errors().iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("field 'weapon.name'") && m.contains("declares type")),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("field 'weapon.id'") && m.contains("declares a default")),
+        "{msgs:?}"
+    );
+}

@@ -1505,6 +1505,7 @@ impl Schema {
 /// levels past the cap short-circuits and reports `MAX_FIELD_TYPE_DEPTH + 1`
 /// with `saturated` set, so a call on a pathologically deep type stays
 /// stack-bounded instead of recursing thousands of frames.
+#[derive(Debug)]
 struct DepthMeasure {
     /// The nesting depth, or `MAX_FIELD_TYPE_DEPTH + 1` when `saturated`.
     depth: usize,
@@ -2857,6 +2858,100 @@ enums: {}
     }
 
     #[test]
+    fn field_type_depth_measures_object_and_union_spines() {
+        // Array/Map/object/union spines all measure their real depth and
+        // saturate past the cap without recursing the caller's stack.
+        let mut obj = IndexMap::new();
+        obj.insert(
+            "a".to_string(),
+            FieldType::Array(Box::new(FieldType::Int32)),
+        );
+        obj.insert(
+            "b".to_string(),
+            FieldType::Map(MapField {
+                key_type: MapKeyType::String,
+                value_type: Box::new(FieldType::String),
+            }),
+        );
+        let object = FieldType::Object(obj);
+        let m = field_type_depth(&object).expect("object is a container");
+        assert_eq!(m.depth, 2);
+        assert!(!m.saturated);
+
+        let mut branches = IndexMap::new();
+        let mut leaf = IndexMap::new();
+        leaf.insert("x".to_string(), FieldType::Int32);
+        branches.insert("A".to_string(), leaf);
+        let union = FieldType::TaggedUnion(Box::new(TaggedUnion {
+            tag: "$t".to_string(),
+            branches,
+        }));
+        let m = field_type_depth(&union).expect("union is a container");
+        assert_eq!(m.depth, 1);
+        assert!(!m.saturated);
+
+        // A deeply nested array saturates the probe.
+        let mut deep = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 3) {
+            deep = FieldType::Array(Box::new(deep));
+        }
+        let m = field_type_depth(&deep).expect("deep type");
+        assert!(m.saturated);
+        assert_eq!(m.depth, MAX_FIELD_TYPE_DEPTH + 1);
+    }
+
+    #[test]
+    fn from_de_refuses_object_and_union_over_cap() {
+        // Object over the cap: the deserializer's own depth seed refuses
+        // with the same message as arrays.
+        let mut value = serde_json::json!({"kind": "Int32"});
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 2) {
+            value = serde_json::json!({"kind": "Object", "value": {"f": value}});
+        }
+        assert!(
+            serde_json::from_value::<FieldType>(value)
+                .unwrap_err()
+                .to_string()
+                .contains("nesting depth"),
+            "object over cap refused"
+        );
+
+        // TaggedUnion one-over-the-cap: refused too.
+        let mut tu = serde_json::json!({"kind": "Int32"});
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 2) {
+            tu = serde_json::json!({
+                "kind": "TaggedUnion",
+                "value": {"tag": "$t", "branches": {"B": {"f": tu}}}
+            });
+        }
+        assert!(
+            serde_json::from_value::<FieldType>(tu)
+                .unwrap_err()
+                .to_string()
+                .contains("nesting depth"),
+            "union over cap refused"
+        );
+    }
+
+    #[test]
+    fn resolve_env_unknown_field_is_reported() {
+        let mut schema = env_schema();
+        let mut prod = IndexMap::new();
+        prod.insert("ghost".to_string(), FieldOverride::default());
+        schema
+            .tables
+            .get_mut("Item")
+            .unwrap()
+            .env_overrides
+            .insert("prod".to_string(), prod);
+        let err = schema.resolve_env("prod").unwrap_err();
+        assert!(
+            err.contains("unknown field 'ghost' in table 'Item'"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn resolve_env_patches_fields_and_keeps_base_untouched() {
         let schema = env_schema();
 
@@ -2890,6 +2985,341 @@ enums: {}
         assert_eq!(
             serde_yaml::to_string(&dev).unwrap(),
             serde_yaml::to_string(&schema).unwrap()
+        );
+    }
+
+    #[test]
+    fn field_type_depth_saturates_every_container_spine() {
+        // Map spine one-over-cap saturates.
+        let mut deep = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 3) {
+            deep = FieldType::Map(MapField {
+                key_type: MapKeyType::String,
+                value_type: Box::new(deep),
+            });
+        }
+        let m = field_type_depth(&deep).expect("map is a container");
+        assert!(m.saturated, "{m:?}");
+
+        // Object spine one-over-cap saturates.
+        let mut deep = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 3) {
+            let mut fields = IndexMap::new();
+            fields.insert("f".to_string(), deep);
+            deep = FieldType::Object(fields);
+        }
+        let m = field_type_depth(&deep).expect("object is a container");
+        assert!(m.saturated, "{m:?}");
+
+        // TaggedUnion spine one-over-cap saturates.
+        let mut deep = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 3) {
+            let mut branches = IndexMap::new();
+            let mut branch = IndexMap::new();
+            branch.insert("f".to_string(), deep);
+            branches.insert("A".to_string(), branch);
+            deep = FieldType::TaggedUnion(Box::new(TaggedUnion {
+                tag: "$t".to_string(),
+                branches,
+            }));
+        }
+        let m = field_type_depth(&deep).expect("union is a container");
+        assert!(m.saturated, "{m:?}");
+
+        // A shallow container that mixes saturated and unsaturated children
+        // reports the saturated spine.
+        let mut fields = IndexMap::new();
+        fields.insert("leaf".to_string(), FieldType::Int32);
+        let mut deep = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 3) {
+            deep = FieldType::Array(Box::new(deep));
+        }
+        fields.insert("deep".to_string(), deep);
+        let m = field_type_depth(&FieldType::Object(fields)).expect("mixed object");
+        assert!(m.saturated, "{m:?}");
+    }
+
+    #[test]
+    fn scalar_wire_maps_every_scalar_variant() {
+        assert_eq!(
+            scalar_wire(&FieldType::Null),
+            serde_json::json!({"kind": "Null"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Bool),
+            serde_json::json!({"kind": "Bool"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Int8),
+            serde_json::json!({"kind": "Int8"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Int16),
+            serde_json::json!({"kind": "Int16"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Int32),
+            serde_json::json!({"kind": "Int32"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Int64),
+            serde_json::json!({"kind": "Int64"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::UInt8),
+            serde_json::json!({"kind": "UInt8"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::UInt16),
+            serde_json::json!({"kind": "UInt16"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::UInt32),
+            serde_json::json!({"kind": "UInt32"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::UInt64),
+            serde_json::json!({"kind": "UInt64"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Float32),
+            serde_json::json!({"kind": "Float32"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Float64),
+            serde_json::json!({"kind": "Float64"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::String),
+            serde_json::json!({"kind": "String"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Bytes),
+            serde_json::json!({"kind": "Bytes"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Any),
+            serde_json::json!({"kind": "Any"})
+        );
+        assert_eq!(
+            scalar_wire(&FieldType::Enum("Rarity".to_string())),
+            serde_json::json!({"kind": "Enum", "value": "Rarity"})
+        );
+    }
+
+    #[test]
+    fn every_field_type_variant_clone_eq_debug_round_trips() {
+        let variants = [
+            FieldType::Null,
+            FieldType::Bool,
+            FieldType::Int8,
+            FieldType::Int16,
+            FieldType::Int32,
+            FieldType::Int64,
+            FieldType::UInt8,
+            FieldType::UInt16,
+            FieldType::UInt32,
+            FieldType::UInt64,
+            FieldType::Float32,
+            FieldType::Float64,
+            FieldType::String,
+            FieldType::Bytes,
+            FieldType::Any,
+            FieldType::Enum("Rarity".to_string()),
+            FieldType::Array(Box::new(FieldType::Int32)),
+            FieldType::Map(MapField {
+                key_type: MapKeyType::String,
+                value_type: Box::new(FieldType::Int32),
+            }),
+            FieldType::Object({
+                let mut f = IndexMap::new();
+                f.insert("x".to_string(), FieldType::Int32);
+                f
+            }),
+            FieldType::TaggedUnion(Box::new(TaggedUnion {
+                tag: "$t".to_string(),
+                branches: {
+                    let mut b = IndexMap::new();
+                    let mut br = IndexMap::new();
+                    br.insert("x".to_string(), FieldType::Int32);
+                    b.insert("A".to_string(), br);
+                    b
+                },
+            })),
+        ];
+        for v in &variants {
+            let cloned = v.clone();
+            assert_eq!(v, &cloned, "clone/eq for {v:?}");
+            let dbg = format!("{v:?}");
+            assert!(!dbg.is_empty(), "debug renders");
+            let ser = serde_json::to_value(v).expect("serialize");
+            let back: FieldType = serde_json::from_value(ser).expect("deserialize");
+            assert_eq!(v, &back, "serde round-trip for {v:?}");
+        }
+    }
+
+    /// Every `FieldOverride` constraint key is applied by `resolve_env`:
+    /// the full override surface (min_length, max_length, pattern,
+    /// enum_values, min_items, max_items) must land on the resolved field.
+    #[test]
+    fn resolve_env_applies_every_override_constraint() {
+        let mut schema = env_schema();
+        let prod = IndexMap::from([(
+            "hp".to_string(),
+            FieldOverride {
+                required: Some(false),
+                min: Some(1.0),
+                max: Some(999.0),
+                min_length: Some(2),
+                max_length: Some(8),
+                pattern: Some(r"^[A-Z]".to_string()),
+                enum_values: Some(vec!["a".to_string(), "b".to_string()]),
+                min_items: Some(1),
+                max_items: Some(3),
+            },
+        )]);
+        schema
+            .tables
+            .get_mut("Item")
+            .unwrap()
+            .env_overrides
+            .insert("prod".to_string(), prod);
+        let resolved = schema.resolve_env("prod").expect("resolves");
+        let hp = &resolved.tables["Item"].fields["hp"];
+        assert!(!hp.required);
+        assert_eq!(hp.min, Some(1.0));
+        assert_eq!(hp.max, Some(999.0));
+        assert_eq!(hp.min_length, Some(2));
+        assert_eq!(hp.max_length, Some(8));
+        assert_eq!(hp.pattern.as_deref(), Some(r"^[A-Z]"));
+        assert_eq!(
+            hp.enum_values.as_deref(),
+            Some(&["a".to_string(), "b".to_string()][..])
+        );
+        assert_eq!(hp.min_items, Some(1));
+        assert_eq!(hp.max_items, Some(3));
+    }
+
+    /// The iterative `PartialEq` must report the false branches of the
+    /// container frames: enum name mismatch, map key mismatch, object size /
+    /// missing-name mismatch, union tag / branch-size / missing-branch and
+    /// missing-field mismatches, and the cross-kind arm.
+    #[test]
+    fn field_type_eq_reports_container_mismatches() {
+        let arr = |t: FieldType| FieldType::Array(Box::new(t));
+        // Enum name mismatch.
+        assert_ne!(FieldType::Enum("A".into()), FieldType::Enum("B".into()));
+        // Map key mismatch.
+        assert_ne!(
+            map_type(MapKeyType::String, FieldType::Int32),
+            map_type(MapKeyType::Int, FieldType::Int32)
+        );
+        // Map value mismatch.
+        assert_ne!(
+            map_type(MapKeyType::String, FieldType::Int32),
+            map_type(MapKeyType::String, FieldType::String)
+        );
+        // Object size mismatch.
+        assert_ne!(
+            FieldType::Object(IndexMap::new()),
+            FieldType::Object(IndexMap::from([("x".into(), FieldType::Int32)]))
+        );
+        // Object missing key.
+        assert_ne!(
+            FieldType::Object(IndexMap::from([
+                ("x".into(), FieldType::Int32),
+                ("y".into(), FieldType::Int32)
+            ])),
+            FieldType::Object(IndexMap::from([("x".into(), FieldType::Int32)]))
+        );
+        // Union tag mismatch.
+        assert_ne!(
+            FieldType::TaggedUnion(Box::new(TaggedUnion {
+                tag: "a".into(),
+                branches: IndexMap::new(),
+            })),
+            FieldType::TaggedUnion(Box::new(TaggedUnion {
+                tag: "b".into(),
+                branches: IndexMap::new(),
+            })),
+        );
+        // Union branch-size mismatch.
+        assert_ne!(
+            FieldType::TaggedUnion(Box::new(TaggedUnion {
+                tag: "a".into(),
+                branches: IndexMap::from([("A".into(), IndexMap::new())]),
+            })),
+            FieldType::TaggedUnion(Box::new(TaggedUnion {
+                tag: "a".into(),
+                branches: IndexMap::new(),
+            })),
+        );
+        // Union missing branch / missing field inside a branch.
+        let union = |branches: IndexMap<String, IndexMap<String, FieldType>>| {
+            FieldType::TaggedUnion(Box::new(TaggedUnion {
+                tag: "a".into(),
+                branches,
+            }))
+        };
+        assert_ne!(
+            union(IndexMap::from([("A".into(), IndexMap::new())])),
+            union(IndexMap::from([("B".into(), IndexMap::new())]))
+        );
+        assert_ne!(
+            union(IndexMap::from([(
+                "A".into(),
+                IndexMap::from([("x".into(), FieldType::Int32)])
+            )])),
+            union(IndexMap::from([("A".into(), IndexMap::new())]))
+        );
+        assert_ne!(
+            union(IndexMap::from([(
+                "A".into(),
+                IndexMap::from([("x".into(), FieldType::Int32)])
+            )])),
+            union(IndexMap::from([(
+                "A".into(),
+                IndexMap::from([("y".into(), FieldType::Int32)])
+            )]))
+        );
+        // Cross-kind mismatch.
+        assert_ne!(FieldType::Null, FieldType::Bool);
+        assert_ne!(arr(FieldType::Int32), FieldType::Int32);
+    }
+
+    /// `rust_type` names the tagged-union wire shape and `field_type_depth`
+    /// reports the union/map spines exactly; `scalar_wire` panics only for a
+    /// container (the serializer never sends one — the contract is internal).
+    #[test]
+    fn rust_type_and_depth_cover_union_and_map_spines() {
+        let tu = FieldType::TaggedUnion(Box::new(TaggedUnion {
+            tag: "$t".into(),
+            branches: IndexMap::new(),
+        }));
+        assert_eq!(tu.rust_type(), "IndexMap<String, serde_json::Value>");
+
+        let m = field_type_depth(&map_type(MapKeyType::String, FieldType::Int32)).expect("map");
+        assert_eq!(m.depth, 1);
+        assert!(!m.saturated);
+
+        let tu_m = field_type_depth(&tu).expect("union");
+        assert_eq!(tu_m.depth, 1);
+        assert!(!tu_m.saturated);
+
+        // A map spine past the cap saturates.
+        let mut deep = FieldType::Int32;
+        for _ in 0..(MAX_FIELD_TYPE_DEPTH + 3) {
+            deep = map_type(MapKeyType::String, deep);
+        }
+        let m = field_type_depth(&deep).expect("deep map");
+        assert!(m.saturated);
+
+        // scalar_wire refuses a container with the documented internal panic.
+        let panic =
+            std::panic::catch_unwind(|| scalar_wire(&FieldType::Array(Box::new(FieldType::Int32))));
+        assert!(
+            panic.is_err(),
+            "container variants must not reach scalar_wire"
         );
     }
 }

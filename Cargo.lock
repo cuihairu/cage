@@ -414,6 +414,7 @@ name = "cage-target-flatbuffers"
 version = "0.1.0"
 dependencies = [
  "cage-core",
+ "indexmap",
  "serde_json",
  "serde_yaml",
 ]

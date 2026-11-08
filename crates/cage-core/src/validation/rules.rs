@@ -1735,4 +1735,127 @@ mod tests {
         let registry = GameRuleRegistry::with_rules(vec![client_server_rule()]);
         assert!(registry.run(&schema, &doc).is_empty());
     }
+
+    #[test]
+    fn skill_item_category_skips_missing_tables_and_fields() {
+        let mut doc = Document::new();
+        // No Item table at all → rule skips.
+        let skills = declarative_table(
+            "Skill",
+            vec![declarative_row(
+                vec![declarative_field("item", Value::UInt(200), None)],
+                None,
+                0,
+            )],
+        );
+        doc.add_table(skills);
+        let registry = GameRuleRegistry::with_rules(vec![item_category_rule()]);
+        assert!(registry.run(&Schema::new(), &doc).is_empty());
+
+        // Item table present but the skill table is missing → skip.
+        let mut doc2 = Document::new();
+        doc2.add_table(declarative_table(
+            "Item",
+            vec![declarative_row(
+                vec![
+                    declarative_field("id", Value::UInt(200), None),
+                    declarative_field("category", Value::String("pet".into()), None),
+                ],
+                None,
+                0,
+            )],
+        ));
+        assert!(registry.run(&Schema::new(), &doc2).is_empty());
+
+        // Skill row has no item field → skip; item row lacks id → skip;
+        // item row lacks category → skip.
+        let mut doc3 = Document::new();
+        doc3.add_table(declarative_table(
+            "Skill",
+            vec![declarative_row(
+                vec![declarative_field("other", Value::UInt(1), None)],
+                None,
+                0,
+            )],
+        ));
+        doc3.add_table(declarative_table(
+            "Item",
+            vec![
+                declarative_row(
+                    vec![declarative_field(
+                        "category",
+                        Value::String("pet".into()),
+                        None,
+                    )],
+                    None,
+                    0,
+                ),
+                declarative_row(
+                    vec![declarative_field("id", Value::UInt(200), None)],
+                    None,
+                    1,
+                ),
+            ],
+        ));
+        assert!(registry.run(&Schema::new(), &doc3).is_empty());
+    }
+
+    #[test]
+    fn skill_item_category_first_row_wins_for_duplicate_ids() {
+        // The same item id appears twice; the first row's category is the
+        // one consulted (the second duplicate does not overwrite).
+        let items = declarative_table(
+            "Item",
+            vec![
+                declarative_row(
+                    vec![
+                        declarative_field("id", Value::UInt(200), None),
+                        declarative_field("category", Value::String("equipment".into()), None),
+                    ],
+                    None,
+                    0,
+                ),
+                declarative_row(
+                    vec![
+                        declarative_field("id", Value::UInt(200), None),
+                        declarative_field("category", Value::String("pet".into()), None),
+                    ],
+                    None,
+                    1,
+                ),
+            ],
+        );
+        let skills = declarative_table(
+            "Skill",
+            vec![declarative_row(
+                vec![declarative_field("item", Value::UInt(200), None)],
+                None,
+                0,
+            )],
+        );
+        let mut doc = Document::new();
+        doc.add_table(items);
+        doc.add_table(skills);
+        let registry = GameRuleRegistry::with_rules(vec![item_category_rule()]);
+        assert!(
+            registry.run(&Schema::new(), &doc).is_empty(),
+            "first category equipment is allowed"
+        );
+    }
+
+    #[test]
+    fn reference_edge_location_falls_back_to_table_source() {
+        // No row carries the field → the fallback uses the table source map
+        // (and its sheet), with the field name attached.
+        let mut table_source = std::collections::HashMap::new();
+        table_source.insert(
+            "Item".to_string(),
+            ("config/Item.json".to_string(), Some("Items".to_string())),
+        );
+        let loc =
+            reference_edge_location(&Document::new(), "Item", "required_skill", &table_source);
+        assert_eq!(loc.file, "config/Item.json");
+        assert_eq!(loc.sheet.as_deref(), Some("Items"));
+        assert_eq!(loc.field.as_deref(), Some("required_skill"));
+    }
 }

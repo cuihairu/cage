@@ -1097,4 +1097,110 @@ enums: {}
             again.iter().map(|(p, c)| (p, c)).collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn test_from_config_reads_both_target_options() {
+        let mut options = indexmap::IndexMap::new();
+        options.insert(
+            "namespace".to_string(),
+            serde_json::Value::String("demo.ns".to_string()),
+        );
+        options.insert(
+            "enums_file".to_string(),
+            serde_json::Value::String("defs/enums.fbs".to_string()),
+        );
+        let config = TargetConfig {
+            format: "flatbuffers".to_string(),
+            output_dir: "build/fbs".to_string(),
+            file_template: Some("{table}_gen.fbs".to_string()),
+            options: Some(options),
+        };
+        let gen = FlatbuffersTargetGenerator::from_config(&config);
+        assert_eq!(gen.output_dir, PathBuf::from("build/fbs"));
+        assert_eq!(gen.file_template, "{table}_gen.fbs");
+        assert_eq!(gen.namespace, "demo.ns");
+        assert_eq!(gen.enums_file, "defs/enums.fbs");
+    }
+
+    #[test]
+    fn test_scalar_fields_use_the_expected_fbs_types() {
+        let schema = schema(
+            r#"
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      i8: { name: i8, type: { kind: Int8 } }
+      i16: { name: i16, type: { kind: Int16 } }
+      i64: { name: i64, type: { kind: Int64 } }
+      u8: { name: u8, type: { kind: UInt8 } }
+      u16: { name: u16, type: { kind: UInt16 } }
+      u32: { name: u32, type: { kind: UInt32 } }
+      u64: { name: u64, type: { kind: UInt64 } }
+      f32: { name: f32, type: { kind: Float32 } }
+      f64: { name: f64, type: { kind: Float64 } }
+      bytes: { name: bytes, type: { kind: Bytes } }
+enums: {}
+"#,
+        );
+        let artifacts = FlatbuffersTargetGenerator::default().generate(&schema, Some("hash"));
+        let t = artifact(&artifacts, "T.fbs");
+        for line in [
+            "  i8: byte;",
+            "  i16: short;",
+            "  i64: long;",
+            "  u8: ubyte;",
+            "  u16: ushort;",
+            "  u32: uint;",
+            "  u64: ulong;",
+            "  f32: float;",
+            "  f64: double;",
+            "  bytes: [ubyte];",
+            "  id: int (key);",
+        ] {
+            assert!(t.contains(line), "missing {line} in\n{t}");
+        }
+    }
+
+    #[test]
+    fn test_freeform_fields_and_nested_maps_degrade_or_wrap_deterministically() {
+        let schema = schema(
+            r#"
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      null: { name: null, type: { kind: Null } }
+      any: { name: any, type: { kind: Any } }
+      obj: { name: obj, type: { kind: Object, value: {} } }
+      union: { name: union, type: { kind: TaggedUnion, value: { tag: "$type", branches: {} } } }
+      bad_enum: { name: bad_enum, type: { kind: Enum, value: Broken } }
+      nested: { name: nested, type: { kind: Map, value: { key_type: string, value_type: { kind: Map, value: { key_type: int, value_type: { kind: Bool } } } } } }
+enums:
+  Broken:
+    name: Broken
+    values:
+      - { name: Text, value: not-a-number }
+"#,
+        );
+        let artifacts = FlatbuffersTargetGenerator::default().generate(&schema, None);
+        let t = artifact(&artifacts, "T.fbs");
+        assert!(t.contains("  null_: string;"), "{t}");
+        assert!(t.contains("  any: string;"), "{t}");
+        assert!(t.contains("  obj: string;"), "{t}");
+        assert!(t.contains("  union_: string;"), "{t}");
+        assert!(t.contains("  bad_enum: string;"), "{t}");
+        assert!(t.contains("free-form payload"), "{t}");
+        assert!(t.contains("enum \"Broken\""), "{t}");
+        assert!(t.contains("  nested: [nestedEntry];"), "{t}");
+        assert!(t.contains("table nestedEntry {"), "{t}");
+        assert!(t.contains("key: string;"), "{t}");
+        assert!(t.contains("value: nestedValue;"), "{t}");
+        assert!(t.contains("table nestedValue {"), "{t}");
+        assert!(t.contains("key: long; value: bool;"), "{t}");
+    }
 }

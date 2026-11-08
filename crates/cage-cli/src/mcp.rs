@@ -1208,4 +1208,323 @@ mod tests {
             metadata: indexmap::IndexMap::new(),
         }
     }
+
+    #[test]
+    fn list_fields_without_table_lists_all_tables() {
+        let v = run_list_fields(example_project().to_str().unwrap(), None, false).expect("loads");
+        assert!(v["table_count"].as_u64().unwrap() >= 6, "all tables: {v}");
+        let names: Vec<&str> = v["tables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"Item") && names.contains(&"Shop"),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn source_root_kind_classifies_roots() {
+        assert_eq!(source_root_kind("registry:reg"), "registry");
+        assert_eq!(source_root_kind("mysql:db"), "database");
+        assert_eq!(source_root_kind("pg:db"), "database");
+        assert_eq!(source_root_kind("gsheet:spreadsheet"), "sheets");
+        assert_eq!(source_root_kind("https://example.com/data"), "http");
+        assert_eq!(source_root_kind("config"), "local");
+    }
+
+    #[test]
+    fn location_string_covers_sheet_line_row_and_column() {
+        let loc =
+            |sheet: Option<&str>, _line: Option<usize>, row: Option<usize>, col: Option<usize>| {
+                let mut location = cage_core::value::SourceLocation::new("data/Item.csv");
+                if let Some(s) = sheet {
+                    location = location.with_sheet(s);
+                }
+                if let Some(r) = row {
+                    location = location.with_row(r);
+                }
+                if let Some(l) = _line {
+                    location = location.with_line_col(l, 1);
+                }
+                if let Some(c) = col {
+                    location = location.with_column(c.to_string());
+                }
+                let d = cage_core::Diagnostic {
+                    code: "E1201".to_string(),
+                    source: "data/Item.csv".to_string(),
+                    location: Some(location),
+                    ..empty_diag()
+                };
+                location_string(&d)
+            };
+        assert!(loc(None, None, None, None).contains("data/Item.csv"));
+        assert!(loc(Some("Sheet1"), None, None, None).contains("[Sheet1]"));
+        assert!(loc(None, Some(3), None, None).contains(":3"));
+        assert!(loc(None, None, Some(4), None).contains(":row 4"));
+        assert!(loc(None, None, Some(4), Some(5)).contains(":5"));
+        assert!(loc(None, None, None, Some(7)).contains(":7"));
+    }
+
+    #[test]
+    fn load_error_json_recognizes_all_suggestion_families() {
+        let cases = [
+            (
+                "unknown environment 'qa' (declared: dev, prod)",
+                "env_overrides",
+            ),
+            ("declares no environments", "env_overrides"),
+            (
+                "invalid env_overrides: type cannot be changed",
+                "env_overrides",
+            ),
+            ("path not found: config/x.csv", "路径不存在"),
+            ("no such file or directory", "路径不存在"),
+            ("目录不存在：/tmp/nope", "路径不存在"),
+        ];
+        for (msg, needle) in cases {
+            let v = load_error_json(msg, ".");
+            let s = v["error"]["suggestion"].as_str().expect("suggestion");
+            assert!(s.contains(needle), "{msg}: {s}");
+        }
+        let v = load_error_json("unknown profile 'x'", ".");
+        assert!(v["error"]["suggestion"].is_null());
+    }
+
+    #[test]
+    fn build_dry_run_unknown_profile_and_generate_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        write_min_project(&root);
+        let err = run_build_dry_run(root.to_str().unwrap(), "server", None, "semantic", false)
+            .expect_err("unknown profile");
+        assert!(err.contains("未知 profile"), "err: {err}");
+        assert!(err.contains("client"), "alternatives: {err}");
+
+        // Unsupported target format → hard error (the Io branch of the
+        // generator), still surfaced as an Err string.
+        std::fs::write(
+            root.join("cage.toml"),
+            "schema_path = \"schemas\"\n[project]\nname = \"dry\"\n[source_roots]\nmain = \"config\"\n[profiles.client]\nname = \"client\"\ntargets = [{ format = \"unsupported\", output_dir = \"build/client/x\" }]\n",
+        )
+        .unwrap();
+        let err = run_build_dry_run(root.to_str().unwrap(), "client", None, "semantic", false)
+            .expect_err("unsupported format is a hard error");
+        assert!(err.contains("unsupported target format"), "err: {err}");
+    }
+
+    #[test]
+    fn print_tools_returns_zero() {
+        assert_eq!(print_tools(), 0);
+    }
+
+    #[test]
+    fn suggestion_covers_every_code_family() {
+        let codes = [
+            parse::E0001,
+            parse::E0002,
+            parse::E0003,
+            parse::E0004,
+            schema_codes::E1001,
+            schema_codes::E1002,
+            schema_codes::E1003,
+            schema_codes::E1004,
+            schema_codes::E1005,
+            type_val::E1101,
+            type_val::E1102,
+            type_val::E1103,
+            type_val::E1104,
+            value_codes::E1201,
+            value_codes::E1202,
+            value_codes::E1203,
+            value_codes::E1204,
+            value_codes::E1205,
+            table::E1301,
+            table::E1302,
+            table::E1303,
+            table::E1304,
+            table::E1305,
+            ref_codes::E1401,
+            ref_codes::E1402,
+            ref_codes::E1403,
+            ref_codes::E1404,
+            ref_codes::E1410,
+            ref_codes::E1411,
+            semantic::E1501,
+            semantic::E1502,
+            semantic::E1503,
+            gamerule::E1601,
+            gamerule::E1602,
+            gamerule::E1603,
+            gamerule::E1604,
+            gamerule::E1605,
+            editor::E1701,
+            registry::E1801,
+            registry::E1802,
+            registry::E1803,
+            remote::E1901,
+            remote::E1902,
+            remote::E1903,
+            remote::E1904,
+            remote::E1905,
+            remote::E1906,
+            build::E9001,
+            build::E9002,
+            build::E9003,
+            build::E9004,
+            build::E9005,
+            build::E9006,
+            internal::E9901,
+            internal::E9902,
+            internal::E9903,
+            internal::E9904,
+        ];
+        for code in codes {
+            let d = cage_core::Diagnostic {
+                code: code.to_string(),
+                ..empty_diag()
+            };
+            assert!(
+                suggestion_for(&d).is_some(),
+                "{} should have a suggestion",
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn section_key_normalizes_aliases_and_find_config_prefers_toml() {
+        assert_eq!(section_key("sources"), "source_roots");
+        assert_eq!(section_key("source"), "source_roots");
+        assert_eq!(section_key("deps"), "dependencies");
+        assert_eq!(section_key("output-dir"), "output_dir");
+        assert_eq!(section_key("schema-path"), "schema_path");
+        assert_eq!(section_key("profiles"), "profiles");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(find_config_file(dir.path()).is_err());
+        std::fs::write(dir.path().join("cage.yaml"), "x").unwrap();
+        assert_eq!(find_config_file(dir.path()).unwrap(), "cage.yaml");
+        std::fs::write(dir.path().join("cage.toml"), "x").unwrap();
+        assert_eq!(find_config_file(dir.path()).unwrap(), "cage.toml");
+    }
+
+    #[test]
+    fn render_pretty_json_and_tool_entries_run_through_macros() {
+        let v = json!({"ok": true, "n": 1});
+        assert!(render(&v).contains("{\n  \"ok\": true"));
+        // The tool methods are thin wrappers over run_*; drive the success
+        // and error arms through a real project.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_min_project(dir.path());
+        let server = CageMcpServer;
+        let s = server.check_schema(rmcp::handler::server::wrapper::Parameters(
+            params::CheckSchema {
+                path: Some(dir.path().to_str().unwrap().to_string()),
+                profile: None,
+                env: None,
+                level: None,
+                no_cache: false,
+            },
+        ));
+        assert!(s.contains("\"ok\": true"), "check_schema: {s}");
+        let s = server.check_schema(rmcp::handler::server::wrapper::Parameters(
+            params::CheckSchema {
+                path: Some("/nope".to_string()),
+                profile: None,
+                env: None,
+                level: None,
+                no_cache: false,
+            },
+        ));
+        assert!(s.contains("\"ok\": false"), "error arm: {s}");
+
+        // Drive the remaining tool methods through the macro wrappers so
+        // every #[tool] arm gets real execution, success and error sides.
+        let root = Some(dir.path().to_str().unwrap().to_string());
+        let ok = server.list_tables(rmcp::handler::server::wrapper::Parameters(
+            params::ListTables {
+                path: root.clone(),
+                no_cache: false,
+            },
+        ));
+        assert!(ok.contains("\"tables\""), "list_tables: {ok}");
+        let err = server.list_tables(rmcp::handler::server::wrapper::Parameters(
+            params::ListTables {
+                path: Some("/nope".into()),
+                no_cache: false,
+            },
+        ));
+        assert!(err.contains("\"ok\": false"), "list_tables err: {err}");
+
+        let ok = server.list_fields(rmcp::handler::server::wrapper::Parameters(
+            params::ListFields {
+                path: root.clone(),
+                table: None,
+                no_cache: false,
+            },
+        ));
+        assert!(ok.contains("\"tables\""), "list_fields: {ok}");
+        let err = server.list_fields(rmcp::handler::server::wrapper::Parameters(
+            params::ListFields {
+                path: Some("/nope".into()),
+                table: None,
+                no_cache: false,
+            },
+        ));
+        assert!(err.contains("\"ok\": false"), "list_fields err: {err}");
+
+        let ok = server.list_envs(rmcp::handler::server::wrapper::Parameters(
+            params::ListEnvs {
+                path: root.clone(),
+                no_cache: false,
+            },
+        ));
+        assert!(ok.contains("\"declared\""), "list_envs: {ok}");
+        let err = server.list_envs(rmcp::handler::server::wrapper::Parameters(
+            params::ListEnvs {
+                path: Some("/nope".into()),
+                no_cache: false,
+            },
+        ));
+        assert!(err.contains("\"ok\": false"), "list_envs err: {err}");
+
+        let ok = server.build_dry_run(rmcp::handler::server::wrapper::Parameters(
+            params::BuildDryRun {
+                path: root.clone(),
+                profile: None,
+                env: None,
+                level: None,
+                no_cache: false,
+            },
+        ));
+        assert!(ok.contains("\"artifact_count\""), "build_dry_run: {ok}");
+        let err = server.build_dry_run(rmcp::handler::server::wrapper::Parameters(
+            params::BuildDryRun {
+                path: Some("/nope".into()),
+                profile: None,
+                env: None,
+                level: None,
+                no_cache: false,
+            },
+        ));
+        assert!(err.contains("\"ok\": false"), "build_dry_run err: {err}");
+
+        let ok = server.explain_config(rmcp::handler::server::wrapper::Parameters(
+            params::ExplainConfig {
+                path: root.clone(),
+                section: None,
+            },
+        ));
+        assert!(ok.contains("precedence"), "explain_config: {ok}");
+        let err = server.explain_config(rmcp::handler::server::wrapper::Parameters(
+            params::ExplainConfig {
+                path: Some("/nope".into()),
+                section: None,
+            },
+        ));
+        assert!(err.contains("\"ok\": false"), "explain_config err: {err}");
+    }
 }

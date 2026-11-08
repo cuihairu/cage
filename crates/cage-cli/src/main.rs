@@ -7569,4 +7569,149 @@ main = "config"
         );
         assert_eq!(code, 2);
     }
+
+    #[test]
+    fn schema_draft_excel_missing_spec_and_dsn_errors() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // A minimal project with a valid config (needed by run_schema_draft).
+        write_text(
+            &root.join("config/item.json"),
+            r#"{"Item": [{"id": 1, "name": "Sword"}]}"#,
+        );
+        write_text(&root.join("schema.yaml"), PUBLISHER_SCHEMA);
+        write_text(
+            &root.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+"#,
+        );
+
+        // No cage.toml → usage error (load_project_config fails).
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).expect("empty dir");
+        assert_eq!(run_schema_draft(&empty, &["mysql:db".to_string()], None), 2);
+
+        // A spec that is neither mysql:/pg:/excel: → E1905 usage error.
+        assert_eq!(
+            run_schema_draft(root, &["csv:data.csv".to_string()], None),
+            2
+        );
+
+        // excel: spec on a missing workbook → adapter fails → 2.
+        assert_eq!(
+            run_schema_draft(root, &["excel:missing.xlsx".to_string()], None),
+            2
+        );
+
+        // mysql: with no [remote.mysql] DSN configured → resolve_dsn fails → 2.
+        assert_eq!(run_schema_draft(root, &["mysql:Item".to_string()], None), 2);
+
+        // Empty spec list → writes an empty draft (no tables, exit 0).
+        assert_eq!(run_schema_draft(root, &[], None), 0);
+    }
+
+    #[test]
+    fn schema_draft_writes_output_file_and_creates_parent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_text(&root.join("schema.yaml"), PUBLISHER_SCHEMA);
+        write_text(
+            &root.join("cage.toml"),
+            r#"output_dir = "build"
+schema_path = "schema.yaml"
+
+[project]
+name = "common"
+version = "0.1.0"
+
+[source_roots]
+main = "config"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/client/json"
+"#,
+        );
+        // -o schemas/draft.yaml with no schemas/ yet creates the parent.
+        let out = root.join("schemas/draft.yaml");
+        assert_eq!(run_schema_draft(root, &[], Some(&out)), 0);
+        assert!(out.is_file(), "draft written");
+    }
+
+    #[test]
+    fn remote_root_classification_and_credential_gates() {
+        // Pure classification.
+        assert!(remote::is_remote_root("https://host/registry"));
+        assert!(remote::is_remote_root("http://host/registry"));
+        assert!(!remote::is_remote_root("reg"));
+        assert!(!remote::is_remote_root("registry:reg"));
+
+        // Credential resolution precedes network: missing and empty env
+        // vars fail before any GET (E2105).
+        let unique = format!("CAGE_TEST_UNSET_{}", std::process::id());
+        std::env::remove_var(&unique);
+        let err = remote::fetch_remote_index(None, "https://host/registry", "pkg", Some(&unique))
+            .unwrap_err();
+        assert!(err.contains("credential missing"), "err: {err}");
+        assert!(err.contains("not set"), "err: {err}");
+    }
+
+    #[test]
+    fn source_script_fingerprint_mixes_sheets_and_excel_parts() {
+        use cage_core::convention::{ExcelConvention, Preset, SheetsConvention};
+        use cage_core::manifest::SourceConfig;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tools")).unwrap();
+        std::fs::write(root.join("tools/excel.py"), "print('x')\n").unwrap();
+        std::fs::write(root.join("tools/sheets.py"), "print('y')\n").unwrap();
+
+        let excel = ExcelConvention {
+            preset: Preset::Data,
+            script: Some("tools/excel.py".into()),
+            ..Default::default()
+        };
+        let sheets = SheetsConvention {
+            preset: Preset::Data,
+            script: Some("tools/sheets.py".into()),
+            ..Default::default()
+        };
+        let mut config = ProjectConfig::default();
+        config.project.name = "fp".into();
+        config.source = Some(SourceConfig {
+            excel: Some(excel),
+            sheets: Some(sheets),
+        });
+
+        let fp = source_script_fingerprint(root, &config).expect("fingerprint computes");
+        let fp = fp.expect("both adapters contribute");
+        assert!(fp.contains("excel|"), "{fp}");
+        assert!(fp.contains("sheets|"), "{fp}");
+        assert!(fp.contains("tools/excel.py"), "{fp}");
+        assert!(fp.contains("tools/sheets.py"), "{fp}");
+
+        // No adapters → None.
+        let bare = source_script_fingerprint(root, &ProjectConfig::default()).unwrap();
+        assert!(bare.is_none());
+    }
 }

@@ -185,6 +185,7 @@ pub(crate) fn load_schema_indexed(
 }
 
 /// Outcome of an incremental save.
+#[derive(Debug)]
 pub(crate) struct SaveOutcome {
     /// Files rewritten (project-relative), sorted.
     pub(crate) written: Vec<String>,
@@ -198,6 +199,7 @@ pub(crate) struct SaveOutcome {
 }
 
 /// Save failure: `Conflict` renders as 409, `Io` as 500.
+#[derive(Debug)]
 pub(crate) enum SaveError {
     /// A source file changed (or appeared) since the client loaded it.
     Conflict(String),
@@ -411,6 +413,161 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
             Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod uncovered_paths {
+    use super::*;
+    use cage_core::schema::{FieldSchema, TableSchema};
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn field(name: &str) -> FieldSchema {
+        FieldSchema {
+            name: name.to_string(),
+            field_type: cage_core::schema::FieldType::UInt32,
+            description: None,
+            required: true,
+            nullable: false,
+            default: None,
+            min: None,
+            max: None,
+            min_length: None,
+            max_length: None,
+            pattern: None,
+            enum_values: None,
+            min_items: None,
+            max_items: None,
+            items: None,
+            separator: None,
+            properties: None,
+            additional_properties: None,
+            reference: None,
+            targets: Vec::new(),
+            rules: Vec::new(),
+            metadata: Default::default(),
+        }
+    }
+
+    fn table(name: &str) -> TableSchema {
+        TableSchema {
+            name: name.to_string(),
+            description: None,
+            primary_key: vec!["id".to_string()],
+            fields: [(name.to_string(), field(name))].into_iter().collect(),
+            unique_constraints: Vec::new(),
+            order_by: None,
+            targets: Vec::new(),
+            env_overrides: Default::default(),
+        }
+    }
+
+    fn write_main_fragment(dir: &TempDir) {
+        fs::create_dir_all(dir.path().join("schemas")).unwrap();
+        fs::write(
+            dir.path().join("schemas/main.yaml"),
+            "metadata:\n  version: \"1\"\nenums: {}\ntables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      id: { name: id, type: { kind: UInt32 }, required: true }\n",
+        )
+        .unwrap();
+    }
+
+    fn load(dir: &TempDir) -> (Schema, SchemaSourceIndex) {
+        load_schema_indexed(dir.path(), &dir.path().join("schemas")).expect("indexed load")
+    }
+
+    #[test]
+    fn from_json_rejects_a_lossy_index() {
+        assert!(SchemaSourceIndex::from_json(&serde_json::json!(null)).is_none());
+        assert!(
+            SchemaSourceIndex::from_json(&serde_json::json!({"files": [{"file": "a"}]})).is_none()
+        );
+        assert!(SchemaSourceIndex::from_json(
+            &serde_json::json!({"files": [], "tables": {"Item": 1}})
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn save_conflicts_on_missing_and_new_schema_files() {
+        let dir = TempDir::new().unwrap();
+        write_main_fragment(&dir);
+        let index = load(&dir).1;
+        let edited = load(&dir).0;
+
+        fs::remove_file(dir.path().join("schemas/main.yaml")).unwrap();
+        match save_schema_incremental(dir.path(), &dir.path().join("schemas"), &edited, &index) {
+            Err(SaveError::Conflict(message)) => {
+                assert!(message.contains("no longer exists"), "{message}")
+            }
+            result => panic!("expected conflict, got {result:?}"),
+        }
+
+        write_main_fragment(&dir);
+        fs::write(
+            dir.path().join("schemas/new.yaml"),
+            "enums: {}\ntables: {}\n",
+        )
+        .unwrap();
+        match save_schema_incremental(dir.path(), &dir.path().join("schemas"), &edited, &index) {
+            Err(SaveError::Conflict(message)) => {
+                assert!(message.contains("new schema source"), "{message}")
+            }
+            result => panic!("expected conflict, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn save_routes_table_enum_and_metadata_changes_and_rotates_revisions() {
+        let dir = TempDir::new().unwrap();
+        write_main_fragment(&dir);
+        fs::write(
+            dir.path().join("schemas/other.yaml"),
+            "enums: {}\ntables:\n  Old:\n    name: Old\n    primary_key: [id]\n    fields:\n      id: { name: id, type: { kind: UInt32 }, required: true }\n",
+        )
+        .unwrap();
+        let (_, index) = load(&dir);
+        let mut edited = load(&dir).0;
+
+        let mut item = table("Item");
+        item.description = Some("changed".to_string());
+        edited.tables.insert("Item".into(), item);
+        edited.tables.shift_remove("Old");
+        edited.enums.insert(
+            "Kind".into(),
+            cage_core::schema::EnumSchema {
+                name: "Kind".into(),
+                values: Default::default(),
+                description: None,
+            },
+        );
+
+        let out = save_schema_incremental(dir.path(), &dir.path().join("schemas"), &edited, &index)
+            .expect("save");
+        assert_eq!(out.written, ["schemas/main.yaml", "schemas/other.yaml"]);
+        assert_eq!(out.untouched, 0);
+        let main = fs::read_to_string(dir.path().join("schemas/main.yaml")).unwrap();
+        let other = fs::read_to_string(dir.path().join("schemas/other.yaml")).unwrap();
+        assert!(main.contains("Kind:"), "{main}");
+        assert!(!main.contains("Old"), "{main}");
+        assert!(!other.contains("Old"), "{other}");
+        assert_ne!(out.sources.files[0].sha256, index.files[0].sha256);
+    }
+
+    #[test]
+    fn atomic_write_reports_write_failures_without_tmp_litter() {
+        let dir = TempDir::new().unwrap();
+        let err = atomic_write(&dir.path().join("absent/file.yaml"), b"x").unwrap_err();
+        assert!(err.contains("cannot write"), "{err}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+            let err = atomic_write(&dir.path().join("file.yaml"), b"x").unwrap_err();
+            assert!(err.contains("cannot write"), "{err}");
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
         }
     }
 }
