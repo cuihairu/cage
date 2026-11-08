@@ -1870,8 +1870,11 @@ fn run_script_reports_broken_pipe_and_spawn_failure() {
 #[test]
 fn drift_reports_default_enum_min_max_and_missing_reference() {
     // Declared: default 10, enum [a,b], min 0, max 999, reference Item.id.
+    // score / level declare Int32 to match the adopted type — a type
+    // mismatch short-circuits the per-field comparison and would mask the
+    // min / max arms under test.
     let rows = [
-        &["##type Int32", "String", "String", "String", "String"][..],
+        &["##type Int32", "String", "Int32", "Int32", "String"][..],
         &[
             "##default 10",
             "##enum a,b",
@@ -1939,37 +1942,35 @@ fn drift_reports_default_enum_min_max_and_missing_reference() {
 fn drift_compares_sub_column_children_and_items_shape() {
     use crate::schema::FieldType;
 
-    // A `multi_row` bean with a sub-column whose declared type drifts.
+    // A `*weapon` multi-row bean with sub-columns whose declared type and
+    // default drift. The parent's shape comes from the `*bean` marker —
+    // `##type Object` is not declarable in a cell (E2202), so the fixture
+    // uses the `##var` header + `##+` sub-column idiom.
     let rows = [
-        &["##type Object", ""][..],
-        &["##+", ""][..],
-        &["weapon", "name"][..],
-        &["##type Int32", "String"][..],
-        &["##default 5", ""][..],
+        &["##var", "id", "*weapon", "*weapon"][..],
+        &["##+", "", "id", "name"][..],
+        &["##type", "Int32", "Int32", "String"][..],
+        &["##default", "", "5", ""][..],
     ];
-    let metas = metas_of(&rows, 2, &[0, 1]);
-    // The `+` row marks `weapon` as a multi-row bean; the derived shape
-    // is `Array<Object>`.
-    let mut adopted = adopt_one_table(
-        [(
-            "weapon".to_string(),
-            declared_field(
-                "weapon",
-                FieldType::Array(Box::new(FieldType::Object(IndexMap::new()))),
-            ),
-        )]
+    let metas = metas_of(&rows, 0, &[0, 1, 2, 3]);
+    // The `*weapon` marker derives a `multi_row` bean: the adopted shape
+    // is `Array<Object>`, children compared under the items object.
+    let mut props = IndexMap::new();
+    props.insert("id".to_string(), FieldType::Int32);
+    props.insert("name".to_string(), FieldType::Int32); // mismatched: declared String
+    let weapon = declared_field(
+        "weapon",
+        FieldType::Array(Box::new(FieldType::Object(props))),
+    );
+    let adopted = adopt_one_table(
+        [
+            ("id".to_string(), declared_field("id", FieldType::Int32)),
+            ("weapon".to_string(), weapon),
+        ]
         .into_iter()
         .collect(),
         Vec::new(),
     );
-    // Adopted `name` child (under items) has a different type than the
-    // declared Int32 → drift. `id` matches the declared default (5).
-    if let FieldType::Array(inner) = &mut adopted.tables["Skill"].fields["weapon"].field_type {
-        if let FieldType::Object(props) = inner.as_mut() {
-            props.insert("name".to_string(), FieldType::String);
-            props.insert("id".to_string(), FieldType::Int32);
-        }
-    }
     let diags = derive::drift(&metas, &adopted, "config/Skill.xlsx");
     let msgs: Vec<&str> = diags.errors().iter().map(|d| d.message.as_str()).collect();
     assert!(
