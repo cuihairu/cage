@@ -1238,7 +1238,7 @@ mod tests {
     #[test]
     fn location_string_covers_sheet_line_row_and_column() {
         let loc =
-            |sheet: Option<&str>, _line: Option<usize>, row: Option<usize>, col: Option<usize>| {
+            |sheet: Option<&str>, line: Option<usize>, row: Option<usize>, col: Option<usize>| {
                 let mut location = cage_core::value::SourceLocation::new("data/Item.csv");
                 if let Some(s) = sheet {
                     location = location.with_sheet(s);
@@ -1246,7 +1246,7 @@ mod tests {
                 if let Some(r) = row {
                     location = location.with_row(r);
                 }
-                if let Some(l) = _line {
+                if let Some(l) = line {
                     location = location.with_line_col(l, 1);
                 }
                 if let Some(c) = col {
@@ -1388,8 +1388,7 @@ mod tests {
             };
             assert!(
                 suggestion_for(&d).is_some(),
-                "{} should have a suggestion",
-                code
+                "{code} should have a suggestion"
             );
         }
     }

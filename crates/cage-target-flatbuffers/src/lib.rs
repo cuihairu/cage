@@ -1125,7 +1125,7 @@ enums: {}
     #[test]
     fn test_scalar_fields_use_the_expected_fbs_types() {
         let schema = schema(
-            r#"
+            r"
 tables:
   T:
     name: T
@@ -1143,7 +1143,7 @@ tables:
       f64: { name: f64, type: { kind: Float64 } }
       bytes: { name: bytes, type: { kind: Bytes } }
 enums: {}
-"#,
+",
         );
         let artifacts = FlatbuffersTargetGenerator::default().generate(&schema, Some("hash"));
         let t = artifact(&artifacts, "T.fbs");

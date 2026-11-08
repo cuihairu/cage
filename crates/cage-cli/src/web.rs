@@ -3135,10 +3135,10 @@ output_dir = "build/client/json"
 
     #[test]
     fn api_upload_reports_500_when_the_source_parent_is_unwritable() {
-        let dir = TempDir::new().expect("tempdir");
-        let ctx = demo_ctx(&dir);
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().expect("tempdir");
+        let ctx = demo_ctx(&dir);
         let cfg_path = dir.path().join("cage.toml");
         let cfg = fs::read_to_string(&cfg_path)
             .unwrap()
@@ -3346,11 +3346,8 @@ output_dir = "build/client/json"
 
     #[test]
     fn handle_routes_every_static_and_api_route() {
-        let dir = TempDir::new().expect("tempdir");
-        let mut ctx = demo_ctx(&dir);
-        api_build(&ctx, r#"{"profile": "client"}"#);
-        ctx.config.schema_path = Some("absent.yaml".to_string());
-
+        /// Push one raw HTTP request through the bound server, let `handle`
+        /// serve it, and return the raw reply (head + body).
         fn round_trip(
             server: &tiny_http::Server,
             ctx: &Ctx,
@@ -3359,12 +3356,13 @@ output_dir = "build/client/json"
             path: &str,
             body: &[u8],
         ) -> String {
+            use std::fmt::Write as _;
             let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
             client
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .expect("read timeout");
             let mut head = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n");
-            head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+            let _ = write!(head, "Content-Length: {}\r\n", body.len());
             head.push_str("Connection: close\r\n\r\n");
             client.write_all(head.as_bytes()).expect("send head");
             client.write_all(body).expect("send body");
@@ -3377,6 +3375,11 @@ output_dir = "build/client/json"
             client.read_to_end(&mut reply).expect("read reply");
             String::from_utf8_lossy(&reply).into_owned()
         }
+
+        let dir = TempDir::new().expect("tempdir");
+        let mut ctx = demo_ctx(&dir);
+        api_build(&ctx, r#"{"profile": "client"}"#);
+        ctx.config.schema_path = Some("absent.yaml".to_string());
 
         let server = tiny_http::Server::http(("127.0.0.1", 0)).expect("server");
         let port = server.server_addr().to_ip().expect("addr").port();
@@ -3848,7 +3851,7 @@ output_dir = "build/client/json"
         assert!(cells.is_array());
         let obj_cell = data_cell(&Value::Object(obj.clone()));
         assert!(obj_cell.is_object());
-        assert!(obj_cell["k"] == serde_json::json!(false));
+        assert_eq!(obj_cell["k"], serde_json::json!(false));
         let _ = table; // the row builds the value families
     }
 
@@ -3951,7 +3954,7 @@ output_dir = "build/client/json"
     #[test]
     fn api_upload_reports_rename_and_restore_failures() {
         let dir = TempDir::new().expect("tempdir");
-        let ctx = demo_ctx(&dir);
+        let _ctx = demo_ctx(&dir); // creates config/item.json; the API isn't exercised here
         let target = dir.path().join("config/item.json");
         fs::read(&target).expect("read original");
 

@@ -3159,8 +3159,8 @@ enums: {}
     }
 
     /// Every `FieldOverride` constraint key is applied by `resolve_env`:
-    /// the full override surface (min_length, max_length, pattern,
-    /// enum_values, min_items, max_items) must land on the resolved field.
+    /// the full override surface (`min_length`, `max_length`, `pattern`,
+    /// `enum_values`, `min_items`, `max_items`) must land on the resolved field.
     #[test]
     fn resolve_env_applies_every_override_constraint() {
         let mut schema = env_schema();

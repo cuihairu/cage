@@ -1477,11 +1477,11 @@ fn convention_territory_preset_shapes() {
 
     let (rows, data_start) =
         convention_territory(&grid(&plain_rows), 1, DEFAULT_MARKER, Preset::Data);
-    assert!(rows.is_empty());
+    assert_eq!(rows, [] as [usize; 0]);
     assert_eq!(data_start, 2);
     let (rows, data_start) =
         convention_territory(&grid(&plain_rows), 1, DEFAULT_MARKER, Preset::MetaSheet);
-    assert!(rows.is_empty());
+    assert_eq!(rows, [] as [usize; 0]);
     assert_eq!(data_start, 2);
 }
 

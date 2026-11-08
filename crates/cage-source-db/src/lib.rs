@@ -638,10 +638,7 @@ mod tests {
             DbValue::Float(f64::INFINITY).to_json(),
             serde_json::Value::Null
         );
-        assert_eq!(
-            DbValue::Float(2.5).to_json(),
-            serde_json::json!(2.5)
-        );
+        assert_eq!(DbValue::Float(2.5).to_json(), serde_json::json!(2.5));
     }
 
     #[test]

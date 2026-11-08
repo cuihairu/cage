@@ -421,6 +421,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 mod uncovered_paths {
     use super::*;
     use cage_core::schema::{FieldSchema, TableSchema};
+    use indexmap::IndexMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -447,7 +448,7 @@ mod uncovered_paths {
             reference: None,
             targets: Vec::new(),
             rules: Vec::new(),
-            metadata: Default::default(),
+            metadata: IndexMap::default(),
         }
     }
 
@@ -460,7 +461,7 @@ mod uncovered_paths {
             unique_constraints: Vec::new(),
             order_by: None,
             targets: Vec::new(),
-            env_overrides: Default::default(),
+            env_overrides: IndexMap::default(),
         }
     }
 
@@ -499,7 +500,7 @@ mod uncovered_paths {
         fs::remove_file(dir.path().join("schemas/main.yaml")).unwrap();
         match save_schema_incremental(dir.path(), &dir.path().join("schemas"), &edited, &index) {
             Err(SaveError::Conflict(message)) => {
-                assert!(message.contains("no longer exists"), "{message}")
+                assert!(message.contains("no longer exists"), "{message}");
             }
             result => panic!("expected conflict, got {result:?}"),
         }
@@ -512,7 +513,7 @@ mod uncovered_paths {
         .unwrap();
         match save_schema_incremental(dir.path(), &dir.path().join("schemas"), &edited, &index) {
             Err(SaveError::Conflict(message)) => {
-                assert!(message.contains("new schema source"), "{message}")
+                assert!(message.contains("new schema source"), "{message}");
             }
             result => panic!("expected conflict, got {result:?}"),
         }
@@ -538,7 +539,7 @@ mod uncovered_paths {
             "Kind".into(),
             cage_core::schema::EnumSchema {
                 name: "Kind".into(),
-                values: Default::default(),
+                values: Vec::default(),
                 description: None,
             },
         );
