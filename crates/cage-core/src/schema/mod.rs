@@ -2445,6 +2445,49 @@ enums:
         drop(t);
     }
 
+    /// The bounded-stack `fmt_deep` fallback must cover every `FieldType`
+    /// variant: it is the only formatter that runs on an over-cap type, so
+    /// an unreachable arm would make a pathological debug print incomplete.
+    #[test]
+    fn fmt_deep_renders_every_variant_without_recursion() {
+        // Array(Map(Object(TaggedUnion(...)))) exercises every container
+        // arm of the bounded fallback formatter; nest it past the cap so
+        // `Debug` takes the `fmt_deep` path.
+        let mut deep = FieldType::TaggedUnion(Box::new(TaggedUnion {
+            tag: "kind".to_string(),
+            branches: {
+                let mut b: IndexMap<String, IndexMap<String, FieldType>> = IndexMap::new();
+                let mut p = IndexMap::new();
+                p.insert("leaf".to_string(), FieldType::Enum("E".to_string()));
+                b.insert("arm".to_string(), p);
+                b
+            },
+        }));
+        deep = FieldType::Object({
+            let mut m = IndexMap::new();
+            m.insert("k".to_string(), deep);
+            m
+        });
+        deep = FieldType::Map(MapField {
+            key_type: MapKeyType::Int,
+            value_type: Box::new(deep),
+        });
+        deep = FieldType::Array(Box::new(deep));
+        for _ in 0..=MAX_FIELD_TYPE_DEPTH {
+            deep = FieldType::Array(Box::new(deep));
+        }
+        let printed = format!("{deep:?}");
+        for needle in [
+            "Array(",
+            "Map(MapField { key_type: Int, value_type: ",
+            "Object({",
+            "TaggedUnion(TaggedUnion { tag: ",
+            "Enum(",
+        ] {
+            assert!(printed.contains(needle), "missing {needle} in {printed}");
+        }
+    }
+
     /// The custom iterative `Drop` means Rust refuses by-value moves out of
     /// the container variants (E0509). `FieldType::take` is the documented
     /// migration path for code that needs to *move the whole value out* of a
