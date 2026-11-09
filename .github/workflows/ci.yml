@@ -182,6 +182,37 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       id-token: write
+    # The cage-source-db live tests exercise real DDL on both engines and are
+    # skipped without a DSN; running them here is what covers the adapter code
+    # in the reported numbers, so both engines are provided as services.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test_user -d test_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_USER: test_user
+          MYSQL_PASSWORD: test_password
+          MYSQL_DATABASE: test_db
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -u test_user -ptest_password"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -196,6 +227,9 @@ jobs:
           tool: cargo-llvm-cov
       - name: Generate lcov report
         run: cargo llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info
+        env:
+          CAGE_DB_TEST_PG_DSN: postgres://test_user:test_password@127.0.0.1:5432/test_db
+          CAGE_DB_TEST_MYSQL_DSN: mysql://test_user:test_password@127.0.0.1:3306/test_db
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7.1.1
         with:
