@@ -45,6 +45,14 @@ use std::path::{Path, PathBuf};
 const EDITOR_INDEX: &str = include_str!("../../../../docs/public/editor/index.html");
 const EDITOR_APP_JS: &str = include_str!("../../../../docs/public/editor/app.js");
 const EDITOR_APP_CSS: &str = include_str!("../../../../docs/public/editor/app.css");
+// The editor entry (app.js) is an ES module that imports its split parts;
+// each is embedded and served the same way (LAY-027).
+const EDITOR_CONSTANTS_JS: &str = include_str!("../../../../docs/public/editor/constants.js");
+const EDITOR_STATE_JS: &str = include_str!("../../../../docs/public/editor/state.js");
+const EDITOR_DOM_JS: &str = include_str!("../../../../docs/public/editor/dom.js");
+const EDITOR_API_JS: &str = include_str!("../../../../docs/public/editor/api.js");
+const EDITOR_TYPES_JS: &str = include_str!("../../../../docs/public/editor/types.js");
+const EDITOR_FORMS_JS: &str = include_str!("../../../../docs/public/editor/forms.js");
 
 /// U1 status page and assets, embedded the same way.
 const STATUS_INDEX: &str = include_str!("../../../../docs/public/status/index.html");
@@ -321,6 +329,36 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
                 200,
                 "text/javascript; charset=utf-8",
                 EDITOR_APP_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/constants.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                EDITOR_CONSTANTS_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/state.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                EDITOR_STATE_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/dom.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                EDITOR_DOM_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/api.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                EDITOR_API_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/types.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                EDITOR_TYPES_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/forms.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                EDITOR_FORMS_JS.to_string(),
             ),
             (tiny_http::Method::Get, "/app.css") => {
                 text_response(200, "text/css; charset=utf-8", EDITOR_APP_CSS.to_string())

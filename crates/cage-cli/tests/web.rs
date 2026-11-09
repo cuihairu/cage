@@ -361,34 +361,50 @@ fn web_serves_editor_page_and_assets() {
         "the page must load its stylesheet: {body}"
     );
 
-    // Assets are embedded and served with the right media types.
+    // Assets are embedded and served with the right media types. The entry
+    // is an ES module that imports its split parts (LAY-027), so each part
+    // must be served at its own path for the browser to load the graph.
     let (status, body) = request(server.port, "GET", "/app.js", None);
-    assert_eq!(status, 200, "editor module must be served");
+    assert_eq!(status, 200, "editor entry module must be served");
     assert!(
         body.contains("/api/schema"),
-        "module must call the API: {body}"
+        "entry must call the API: {body}"
     );
-    assert!(body.contains("cage"), "module content sanity: {body}");
-    // Planner interface P1: rule form editing rides this editor, and the
-    // immediate re-validation toggle lives in the top bar.
+    // Entry wires the split parts together.
+    assert!(body.contains("import"), "entry must be a module: {body}");
+    assert!(
+        body.contains("./forms.js"),
+        "entry must import the form renderer: {body}"
+    );
+    // Planner interface P1: the immediate re-validation toggle lives in the
+    // api module (dirty-flag + 700ms debounce).
+    let (status, body) = request(server.port, "GET", "/api.js", None);
+    assert_eq!(status, 200, "api module must be served");
     assert!(
         body.contains("auto-validate"),
         "the top bar must offer immediate re-validation: {body}"
     );
     assert!(
         body.contains("scheduleAutoValidate"),
-        "module must re-validate on edit: {body}"
+        "api module must re-validate on edit: {body}"
     );
-    // Planner interface P2: the field template library lives in the module
-    // (static dictionary, insertion goes through the normal save/validate chain).
+    // Planner interface P2: the field template library lives in the forms
+    // module (static dictionary, insertion goes through save/validate chain).
+    let (status, body) = request(server.port, "GET", "/forms.js", None);
+    assert_eq!(status, 200, "forms module must be served");
     assert!(
         body.contains("FIELD_TEMPLATES"),
-        "module must carry the template library: {body}"
+        "forms module must carry the template library: {body}"
     );
     assert!(
         body.contains("外键引用"),
         "the template library must cover the foreign-key case: {body}"
     );
+    // The remaining split parts serve too (constants/state/dom/types).
+    for part in ["constants.js", "state.js", "dom.js", "types.js"] {
+        let (status, _) = request(server.port, "GET", &format!("/{part}"), None);
+        assert_eq!(status, 200, "module {part} must be served");
+    }
 
     let (status, body) = request(server.port, "GET", "/app.css", None);
     assert_eq!(status, 200, "editor stylesheet must be served");
