@@ -1,5 +1,7 @@
 use super::super::*;
 use super::{grid, meta_of};
+use crate::diagnostics::Diagnostic;
+use std::collections::HashSet;
 
 // ------------------------------------------------------------------
 // X2: the decoded TableMeta as a schema, and the drift check (derive.rs)

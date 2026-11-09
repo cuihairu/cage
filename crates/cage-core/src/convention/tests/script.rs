@@ -1,4 +1,6 @@
 use super::super::*;
+use crate::error::codes::source_convention::{E2202, E2203, E2204, E2205, E2206, E2207};
+use std::time::Duration;
 
 /// `parse_response` gates every malformed script answer with the right code
 /// (E2206 for shape, E2207 for identity, E2202 for vocabulary).

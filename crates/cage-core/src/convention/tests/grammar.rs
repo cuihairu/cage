@@ -1,5 +1,10 @@
+use super::super::script::canonical_json;
+use super::super::types::{parse_list_text, parse_reference_text, parse_type_text};
 use super::super::*;
 use super::{grid, meta_of};
+use crate::diagnostics::Diagnostics;
+use crate::schema::{MapField, MapKeyType};
+use std::collections::HashSet;
 
 /// The Luban-style row shape the 2026-10-26 sourcing directive points at:
 /// keyword cell in the first column, per-column values across the row.

@@ -3,6 +3,7 @@
 //! run against a real subprocess in the cage-source-excel adapter tests.
 
 use super::*;
+use std::collections::HashSet;
 
 fn grid(rows: &[&[&str]]) -> Grid {
     rows.iter()
