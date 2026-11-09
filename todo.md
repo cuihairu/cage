@@ -425,7 +425,8 @@
 - [x] LAY-008 [P2] 拆分 `crates/cage-target-java/src/lib.rs`（2191 行）——Java 类型映射、成员生成、保留字策略、模板填充和测试集中（`crates/cage-target-java/src/lib.rs:71`）。已拆为 lib.rs（生成器结构体+表格/枚举渲染 impl，511 行）+ types.rs（FieldType→Java 类型映射，125 行）+ literals.rs（默认值/字面量渲染+字段 Javadoc，319 行）+ idents.rs（保留字表与标识符清洗，128 行）+ filters.rs（Tera 过滤器与 register_filters，99 行）+ tests.rs（单测，1044 行），commit a51cba9；跨模块助手 `pub(crate)`，register_filters 经 `pub use` 保持公开路径。门禁：全仓 75 套件全绿 + clippy -D warnings + fmt 过。
 - [x] LAY-009 [P2] 拆分 `crates/cage-target-go/src/lib.rs`（2164 行）——Go 类型/默认值/包名/导出规则与生成器测试集中（`crates/cage-target-go/src/lib.rs:71`）。
   - 2026-11-10 落地：拆为 docfmt/idents/types/literals/filters 五个模块 + 扁平化 tests.rs，lib.rs 剩 ~549 行；crate 根 `pub use`/`pub(crate) use` 保外部路径不变。fmt+clippy(-D warnings)+75 套件全绿（go 30 tests: 29 passed, 1 ignored）。commit 7a97e07。
-- [ ] LAY-010 [P2] 拆分 `crates/cage-target-ts/src/lib.rs`（2114 行）——TS/JS 语法、类型映射、运行时形态与生成器测试集中（`crates/cage-target-ts/src/lib.rs:82`）。
+- [x] LAY-010 [P2] 拆分 `crates/cage-target-ts/src/lib.rs`（2114 行）——TS/JS 语法、类型映射、运行时形态与生成器测试集中（`crates/cage-target-ts/src/lib.rs:82`）。
+  - 2026-11-10 落地：拆为 docfmt/idents/types/literals/plan/filters 六个模块 + 扁平化 tests.rs，lib.rs 剩 ~314 行；crate 根 `pub use register_filters` 保外部路径不变。fmt+clippy(-D warnings)+全量套件全绿。commit a68ee56。
 - [ ] LAY-011 [P2] 拆分 `crates/cage-target-cpp/src/lib.rs`（2041 行）——C++ 类型映射、命名、头文件渲染和测试集中（`crates/cage-target-cpp/src/lib.rs:69`）。
 - [ ] LAY-012 [P2] 拆分 `crates/cage-core/src/validation/rules.rs`（1738 行）——声明式游戏规则实现与规则测试挤进校验 crate 的 rules 文件（`crates/cage-core/src/validation/rules.rs`）。
 - [ ] LAY-013 [P2] 拆分 `crates/cage-core/src/manifest/mod.rs`（1609 行）——BuildManifest、增量记录、cage.toml schema 和生成器在一个文件（`crates/cage-core/src/manifest/mod.rs:9`、`crates/cage-core/src/manifest/mod.rs:523`）。
