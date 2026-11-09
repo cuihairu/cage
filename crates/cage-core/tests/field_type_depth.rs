@@ -183,3 +183,127 @@ fn value_first_container_families_parse_like_kind_first() {
         );
     }
 }
+
+/// Every unit variant parses with no `value` at all (kind-first) and with
+/// explicit `value: null` (value-first), yielding identical types — the
+/// derived parser accepts both shapes, and the replay must accept them too.
+#[test]
+fn unit_variants_parse_without_content_in_both_key_orders() {
+    const UNIT_VARIANTS: [&str; 15] = [
+        "Null", "Bool", "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64",
+        "Float32", "Float64", "String", "Bytes", "Any",
+    ];
+    for name in UNIT_VARIANTS {
+        let kind_first = format!(r#"{{"kind":"{name}"}}"#);
+        let value_first = format!(r#"{{"value":null,"kind":"{name}"}}"#);
+        let direct: FieldType = serde_json::from_str(&kind_first)
+            .unwrap_or_else(|e| panic!("{name} must parse without content: {e}"));
+        let replayed: FieldType = serde_json::from_str(&value_first)
+            .unwrap_or_else(|e| panic!("{name} must parse with null content: {e}"));
+        assert_eq!(direct, replayed, "{name}");
+    }
+}
+
+/// Buffered non-content (booleans, numbers, floats, sequences) replays into
+/// the same "expected unit" refusals the direct path produces.
+#[test]
+fn primitive_content_is_refused_in_value_first_order() {
+    let cases: [(&str, &str); 5] = [
+        (r#"{"value":true,"kind":"Int32"}"#, "boolean `true`"),
+        (r#"{"value":42,"kind":"Int32"}"#, "integer `42`"),
+        (
+            r#"{"value":18446744073709551615,"kind":"Int32"}"#,
+            "integer `18446744073709551615`",
+        ),
+        (r#"{"value":1.5,"kind":"Int32"}"#, "floating point `1.5`"),
+        (r#"{"value":[1],"kind":"Int32"}"#, "sequence"),
+    ];
+    for (wire, unexpected) in cases {
+        let err = serde_json::from_str::<FieldType>(wire)
+            .expect_err("unit variant must refuse non-unit content");
+        assert!(err.to_string().contains(unexpected), "{err}");
+    }
+}
+
+/// The positional `[tag, value]` form parses like the map form for unit,
+/// string-payload and container payloads; every malformed shape is refused
+/// with the derive's own diagnostics.
+#[test]
+fn seq_form_matches_the_map_form() {
+    let cases: [(&str, &str); 4] = [
+        (r#"["Int32"]"#, r#"{"kind":"Int32"}"#),
+        (r#"["Int32",null]"#, r#"{"kind":"Int32"}"#),
+        (
+            r#"["Enum","Damage"]"#,
+            r#"{"kind":"Enum","value":"Damage"}"#,
+        ),
+        (
+            r#"["Array",{"kind":"Int32"}]"#,
+            r#"{"kind":"Array","value":{"kind":"Int32"}}"#,
+        ),
+    ];
+    for (seq_wire, map_wire) in cases {
+        let from_seq: FieldType =
+            serde_json::from_str(seq_wire).unwrap_or_else(|e| panic!("{seq_wire}: {e}"));
+        let from_map: FieldType =
+            serde_json::from_str(map_wire).unwrap_or_else(|e| panic!("{map_wire}: {e}"));
+        assert_eq!(from_seq, from_map, "{seq_wire}");
+    }
+
+    let err = serde_json::from_str::<FieldType>(r#"["Quadruple"]"#)
+        .expect_err("unknown variant must be refused in seq form");
+    assert!(
+        err.to_string().contains("unknown variant `Quadruple`"),
+        "{err}"
+    );
+
+    let err = serde_json::from_str::<FieldType>(r#"[]"#).expect_err("empty seq must be refused");
+    assert!(err.to_string().contains("missing field `kind`"), "{err}");
+
+    let err = serde_json::from_str::<FieldType>(r#"["Int32",null,1]"#)
+        .expect_err("extra seq element must be refused");
+    assert!(err.to_string().contains("invalid length"), "{err}");
+}
+
+/// Duplicate `kind`/`value` keys and a missing `kind` are refused in both
+/// key orders; unrelated keys are ignored like the derive does.
+#[test]
+fn duplicate_and_missing_keys_are_refused_in_both_orders() {
+    let dup_kind: [&str; 2] = [
+        r#"{"kind":"Int32","kind":"Bool"}"#,
+        r#"{"value":null,"kind":"Int32","kind":"Bool"}"#,
+    ];
+    for wire in dup_kind {
+        let err =
+            serde_json::from_str::<FieldType>(wire).expect_err("duplicate kind must be refused");
+        assert!(err.to_string().contains("duplicate field `kind`"), "{err}");
+    }
+    let dup_value: [&str; 2] = [
+        r#"{"kind":"Int32","value":null,"value":1}"#,
+        r#"{"value":null,"kind":"Int32","value":1}"#,
+    ];
+    for wire in dup_value {
+        let err =
+            serde_json::from_str::<FieldType>(wire).expect_err("duplicate value must be refused");
+        assert!(err.to_string().contains("duplicate field `value`"), "{err}");
+    }
+
+    let err = serde_json::from_str::<FieldType>(r#"{"value":null}"#)
+        .expect_err("missing kind must be refused");
+    assert!(err.to_string().contains("missing field `kind`"), "{err}");
+
+    let parsed: FieldType = serde_json::from_str(r#"{"kind":"Int32","extra":{"nested":[1,2]}}"#)
+        .expect("unrelated keys are ignored");
+    assert_eq!(parsed, FieldType::Int32);
+}
+
+/// A non-unit variant name with no `value` at all is refused exactly like the
+/// derived parser (`missing field \`value\``), in map and seq forms alike.
+#[test]
+fn non_unit_variant_without_value_is_refused() {
+    for wire in [r#"{"kind":"Enum"}"#, r#"["Enum"]"#] {
+        let err = serde_json::from_str::<FieldType>(wire)
+            .expect_err("non-unit variant must demand a value");
+        assert!(err.to_string().contains("missing field `value`"), "{err}");
+    }
+}
