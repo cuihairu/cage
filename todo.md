@@ -435,7 +435,7 @@
   - 2026-11-10 落地：拆出 `manifest/config.rs`（BuildProfile/TargetConfig/ProjectConfig/SourceConfig/RegistryConfig/RemoteSourceConfig/ProjectInfo + Default，~208 行）+ 扁平化 `manifest/tests.rs`；mod.rs 剩 ~500 行，crate 根 `pub use config::{...}` 保外部路径不变。fmt+clippy(-D warnings)+75 套件全绿。commit dbab666。
 - [x] LAY-014 [P2] 拆分 `crates/cage-source-sheets/src/lib.rs`（1540 行）——Sheets API 调用、分页、值转换、约定和错误集中（`crates/cage-source-sheets/src/lib.rs:298`）。
   - 2026-11-10 落地：拆出 `rows.rs`（网格/元数据/规范转换，~317 行）+ 扁平化 `tests.rs`（含原 1540-1641 全部用例）；lib.rs 剩 ~389 行。fmt+clippy(-D warnings)+75 套件全绿。commit a03d508。
-- [ ] LAY-015 [P2] 拆分 `crates/cage-core/src/normalize/mod.rs`（1459 行）——递归规范、类型收敛、默认值/数组拆分与测试集中（`crates/cage-core/src/normalize/mod.rs:116`）。
+- [x] LAY-015 [P2] 拆分 `crates/cage-core/src/normalize/mod.rs`（1459 行）——递归规范、类型收敛、默认值/数组拆分与测试集中（`crates/cage-core/src/normalize/mod.rs:116`）。拆出 `normalize/fields.rs`（286 行：fill_field_defaults / split_cell_arrays / coerce_to_type，`pub use` 保持原路径）+ `normalize/tests.rs`（1073 行）；mod.rs 剩 107 行。clippy -D warnings 绿，75 套件全绿，commit 2efdef0。
 - [ ] LAY-016 [P2] 拆分 `crates/cage-core/src/convention/tests.rs`（1438 行）——Excel/Sheets 约定行为测试集中成单测试文件（`crates/cage-core/src/convention/tests.rs`）。
 - [ ] LAY-017 [P2] 拆分 `crates/cage-core/src/convention/mod.rs`（1445 行）——meta 解码、类型文本、脚本执行和响应协议集中（`crates/cage-core/src/convention/mod.rs:165`、`crates/cage-core/src/convention/mod.rs:1144`）。
 - [ ] LAY-018 [P3] 拆分 `crates/cage-cli/tests/cli_paths.rs`（1385 行）——CLI 路径/安全场景共享常量与多组集成测试集中（`crates/cage-cli/tests/cli_paths.rs:37`）。
