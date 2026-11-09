@@ -415,7 +415,7 @@
 
 ### 超大文件候选
 
-- [ ] LAY-001 [P1] 拆分 `crates/cage-cli/src/main.rs`（7572 行）——CLI 定义、项目装载、校验、构建、快照、注册表、迁移、目标分发和测试挤在同一入口（`crates/cage-cli/src/main.rs:83`、`crates/cage-cli/src/main.rs:2184`）。
+- [x] LAY-001 [P1] 拆分 `crates/cage-cli/src/main.rs`（7572 行）——CLI 定义、项目装载、校验、构建、快照、注册表、迁移、目标分发和测试挤在同一入口（`crates/cage-cli/src/main.rs:83`、`crates/cage-cli/src/main.rs:2184`）。已拆出 6 个模块：loading（Project+装载层）、migrate（迁移+草稿+CSV 重写）、build（构建+快照）、registry（本地注册表 CLI）、gen（codegen+manifest）、inspect（inspect/diff/graph/assets/verify），commit 0d6ee4f 5db27a6 887b4d1 7215e80 6811ce7 b6bb035；main.rs 7717→4131 行（其余为 clap 定义、main 分发、run_check 与 ~2700 行单测）。每步全仓 75 套件全绿 + clippy -D warnings + fmt 过。
 - [ ] LAY-002 [P1] 拆分 `crates/cage-core/src/registry.rs`（4208 行）——包模型、版本语义、发布/解析、bundle/签名和 push 路由集中在一个文件（`crates/cage-core/src/registry.rs:39`、`crates/cage-core/src/registry.rs:528`）。
 - [ ] LAY-003 [P1] 拆分 `crates/cage-core/src/validation/mod.rs`（4105 行）——级别枚举、八个校验器、共享规则和测试同文件（`crates/cage-core/src/validation/mod.rs:22`、`crates/cage-core/src/validation/mod.rs:157`）。
 - [ ] LAY-004 [P1] 拆分 `crates/cage-cli/src/web.rs`（3646 行）——HTTP 循环、路由、安全边界、API handler、嵌入 UI 和测试集中（`crates/cage-cli/src/web.rs:61`、`crates/cage-cli/src/web.rs:49`）。
