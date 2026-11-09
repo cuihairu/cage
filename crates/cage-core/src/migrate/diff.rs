@@ -20,7 +20,7 @@
 //! into steps, fill `from`/`to`), then hand to `cage migrate` — which
 //! always dry-runs first, so a half-reviewed draft cannot touch data.
 
-use super::is_widening;
+use super::apply::is_widening;
 use super::Step;
 use crate::schema::{FieldSchema, FieldType, Schema, TableSchema};
 use crate::value::Value;
