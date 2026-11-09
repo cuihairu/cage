@@ -446,7 +446,7 @@
 - [x] LAY-023 [P3] 拆分 `crates/cage-cli/tests/registry.rs`（1265 行）——注册表集成场景、辅助 fixture 与多个 push/import 用例集中（`crates/cage-cli/tests/registry.rs:61`）。（完成：tests/registry/{main,publish,resolve,export,import}.rs；916a432）
 - [x] LAY-024 [P2] 拆分 `crates/cage-core/src/reference/mod.rs`（1247 行）——引用解析、依赖图、增量规划和测试集中（`crates/cage-core/src/reference/mod.rs:9`、`crates/cage-core/src/reference/mod.rs:240`）。（完成：mod 242 + graph 244 + tests 775；8c77d2a）
 - [x] LAY-025 [P2] 拆分 `crates/cage-core/src/migrate/diff.rs`（实为 1274 行，todo 记 1220）——schema diff、规则起草和测试集中（`crates/cage-core/src/migrate/diff.rs:88`、`crates/cage-core/src/migrate/diff.rs:110`）。（完成：diff 218 + diff/{draft,values,render,tests} 191+166+82+647；98870db）
-- [ ] LAY-026 [P2] 拆分 `crates/cage-cli/src/mcp.rs`（1211 行）——工具 schema、执行体、错误解释和测试集中（`crates/cage-cli/src/mcp.rs:135`、`crates/cage-cli/src/mcp.rs:270`）。
+- [x] LAY-026 [P2] 拆分 `crates/cage-cli/src/mcp.rs`（实为 1615 行）——工具 schema、执行体、错误解释和测试集中（`crates/cage-cli/src/mcp.rs:135`、`crates/cage-cli/src/mcp.rs:270`）。（完成：mcp 174 + mcp/{params,tools,views,tests} 89+312+369+711；2f69c42）
 - [ ] LAY-027 [P3] 拆分 `docs/public/editor/app.js`（1155 行）——schema 状态、渲染、校验、构建/产物/快照/注册表 UI 事件集中（`docs/public/editor/app.js:37`）。
 - [ ] LAY-028 [P2] 拆分 `crates/cage-cli/src/init.rs`（1135 行）——交互问答、项目 scaffold 和配置生成集中（`crates/cage-cli/src/init.rs`）。
 - [ ] LAY-029 [P3] 拆分 `crates/cage-cli/tests/web.rs`（1111 行）——Web API 集成 fixture、HTTP 驱动和多面用例集中（`crates/cage-cli/tests/web.rs:174`）。
