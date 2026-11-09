@@ -2,6 +2,7 @@
 
 use crate::value::SourceLocation;
 use indexmap::IndexMap;
+use serde::de;
 use serde::{Deserialize, Serialize};
 
 /// Root schema document
@@ -368,15 +369,19 @@ pub enum FieldType {
     Any,
 }
 
-/// Mirror of [`FieldType`] used only to drive the derived `Deserialize`.
+/// Mirror of [`FieldType`] used only to drive the `Deserialize` parse.
 ///
 /// `FieldType` cannot derive `Deserialize` directly because a type nested
 /// past [`MAX_FIELD_TYPE_DEPTH`] must be refused, but serde's derive has no
-/// depth knob. This mirror keeps the exact derived parsing semantics
-/// (including YAML `kind: Null` matching the `Null` variant) while the
-/// conversion in [`FieldType::deserialize`] enforces the cap.
-#[derive(Deserialize)]
-#[serde(tag = "kind", content = "value")]
+/// depth knob. This mirror keeps the exact adjacently tagged parsing
+/// semantics (including YAML `kind: Null` matching the `Null` variant) while
+/// the conversion in [`FieldType::deserialize`] enforces the cap. The
+/// `Deserialize` impl is hand-written ([`FieldTypeDeVisitor`]) so that when
+/// the `value` content key precedes `kind`, the content is buffered with a
+/// hard depth bound instead of serde's unbounded private `Content` buffer —
+/// serde's derived adjacently tagged parser recurses the whole subtree into
+/// `Content` before any [`BoundedFieldTypeDe`] check runs, which a deeply
+/// nested `serde_json::Value` exploits to overflow the stack.
 enum FieldTypeDe {
     Null,
     Bool,
@@ -398,6 +403,990 @@ enum FieldTypeDe {
     Map(MapFieldDe),
     Enum(String),
     Any,
+}
+
+/// Wire variant names of [`FieldTypeDe`] in declaration order — the order
+/// serde's derive uses for `unknown variant` diagnostics.
+const FIELD_TYPE_VARIANTS: &[&str] = &[
+    "Null",
+    "Bool",
+    "Int8",
+    "Int16",
+    "Int32",
+    "Int64",
+    "UInt8",
+    "UInt16",
+    "UInt32",
+    "UInt64",
+    "Float32",
+    "Float64",
+    "String",
+    "Bytes",
+    "Array",
+    "Object",
+    "TaggedUnion",
+    "Map",
+    "Enum",
+    "Any",
+];
+
+/// Depth-bounded stand-in for serde's internal `Content`, used when the
+/// `value` content key arrives before `kind` in the adjacently tagged wire
+/// format. serde's derived `Deserialize` buffers such content into its
+/// private `Content` enum with no depth limit — a 10,000-level borrowed
+/// `serde_json::Value` overflows the stack before any [`BoundedFieldTypeDe`]
+/// depth check runs. This buffer enforces a hard cap during buffering so an
+/// adversarial input is refused instead of overflowing, then replays through
+/// the same payload types, so parse semantics are identical to the tag-first
+/// path.
+enum BufContent {
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    F64(f64),
+    Str(String),
+    Unit,
+    Seq(Vec<BufContent>),
+    Map(Vec<(BufContent, BufContent)>),
+}
+
+/// Hard cap on `BufContent` nesting. Every `FieldType` level costs at most a
+/// handful of JSON wrapper levels (worst case 4 for `TaggedUnion`: the value
+/// object, the branches map, the branch map and the field map), so a legal
+/// type at [`MAX_FIELD_TYPE_DEPTH`] stays under ~257 levels and this cap
+/// leaves ~2× headroom. The cap only trips on adversarial input and keeps
+/// the buffering recursion well below a 1 MiB thread stack at the measured
+/// ~0.9 KiB per level — deep enough for any legal schema yet far enough from
+/// the guardrail that a 10,000-level input is refused instead of overflowing.
+const BUF_CONTENT_DEPTH_CAP: usize = MAX_FIELD_TYPE_DEPTH * 8;
+
+impl BufContent {
+    fn unexpected(&self) -> de::Unexpected<'_> {
+        match self {
+            BufContent::Bool(v) => de::Unexpected::Bool(*v),
+            BufContent::I64(v) => de::Unexpected::Signed(*v),
+            BufContent::U64(v) => de::Unexpected::Unsigned(*v),
+            BufContent::F64(v) => de::Unexpected::Float(*v),
+            BufContent::Str(v) => de::Unexpected::Str(v),
+            BufContent::Unit => de::Unexpected::Unit,
+            BufContent::Seq(_) => de::Unexpected::Seq,
+            BufContent::Map(_) => de::Unexpected::Map,
+        }
+    }
+}
+
+/// Seed that buffers one content value with the given depth, refusing to
+/// descend past [`BUF_CONTENT_DEPTH_CAP`].
+struct BufContentSeed {
+    depth: usize,
+}
+
+impl<'de> de::DeserializeSeed<'de> for BufContentSeed {
+    type Value = BufContent;
+    fn deserialize<D>(self, deserializer: D) -> Result<BufContent, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(BufContentVisitor { depth: self.depth })
+    }
+}
+
+struct BufContentVisitor {
+    depth: usize,
+}
+
+impl<'de> de::Visitor<'de> for BufContentVisitor {
+    type Value = BufContent;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("any value")
+    }
+    fn visit_bool<E>(self, v: bool) -> Result<BufContent, E> {
+        Ok(BufContent::Bool(v))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<BufContent, E> {
+        Ok(BufContent::I64(v))
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<BufContent, E> {
+        Ok(BufContent::U64(v))
+    }
+    fn visit_f64<E>(self, v: f64) -> Result<BufContent, E> {
+        Ok(BufContent::F64(v))
+    }
+    fn visit_str<E>(self, v: &str) -> Result<BufContent, E> {
+        Ok(BufContent::Str(v.to_owned()))
+    }
+    fn visit_string<E>(self, v: String) -> Result<BufContent, E> {
+        Ok(BufContent::Str(v))
+    }
+    fn visit_unit<E>(self) -> Result<BufContent, E> {
+        Ok(BufContent::Unit)
+    }
+    fn visit_none<E>(self) -> Result<BufContent, E> {
+        Ok(BufContent::Unit)
+    }
+    fn visit_seq<A>(self, mut seq: A) -> Result<BufContent, A::Error>
+    where
+        A: de::SeqAccess<'de>,
+    {
+        if self.depth >= BUF_CONTENT_DEPTH_CAP {
+            return Err(de::Error::custom(
+                "schema value exceeds the maximum nesting depth",
+            ));
+        }
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element_seed(BufContentSeed {
+            depth: self.depth + 1,
+        })? {
+            items.push(item);
+        }
+        Ok(BufContent::Seq(items))
+    }
+    fn visit_map<A>(self, mut map: A) -> Result<BufContent, A::Error>
+    where
+        A: de::MapAccess<'de>,
+    {
+        if self.depth >= BUF_CONTENT_DEPTH_CAP {
+            return Err(de::Error::custom(
+                "schema value exceeds the maximum nesting depth",
+            ));
+        }
+        let mut entries = Vec::new();
+        while let Some((key, value)) = map.next_entry_seed(
+            BufContentSeed {
+                depth: self.depth + 1,
+            },
+            BufContentSeed {
+                depth: self.depth + 1,
+            },
+        )? {
+            entries.push((key, value));
+        }
+        Ok(BufContent::Map(entries))
+    }
+}
+
+/// Replays a buffered [`BufContent`] through the same payload types the
+/// tag-first path uses, so both key orders share identical parse semantics.
+struct BufContentDeserializer<'de, E> {
+    content: BufContent,
+    marker: std::marker::PhantomData<&'de E>,
+}
+
+impl<'de, E> BufContentDeserializer<'de, E>
+where
+    E: de::Error,
+{
+    fn new(content: BufContent) -> Self {
+        BufContentDeserializer {
+            content,
+            marker: std::marker::PhantomData,
+        }
+    }
+    #[cold]
+    fn invalid_type(&self, exp: &dyn de::Expected) -> E {
+        de::Error::invalid_type(self.content.unexpected(), exp)
+    }
+    fn deserialize_integer<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::I64(v) => visitor.visit_i64(v),
+            BufContent::U64(v) => visitor.visit_u64(v),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_float<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::F64(v) => visitor.visit_f64(v),
+            BufContent::I64(v) => visitor.visit_i64(v),
+            BufContent::U64(v) => visitor.visit_u64(v),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+}
+
+impl<'de, E> de::Deserializer<'de> for BufContentDeserializer<'de, E>
+where
+    E: de::Error,
+{
+    type Error = E;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Bool(v) => visitor.visit_bool(v),
+            BufContent::I64(v) => visitor.visit_i64(v),
+            BufContent::U64(v) => visitor.visit_u64(v),
+            BufContent::F64(v) => visitor.visit_f64(v),
+            BufContent::Str(v) => visitor.visit_string(v),
+            BufContent::Unit => visitor.visit_unit(),
+            BufContent::Seq(items) => visitor.visit_seq(BufSeqAccess {
+                iter: items.into_iter(),
+                marker: std::marker::PhantomData,
+            }),
+            BufContent::Map(entries) => visitor.visit_map(BufMapAccess {
+                iter: entries.into_iter(),
+                pending: None,
+                marker: std::marker::PhantomData,
+            }),
+        }
+    }
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Bool(v) => visitor.visit_bool(v),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_integer(visitor)
+    }
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_integer(visitor)
+    }
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_integer(visitor)
+    }
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_integer(visitor)
+    }
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_integer(visitor)
+    }
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_integer(visitor)
+    }
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_integer(visitor)
+    }
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_integer(visitor)
+    }
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_float(visitor)
+    }
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_float(visitor)
+    }
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Str(v) => visitor.visit_string(v),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Str(v) => visitor.visit_string(v),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Str(v) => visitor.visit_string(v),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Str(v) => visitor.visit_byte_buf(v.into_bytes()),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Str(v) => visitor.visit_byte_buf(v.into_bytes()),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Unit => visitor.visit_unit(),
+            _ => visitor.visit_some(self),
+        }
+    }
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Unit => visitor.visit_unit(),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_any(visitor)
+    }
+    fn deserialize_newtype_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Seq(items) => visitor.visit_seq(BufSeqAccess {
+                iter: items.into_iter(),
+                marker: std::marker::PhantomData,
+            }),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Map(entries) => visitor.visit_map(BufMapAccess {
+                iter: entries.into_iter(),
+                pending: None,
+                marker: std::marker::PhantomData,
+            }),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Map(entries) => visitor.visit_map(BufMapAccess {
+                iter: entries.into_iter(),
+                pending: None,
+                marker: std::marker::PhantomData,
+            }),
+            BufContent::Seq(items) => visitor.visit_seq(BufSeqAccess {
+                iter: items.into_iter(),
+                marker: std::marker::PhantomData,
+            }),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_enum<V>(
+        self,
+        _name: &str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        let (variant, value) = match self.content {
+            BufContent::Map(entries) => {
+                let mut iter = entries.into_iter();
+                let Some((variant, value)) = iter.next() else {
+                    return Err(de::Error::invalid_value(
+                        de::Unexpected::Map,
+                        &"map with a single key",
+                    ));
+                };
+                if iter.next().is_some() {
+                    return Err(de::Error::invalid_value(
+                        de::Unexpected::Map,
+                        &"map with a single key",
+                    ));
+                }
+                (variant, Some(value))
+            }
+            s @ BufContent::Str(_) => (s, None),
+            other => {
+                return Err(de::Error::invalid_type(
+                    other.unexpected(),
+                    &"string or map",
+                ));
+            }
+        };
+        visitor.visit_enum(BufEnumAccess {
+            variant,
+            value,
+            marker: std::marker::PhantomData,
+        })
+    }
+    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            BufContent::Str(v) => visitor.visit_string(v),
+            _ => Err(self.invalid_type(&visitor)),
+        }
+    }
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        drop(self);
+        visitor.visit_unit()
+    }
+}
+
+struct BufSeqAccess<'de, E> {
+    iter: std::vec::IntoIter<BufContent>,
+    marker: std::marker::PhantomData<&'de E>,
+}
+
+impl<'de, E> de::SeqAccess<'de> for BufSeqAccess<'de, E>
+where
+    E: de::Error,
+{
+    type Error = E;
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, E>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some(content) => Ok(Some(
+                seed.deserialize(BufContentDeserializer::new(content))?,
+            )),
+            None => Ok(None),
+        }
+    }
+}
+
+struct BufMapAccess<'de, E> {
+    iter: std::vec::IntoIter<(BufContent, BufContent)>,
+    pending: Option<BufContent>,
+    marker: std::marker::PhantomData<&'de E>,
+}
+
+impl<'de, E> de::MapAccess<'de> for BufMapAccess<'de, E>
+where
+    E: de::Error,
+{
+    type Error = E;
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, E>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some((key, value)) => {
+                let key = seed.deserialize(BufContentDeserializer::new(key))?;
+                self.pending = Some(value);
+                Ok(Some(key))
+            }
+            None => Ok(None),
+        }
+    }
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, E>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        match self.pending.take() {
+            Some(value) => seed.deserialize(BufContentDeserializer::new(value)),
+            None => Err(de::Error::custom("map value missing after key")),
+        }
+    }
+}
+
+struct BufEnumAccess<'de, E> {
+    variant: BufContent,
+    value: Option<BufContent>,
+    marker: std::marker::PhantomData<&'de E>,
+}
+
+impl<'de, E> de::EnumAccess<'de> for BufEnumAccess<'de, E>
+where
+    E: de::Error,
+{
+    type Error = E;
+    type Variant = BufVariantAccess<'de, E>;
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), E>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = seed.deserialize(BufContentDeserializer::new(self.variant))?;
+        Ok((
+            variant,
+            BufVariantAccess {
+                value: self.value,
+                marker: std::marker::PhantomData,
+            },
+        ))
+    }
+}
+
+struct BufVariantAccess<'de, E> {
+    value: Option<BufContent>,
+    marker: std::marker::PhantomData<&'de E>,
+}
+
+impl<'de, E> de::VariantAccess<'de> for BufVariantAccess<'de, E>
+where
+    E: de::Error,
+{
+    type Error = E;
+    fn unit_variant(self) -> Result<(), E> {
+        match self.value {
+            Some(value) => <() as de::Deserialize>::deserialize(BufContentDeserializer::new(value)),
+            None => Ok(()),
+        }
+    }
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, E>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.value {
+            Some(value) => seed.deserialize(BufContentDeserializer::new(value)),
+            None => Err(de::Error::invalid_type(
+                de::Unexpected::UnitVariant,
+                &"newtype variant",
+            )),
+        }
+    }
+    fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.value {
+            Some(value) => {
+                de::Deserializer::deserialize_any(BufContentDeserializer::new(value), visitor)
+            }
+            None => Err(de::Error::invalid_type(
+                de::Unexpected::UnitVariant,
+                &"tuple variant",
+            )),
+        }
+    }
+    fn struct_variant<V>(self, _fields: &'static [&'static str], visitor: V) -> Result<V::Value, E>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.value {
+            Some(value) => {
+                de::Deserializer::deserialize_any(BufContentDeserializer::new(value), visitor)
+            }
+            None => Err(de::Error::invalid_type(
+                de::Unexpected::UnitVariant,
+                &"struct variant",
+            )),
+        }
+    }
+}
+
+/// Accepts only null/unit content for a unit variant, mirroring serde's
+/// `UntaggedUnitVisitor` used by the adjacently tagged seed path.
+struct UnitContentVisitor;
+
+impl de::Visitor<'_> for UnitContentVisitor {
+    type Value = ();
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("unit")
+    }
+    fn visit_unit<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_none<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+}
+
+fn is_unit_variant(name: &str) -> bool {
+    matches!(
+        name,
+        "Null"
+            | "Bool"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "Float32"
+            | "Float64"
+            | "String"
+            | "Bytes"
+            | "Any"
+    )
+}
+
+fn unit_construct(name: &str) -> FieldTypeDe {
+    match name {
+        "Null" => FieldTypeDe::Null,
+        "Bool" => FieldTypeDe::Bool,
+        "Int8" => FieldTypeDe::Int8,
+        "Int16" => FieldTypeDe::Int16,
+        "Int32" => FieldTypeDe::Int32,
+        "Int64" => FieldTypeDe::Int64,
+        "UInt8" => FieldTypeDe::UInt8,
+        "UInt16" => FieldTypeDe::UInt16,
+        "UInt32" => FieldTypeDe::UInt32,
+        "UInt64" => FieldTypeDe::UInt64,
+        "Float32" => FieldTypeDe::Float32,
+        "Float64" => FieldTypeDe::Float64,
+        "String" => FieldTypeDe::String,
+        "Bytes" => FieldTypeDe::Bytes,
+        "Any" => FieldTypeDe::Any,
+        _ => unreachable!("unit variant name checked by is_unit_variant"),
+    }
+}
+
+/// Dispatches a buffered or direct deserializer to the payload type of the
+/// named variant — the same payload types the derived adjacently tagged path
+/// uses, so both key orders parse identically.
+fn dispatch_variant<'de, D>(name: &str, deserializer: D) -> Result<FieldTypeDe, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    match name {
+        "Null" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Null)
+        }
+        "Bool" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Bool)
+        }
+        "Int8" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Int8)
+        }
+        "Int16" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Int16)
+        }
+        "Int32" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Int32)
+        }
+        "Int64" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Int64)
+        }
+        "UInt8" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::UInt8)
+        }
+        "UInt16" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::UInt16)
+        }
+        "UInt32" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::UInt32)
+        }
+        "UInt64" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::UInt64)
+        }
+        "Float32" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Float32)
+        }
+        "Float64" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Float64)
+        }
+        "String" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::String)
+        }
+        "Bytes" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Bytes)
+        }
+        "Array" => Ok(FieldTypeDe::Array(Box::new(
+            BoundedFieldTypeDe::deserialize(deserializer)?,
+        ))),
+        "Object" => Ok(FieldTypeDe::Object(
+            IndexMap::<String, BoundedFieldTypeDe>::deserialize(deserializer)?,
+        )),
+        "TaggedUnion" => Ok(FieldTypeDe::TaggedUnion(Box::new(
+            TaggedUnionDe::deserialize(deserializer)?,
+        ))),
+        "Map" => Ok(FieldTypeDe::Map(MapFieldDe::deserialize(deserializer)?)),
+        "Enum" => Ok(FieldTypeDe::Enum(String::deserialize(deserializer)?)),
+        "Any" => {
+            deserializer.deserialize_any(UnitContentVisitor)?;
+            Ok(FieldTypeDe::Any)
+        }
+        other => Err(de::Error::unknown_variant(other, FIELD_TYPE_VARIANTS)),
+    }
+}
+
+/// The seed used to map a `kind`/`value` map key, mirroring serde's
+/// `TagContentOtherFieldVisitor` (unknown keys become `Other` and are
+/// skipped).
+struct FieldTypeVariantSeed {
+    variant: String,
+}
+
+/// Reads the `kind` value (the variant name) and rejects an unknown variant
+/// while the value is still being deserialized. serde's derive builds the
+/// `unknown_variant` error inside `next_value_seed` for the tag, so
+/// `serde_path_to_error` attributes it to the `kind` key; validating here
+/// reproduces that path rather than pointing at the enclosing node.
+struct VariantNameSeed;
+
+impl<'de> de::DeserializeSeed<'de> for VariantNameSeed {
+    type Value = String;
+    fn deserialize<D>(self, deserializer: D) -> Result<String, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        if FIELD_TYPE_VARIANTS.contains(&name.as_str()) {
+            Ok(name)
+        } else {
+            Err(de::Error::unknown_variant(&name, FIELD_TYPE_VARIANTS))
+        }
+    }
+}
+
+impl<'de> de::DeserializeSeed<'de> for FieldTypeVariantSeed {
+    type Value = FieldTypeDe;
+    fn deserialize<D>(self, deserializer: D) -> Result<FieldTypeDe, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        dispatch_variant(&self.variant, deserializer)
+    }
+}
+
+enum TagKey {
+    Kind,
+    Value,
+    Other,
+}
+
+struct TagKeySeed;
+
+impl<'de> de::DeserializeSeed<'de> for TagKeySeed {
+    type Value = TagKey;
+    fn deserialize<D>(self, deserializer: D) -> Result<TagKey, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_identifier(TagKeyVisitor)
+    }
+}
+
+struct TagKeyVisitor;
+
+impl de::Visitor<'_> for TagKeyVisitor {
+    type Value = TagKey;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("`kind` or `value`")
+    }
+    fn visit_u64<E>(self, value: u64) -> Result<TagKey, E>
+    where
+        E: de::Error,
+    {
+        match value {
+            0 => Ok(TagKey::Kind),
+            1 => Ok(TagKey::Value),
+            _ => Ok(TagKey::Other),
+        }
+    }
+    fn visit_str<E>(self, value: &str) -> Result<TagKey, E>
+    where
+        E: de::Error,
+    {
+        self.visit_bytes(value.as_bytes())
+    }
+    fn visit_bytes<E>(self, value: &[u8]) -> Result<TagKey, E>
+    where
+        E: de::Error,
+    {
+        match value {
+            b"kind" => Ok(TagKey::Kind),
+            b"value" => Ok(TagKey::Value),
+            _ => Ok(TagKey::Other),
+        }
+    }
+}
+
+/// Hand-written adjacently tagged `Deserialize` for [`FieldTypeDe`]: accepts
+/// `kind` and `value` in either order. When `value` precedes `kind` the
+/// content is buffered with a hard depth bound ([`BufContent`]) instead of
+/// serde's unbounded private buffer, then replayed through the same payload
+/// types so both orders share identical semantics; when `kind` precedes
+/// `value` the content is deserialized directly, so the
+/// [`BoundedFieldTypeDe`] depth check fires on the live deserializer.
+struct FieldTypeDeVisitor;
+
+impl<'de> de::Visitor<'de> for FieldTypeDeVisitor {
+    type Value = FieldTypeDe;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("adjacently tagged enum FieldTypeDe")
+    }
+    fn visit_map<A>(self, mut map: A) -> Result<FieldTypeDe, A::Error>
+    where
+        A: de::MapAccess<'de>,
+    {
+        let mut kind: Option<String> = None;
+        let mut buffered: Option<BufContent> = None;
+        let mut result: Option<FieldTypeDe> = None;
+        while let Some(key) = map.next_key_seed(TagKeySeed)? {
+            match key {
+                TagKey::Other => {
+                    map.next_value::<de::IgnoredAny>()?;
+                }
+                TagKey::Kind => {
+                    if result.is_some() || kind.is_some() {
+                        return Err(de::Error::duplicate_field("kind"));
+                    }
+                    let name: String = map.next_value_seed(VariantNameSeed)?;
+                    if let Some(content) = buffered.take() {
+                        result = Some(dispatch_variant(
+                            &name,
+                            BufContentDeserializer::<A::Error>::new(content),
+                        )?);
+                    }
+                    kind = Some(name);
+                }
+                TagKey::Value => {
+                    if result.is_some() || buffered.is_some() {
+                        return Err(de::Error::duplicate_field("value"));
+                    }
+                    match &kind {
+                        Some(name) => {
+                            result = Some(map.next_value_seed(FieldTypeVariantSeed {
+                                variant: name.clone(),
+                            })?);
+                        }
+                        None => {
+                            buffered = Some(map.next_value_seed(BufContentSeed { depth: 0 })?);
+                        }
+                    }
+                }
+            }
+        }
+        match (result, kind, buffered) {
+            (Some(parsed), _, _) => Ok(parsed),
+            (None, Some(name), Some(content)) => {
+                dispatch_variant(&name, BufContentDeserializer::<A::Error>::new(content))
+            }
+            (None, Some(name), None) => {
+                // `VariantNameSeed` already rejected unknown variants while
+                // reading the tag, so `name` is a known variant here.
+                if is_unit_variant(&name) {
+                    Ok(unit_construct(&name))
+                } else {
+                    Err(de::Error::missing_field("value"))
+                }
+            }
+            (None, None, _) => Err(de::Error::missing_field("kind")),
+        }
+    }
+    fn visit_seq<A>(self, mut seq: A) -> Result<FieldTypeDe, A::Error>
+    where
+        A: de::SeqAccess<'de>,
+    {
+        let name: String = match seq.next_element_seed(VariantNameSeed)? {
+            Some(name) => name,
+            None => return Err(de::Error::missing_field("kind")),
+        };
+        let parsed = if is_unit_variant(&name) {
+            let _ = seq.next_element::<de::IgnoredAny>()?;
+            unit_construct(&name)
+        } else {
+            match seq.next_element_seed(FieldTypeVariantSeed {
+                variant: name.clone(),
+            })? {
+                Some(parsed) => parsed,
+                None => return Err(de::Error::missing_field("value")),
+            }
+        };
+        if seq.next_element::<de::IgnoredAny>()?.is_some() {
+            return Err(de::Error::invalid_length(3, &"sequence of 2 elements"));
+        }
+        Ok(parsed)
+    }
+}
+
+impl<'de> de::Deserialize<'de> for FieldTypeDe {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(FieldTypeDeVisitor)
+    }
 }
 
 /// Deserializes one `FieldTypeDe` layer at a time, refusing descent once the

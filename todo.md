@@ -391,13 +391,13 @@
 - [x] 审核发现：本轮复审 f7f96995..HEAD 未发现新增问题——既有 6 条开放发现均复现属实（Debug 空白/`{:#?}` 忽略 todo.md:385、Serialize 键序依赖 preserve_order :386、FinishObject/Union 子值 clone 浪费 :387、超限序列化拒绝致往返不对称 :388、take() 文档误导 :389、DepthMeasure 文档矛盾 :390）；另逐帧推演新迭代式 Clone/PartialEq/Eq（crates/cage-core/src/schema/mod.rs:475-770）正确无缺陷，E1004 消息分支与 custom.css 去重亦无问题 — 属实：上述 6 条均已修复并勾选；cargo test --workspace 全绿（cage-core lib 351 项）
 - [x] 审核发现：深度上限在递归反序列化完整的 FieldTypeDe 之后才检查，通过 serde_json::from_value 传入 10000 层嵌套时会先栈溢出并终止进程，无法安全拒绝超限输入（crates/cage-core/src/schema/mod.rs:432） — 属实：反序列化改为在每层 `BoundedFieldTypeDe` 入口限深（`MAX_FIELD_TYPE_DEPTH`），超限即拒绝，不再先解析完整 `FieldTypeDe`；`from_str` 10000 层与借用 `Value` 10000 层均安全返回深度错误（tests/field_type_depth.rs 4/4 全绿）
 - [ ] 审核发现：`serde_json::from_value` 按值消费 10000 层 `Value` 时，serde_json `Value` 的递归 Drop 仍会先爆栈，cage-core 无法在 `from_value` 内部拦截已消费 `Value` 的析构 — BLOCKED（复核 2026-11-06：所缺条件仍缺——serde_json 最新 1.0.154 仍无迭代式 `Value` Drop 或按值安全入口；上游 serde-rs/json#440 仍 open）
-- [ ] 审核发现：`value` 位于 `kind` 之前时，serde 在调用限深包装器前递归缓冲整个字段值，借用 10000 层 `serde_json::Value` 反序列化会栈溢出并终止进程，限深护栏可被合法键序绕过（crates/cage-core/src/schema/mod.rs:386）。
+- [x] 审核发现：`value` 位于 `kind` 之前时，serde 在调用限深包装器前递归缓冲整个字段值，借用 10000 层 `serde_json::Value` 反序列化会栈溢出并终止进程，限深护栏可被合法键序绕过（crates/cage-core/src/schema/mod.rs:386） — 属实：实测复现——借用 10000 层 value-first `Value` 反序列化 SIGABRT 爆栈，kind-first 同深度则被安全拒绝（serde_derive 1.0.219 de.rs:1672 对 content-first 键序 `next_value::<Content>()` 无界缓冲，先于任何限深检查）。修复：为 `FieldType` 手写有界 adjacently-tagged 反序列化——content-first 先缓冲进深度封顶的 `BufContent`（`BUF_CONTENT_DEPTH_CAP` = MAX×8 = 512，crates/cage-core/src/schema/mod.rs:461），再按 serde `ContentDeserializer` 语义重放，两键序解析语义一致；tag-first 直接派发且逐层过 `BoundedFieldTypeDe` 限深（`FieldTypeDeVisitor` mod.rs:1291、`dispatch_variant` mod.rs:1112）。unknown variant 错误改为在读取 `kind` 值时即产生（`VariantNameSeed` mod.rs:1204），与 serde 派生一致地把错误归到 `.type.kind`（serde_path_to_error 路径归属，edit::tests::e1701 仍绿）。新增回归 5 项（crates/cage-core/tests/field_type_depth.rs:103-165：10000 层借用拒绝、10000 层文本拒绝、MAX+1 拒绝、容量处两键序等价+往返、各容器族两键序等价）；cage-core 385 lib + 9 集成全绿，clippy -D warnings 与 fmt 干净
 
 ## 源码分层分析 2026-11-07
 
 ### 抽象层清单
 
-- [ ] APP-001 应用接口层：把 CLI/HTTP/MCP/LSP 请求分发给共享编译管线，不重写校验或生成逻辑（`crates/cage-cli/src/main.rs:575`）。
+- [x] APP-001 应用接口层：把 CLI/HTTP/MCP/LSP 请求分发给共享编译管线，不重写校验或生成逻辑（`crates/cage-cli/src/main.rs:575`） — 属实（已满足，无需改动）：校验唯一入口 `validate_project`（crates/cage-cli/src/main.rs:1304，内部调 cage_core::validation::validate_with_profile）被四端共用——CLI check（main.rs:1333）、HTTP（web.rs:733、web.rs:1264）、MCP（mcp.rs:278、mcp.rs:422）、LSP（lsp.rs:110）；生成唯一入口 `generate_target_items`（main.rs:3727）被 CLI build（main.rs:2452）与 MCP（mcp.rs:465）共用；web.rs/lsp.rs 不含生成路径，`validate_with_profile` 在 cage-cli 内仅 main.rs 三处（1319、2226、3557，均为共享管线内部），无一端重写校验或生成逻辑
 - [ ] APP-002 工程装载层：解析 `cage.toml`、schema、本地/远程源与 registry pin，产出编译输入（`crates/cage-cli/src/main.rs:787`）。
 - [ ] APP-003 核心模型层：用格式无关的 `Schema`、`Value`、`Document` 承载结构化配置与位置元数据（`crates/cage-core/src/schema/mod.rs:9`、`crates/cage-core/src/value/mod.rs:134`）。
 - [ ] APP-004 归一化层：把源数据转换成 schema 声明的类型视图，处理默认值和单元格数组（`crates/cage-core/src/normalize/mod.rs:116`）。
