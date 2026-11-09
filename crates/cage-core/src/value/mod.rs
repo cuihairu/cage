@@ -262,7 +262,7 @@ impl Value {
     /// magnitude — `i64` → [`Value::Int`], larger unsigned → [`Value::UInt`],
     /// anything else → [`Value::Float`] — so a value never silently widens to
     /// float just because it arrived as JSON. Object key order is preserved
-    /// (serde_json is built with `preserve_order` here).
+    /// (`serde_json` is built with `preserve_order` here).
     ///
     /// This is a plain structural mapping, not a serde round-trip: the
     /// canonical model is adjacently tagged (`{"type":…,"value":…}`), which a
@@ -310,8 +310,9 @@ impl Value {
             Value::Bool(b) => serde_json::Value::Bool(*b),
             Value::Int(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
             Value::UInt(u) => serde_json::Value::Number(serde_json::Number::from(*u)),
-            Value::Float(f) => serde_json::Number::from_f64(*f)
-                .map_or(serde_json::Value::Null, |n| serde_json::Value::Number(n)),
+            Value::Float(f) => {
+                serde_json::Number::from_f64(*f).map_or(serde_json::Value::Null, Into::into)
+            }
             Value::String(s) => serde_json::Value::String(s.clone()),
             Value::Bytes(b) => {
                 serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(b))
@@ -775,7 +776,7 @@ mod tests {
         assert_eq!(Value::Int(-4).to_json(), serde_json::json!(-4));
         assert_eq!(
             Value::UInt(u64::MAX).to_json(),
-            serde_json::json!(18446744073709551615u64)
+            serde_json::json!(18_446_744_073_709_551_615u64)
         );
         assert_eq!(Value::Float(1.5).to_json(), serde_json::json!(1.5));
         assert_eq!(

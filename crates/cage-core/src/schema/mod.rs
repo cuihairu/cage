@@ -1358,25 +1358,40 @@ impl<'de> de::Visitor<'de> for FieldTypeDeVisitor {
     where
         A: de::SeqAccess<'de>,
     {
+        // Seq form mirrors the derive exactly: the tag is required
+        // (`invalid_length(0)`), the content element is required even for
+        // unit variants (`invalid_length(1)`), and unit content must be
+        // unit-shaped (null) — `["Int32",true]` is refused, not ignored.
+        // Extra elements are left to the format layer, which reports them
+        // as trailing characters just like the derive does.
         let name: String = match seq.next_element_seed(VariantNameSeed)? {
             Some(name) => name,
-            None => return Err(de::Error::missing_field("kind")),
+            None => {
+                return Err(de::Error::invalid_length(
+                    0,
+                    &"adjacently tagged enum FieldTypeDe",
+                ))
+            }
         };
-        let parsed = if is_unit_variant(&name) {
-            let _ = seq.next_element::<de::IgnoredAny>()?;
-            unit_construct(&name)
+        if is_unit_variant(&name) {
+            match seq.next_element::<()>()? {
+                Some(()) => Ok(unit_construct(&name)),
+                None => Err(de::Error::invalid_length(
+                    1,
+                    &"adjacently tagged enum FieldTypeDe",
+                )),
+            }
         } else {
             match seq.next_element_seed(FieldTypeVariantSeed {
                 variant: name.clone(),
             })? {
-                Some(parsed) => parsed,
-                None => return Err(de::Error::missing_field("value")),
+                Some(parsed) => Ok(parsed),
+                None => Err(de::Error::invalid_length(
+                    1,
+                    &"adjacently tagged enum FieldTypeDe",
+                )),
             }
-        };
-        if seq.next_element::<de::IgnoredAny>()?.is_some() {
-            return Err(de::Error::invalid_length(3, &"sequence of 2 elements"));
         }
-        Ok(parsed)
     }
 }
 

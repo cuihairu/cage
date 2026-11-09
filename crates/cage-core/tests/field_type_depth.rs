@@ -227,11 +227,11 @@ fn primitive_content_is_refused_in_value_first_order() {
 
 /// The positional `[tag, value]` form parses like the map form for unit,
 /// string-payload and container payloads; every malformed shape is refused
-/// with the derive's own diagnostics.
+/// with the derive's own diagnostics — including non-unit content after a
+/// unit tag, a bare tag without content, and extra elements.
 #[test]
 fn seq_form_matches_the_map_form() {
-    let cases: [(&str, &str); 4] = [
-        (r#"["Int32"]"#, r#"{"kind":"Int32"}"#),
+    let cases: [(&str, &str); 3] = [
         (r#"["Int32",null]"#, r#"{"kind":"Int32"}"#),
         (
             r#"["Enum","Damage"]"#,
@@ -257,12 +257,27 @@ fn seq_form_matches_the_map_form() {
         "{err}"
     );
 
+    // The derive requires the content element even for unit variants and
+    // only accepts unit-shaped content: a bare tag is an invalid length and
+    // illegal content is refused, not ignored.
+    for wire in [r#"["Int32"]"#, r#"["Enum"]"#] {
+        let err = serde_json::from_str::<FieldType>(wire)
+            .expect_err("bare tag without content must be refused");
+        assert!(err.to_string().contains("invalid length 1"), "{err}");
+    }
+
     let err = serde_json::from_str::<FieldType>(r#"[]"#).expect_err("empty seq must be refused");
-    assert!(err.to_string().contains("missing field `kind`"), "{err}");
+    assert!(err.to_string().contains("invalid length 0"), "{err}");
+
+    for wire in [r#"["Int32",true]"#, r#"["Int32",1]"#] {
+        let err = serde_json::from_str::<FieldType>(wire)
+            .expect_err("unit variant must refuse non-unit seq content");
+        assert!(err.to_string().contains("invalid type"), "{err}");
+    }
 
     let err = serde_json::from_str::<FieldType>(r#"["Int32",null,1]"#)
         .expect_err("extra seq element must be refused");
-    assert!(err.to_string().contains("invalid length"), "{err}");
+    assert!(err.to_string().contains("trailing characters"), "{err}");
 }
 
 /// Duplicate `kind`/`value` keys and a missing `kind` are refused in both
@@ -297,13 +312,11 @@ fn duplicate_and_missing_keys_are_refused_in_both_orders() {
     assert_eq!(parsed, FieldType::Int32);
 }
 
-/// A non-unit variant name with no `value` at all is refused exactly like the
-/// derived parser (`missing field \`value\``), in map and seq forms alike.
+/// A non-unit variant name with no `value` key is refused exactly like the
+/// derived parser (`missing field \`value\``).
 #[test]
 fn non_unit_variant_without_value_is_refused() {
-    for wire in [r#"{"kind":"Enum"}"#, r#"["Enum"]"#] {
-        let err = serde_json::from_str::<FieldType>(wire)
-            .expect_err("non-unit variant must demand a value");
-        assert!(err.to_string().contains("missing field `value`"), "{err}");
-    }
+    let err = serde_json::from_str::<FieldType>(r#"{"kind":"Enum"}"#)
+        .expect_err("non-unit variant must demand a value");
+    assert!(err.to_string().contains("missing field `value`"), "{err}");
 }
