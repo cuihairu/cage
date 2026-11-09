@@ -427,7 +427,8 @@
   - 2026-11-10 落地：拆为 docfmt/idents/types/literals/filters 五个模块 + 扁平化 tests.rs，lib.rs 剩 ~549 行；crate 根 `pub use`/`pub(crate) use` 保外部路径不变。fmt+clippy(-D warnings)+75 套件全绿（go 30 tests: 29 passed, 1 ignored）。commit 7a97e07。
 - [x] LAY-010 [P2] 拆分 `crates/cage-target-ts/src/lib.rs`（2114 行）——TS/JS 语法、类型映射、运行时形态与生成器测试集中（`crates/cage-target-ts/src/lib.rs:82`）。
   - 2026-11-10 落地：拆为 docfmt/idents/types/literals/plan/filters 六个模块 + 扁平化 tests.rs，lib.rs 剩 ~314 行；crate 根 `pub use register_filters` 保外部路径不变。fmt+clippy(-D warnings)+全量套件全绿。commit a68ee56。
-- [ ] LAY-011 [P2] 拆分 `crates/cage-target-cpp/src/lib.rs`（2041 行）——C++ 类型映射、命名、头文件渲染和测试集中（`crates/cage-target-cpp/src/lib.rs:69`）。
+- [x] LAY-011 [P2] 拆分 `crates/cage-target-cpp/src/lib.rs`（2041 行）——C++ 类型映射、命名、头文件渲染和测试集中（`crates/cage-target-cpp/src/lib.rs:69`）。
+  - 2026-11-10 落地：拆为 idents/types/literals/filters 四个模块 + 扁平化 tests.rs，lib.rs 剩 ~417 行；crate 根 `pub use register_filters` 保外部路径不变。fmt+clippy(-D warnings)+75 套件全绿。commit 36a59e4。
 - [ ] LAY-012 [P2] 拆分 `crates/cage-core/src/validation/rules.rs`（1738 行）——声明式游戏规则实现与规则测试挤进校验 crate 的 rules 文件（`crates/cage-core/src/validation/rules.rs`）。
 - [ ] LAY-013 [P2] 拆分 `crates/cage-core/src/manifest/mod.rs`（1609 行）——BuildManifest、增量记录、cage.toml schema 和生成器在一个文件（`crates/cage-core/src/manifest/mod.rs:9`、`crates/cage-core/src/manifest/mod.rs:523`）。
 - [ ] LAY-014 [P2] 拆分 `crates/cage-source-sheets/src/lib.rs`（1540 行）——Sheets API 调用、分页、值转换、约定和错误集中（`crates/cage-source-sheets/src/lib.rs:298`）。
