@@ -12,7 +12,6 @@
 //! untrusted code (Registry) is never executed — see the design doc for the
 //! full comparison and the migration path.
 
-
 use crate::diagnostics::{Diagnostic, DiagnosticBuilder};
 use crate::error::codes::gamerule;
 use crate::schema::Schema;
