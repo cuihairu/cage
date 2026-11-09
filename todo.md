@@ -444,7 +444,7 @@
 - [x] LAY-021 [P2] 拆分 `crates/cage-source-http/src/lib.rs`（1302 行）——分页、重试、内容类型、缓存 JSON 与测试集中（`crates/cage-source-http/src/lib.rs:45`、`crates/cage-source-http/src/lib.rs:133`）。拆出 `paging.rs`（187：MAX_PAGES/PageFailure/PageFetch/条件 GET 分页游走/Link next 解析）+ `meta.rs`（60：validators sidecar 读写）+ `tests.rs`（928）；lib.rs 剩 148（HttpSourceAdapter 管线）。clippy -D warnings 绿，75 套件全绿。
 - [x] LAY-022 [P2] 拆分 `crates/cage-target-lua/src/lib.rs`（1295 行）——Lua 类型/默认值/转义和生成器测试集中（`crates/cage-target-lua/src/lib.rs:59`）。（完成：lib 259 + idents/types/literals/docfmt/filters + tests 695；9671956）
 - [x] LAY-023 [P3] 拆分 `crates/cage-cli/tests/registry.rs`（1265 行）——注册表集成场景、辅助 fixture 与多个 push/import 用例集中（`crates/cage-cli/tests/registry.rs:61`）。（完成：tests/registry/{main,publish,resolve,export,import}.rs；916a432）
-- [ ] LAY-024 [P2] 拆分 `crates/cage-core/src/reference/mod.rs`（1247 行）——引用解析、依赖图、增量规划和测试集中（`crates/cage-core/src/reference/mod.rs:9`、`crates/cage-core/src/reference/mod.rs:240`）。
+- [x] LAY-024 [P2] 拆分 `crates/cage-core/src/reference/mod.rs`（1247 行）——引用解析、依赖图、增量规划和测试集中（`crates/cage-core/src/reference/mod.rs:9`、`crates/cage-core/src/reference/mod.rs:240`）。（完成：mod 242 + graph 244 + tests 775；8c77d2a）
 - [ ] LAY-025 [P2] 拆分 `crates/cage-core/src/migrate/diff.rs`（1220 行）——schema diff、规则起草和测试集中（`crates/cage-core/src/migrate/diff.rs:88`、`crates/cage-core/src/migrate/diff.rs:110`）。
 - [ ] LAY-026 [P2] 拆分 `crates/cage-cli/src/mcp.rs`（1211 行）——工具 schema、执行体、错误解释和测试集中（`crates/cage-cli/src/mcp.rs:135`、`crates/cage-cli/src/mcp.rs:270`）。
 - [ ] LAY-027 [P3] 拆分 `docs/public/editor/app.js`（1155 行）——schema 状态、渲染、校验、构建/产物/快照/注册表 UI 事件集中（`docs/public/editor/app.js:37`）。
