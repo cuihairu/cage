@@ -2364,6 +2364,13 @@ impl Schema {
         self.tables.get(table)?.fields.get(field)
     }
 
+    /// Look up a shared enum definition by name — the read side of
+    /// [`Schema::add_enum`], so enum consumers (validation L2, target
+    /// generators) don't reach into `self.enums` directly.
+    pub fn get_enum(&self, name: &str) -> Option<&EnumSchema> {
+        self.enums.get(name)
+    }
+
     /// Validate schema internal consistency
     pub fn validate(&self) -> crate::diagnostics::Diagnostics {
         let mut diags = crate::diagnostics::Diagnostics::new();
@@ -3247,6 +3254,11 @@ enums:
         assert_eq!(id.field_type, FieldType::UInt32);
         assert!(schema.get_field("Item", "ghost").is_none());
         assert!(schema.get_field("Ghost", "id").is_none());
+
+        let rarity = schema.get_enum("Rarity").expect("Rarity exists");
+        assert_eq!(rarity.values.len(), 1);
+        assert_eq!(rarity.values[0].name, "Common");
+        assert!(schema.get_enum("Ghost").is_none());
     }
 
     /// A one-field table whose sole field carries the given type.

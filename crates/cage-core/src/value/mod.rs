@@ -255,6 +255,75 @@ impl Value {
             _ => None,
         }
     }
+
+    /// Canonical ingress for JSON-shaped source data (`json` / `yaml` /
+    /// `http` payloads / DB JSON columns / …): one format-agnostic mapping
+    /// every adapter reuses instead of re-deriving. Numbers keep their
+    /// magnitude — `i64` → [`Value::Int`], larger unsigned → [`Value::UInt`],
+    /// anything else → [`Value::Float`] — so a value never silently widens to
+    /// float just because it arrived as JSON. Object key order is preserved
+    /// (serde_json is built with `preserve_order` here).
+    ///
+    /// This is a plain structural mapping, not a serde round-trip: the
+    /// canonical model is adjacently tagged (`{"type":…,"value":…}`), which a
+    /// JSON document of arbitrary user shape must not be confused with.
+    pub fn from_json(json: serde_json::Value) -> Value {
+        match json {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else if let Some(u) = n.as_u64() {
+                    Value::UInt(u)
+                } else {
+                    Value::Float(n.as_f64().unwrap_or_default())
+                }
+            }
+            serde_json::Value::String(s) => Value::String(s),
+            serde_json::Value::Array(items) => {
+                Value::Array(items.into_iter().map(Value::from_json).collect())
+            }
+            serde_json::Value::Object(map) => Value::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, Value::from_json(v)))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Canonical egress to JSON — the inverse of [`Value::from_json`] with
+    /// two documented losses, both matching the JSON target generator's
+    /// established convention (`cage-target-json`):
+    ///
+    /// - [`Value::Bytes`] renders as a standard base64 string (JSON has no
+    ///   byte literal); `from_json` reads that back as `String`, not `Bytes`.
+    /// - A non-finite [`Value::Float`] (`NaN` / `±inf`) renders as `null`
+    ///   (JSON has no such literal).
+    ///
+    /// Object key order is preserved.
+    pub fn to_json(&self) -> serde_json::Value {
+        use base64::Engine as _;
+
+        match self {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::Int(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
+            Value::UInt(u) => serde_json::Value::Number(serde_json::Number::from(*u)),
+            Value::Float(f) => serde_json::Number::from_f64(*f)
+                .map_or(serde_json::Value::Null, |n| serde_json::Value::Number(n)),
+            Value::String(s) => serde_json::Value::String(s.clone()),
+            Value::Bytes(b) => {
+                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(b))
+            }
+            Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(Value::to_json).collect())
+            }
+            Value::Object(obj) => serde_json::Value::Object(
+                obj.iter().map(|(k, v)| (k.clone(), v.to_json())).collect(),
+            ),
+        }
+    }
 }
 
 impl fmt::Display for Value {
@@ -384,10 +453,20 @@ impl Document {
         }
     }
 
-    /// Add a table (registers its source file)
+    /// Add a table (registers its source file once — a second table from
+    /// the same file, or replacing an existing table, adds no duplicate
+    /// entry; `source_files` is a contributing-files record, not a per-table
+    /// log)
     pub fn add_table(&mut self, table: Table) {
-        self.source_files.push(table.source_file.clone());
+        if !self.source_files.contains(&table.source_file) {
+            self.source_files.push(table.source_file.clone());
+        }
         self.tables.insert(table.name.clone(), table);
+    }
+
+    /// Table names in document (insertion) order
+    pub fn table_names(&self) -> Vec<&str> {
+        self.tables.keys().map(String::as_str).collect()
     }
 
     /// Look up a table by name
@@ -630,6 +709,146 @@ mod tests {
         // nested containers format recursively
         let nested = Value::Array(vec![Value::Array(vec![Value::UInt(2)])]);
         assert_eq!(nested.to_string(), "[[2]]");
+    }
+
+    #[test]
+    fn from_json_maps_every_json_shape() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+                "n": null,
+                "flag": true,
+                "small": -3,
+                "big": 18446744073709551615,
+                "ratio": 1.5,
+                "name": "sword",
+                "list": [1, "a", null],
+                "nested": {"k": [true]}
+            }"#,
+        )
+        .expect("parse fixture");
+
+        let v = Value::from_json(json);
+        let Value::Object(obj) = &v else {
+            panic!("expected object, got {v:?}");
+        };
+        assert_eq!(obj["n"], Value::Null);
+        assert_eq!(obj["flag"], Value::Bool(true));
+        assert_eq!(obj["small"], Value::Int(-3));
+        // an integer that exceeds i64 stays an exact UInt, not a float
+        assert_eq!(obj["big"], Value::UInt(u64::MAX));
+        assert_eq!(obj["ratio"], Value::Float(1.5));
+        assert_eq!(obj["name"], Value::String("sword".to_string()));
+        assert_eq!(
+            obj["list"],
+            Value::Array(vec![
+                Value::Int(1),
+                Value::String("a".to_string()),
+                Value::Null
+            ])
+        );
+        assert_eq!(
+            obj["nested"],
+            Value::Object(IndexMap::from([(
+                "k".to_string(),
+                Value::Array(vec![Value::Bool(true)])
+            )]))
+        );
+    }
+
+    #[test]
+    fn from_json_preserves_object_key_order() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"zeta": 1, "alpha": 2, "mid": 3}"#).expect("parse fixture");
+        let Value::Object(obj) = Value::from_json(json) else {
+            panic!("expected object");
+        };
+        let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["zeta", "alpha", "mid"]);
+    }
+
+    #[test]
+    fn to_json_matches_the_json_target_convention() {
+        use base64::Engine as _;
+
+        assert_eq!(Value::Null.to_json(), serde_json::Value::Null);
+        assert_eq!(Value::Bool(true).to_json(), serde_json::json!(true));
+        assert_eq!(Value::Int(-4).to_json(), serde_json::json!(-4));
+        assert_eq!(
+            Value::UInt(u64::MAX).to_json(),
+            serde_json::json!(18446744073709551615u64)
+        );
+        assert_eq!(Value::Float(1.5).to_json(), serde_json::json!(1.5));
+        assert_eq!(
+            Value::String("s".to_string()).to_json(),
+            serde_json::json!("s")
+        );
+        // Bytes → standard base64 string (JSON has no byte literal)
+        assert_eq!(
+            Value::Bytes(b"Hello".to_vec()).to_json(),
+            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(b"Hello"))
+        );
+        // non-finite floats → null (JSON has no such literal)
+        assert_eq!(Value::Float(f64::NAN).to_json(), serde_json::Value::Null);
+        assert_eq!(
+            Value::Float(f64::INFINITY).to_json(),
+            serde_json::Value::Null
+        );
+        // containers recurse, object key order is preserved
+        let nested = Value::Object(IndexMap::from([
+            ("b".to_string(), Value::Array(vec![Value::Null])),
+            ("a".to_string(), Value::Int(1)),
+        ]));
+        assert_eq!(nested.to_json().to_string(), r#"{"b":[null],"a":1}"#);
+    }
+
+    #[test]
+    fn json_roundtrip_loses_only_bytes_and_nonfinite_floats() {
+        let v = Value::Object(IndexMap::from([
+            ("i".to_string(), Value::Int(-3)),
+            ("u".to_string(), Value::UInt(u64::MAX)),
+            ("f".to_string(), Value::Float(1.5)),
+            ("s".to_string(), Value::String("x".to_string())),
+            (
+                "list".to_string(),
+                Value::Array(vec![Value::Bool(false), Value::Null]),
+            ),
+            (
+                "obj".to_string(),
+                Value::Object(IndexMap::from([("k".to_string(), Value::Int(0))])),
+            ),
+        ]));
+        let back = Value::from_json(v.to_json());
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn add_table_records_each_source_file_once() {
+        let row = || Row {
+            primary_key: Vec::new(),
+            fields: IndexMap::new(),
+            location: SourceLocation::new("data.xlsx"),
+            index: 0,
+        };
+        let table = |name: &str, file: &str| Table {
+            name: name.to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![row()],
+            source_file: file.to_string(),
+            sheet: None,
+        };
+
+        let mut doc = Document::new();
+        doc.add_table(table("Item", "data.xlsx"));
+        // a second table from the same file adds no duplicate entry
+        doc.add_table(table("Drop", "data.xlsx"));
+        // replacing a table under the same name adds no duplicate either
+        doc.add_table(table("Item", "data.xlsx"));
+        // a genuinely new file is recorded
+        doc.add_table(table("Shop", "shop.csv"));
+
+        assert_eq!(doc.source_files, ["data.xlsx", "shop.csv"]);
+        assert_eq!(doc.table_names(), ["Item", "Drop", "Shop"]);
+        assert_eq!(doc.get_table("Item").expect("Item").rows.len(), 1);
     }
 
     #[test]
