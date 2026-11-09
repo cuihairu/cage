@@ -1,0 +1,126 @@
+//! C# identifier handling: the hard-keyword table and verbatim-ident
+//! helpers (split out of lib.rs, LAY-019).
+
+use std::collections::HashSet;
+
+const CS_KEYWORDS: &[&str] = &[
+    "abstract",
+    "as",
+    "base",
+    "bool",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "checked",
+    "class",
+    "const",
+    "continue",
+    "decimal",
+    "default",
+    "delegate",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "event",
+    "explicit",
+    "extern",
+    "false",
+    "finally",
+    "fixed",
+    "float",
+    "for",
+    "foreach",
+    "goto",
+    "if",
+    "implicit",
+    "in",
+    "int",
+    "interface",
+    "internal",
+    "is",
+    "lock",
+    "long",
+    "namespace",
+    "new",
+    "null",
+    "object",
+    "operator",
+    "out",
+    "override",
+    "params",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "ref",
+    "return",
+    "sbyte",
+    "sealed",
+    "short",
+    "sizeof",
+    "stackalloc",
+    "static",
+    "string",
+    "struct",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "uint",
+    "ulong",
+    "unchecked",
+    "unsafe",
+    "ushort",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "while",
+];
+
+/// Sanitize a schema name into a valid identifier (ASCII alnum + `_`,
+/// never starting with a digit).
+pub(crate) fn sanitize_ident(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        out.push('_');
+    }
+    if out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    out
+}
+
+/// Identifier with `@` verbatim prefix for C# hard keywords.
+pub(crate) fn cs_ident(name: &str) -> String {
+    let s = sanitize_ident(name);
+    if CS_KEYWORDS.contains(&s.as_str()) {
+        format!("@{s}")
+    } else {
+        s
+    }
+}
+
+/// First-unique wins: colliding identifiers get `_` appended until free
+/// (deterministic because callers iterate in name order).
+pub(crate) fn unique_ident(base: String, used: &mut HashSet<String>) -> String {
+    let mut candidate = base;
+    while !used.insert(candidate.clone()) {
+        candidate.push('_');
+    }
+    candidate
+}
