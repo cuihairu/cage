@@ -196,6 +196,7 @@
 - [x] 实测：codecov 口径=CI 无 DB env=97.18%（50587/52053）；开 DB live 测试=98.03%（51030/52053）。缺口 0.16% 不是"几个分支"，而是 cage-source-db live 测试在 CI 从未运行（443 行 DB 代码仅活库可覆盖）。
 - [x] 处置：补 FieldType value-first replay 全覆盖测试（`schema/mod.rs` buf_content_replay_tests + `tests/field_type_depth.rs`，395 lib + 14 集成全绿）+ CI coverage job 加 postgres:16/mysql:8.0 service 并注入 DSN（`ci.yml`，live 测试如实参与统计）。
 - [x] 证据：commit `51faf98`（test）、`24147a6`（ci），本地 DB-enabled 98.03%，剩余未覆盖集中在 web.rs 阻塞服务器/fs 竞态臂、main.rs 错误臂、remote.rs 网络错误臂等难达分支；codecov project 状态为 informational（`target: auto`，1% 阈值），不构成合入门禁。
+- [x] CI 确认：run `42604610186` 全绿；4 个 live 测试（`live_pg_pooled_fetch_round_trips_pins_and_reuses`/`live_pg_bulk_fetch_round_trips`/`live_mysql_*`）在 CI 真实运行通过（service 生效）；codecov/project **98.71%**（+1.55% vs `4419e97`），codecov/patch 100.00%，达标。
 ### 路线图四项拍板
 
 - [x] 四项逐条裁定完毕
