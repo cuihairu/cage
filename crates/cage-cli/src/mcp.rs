@@ -14,7 +14,7 @@
 //!
 //! Everything is JSON: an AI can read the result and tell the user exactly
 //! what to change. Nothing here re-implements validation or generation —
-//! the tools call [`validate_project`], [`generate_target_items`] and the
+//! the tools call [`crate::validate_project`], [`crate::gen::generate_target_items`] and the
 //! same loaders `cage check` / `cage build` use.
 
 use rmcp::handler::server::wrapper::Parameters;

@@ -43,7 +43,7 @@ pub enum BundleCompression {
     /// format `export_bundle` wrote before compression landed.
     Plain,
     /// The deterministic tar wrapped in a single zstd frame at the fixed
-    /// level [`BUNDLE_ZSTD_LEVEL`]. `import_bundle` sniffs the frame magic,
+    /// level [`super::BUNDLE_ZSTD_LEVEL`]. `import_bundle` sniffs the frame magic,
     /// so both forms load identically; the trust ledger hashes uncompressed
     /// content, so a wrapped bundle verifies exactly like its plain form.
     Zstd,

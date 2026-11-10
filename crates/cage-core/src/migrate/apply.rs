@@ -60,7 +60,7 @@ impl MigrateReport {
 /// are all no-ops), which is what makes `cage migrate --write` idempotent.
 ///
 /// `from_schema` supplies the pre-migration field types for `widen_type`'s
-/// direction check; reference validity against it is [`validate_spec`]'s
+/// direction check; reference validity against it is [`super::validate_spec`]'s
 /// job (run before apply). The CLI loads the current (already-bumped)
 /// schema, so a step whose target type equals the schema's type takes the
 /// `current == to` path — the direction table has nothing to say about a

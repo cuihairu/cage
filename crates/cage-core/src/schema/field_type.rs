@@ -195,7 +195,7 @@ pub struct MapField {
 
 /// Maximum nesting depth for a `FieldType` (`Array` / `Map` / `Object` /
 /// `TaggedUnion` recursively nest). A deeper type is refused by
-/// [`Schema::validate`] rather than recursing the schema and the
+/// [`super::Schema::validate`] rather than recursing the schema and the
 /// normalize/generator passes without bound — a maliciously deep schema
 /// must not overflow the stack. 64 is far beyond any realistic data
 /// shape and keeps the recursive walks safely bounded.
