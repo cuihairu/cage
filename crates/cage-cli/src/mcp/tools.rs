@@ -6,7 +6,8 @@ use super::views::{
     table_names,
 };
 use crate::{
-    filter_by_profile, generate_target_items, load_project, load_project_config, validate_project,
+    filter_by_profile, generate_target_items, load_project, load_project_config, normalize_artifact_rel,
+    validate_project,
 };
 use cage_core::manifest::ManifestGenerator;
 use cage_core::normalize_document;
@@ -233,6 +234,7 @@ pub(crate) fn run_build_dry_run(
             }
         };
         for (rel_path, content) in items {
+            let rel_path = normalize_artifact_rel(&rel_path);
             let table = rel_path
                 .rsplit('/')
                 .next()

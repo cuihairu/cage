@@ -68,7 +68,9 @@ pub(crate) use registry::{
 
 mod build;
 
-pub(crate) use gen::{generate_target_items, run_gen, write_artifact_files, write_manifest};
+pub(crate) use gen::{
+    generate_target_items, normalize_artifact_rel, run_gen, write_artifact_files, write_manifest,
+};
 
 pub(crate) use inspect::{
     load_manifest, manifest_rel_path_is_safe, resolved_within_root, run_assets, run_diff,
@@ -1478,10 +1480,12 @@ mod tests {
         let names: Vec<String> = files
             .iter()
             .map(|p| {
+                // Compare against `/`-separated expectations (the portable
+                // form) regardless of the platform's native separator.
                 p.strip_prefix(root)
                     .unwrap_or(p)
                     .to_string_lossy()
-                    .into_owned()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
             })
             .collect();
         assert_eq!(
@@ -3067,7 +3071,6 @@ file_template = "{{table}}.csv"
 
     #[test]
     fn build_incremental_carries_untouched_tables_and_recovers() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         let proj = two_table_fixture(root, "carry", "csv");
@@ -3086,22 +3089,26 @@ file_template = "{{table}}.csv"
 
         // A carried artifact that became unreadable falls back to a full
         // build — which then fails writing the unreadable file back.
-        let tag_csv = proj.join("build/client/csv/Tag.csv");
-        std::fs::set_permissions(&tag_csv, std::fs::Permissions::from_mode(0o000))
-            .expect("chmod 000");
-        write_text(
-            &proj.join("config/item.json"),
-            r#"{"Item": [{"id": 1, "name": "Clay"}]}"#,
-        );
-        assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 2);
-        std::fs::set_permissions(&tag_csv, std::fs::Permissions::from_mode(0o644))
-            .expect("chmod 644");
-        assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 0);
+        // (Mode bits only bite on unix; the carry path is covered above.)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let tag_csv = proj.join("build/client/csv/Tag.csv");
+            std::fs::set_permissions(&tag_csv, std::fs::Permissions::from_mode(0o000))
+                .expect("chmod 000");
+            write_text(
+                &proj.join("config/item.json"),
+                r#"{"Item": [{"id": 1, "name": "Clay"}]}"#,
+            );
+            assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 2);
+            std::fs::set_permissions(&tag_csv, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod 644");
+            assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 0);
+        }
     }
 
     #[test]
     fn build_stale_target_artifacts_are_removed_with_warnings() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         let proj = two_table_fixture(root, "stale", "csvout");
@@ -3112,20 +3119,29 @@ file_template = "{{table}}.csv"
 
         // One stale file is already gone (the NotFound arm), the other sits
         // in a read-only directory (the denied arm): both warn, neither
-        // fails the build.
+        // fails the build. (Read-only directories are a unix story; the
+        // NotFound arm runs everywhere.)
         std::fs::remove_file(proj.join("build/client/csvout/Item.csv")).expect("rm stale");
-        std::fs::set_permissions(
-            proj.join("build/client/csvout"),
-            std::fs::Permissions::from_mode(0o500),
-        )
-        .expect("chmod 500");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                proj.join("build/client/csvout"),
+                std::fs::Permissions::from_mode(0o500),
+            )
+            .expect("chmod 500");
+        }
         write_text(&proj.join("cage.toml"), &two_table_toml("csvout2"));
         assert_eq!(run_build(&proj, "gamerule", "client", None, true, false), 0);
-        std::fs::set_permissions(
-            proj.join("build/client/csvout"),
-            std::fs::Permissions::from_mode(0o700),
-        )
-        .expect("chmod back");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                proj.join("build/client/csvout"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .expect("chmod back");
+        }
         assert!(proj.join("build/client/csvout2/Tag.csv").is_file());
     }
 
@@ -3473,7 +3489,9 @@ file_template = "{table}.cs"
 
     /// A migrate fixture: the schema already declares `description` (the
     /// post-migration shape), the data still carries the pre-rename `desc`
-    /// extra field.
+    /// extra field. (Only the unix-gated read-only --write scenario uses
+    /// it; on Windows it would dangle unused.)
+    #[cfg(unix)]
     fn migrate_fixture(root: &Path, dir_name: &str) -> PathBuf {
         let proj = root.join(dir_name);
         write_text(
@@ -3531,7 +3549,6 @@ steps:
 
     #[test]
     fn migrate_reports_chain_apply_and_write_failures() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
 
@@ -3561,22 +3578,26 @@ steps:
         assert_eq!(run_migrate(&apply, false, None, false), 1);
 
         // A read-only source file fails the --write landing, then succeeds
-        // once writable again.
-        let wr = migrate_fixture(root, "mig_write");
-        let source = wr.join("config/item.json");
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444))
-            .expect("chmod 444");
-        assert_eq!(run_migrate(&wr, false, Some("0.2.0"), true), 1);
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644))
-            .expect("chmod 644");
-        assert_eq!(run_migrate(&wr, false, Some("0.2.0"), true), 0);
-        let text = std::fs::read_to_string(&source).expect("rewritten");
-        assert!(text.contains("\"description\": \"sharp\""), "{text}");
+        // once writable again. (Mode bits only bite on unix; the apply-time
+        // failures above run everywhere.)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let wr = migrate_fixture(root, "mig_write");
+            let source = wr.join("config/item.json");
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444))
+                .expect("chmod 444");
+            assert_eq!(run_migrate(&wr, false, Some("0.2.0"), true), 1);
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod 644");
+            assert_eq!(run_migrate(&wr, false, Some("0.2.0"), true), 0);
+            let text = std::fs::read_to_string(&source).expect("rewritten");
+            assert!(text.contains("\"description\": \"sharp\""), "{text}");
+        }
     }
 
     #[test]
     fn migrate_draft_reports_load_and_write_failures() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         let v1 = root.join("v1.yaml");
@@ -3622,15 +3643,22 @@ enums: {}
             run_migrate_draft(&v1, &v2, "1", "2", Some(&blocker.join("d.yaml"))),
             1
         );
-        // -o into a read-only directory cannot write.
-        let ro = root.join("rodir");
-        std::fs::create_dir_all(&ro).expect("rodir");
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).expect("chmod 500");
-        assert_eq!(
-            run_migrate_draft(&v1, &v2, "1", "2", Some(&ro.join("d.yaml"))),
-            1
-        );
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).expect("chmod back");
+        // -o into a read-only directory cannot write. (Mode bits only bite
+        // on unix; the load/draft failures above run everywhere.)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ro = root.join("rodir");
+            std::fs::create_dir_all(&ro).expect("rodir");
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500))
+                .expect("chmod 500");
+            assert_eq!(
+                run_migrate_draft(&v1, &v2, "1", "2", Some(&ro.join("d.yaml"))),
+                1
+            );
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod back");
+        }
     }
 
     #[test]

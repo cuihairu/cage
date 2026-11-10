@@ -34,9 +34,14 @@ pub fn script_fingerprint(
     // semantically equal configs (differing only in key order) hash the
     // same, matching the "canonical form" determinism contract.
     let config = canonical_json(&convention.script_config);
+    // The path segment carries `/` separators on every platform (the
+    // portable form) — a Windows-native `\` path would leak the separator
+    // into `source_hash` / `build_id`.
+    let script_display = script
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
     Ok(Some(format!(
-        "{CONTRACT_VERSION}|{script_hash}|{}|{config}",
-        script.to_string_lossy()
+        "{CONTRACT_VERSION}|{script_hash}|{script_display}|{config}"
     )))
 }
 

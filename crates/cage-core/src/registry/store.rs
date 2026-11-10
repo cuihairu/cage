@@ -68,7 +68,16 @@ pub(crate) fn files_under(dir: &Path) -> Result<Vec<PathBuf>, String> {
             if p.is_dir() {
                 stack.push(p);
             } else {
-                files.push(p.strip_prefix(dir).expect("under dir").to_path_buf());
+                // Registry-relative paths are portable `/`-separated keys
+                // (push URLs, tar member names) — normalize the platform
+                // separator at the walk so every consumer stringifies the
+                // same dialect. On unix this is an identity.
+                let rel = p
+                    .strip_prefix(dir)
+                    .expect("under dir")
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+                files.push(std::path::PathBuf::from(rel));
             }
         }
     }

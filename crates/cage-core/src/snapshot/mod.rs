@@ -218,7 +218,13 @@ fn files_on_disk(dir: &Path) -> Result<Vec<String>, String> {
                 .strip_prefix(base)
                 .map_err(|_| "path escape".to_string())?
                 .to_string_lossy()
-                .into_owned();
+                // Snapshot-relative paths are `/`-separated keys everywhere
+                // (the ledger is written from manifest paths), so the walk
+                // must speak the same dialect to be comparable — a Windows
+                // `\` walk would flag every ledgered file as an unlisted
+                // extra. On unix `MAIN_SEPARATOR` is `/`, so this is an
+                // identity (backslashes inside file names survive).
+                .replace(std::path::MAIN_SEPARATOR, "/");
             let metadata = std::fs::symlink_metadata(&path)
                 .map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
             if metadata.file_type().is_symlink() {

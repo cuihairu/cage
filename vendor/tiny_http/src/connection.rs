@@ -2,9 +2,11 @@
 
 #[cfg(unix)]
 use std::os::unix::net as unix_net;
+// `PathBuf` is only used by the unix-socket listener address variants.
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::{
     net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    path::PathBuf,
 };
 
 /// Unified listener. Either a [`TcpListener`] or [`std::os::unix::net::UnixListener`]

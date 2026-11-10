@@ -180,6 +180,9 @@ fn start_server(status: u16, body: &'static str) -> TestServer {
         while !stop2.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Windows accepts inherit the listener's non-blocking
+                    // mode; restore blocking so the response write waits.
+                    let _ = stream.set_nonblocking(false);
                     let head = format!(
                         "HTTP/1.1 {status} REASON\r\nContent-Type: application/json\r\n\
                              Content-Length: {}\r\nConnection: close\r\n\r\n",
@@ -189,6 +192,14 @@ fn start_server(status: u16, body: &'static str) -> TestServer {
                     let _ = stream.write_all(head.as_bytes());
                     let _ = stream.write_all(body.as_bytes());
                     let _ = stream.flush();
+                    // The request is never parsed here, but it must be
+                    // drained before the drop: Windows resets a socket
+                    // closed with unread data pending, and that reset
+                    // clobbers the client's in-flight response read.
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                    use std::io::Read as _;
+                    let mut drained = Vec::new();
+                    let _ = stream.read_to_end(&mut drained);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(5));
@@ -227,6 +238,9 @@ fn start_server_routes(routes: Vec<(&'static str, u16, &'static str)>) -> TestSe
         while !stop2.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Windows accepts inherit the listener's non-blocking
+                    // mode; restore blocking so the request read waits.
+                    let _ = stream.set_nonblocking(false);
                     let mut buf = [0u8; 2048];
                     let n = stream.read(&mut buf).unwrap_or(0);
                     let head = String::from_utf8_lossy(&buf[..n]).to_string();
@@ -771,6 +785,7 @@ fn meta_sheet_missing_or_mismatched_is_e2207_or_e2201() {
 /// cells — number / string / boolean / null — not `.text()`-stringified
 /// cells (review finding: sheets was flattening every cell to a string,
 /// turning blank cells into `""` instead of `null`).
+#[cfg(unix)]
 #[test]
 fn script_grid_keeps_typed_cells_not_strings() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

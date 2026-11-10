@@ -296,6 +296,15 @@ pub(crate) fn java_holder(target: &TargetConfig) -> String {
         .map_or_else(|| f.to_string(), |s| s.to_string_lossy().into_owned())
 }
 
+/// Manifest-facing form of a target's relative output path: portable `/`
+/// separators. The path is a contract key downstream (manifest artifacts,
+/// snapshot ledger, `api_artifact` lookups, diff target mapping) — every
+/// consumer compares it against `/`-separated strings, so the platform
+/// separator must never leak into the recorded form.
+pub(crate) fn normalize_artifact_rel(rel: &str) -> String {
+    rel.replace(std::path::MAIN_SEPARATOR, "/")
+}
+
 /// Write generated artifacts under `root`, recording manifest entries
 /// (relative path, content, raw format string, table stem when derivable).
 pub(crate) fn write_artifact_files(
@@ -305,6 +314,7 @@ pub(crate) fn write_artifact_files(
     artifacts: &mut Vec<(String, Vec<u8>, String, Option<String>)>,
 ) -> Result<(), String> {
     for (rel_path, content) in items {
+        let rel_path = normalize_artifact_rel(&rel_path);
         let abs = root.join(&rel_path);
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)

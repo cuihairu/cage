@@ -209,11 +209,12 @@ impl CsvTargetGenerator {
         }
 
         let file_name = self.file_template.replace("{table}", &table.name);
+        // Artifact keys are contract strings — always `/`.
         let path = self
             .output_dir
             .join(&file_name)
             .to_string_lossy()
-            .to_string();
+            .replace(std::path::MAIN_SEPARATOR, "/");
 
         Ok((path, buffer))
     }

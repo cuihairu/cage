@@ -163,10 +163,11 @@ impl JsonSchemaTargetGenerator {
     }
 
     fn path(&self, file_name: &str) -> String {
+        // Artifact keys are contract strings — always `/`.
         self.output_dir
             .join(file_name)
             .to_string_lossy()
-            .to_string()
+            .replace(std::path::MAIN_SEPARATOR, "/")
     }
 
     /// One table document: meta, title/description, object shape with the

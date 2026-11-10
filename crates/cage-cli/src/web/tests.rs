@@ -1236,13 +1236,22 @@ fn api_upload_writes_the_first_registered_root_even_when_later_roots_have_data()
 
     let (status, payload) = api_upload(&ctx, "name=Item", br#"{"Item": [{"id": 1}]}"#);
     assert_eq!(status, 200, "{payload}");
-    let expected = ctx.root.join("config/item.json").display().to_string();
-    assert_eq!(payload["source_file"], serde_json::json!(expected));
+    // Compare as paths, not strings: the absolute path's separators are the
+    // platform's business (`config\item.json` on Windows means the same
+    // file as `config/item.json`).
+    let expected = ctx.root.join("config/item.json");
+    assert_eq!(
+        payload["source_file"].as_str().map(std::path::PathBuf::from),
+        Some(expected),
+        "{payload}"
+    );
 }
 
+/// Windows ignores the read-only attribute on directories, so the
+/// unwritable-parent failure this exercises only reproduces on unix.
 #[test]
+#[cfg(unix)]
 fn api_upload_reports_500_when_the_source_parent_is_unwritable() {
-    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     let dir = TempDir::new().expect("tempdir");
     let ctx = demo_ctx(&dir);
@@ -1257,7 +1266,6 @@ fn api_upload_reports_500_when_the_source_parent_is_unwritable() {
         dir.path().join("config/ro/item.json"),
     )
     .unwrap();
-    #[cfg(unix)]
     fs::set_permissions(
         dir.path().join("config/ro"),
         fs::Permissions::from_mode(0o555),
@@ -1267,7 +1275,6 @@ fn api_upload_reports_500_when_the_source_parent_is_unwritable() {
     let (status, payload) = api_upload(&ctx, "name=Item", br#"{"Item": []}"#);
     assert_eq!(status, 500, "{payload}");
     assert!(payload["error"].as_str().unwrap().contains("cannot"));
-    #[cfg(unix)]
     fs::set_permissions(
         dir.path().join("config/ro"),
         fs::Permissions::from_mode(0o755),
@@ -1407,7 +1414,10 @@ fn api_diff_rejects_absolute_paths_and_parent_traversal() {
 
     let (status, err) = api_diff(&ctx, "from=build&to=absent");
     assert_eq!(status, 400);
-    assert!(err["error"].as_str().unwrap().contains("No such file"));
+    // The message names the offending parameter; the OS wording after it is
+    // platform-specific (unix "No such file or directory", Windows "The
+    // system cannot find the file specified").
+    assert!(err["error"].as_str().unwrap().contains("absent"));
 }
 
 #[test]
@@ -2234,25 +2244,30 @@ fn api_table_reports_a_failed_panel_load_and_null_cells() {
 #[test]
 fn api_save_reports_io_failures_and_tolerates_unrelated_indexes() {
     // Io: the source directory denies writes (and re-admits them on
-    // the way out so the tempdir can be removed).
-    let dir = TempDir::new().expect("tempdir");
-    multi_file_project(&dir);
-    let ctx = ctx_in(&dir, Some("schemas"));
-    let schemas = dir.path().join("schemas");
-    let writable = fs::metadata(&schemas).expect("stat").permissions();
-    let mut perms = writable.clone();
-    perms.set_readonly(true);
-    fs::set_permissions(&schemas, perms).expect("chmod");
+    // the way out so the tempdir can be removed). Mode bits only bite
+    // on unix — Windows ignores the read-only attribute on directories,
+    // so there the save would legitimately succeed.
+    #[cfg(unix)]
+    {
+        let dir = TempDir::new().expect("tempdir");
+        multi_file_project(&dir);
+        let ctx = ctx_in(&dir, Some("schemas"));
+        let schemas = dir.path().join("schemas");
+        let writable = fs::metadata(&schemas).expect("stat").permissions();
+        let mut perms = writable.clone();
+        perms.set_readonly(true);
+        fs::set_permissions(&schemas, perms).expect("chmod");
 
-    let (envelope, _, _) = edited_envelope(&dir, |doc| {
-        doc["tables"]["Item"]["fields"]["id"]["min"] = serde_json::json!(1);
-    });
-    let (status, payload) = api_save(&ctx, &envelope);
-    fs::set_permissions(&schemas, writable).expect("chmod back");
-    assert_eq!(status, 500, "{payload}");
-    assert_eq!(payload["ok"], serde_json::json!(false));
-    let err = payload["error"].as_str().expect("io error");
-    assert!(err.contains("schemas"), "{err}");
+        let (envelope, _, _) = edited_envelope(&dir, |doc| {
+            doc["tables"]["Item"]["fields"]["id"]["min"] = serde_json::json!(1);
+        });
+        let (status, payload) = api_save(&ctx, &envelope);
+        fs::set_permissions(&schemas, writable).expect("chmod back");
+        assert_eq!(status, 500, "{payload}");
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        let err = payload["error"].as_str().expect("io error");
+        assert!(err.contains("schemas"), "{err}");
+    }
 
     // Unrelated index: the echoed sources list another file, so no
     // conflict applies and the plain save proceeds.
@@ -2299,19 +2314,23 @@ fn api_save_reports_io_failures_and_tolerates_unrelated_indexes() {
 #[test]
 fn api_upload_refuses_targets_that_escape_the_configured_roots() {
     // Symlink escape: the source resolves to a path outside the root.
-    let dir = TempDir::new().expect("tempdir");
-    let outside = TempDir::new().expect("outside tempdir");
-    let outside_file = outside.path().join("elsewhere.json");
-    fs::write(&outside_file, r#"{"Item": [{"id": 1}]}"#).expect("write outside");
-    let ctx = demo_ctx(&dir);
-    fs::remove_file(dir.path().join("config/item.json")).expect("drop original");
+    // (Creating the symlink needs `std::os::unix::fs::symlink` — a unix
+    // capability.)
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&outside_file, dir.path().join("config/item.json"))
-        .expect("symlink");
-    let (status, doc) = api_upload(&ctx, "name=Item&profile=client", b"[1]");
-    assert_eq!(status, 400, "{doc}");
-    let err = doc["error"].as_str().expect("escape error");
-    assert!(err.contains("outside the project"), "{err}");
+    {
+        let dir = TempDir::new().expect("tempdir");
+        let outside = TempDir::new().expect("outside tempdir");
+        let outside_file = outside.path().join("elsewhere.json");
+        fs::write(&outside_file, r#"{"Item": [{"id": 1}]}"#).expect("write outside");
+        let ctx = demo_ctx(&dir);
+        fs::remove_file(dir.path().join("config/item.json")).expect("drop original");
+        std::os::unix::fs::symlink(&outside_file, dir.path().join("config/item.json"))
+            .expect("symlink");
+        let (status, doc) = api_upload(&ctx, "name=Item&profile=client", b"[1]");
+        assert_eq!(status, 400, "{doc}");
+        let err = doc["error"].as_str().expect("escape error");
+        assert!(err.contains("outside the project"), "{err}");
+    }
 
     // Root mismatch: the disk config feeds the table from `data/`,
     // but the Ctx only knows `config/` — outside every root it lists.
@@ -2445,16 +2464,19 @@ fn api_diff_refuses_escapes_and_missing_manifests_and_reports_moves() {
     let dir = TempDir::new().expect("tempdir");
     let ctx = ctx_in(&dir, None);
 
-    // Baseline path resolving outside the root.
-    let outside = TempDir::new().expect("outside tempdir");
-    let outside_file = outside.path().join("elsewhere.json");
-    fs::write(&outside_file, b"{}").expect("write outside");
+    // Baseline path resolving outside the root. (Creating the symlink
+    // needs `std::os::unix::fs::symlink` — a unix capability.)
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&outside_file, dir.path().join("bad")).expect("symlink");
-    let (status, doc) = api_diff(&ctx, "from=bad&to=build");
-    assert_eq!(status, 400, "{doc}");
-    let err = doc["error"].as_str().expect("escape error");
-    assert!(err.contains("outside project root"), "{err}");
+    {
+        let outside = TempDir::new().expect("outside tempdir");
+        let outside_file = outside.path().join("elsewhere.json");
+        fs::write(&outside_file, b"{}").expect("write outside");
+        std::os::unix::fs::symlink(&outside_file, dir.path().join("bad")).expect("symlink");
+        let (status, doc) = api_diff(&ctx, "from=bad&to=build");
+        assert_eq!(status, 400, "{doc}");
+        let err = doc["error"].as_str().expect("escape error");
+        assert!(err.contains("outside project root"), "{err}");
+    }
 
     let manifest_json = |artifacts: serde_json::Value| {
         serde_json::json!({
@@ -2540,7 +2562,11 @@ impl Ctx {
 
 #[cfg(test)]
 mod handle_tests {
-    use super::super::{api_save, api_schema, handle, run_web};
+    use super::super::{api_schema, handle, run_web};
+    // `api_save` is only exercised here by the unix-gated unwritable-target
+    // test below (atomic write-back permissions don't bite on Windows).
+    #[cfg(unix)]
+    use super::super::api_save;
     use super::{ctx_in, good_doc};
     use std::fs;
     use std::io::{Read, Write};

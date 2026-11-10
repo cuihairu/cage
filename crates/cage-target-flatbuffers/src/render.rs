@@ -178,10 +178,11 @@ impl FlatbuffersTargetGenerator {
     }
 
     fn path(&self, file_name: &str) -> String {
+        // Artifact keys are contract strings — always `/`.
         self.output_dir
             .join(file_name)
             .to_string_lossy()
-            .to_string()
+            .replace(std::path::MAIN_SEPARATOR, "/")
     }
 
     /// Resolve one schema enum into a .fbs enum, or `None` when any member

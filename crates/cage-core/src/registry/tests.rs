@@ -569,6 +569,9 @@ fn start_push_server_inner(force_put: Option<u16>, force_get: Option<u16>) -> Pu
                 }
                 Err(_) => break,
             };
+            // Windows accepts inherit the listener's non-blocking mode;
+            // restore blocking so the request read waits.
+            let _ = stream.set_nonblocking(false);
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
             // Read the head, then exactly Content-Length body bytes.
             let mut buf = Vec::new();
@@ -2045,6 +2048,9 @@ fn push_entry_requires_http_root_and_maps_transport_failure() {
                 }
                 Err(_) => break,
             };
+            // Windows accepts inherit the listener's non-blocking mode;
+            // restore blocking so the request read waits.
+            let _ = stream.set_nonblocking(false);
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
             // Read just the request head — the method decides the fate:
             // a GET gets a 404 (fresh remote), a PUT gets silence (the
@@ -2085,17 +2091,21 @@ fn push_entry_requires_http_root_and_maps_transport_failure() {
     handle.join().ok();
 }
 
+// Both scenario levers are unix-only: a 0o000 ledger and a non-UTF-8
+// ghost directory — Windows can represent neither, so there is nothing
+// to test there.
+#[cfg(unix)]
 #[test]
 fn verify_registry_reports_unreadable_ledger_and_skips_unnameable_dirs() {
     let tmp = tempfile::tempdir().unwrap();
     let snap = tmp.path().join("snap");
     make_snapshot(&snap, "epsilon");
     publish(tmp.path(), "common", "1.0.0", &snap).unwrap();
-    let entry = tmp.path().join("common").join("1.0.0");
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let entry = tmp.path().join("common").join("1.0.0");
         fs::set_permissions(entry.join(LEDGER_FILE), fs::Permissions::from_mode(0o000)).unwrap();
     }
     #[cfg(unix)]

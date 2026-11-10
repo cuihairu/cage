@@ -13,7 +13,14 @@ use serde_json::json;
 /// The shared example project, absolute (cargo runs test binaries from the
 /// package directory).
 fn example_root() -> String {
-    format!("{}/../../examples/game-config", env!("CARGO_MANIFEST_DIR"))
+    // URIs end up inside JSON bodies, so the root must stay forward-slashed:
+    // a raw Windows path carries `\` characters that read as invalid JSON
+    // escapes (`\t` in `\tools`, …) and the server rightly answers with a
+    // parse error. Identity on unix.
+    format!(
+        "{}/../../examples/game-config",
+        env!("CARGO_MANIFEST_DIR").replace(std::path::MAIN_SEPARATOR, "/")
+    )
 }
 
 /// One framed LSP message written to the server's stdin.

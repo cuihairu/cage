@@ -1223,10 +1223,14 @@ pub(crate) fn api_snapshot(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
     match crate::build_project(&ctx.root, "gamerule", &profile, env, false, false) {
         Ok(out) => match crate::pack_snapshot(&ctx.root, &out) {
             Ok((snap_dir, files)) => {
-                let rel = snap_dir.strip_prefix(&ctx.root).map_or_else(
-                    |_| snap_dir.to_string_lossy().to_string(),
-                    |p| p.to_string_lossy().to_string(),
-                );
+                // Portable `/` separators for the JSON-facing rel (the page
+                // splits the name off with `/`); native separators would
+                // leak `\` on Windows.
+                let rel = snap_dir
+                    .strip_prefix(&ctx.root)
+                    .unwrap_or(&snap_dir)
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/");
                 (
                     200,
                     serde_json::json!({

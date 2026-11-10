@@ -91,6 +91,9 @@ fn start_server(dir: &Path) -> TestServer {
         while !stop2.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Windows accepts inherit the listener's non-blocking
+                    // mode; restore blocking so the request read waits.
+                    let _ = stream.set_nonblocking(false);
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let mut head = Vec::new();
                     let mut buf = [0u8; 1024];
@@ -380,6 +383,9 @@ fn paginated_remote_source_builds_end_to_end() {
         while !stop2.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Windows accepts inherit the listener's non-blocking
+                    // mode; restore blocking so the request read waits.
+                    let _ = stream.set_nonblocking(false);
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let mut head = Vec::new();
                     let mut buf = [0u8; 1024];

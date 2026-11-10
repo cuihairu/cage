@@ -180,6 +180,9 @@ fn start_push_server(force_put_status: Option<u16>) -> (PushServer, Store, Reque
                 }
                 Err(_) => break,
             };
+            // Windows accepts inherit the listener's non-blocking mode;
+            // restore blocking so the request read waits.
+            let _ = stream.set_nonblocking(false);
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             let mut buf = Vec::new();
             let mut chunk = [0u8; 4096];

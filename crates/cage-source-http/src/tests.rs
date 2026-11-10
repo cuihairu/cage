@@ -51,6 +51,9 @@ fn start_server(status: u16, reason: &str, body: &'static str) -> Server {
         while !stop2.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Windows accepts inherit the listener's non-blocking
+                    // mode; restore blocking so the request read waits.
+                    let _ = stream.set_nonblocking(false);
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let _ = read_request_head(&mut stream);
                     let _ = stream.write_all(head.as_bytes());
@@ -114,6 +117,9 @@ fn start_route_server(
         while !stop2.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Windows accepts inherit the listener's non-blocking
+                    // mode; restore blocking so the request read waits.
+                    let _ = stream.set_nonblocking(false);
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let head = read_request_head(&mut stream);
                     let request = String::from_utf8_lossy(&head);
@@ -182,6 +188,9 @@ fn start_throttle_server(
         while !stop2.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Windows accepts inherit the listener's non-blocking
+                    // mode; restore blocking so the request read waits.
+                    let _ = stream.set_nonblocking(false);
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let _ = read_request_head(&mut stream);
                     let n = hits2.fetch_add(1, Ordering::SeqCst) + 1;
@@ -644,6 +653,9 @@ fn start_revalidate_server(etag: &str, body: &str) -> RevalidateServer {
         while !stop2.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Windows accepts inherit the listener's non-blocking
+                    // mode; restore blocking so the request read waits.
+                    let _ = stream.set_nonblocking(false);
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let head = read_request_head(&mut stream);
                     let request = String::from_utf8_lossy(&head);

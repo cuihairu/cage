@@ -1,6 +1,7 @@
 use super::*;
 use cage_core::convention::{CellValue, Preset};
 use cage_core::error::codes::source_convention::{E2201, E2203, E2207};
+#[cfg(unix)]
 use cage_core::error::codes::source_convention::{E2202, E2204, E2205, E2206};
 use cage_core::error::codes::{internal, parse};
 use cage_core::schema::FieldType;
@@ -1675,6 +1676,7 @@ fn test_convention_violation_is_anchored_to_the_cell() {
 // which is a repository file too (contract §"script").
 
 /// Where python is; the script fixture uses `#!/usr/bin/env python3`.
+#[cfg(unix)]
 fn python() -> Option<String> {
     for candidate in ["python3", "python"] {
         if std::process::Command::new(candidate)
@@ -1690,8 +1692,10 @@ fn python() -> Option<String> {
 
 /// A throwaway project root: `tools/` for scripts, a workbook inside it,
 /// so a declared script path stays inside the root (§51 Q2).
+#[cfg(unix)]
 struct TempRoot(PathBuf);
 
+#[cfg(unix)]
 impl TempRoot {
     fn new(tag: &str) -> Self {
         let nanos = std::time::SystemTime::now()
@@ -1744,6 +1748,7 @@ impl TempRoot {
     }
 }
 
+#[cfg(unix)]
 impl Drop for TempRoot {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -1752,6 +1757,7 @@ impl Drop for TempRoot {
 
 /// The script the contract tests point at: it reads the request, checks
 /// the contract version, and answers two columns.
+#[cfg(unix)]
 const META_SCRIPT: &str = r#"#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
@@ -2012,6 +2018,7 @@ fn test_header_row_beyond_the_sheet_reports_keywordless_rows() {
 }
 
 /// A declared script name that is not a file inside the root is refused.
+#[cfg(unix)]
 fn root_tag(missing: &str) -> String {
     missing
         .chars()

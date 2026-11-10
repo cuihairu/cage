@@ -1,5 +1,10 @@
 use super::super::*;
-use crate::error::codes::source_convention::{E2202, E2203, E2204, E2205, E2206, E2207};
+use crate::error::codes::source_convention::{E2202, E2203, E2206, E2207};
+// `E2204` / `E2205` / `Duration` only feed the unix-gated subprocess tests
+// below; on Windows they would dangle unused.
+#[cfg(unix)]
+use crate::error::codes::source_convention::{E2204, E2205};
+#[cfg(unix)]
 use std::time::Duration;
 
 /// `parse_response` gates every malformed script answer with the right code
@@ -156,11 +161,18 @@ fn resolve_script_rejects_unsafe_paths() {
 
     let resolved = resolve_script(root.path(), "tools/echo.py").expect("good script");
     assert!(resolved.is_file());
-    assert!(resolved.starts_with(root.path()));
+    // The resolved path is canonical, which on Windows means the verbatim
+    // `\\?\C:\…` spelling — compare against a canonicalized root so both
+    // sides carry the same prefix.
+    assert!(
+        resolved.starts_with(root.path().canonicalize().expect("root canon")),
+        "{resolved:?}"
+    );
 }
 
 // ---- run_script: real subprocess paths (python3 fixture scripts) ----
 
+#[cfg(unix)]
 fn python3_available() -> bool {
     std::process::Command::new("python3")
         .arg("--version")
@@ -168,6 +180,7 @@ fn python3_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+#[cfg(unix)]
 fn write_script(root: &std::path::Path, rel: &str, body: &str) {
     let path = root.join(rel);
     if let Some(parent) = path.parent() {

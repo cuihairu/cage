@@ -139,6 +139,11 @@ fn json_dry_run_reports_plan_without_writing() {
     let out = run_cage(&["migrate", proj.to_str().unwrap()]);
     assert_code(&out, 0, "json dry run");
     let out_str = stdout(&out);
+    // The report spells the source path with the OS's own separators.
+    let would_write = format!(
+        "{} (1 table(s))",
+        proj.join("config").join("item.json").display()
+    );
     for line in [
         "cage migrate: segment 0001-rename-item.yaml (1.0.0 → 1.1.0)",
         "rename_field(Item.name → title): 2 row(s)",
@@ -147,7 +152,7 @@ fn json_dry_run_reports_plan_without_writing() {
         // canonical Int carries no width: Int32 → Int64 rewrites nothing
         "widen_type(Item.level → Int64): 0 row(s)",
         "would write",
-        "config/item.json (1 table(s))",
+        would_write.as_str(),
         "cage migrate: OK (1 segment(s), 3 row(s) migrated",
         "dry run, nothing written",
     ] {
@@ -462,7 +467,8 @@ fn excel_report_carries_cell_level_locations() {
         tmp.path(),
         "from: \"1.0.0\"\nto: \"1.1.0\"\nsteps:\n  - set_default:\n      table: Items\n      field: rarity\n      value: \"common\"\n  - set_default:\n      table: Items\n      field: note\n      value: \"\"\n",
     );
-    let xlsx = proj.join("config/Items.xlsx").display().to_string();
+    // Join stepwise so the needle carries the OS separators the report prints.
+    let xlsx = proj.join("config").join("Items.xlsx").display().to_string();
 
     let out = run_cage(&["migrate", proj.to_str().unwrap()]);
     assert_code(&out, 0, "excel location report");
@@ -680,6 +686,7 @@ fn migrate_chain_end_outside_dependencies_pin_is_refused() {
 
 /// Two-table schema + one segment renaming a field in both tables, so
 /// both source files would change under --write.
+#[cfg(unix)]
 const TWO_TABLE_SCHEMA: &str = r#"tables:
   Item:
     name: Item
@@ -716,6 +723,7 @@ const TWO_TABLE_SCHEMA: &str = r#"tables:
 enums: {}
 "#;
 
+#[cfg(unix)]
 const MONSTER_DATA: &str = r#"{
   "Monster": [
     { "id": 1, "name": "Slime" },
@@ -724,6 +732,7 @@ const MONSTER_DATA: &str = r#"{
 }
 "#;
 
+#[cfg(unix)]
 const TWO_SOURCE_SEGMENT: &str = r#"from: "1.0.0"
 to: "1.1.0"
 steps:

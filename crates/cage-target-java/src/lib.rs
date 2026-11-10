@@ -272,7 +272,11 @@ impl JavaTargetGenerator {
             Some(dir) => self.output_dir.join(dir),
             None => self.output_dir.clone(),
         };
-        base.join(file_name).to_string_lossy().to_string()
+        // Artifact keys are contract strings — always `/` (see
+        // cage-target-template's join_output).
+        base.join(file_name)
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/")
     }
 
     /// Path of a table unit: the `{table}` placeholder is replaced with the
@@ -282,7 +286,7 @@ impl JavaTargetGenerator {
         self.output_dir
             .join(file_name)
             .to_string_lossy()
-            .to_string()
+            .replace(std::path::MAIN_SEPARATOR, "/")
     }
 
     /// Enums-unit context for the shared enums template: per-enum shape

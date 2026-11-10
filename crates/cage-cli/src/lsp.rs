@@ -157,7 +157,13 @@ fn lsp_diagnostic(diag: &Diagnostic) -> Value {
     let mut message = format!("{}: {}", diag.code, diag.message);
     if let Some(location) = &diag.location {
         use std::fmt::Write as _;
-        let _ = write!(message, " ({})", location.display());
+        // Editor-facing text keeps the portable `/` separators even when
+        // the location's file path is Windows-native.
+        let _ = write!(
+            message,
+            " ({})",
+            location.display().replace(std::path::MAIN_SEPARATOR, "/")
+        );
     }
     if let Some(hint) = &diag.hint {
         use std::fmt::Write as _;
