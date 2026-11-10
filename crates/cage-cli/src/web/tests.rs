@@ -1241,7 +1241,9 @@ fn api_upload_writes_the_first_registered_root_even_when_later_roots_have_data()
     // file as `config/item.json`).
     let expected = ctx.root.join("config/item.json");
     assert_eq!(
-        payload["source_file"].as_str().map(std::path::PathBuf::from),
+        payload["source_file"]
+            .as_str()
+            .map(std::path::PathBuf::from),
         Some(expected),
         "{payload}"
     );
