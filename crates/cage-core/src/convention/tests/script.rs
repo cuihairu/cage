@@ -326,6 +326,51 @@ fn run_script_reports_broken_pipe_and_spawn_failure() {
 }
 
 #[test]
+#[cfg(unix)]
+fn run_script_truncates_long_stderr_at_a_char_boundary() {
+    if !python3_available() {
+        eprintln!("skip: no python3");
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // A script that fails with >400 bytes of stderr ending in a multi-byte
+    // character. The truncation must land on a char boundary (byte 400 could
+    // slice a CJK char) and must not panic, preserving the E2205 diagnostic.
+    write_script(
+        tmp.path(),
+        "tools/loud.py",
+        "#!/usr/bin/env python3\nimport sys\nsys.stderr.write('x' * 500 + '中文尾部' + '\\n')\nsys.exit(1)\n",
+    );
+    let err = run_script(
+        tmp.path(),
+        "tools/loud.py",
+        &[],
+        Duration::from_secs(5),
+        &serde_json::json!({}),
+    )
+    .expect_err("non-zero exit");
+    let errors = err.errors();
+    let d = errors
+        .iter()
+        .find(|d| d.code == E2205)
+        .expect("E2205 present");
+    assert!(
+        d.message.len() < 500,
+        "stderr must be truncated to ~400 bytes, got {} bytes",
+        d.message.len()
+    );
+    assert!(
+        d.message.is_char_boundary(d.message.len()),
+        "truncation must be safe"
+    );
+    assert!(
+        !d.message.contains('中'),
+        "truncation must cut before the multi-byte tail, got: {}",
+        d.message
+    );
+}
+
+#[test]
 fn preset_for_script_and_empty_script_validate() {
     let scripted = ExcelConvention {
         script: Some("tools/gen.py".to_string()),

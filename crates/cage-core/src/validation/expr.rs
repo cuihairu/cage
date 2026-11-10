@@ -520,4 +520,33 @@ mod tests {
         assert_eq!(Operand::Lit(Value::Bool(true)).render(), "true");
         assert_eq!(Operand::Lit(Value::String("w".into())).render(), "w");
     }
+
+    #[test]
+    fn lexer_tolerates_trailing_whitespace_and_specific_errors_name_their_spot() {
+        // Trailing whitespace after the last token ends the scan cleanly —
+        // the assert still parses to the same comparison.
+        let cmp = parse_assert("price <= 10   ").expect("trailing spaces parse");
+        assert_eq!(cmp.rhs, Operand::Lit(Value::Int(10)));
+
+        // Each malformed shape reports its own reason, so the author sees
+        // the actual mistake instead of a generic "bad assert".
+        let err = parse_assert("`` == 1").unwrap_err();
+        assert_eq!(err, "empty backtick reference");
+
+        let err = parse_assert("a == 'oops").unwrap_err();
+        assert_eq!(err, "unterminated ' string literal");
+
+        let err = parse_assert("a == \"oops").unwrap_err();
+        assert_eq!(err, "unterminated \" string literal");
+
+        // Extra tokens after a complete comparison are position errors.
+        let err = parse_assert("a < 1 b").unwrap_err();
+        assert_eq!(err, "unexpected field 'b'");
+
+        let err = parse_assert("a < 1 2").unwrap_err();
+        assert_eq!(err, "unexpected literal");
+
+        let err = parse_assert("a < b < c").unwrap_err();
+        assert_eq!(err, "unexpected operator '<'");
+    }
 }

@@ -163,3 +163,48 @@ fn test_verify_rejects_non_inventory_file() {
     let err = verify(dir.path(), &cfg, &baseline).unwrap_err();
     assert!(err.contains("no project name"), "{err}");
 }
+
+#[test]
+fn asset_class_display_labels_are_lowercase() {
+    // The class name is user-facing (inventory / baseline files and the
+    // verify report spell it out), so the labels are part of the contract.
+    assert_eq!(AssetClass::Rule.to_string(), "rule");
+    assert_eq!(AssetClass::Source.to_string(), "source");
+    assert_eq!(AssetClass::Build.to_string(), "build");
+}
+
+#[test]
+fn inventory_refuses_a_root_without_a_project_config() {
+    // Fail closed: an inventory over a directory that has no cage.toml /
+    // cage.yaml / cage.yml / cage.json is an error, not a silently empty one.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let cfg = config("project:\n  name: demo\nprofiles: {}\n");
+    let err = inventory(dir.path(), &cfg).unwrap_err();
+    assert!(
+        err.contains("no project config found")
+            && err.contains(dir.path().to_str().expect("utf8 root")),
+        "{err}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn inventory_fails_closed_on_unsupported_file_types() {
+    // A symlink inside a scanned tree is neither a regular file nor a
+    // directory: the inventory refuses it instead of silently skipping (an
+    // inventory that hides entries defeats the tamper check it exists for).
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    write_project(dir.path());
+    std::os::unix::fs::symlink(
+        dir.path().join("schemas/item.yaml"),
+        dir.path().join("sources/Item.link"),
+    )
+    .expect("symlink");
+    let cfg = config("project:\n  name: demo\nprofiles: {}\nsource_roots:\n  main: sources\nschema_path: schemas\n");
+
+    let err = inventory(dir.path(), &cfg).unwrap_err();
+    assert!(
+        err.contains("unsupported file type") && err.contains("sources/Item.link"),
+        "{err}"
+    );
+}

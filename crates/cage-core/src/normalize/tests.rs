@@ -1071,3 +1071,220 @@ fn test_normalize_map_field_values_deterministically() {
     // Locations survive normalization
     assert_eq!(first.location, typed.location);
 }
+
+#[test]
+fn test_coerce_object_to_tagged_union() {
+    // The Object → TaggedUnion branch (回流-6): the discriminant key selects a
+    // branch and every payload key is coerced per that branch's types.
+    let tu = crate::schema::TaggedUnion {
+        tag: "$type".to_string(),
+        branches: IndexMap::from([(
+            "Damage".to_string(),
+            IndexMap::from([
+                ("amount".to_string(), FieldType::Int32),
+                ("element".to_string(), FieldType::String),
+            ]),
+        )]),
+    };
+    let ft = FieldType::TaggedUnion(Box::new(tu));
+
+    // Valid: tag + all payload keys coerced (here "410" arrives as a string
+    // and is coerced to the branch's Int32, proving per-branch typing).
+    let obj = Value::Object(IndexMap::from([
+        ("$type".to_string(), Value::String("Damage".to_string())),
+        ("amount".to_string(), Value::String("410".to_string())),
+        ("element".to_string(), Value::String("wind".to_string())),
+    ]));
+    assert_eq!(
+        coerce_to_type(&obj, &ft),
+        Some(Value::Object(IndexMap::from([
+            ("$type".to_string(), Value::String("Damage".to_string())),
+            ("amount".to_string(), Value::Int(410)),
+            ("element".to_string(), Value::String("wind".to_string())),
+        ]))),
+        "selected branch coerces every payload key, tag passes through"
+    );
+
+    // Missing discriminant key → uncoercible (the L2 check reports it).
+    let obj = Value::Object(IndexMap::from([("amount".to_string(), Value::Int(1))]));
+    assert_eq!(coerce_to_type(&obj, &ft), None, "no tag key → None");
+
+    // Unknown discriminant → uncoercible.
+    let obj = Value::Object(IndexMap::from([(
+        "$type".to_string(),
+        Value::String("Fire".to_string()),
+    )]));
+    assert_eq!(coerce_to_type(&obj, &ft), None, "unknown branch → None");
+
+    // A payload key that belongs to no branch (or another branch) → None: the
+    // union is closed, a stray key must not silently drop.
+    let obj = Value::Object(IndexMap::from([
+        ("$type".to_string(), Value::String("Damage".to_string())),
+        ("stray".to_string(), Value::Int(1)),
+    ]));
+    assert_eq!(coerce_to_type(&obj, &ft), None, "stray payload key → None");
+}
+
+#[test]
+fn test_split_cell_arrays_unknown_branch_and_non_array_type_passthrough() {
+    use crate::value::{Document, Row, Table};
+
+    let schema: crate::schema::Schema = serde_yaml::from_str(
+        r#"enums: {}
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      fx:
+        name: fx
+        type:
+          kind: TaggedUnion
+          value:
+            tag: "$type"
+            branches:
+              Damage: { amount: { kind: Int32 } }
+        separator: "|"
+      plain:
+        name: plain
+        type: { kind: String }
+        separator: "|"
+"#,
+    )
+    .expect("parse schema");
+
+    let loc = |r: usize| crate::value::SourceLocation::new("t.json").with_row(r);
+    let mut row1 = IndexMap::new();
+    row1.insert("id".to_string(), TypedValue::new(Value::Int(1), loc(1)));
+    // Unknown branch token: the union's discriminant selects no branch.
+    row1.insert(
+        "fx".to_string(),
+        TypedValue::new(Value::String("Fire|410".to_string()), loc(1)),
+    );
+    // A non-array / non-union field with a separator is left as the scalar.
+    row1.insert(
+        "plain".to_string(),
+        TypedValue::new(Value::String("a|b".to_string()), loc(1)),
+    );
+
+    let mut doc = Document::new();
+    doc.add_table(Table {
+        name: "T".to_string(),
+        primary_key_fields: vec!["id".to_string()],
+        rows: vec![Row {
+            primary_key: vec![Value::Int(1)],
+            fields: row1,
+            location: loc(1),
+            index: 0,
+        }],
+        source_file: "t.json".to_string(),
+        sheet: None,
+    });
+
+    split_cell_arrays(&schema, &mut doc);
+
+    let row = &doc.tables["T"].rows[0];
+    assert_eq!(
+        row.fields["fx"].value,
+        Value::String("Fire|410".to_string()),
+        "unknown union discriminant leaves the cell as-is for the L2 check"
+    );
+    assert_eq!(
+        row.fields["plain"].value,
+        Value::String("a|b".to_string()),
+        "a scalar field with a separator is not split (only Array/TaggedUnion are)"
+    );
+}
+
+#[test]
+fn test_split_cell_arrays_skips_absent_and_empty_cells_and_foreign_tables() {
+    use crate::value::{Document, Row, Table};
+
+    let schema: crate::schema::Schema = serde_yaml::from_str(
+        r#"enums: {}
+tables:
+  T:
+    name: T
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      tags:
+        name: tags
+        type: { kind: Array, value: { kind: Int32 } }
+        separator: ","
+"#,
+    )
+    .expect("parse schema");
+
+    let loc = |r: usize| crate::value::SourceLocation::new("t.json").with_row(r);
+    // Row 1: `tags` is absent from the row entirely — the guard must skip it
+    // (no panic, no synthesized value). Row 2: `tags` is an empty string —
+    // an empty cell is not split (kept empty). Both are valid data shapes.
+    let mut row1 = IndexMap::new();
+    row1.insert("id".to_string(), TypedValue::new(Value::Int(1), loc(1)));
+    let mut row2 = IndexMap::new();
+    row2.insert("id".to_string(), TypedValue::new(Value::Int(2), loc(2)));
+    row2.insert(
+        "tags".to_string(),
+        TypedValue::new(Value::String(String::new()), loc(2)),
+    );
+
+    let mut doc = Document::new();
+    doc.add_table(Table {
+        name: "T".to_string(),
+        primary_key_fields: vec!["id".to_string()],
+        rows: vec![
+            Row {
+                primary_key: vec![Value::Int(1)],
+                fields: row1,
+                location: loc(1),
+                index: 0,
+            },
+            Row {
+                primary_key: vec![Value::Int(2)],
+                fields: row2,
+                location: loc(2),
+                index: 1,
+            },
+        ],
+        source_file: "t.json".to_string(),
+        sheet: None,
+    });
+    // A table present in the document but absent from the schema (an orphan
+    // or a table the schema does not describe) must be skipped untouched.
+    let mut orphan_fields = IndexMap::new();
+    orphan_fields.insert(
+        "tags".to_string(),
+        TypedValue::new(Value::String("1,2,3".to_string()), loc(1)),
+    );
+    doc.add_table(Table {
+        name: "Ghost".to_string(),
+        primary_key_fields: vec!["id".to_string()],
+        rows: vec![Row {
+            primary_key: vec![Value::Int(1)],
+            fields: orphan_fields,
+            location: loc(1),
+            index: 0,
+        }],
+        source_file: "t.json".to_string(),
+        sheet: None,
+    });
+
+    split_cell_arrays(&schema, &mut doc);
+
+    // Absent field: nothing inserted, value untouched.
+    assert!(!doc.tables["T"].rows[0].fields.contains_key("tags"));
+    // Empty cell: left as empty string, not turned into an empty array.
+    assert_eq!(
+        doc.tables["T"].rows[1].fields["tags"].value,
+        Value::String(String::new()),
+        "an empty cell is not split"
+    );
+    // Foreign table: its separator field is not split (no schema to act on).
+    assert_eq!(
+        doc.tables["Ghost"].rows[0].fields["tags"].value,
+        Value::String("1,2,3".to_string()),
+        "a table absent from the schema is left untouched"
+    );
+}
