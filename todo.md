@@ -451,7 +451,7 @@
 - [x] LAY-028 [P2] 拆分 `crates/cage-cli/src/init.rs`（实为 1432 行）——交互问答、项目 scaffold 和配置生成集中（`crates/cage-cli/src/init.rs`）。（完成：init 340 + init/{dialog,scaffold,tests} 365+192+556；0c02729）
 - [x] LAY-029 [P3] 拆分 `crates/cage-cli/tests/web.rs`（实为 1127 行）——Web API 集成 fixture、HTTP 驱动和多面用例集中（`crates/cage-cli/tests/web.rs:174`）。（完成：tests/web/{main,editor,status,data,snapshots}.rs 255+406+118+240+125；ec3a703）
 - [x] LAY-030 [P3] 拆分 `crates/cage-target-flatbuffers/src/lib.rs`（1100 行）——fbs 类型/服务声明、模板渲染和测试集中（`crates/cage-target-flatbuffers/src/lib.rs:145`）。lib.rs 74 + render.rs 679 + tests.rs 492（commit 7770f5f，75 suites / 1249 tests 绿）。
-- [ ] LAY-031 [P3] 拆分 `crates/cage-target-proto/src/lib.rs`（1015 行）——proto 类型映射、消息渲染和测试集中（`crates/cage-target-proto/src/lib.rs:128`）。
+- [x] LAY-031 [P3] 拆分 `crates/cage-target-proto/src/lib.rs`（1015 行）——proto 类型映射、消息渲染和测试集中（`crates/cage-target-proto/src/lib.rs:128`）。lib.rs 71 + render.rs 592 + tests.rs 365（commit c4f21d2，75 suites / 1249 tests 绿）。
 
 ### 目录/分类不合理处
 
