@@ -466,3 +466,11 @@
 - [x] 覆盖率实测与缺口补齐（work-runner 任务）：workspace 行覆盖 95.70%→95.81%（missed lines 1367→1334）、region 94.73%→94.85%（2741→2681）、function 91.02%→91.06%（251→250）——纯测试新增 9 个行为测试、0 行生产代码改动：`normalize/fields.rs` 86.40%→99.20%（对象→TaggedUnion 逐分支强制转换 + split_cell_arrays 未知分支/非数组带分隔符/缺席与空单元格/外部表守卫）、`validation/expr.rs` 94.60%→96.37%（尾随空白词法、空反引号引用、未终止字符串字面量、rhs 后多余 field/literal/operator 的定位报错）、`assets/mod.rs` 91.78%→97.95%（AssetClass Display 三标签、无项目配置 fail-closed、sources 内 symlink 触发 unsupported file type）、`convention/script.rs` 91.46%→92.53%（stderr>400 字节按字符边界截断，CJK 不 panic）；`cage-source-db/pg.rs` 41.72% 与 `mysql.rs` 52.15% 为活动 DB 连接路径（外部 I/O），如实记录不硬凑；cargo test --workspace 全绿、clippy -D warnings 0 错、fmt 干净（commit 1e4ac4c）
 
 - [x] 审核发现：本轮 diff 未见问题（cb49999a..HEAD）— 属实，复核通过：77 个提交 = 74 个 `refactor:`/`style:` 模块拆分 + 2 个行为改动（276f6e9 序列字段类型、467a413 Windows 端口性）+ 1 个 rustfmt 重排（a69e399）。逐提交对 *.rs 做行多重集比对（剔除 `mod`/`use` 声明、纯括号行与注释），74 个拆分提交**零非管道漂移**，即纯移动不改语义；有改动的仅 3 个非拆分提交（1e4ac4c 加测试、467a413 平台门控、a69e399 导入重排），均已单独审过。467a413 的 `MAIN_SEPARATOR`→`/` 归一化**覆盖面完整**：cpp/cs/go/lua/py/ts 六个代码生成目标不自建产物键，全部委托 `cage-target-template` 的 `join_output`（crates/cage-target-template/src/lib.rs:224-229，内含 `.replace(MAIN_SEPARATOR,"/")`），14 个 target crate 的 artifact key 均经归一化路径构造（json:159/223、csv:217、java:279/289、jsonschema:170、msgpack:162、flatbuffers/render.rs:185、proto/render.rs:171），不存在 Windows 下 `/` 与 `\` 混用的键。gate：fmt 干净、clippy -D warnings 0 错、75 套件 0 失败（1257 passed）。
+
+## Codex 深审发现（2026-11-12，luna profile 近5 commit 审核，0C/2M/2m，待修）
+
+- [ ] [M] snapshot_files 不再把 HASHES.json 加入文件集合（crates/cage-core/src/snapshot/mod.rs:107）——现快照发布/验证必然失败（键在集合但 write_snapshot_files 跳过）
+- [ ] [M] 统一 Windows 下 target generator output_dir 反斜杠规范化（crates/cage-target-json/src/lib.rs:159 等 4 个 target）——artifact key 混用分隔符不一致
+- [ ] [m] 为 output_dir 反斜杠残留补跨平台回归测试（crates/cage-target-json/src/lib.rs:159）
+- [ ] [m] start_server socket drain 时序改客户端先 shutdown 再 read_to_end（crates/cage-source-sheets/src/tests.rs:199）——消除 50ms 读超时竞态
+- [ ] [m] 修正或补充说明 467a413 真实变更范围（crates/cage-target-template/src/lib.rs:174）——提交历史与实际 diff 一致
