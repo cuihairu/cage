@@ -64,7 +64,7 @@ annotations, not data, and the pipeline has zero consumers; the reopen
 conditions and rationale are in the same decision.
 
 Error locations are precise down to the cell (the diagnostic `Source` field
-renders like `monster.xlsx | Sheet: Monster | Row: 27 | Col: G`).
+renders like `monster.xlsx | Format: excel | Sheet: Monster | Row: 27 | Col: G`).
 
 Final conversion to:
 
@@ -156,10 +156,12 @@ workbooks = { "Skill.xlsx" = "header_block" }   # per-workbook-file override
 `[source_roots]` directory discovery collects `json` / `yaml` / `yml` / `csv` /
 `xlsx` / `xls` / `msgpack` extensions; of these, the legacy `.xls` format is
 collected and then rejected with `E0001`, while `.xlsm`/`.ods` are not in the
-directory collection list (silently ignored in directory mode — the adapter
-itself supports `.xlsx`/`.xlsm`/`.ods` when a single file is explicitly
-specified via `schema_path`/`source`). A remote source root (`registry:`, see
-CLI · registry) can likewise be a `[source_roots]` value.
+directory collection list. A single-file `schema_path`/`source` root does not
+reach them either — the load pipeline dispatches only `.xlsx`/`.xls` and
+silently skips other extensions; the one entry point that parses
+`.xlsm`/`.ods` is `cage schema-draft excel:<path>` (the Excel adapter's
+meta-row reader itself accepts `.xlsx`/`.xlsm`/`.ods`). A remote source root
+(`registry:`, see CLI · registry) can likewise be a `[source_roots]` value.
 
 ### HTTP API (Remote Source, S1)
 

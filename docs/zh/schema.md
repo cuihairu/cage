@@ -115,9 +115,9 @@ validation）、`cardinality`
 | `pattern` | 字符串须匹配的正则（`E1203`）。注意：写 `regex:` 会被当作自定义元数据**静默忽略** |
 | `enum_values` | 内联枚举取值域（`E1204`）。注意：写 `values:` 会被静默忽略；命名枚举走顶层 `enums:` + `{ kind: Enum, value: 名 }` |
 | `min_items` / `max_items` | 数组元素个数范围（`E1205`） |
-| `items` | 数组元素的字段 schema（递归） |
+| `items` | 数组元素的字段 schema（递归）。**`check` 不强制它** —— L2 Array 分支只按 `FieldType` payload 校验；`items` 的消费方是 `schema-draft` / drift 对账 |
 | `separator` | 把表格标量单元格（Excel/CSV 无法承载数组）按该分隔符拆成 `Array` —— 等价于 Luban 的 `(list#sep=,)`。每个 token 会被 trim 并强制转换到元素类型；某个 token 拆不动时整格保持原样、由类型检查报出。对 `Array` 与 `TaggedUnion` 字段均有意义 |
-| `properties` / `additional_properties` | 对象属性 schema 与未知键开关 |
+| `properties` / `additional_properties` | 对象属性 schema 与未知键开关。**会被反序列化但 `check` 不强制** —— L2 Object 分支只检查 `FieldType` payload；两个键的消费方是 `schema-draft` / drift 对账 |
 | `reference` | 跨表引用（`table` + `field`，`E1401`；见上文子键说明） |
 | `targets` | 字段对哪些 profile 可见（空 = 全部；`"*"` 等价空；被隐藏的结构必需字段报 `E9006`） |
 | `rules` | 字段级语义规则（`name`/`assert`/`message`/`warning_only`；L6 按单比较断言求值，断言为假或类型不可比报 E1501，畸形断言/未声明字段 E1004，见 Semantic） |
@@ -132,9 +132,10 @@ validation）、`cardinality`
 | `order_by` | 行排序要求：字段名列表（`E1304`） |
 | `targets` | 表对哪些 profile 可见（空 = 全部；整表剔除或隐藏必需表报 `E9006`） |
 
-未知键不会报错——经 `#[serde(flatten)]` 落入自定义元数据。写错约束键
-名（如 `regex`、`values`、字段级 `unique`）因此**静默无效**，校验时
-该约束形同不存在。
+**字段级**未知键不会报错——经 `FieldSchema` 上的 `#[serde(flatten)]`
+落入自定义元数据；**表级**未知键则不会被保留——`TableSchema` 没有兜底
+字段，会被静默丢弃。两种情况下写错约束键名（如 `regex`、`values`、
+字段级 `unique`）都**静默无效**，校验时该约束形同不存在。
 
 Schema 校验由 Validation 流水线 分级执行：required 在
 L1、类型在 L2、值域（min/max/length/pattern/enum/items）在 L3、唯一性

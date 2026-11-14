@@ -63,7 +63,7 @@ Model（2026-10-12 拍板，[design §3.1](https://github.com/cuihairu/cage/blob
 重开条件与理由见同一拍板。
 
 错误定位精确到单元格（诊断 `Source` 字段渲染形如
-`monster.xlsx | Sheet: Monster | Row: 27 | Col: G`）。
+`monster.xlsx | Format: excel | Sheet: Monster | Row: 27 | Col: G`）。
 
 最终转换成：
 
@@ -158,8 +158,10 @@ workbooks = { "Skill.xlsx" = "header_block" }   # 按工作簿文件名的逐簿
 
 `[source_roots]` 目录发现收集 `json` / `yaml` / `yml` / `csv` /
 `xlsx` / `xls` / `msgpack` 扩展名；其中 `.xls` 旧格式被收集后按 `E0001` 拒绝，
-`.xlsm`/`.ods` 不在目录收集清单内（目录模式下被静默忽略——单文件
-`schema_path`/`source` 显式指定时适配器本身支持 `.xlsx`/`.xlsm`/`.ods`）。
+`.xlsm`/`.ods` 不在目录收集清单内。单文件 `schema_path`/`source` 源根同样
+到不了它们——装载管线只分发 `.xlsx`/`.xls`、其余扩展名静默跳过；唯一能解析
+`.xlsm`/`.ods` 的入口是 `cage schema-draft excel:<path>`（Excel 适配器的
+meta 行读取器本身接受 `.xlsx`/`.xlsm`/`.ods`）。
 远程源根（`registry:`，见 CLI · registry）同样可作
 `[source_roots]` 取值。
 

@@ -128,9 +128,9 @@ types pass their parameter in `value`); the lower-case scalar form
 | `pattern` | Regex a string must match (`E1203`). Note: writing `regex:` is treated as custom metadata and **silently ignored** |
 | `enum_values` | Inline enum value domain (`E1204`). Note: writing `values:` is silently ignored; named enums use top-level `enums:` + `{ kind: Enum, value: name }` |
 | `min_items` / `max_items` | Array element count range (`E1205`) |
-| `items` | Field schema for array elements (recursive) |
+| `items` | Field schema for array elements (recursive). **Not enforced by `check`** — the L2 Array arm validates against the `FieldType` payload only; `items` is consumed by `schema-draft` / drift reconciliation |
 | `separator` | Split a scalar table cell (Excel/CSV cannot hold arrays) into an `Array` on this separator — the equivalent of Luban's `(list#sep=,)`. Each token is trimmed and coerced to the element type; a cell that fails to split cleanly is left as-is and the type check reports it. Meaningful on `Array` and `TaggedUnion` fields |
-| `properties` / `additional_properties` | Object property schema and unknown-key switch |
+| `properties` / `additional_properties` | Object property schema and unknown-key switch. **Deserialized but not enforced by `check`** — L2's Object arm checks the `FieldType` payload only; both keys are consumed by `schema-draft` / drift reconciliation |
 | `reference` | Cross-table reference (`table` + `field`, `E1401`; see the sub-key description above) |
 | `targets` | Which profiles the field is visible to (empty = all; `"*"` is equivalent to empty; a hidden structurally required field reports `E9006`) |
 | `rules` | Field-level semantic rules (`name`/`assert`/`message`/`warning_only`; L6 evaluates single-comparison assertions, a false assertion or an incomparable type reports `E1501`, a malformed assertion or undeclared field reports `E1004` — see Semantic) |
@@ -145,10 +145,12 @@ types pass their parameter in `value`); the lower-case scalar form
 | `order_by` | Row ordering requirement: list of field names (`E1304`) |
 | `targets` | Which profiles the table is visible to (empty = all; dropping a whole table or hiding a required table reports `E9006`) |
 
-Unknown keys do not error — they fall into custom metadata via
-`#[serde(flatten)]`. Misspelling a constraint key (e.g. `regex`, `values`, or
-field-level `unique`) is therefore **silently ineffective**, and at validation
-time the constraint is as if it never existed.
+Unknown **field-level** keys do not error — they fall into custom metadata
+via `#[serde(flatten)]` on `FieldSchema`. Unknown **table-level** keys are
+not retained: `TableSchema` has no catch-all field, so they are silently
+dropped. Misspelling a constraint key (e.g. `regex`, `values`, or
+field-level `unique`) is therefore **silently ineffective** either way, and
+at validation time the constraint is as if it never existed.
 
 Schema validation is executed in tiers by the
 Validation pipeline: required at L1, types at L2, value

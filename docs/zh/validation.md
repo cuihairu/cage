@@ -56,15 +56,10 @@ foo:
 YAML 本身非法。Cage：
 
 ```text
-ERROR E0001
-
-Source:
-    config/test.yaml
-
-Location:
-    line 3
-
-Invalid YAML syntax.
+ERROR E0001 — Syntax Error
+  Source: config/test.yaml | Format: yaml | Line: 3
+  Message: YAML syntax error: did not find expected ',' or ']' at line 3 column 7, while parsing a flow sequence at line 2 column 7
+  Hint: Check YAML syntax - common issues: indentation, missing colons, unquoted special characters
 ```
 
 文本类 Source（JSON/YAML/CSV）的语法错误精确到行号。
@@ -76,23 +71,25 @@ Invalid YAML syntax.
 缺少字段：
 
 ```text
-ERROR E1001
-
-Item[10001]
-
-Missing required field:
-    price
+ERROR E1001 — Missing Required Field
+  Source: ./config/Item.json | Format: json | Row: 1 | Field: price
+  Table: Item
+  Row: 0
+  Field: price
+  Message: Missing required field
+  Hint: Add required field 'price' to this row
 ```
 
 未知字段（默认告警，`warnings_as_errors = true` 时升级为错误）：
 
 ```text
-WARNING E1002
-
-Item[10001]
-
-Unknown field:
-    pric
+WARNING E1002 — Unknown Field
+  Source: ./config/Item.json | Format: json | Row: 1 | Field: pric
+  Table: Item
+  Row: 0
+  Field: pric
+  Message: Unknown field not defined in schema
+  Hint: Remove this field or add it to the schema
 ```
 
 ### E9006 字段可见性冲突（Profile 语义化）
@@ -114,11 +111,12 @@ profile 生效：环境补丁先抹到基线字段上（`required` 随之变化�
 按解析后的 `required` 判定——环境收紧后被子 profile 隐藏即冲突。示例：
 
 ```text
-ERROR E9006
-
-Account.secret
-
-Required field hidden by profile (targets: ["server"], profile: "client")
+ERROR E9006 — Field Visibility Conflict
+  Source: schema | Field: secret
+  Table: Account
+  Field: secret
+  Message: Required field hidden by profile
+  Hint: field 'secret' is required and targets ["server"], which hides it from profile 'client'; remove 'targets', add 'client', or give the field a default
 ```
 
 ## L2 Type（类型）
@@ -140,18 +138,14 @@ Schema：
 错误：
 
 ```text
-ERROR E1101
-
-Item[10001].Level
-
-Expected:
-    UInt32
-
-Actual:
-    string
-
-Value:
-    "abc"
+ERROR E1101 — Type Mismatch
+  Source: ./config/Item.json | Format: json | Row: 1 | Col: Level | Field: Level
+  Table: Item
+  Row: 0
+  Field: Level
+  Value: {"type":"String","value":"abc"}
+  Message: Type mismatch
+  Hint: Expected type: UInt32, got: string
 ```
 
 Map 字段的键值逐项校验：键按 `key_type` 门控（string 键恒合法；int 键
@@ -180,12 +174,14 @@ level = 999
 结果：
 
 ```text
-ERROR E1201
-
-Item[10001].level = 999
-
-Allowed range:
-    1..100
+ERROR E1201 — Value Out of Range
+  Source: ./config/Item.json | Format: json | Row: 1 | Col: level | Field: level
+  Table: Item
+  Row: 0
+  Field: level
+  Value: {"type":"Int","value":999}
+  Message: Value exceeds maximum
+  Hint: Maximum allowed: 100
 ```
 
 支持的值约束：
@@ -288,20 +284,14 @@ Item.ID
 Item 存在（`Item[10001]`），但 `Item[10001].Type = QuestItem`，而 Monster 掉落只允许 `Weapon / Armor / Consumable`。用 `compatible_with` 声明目标字段须兼容的取值，违反报 `E1411`：
 
 ```text
-ERROR E1411
-
-Monster[20001].DropItemID = 10001
-
-Referenced Item exists,
-but its type is not valid for Monster drops.
-
-Actual:
-    QuestItem
-
-Allowed:
-    Weapon
-    Armor
-    Consumable
+ERROR E1411 — Reference Field Constraint Violation
+  Source: ./config/Item.json | Format: json | Row: 1 | Col: drop_item_id | Field: drop_item_id
+  Table: Monster
+  Row: 0
+  Field: drop_item_id
+  Value: {"type":"Int","value":10001}
+  Message: Referenced object field value not compatible
+  Hint: Referenced Item.type = 'QuestItem', allowed: Weapon, Armor, Consumable
 ```
 
 Reference 的检查面分四类（行级，加上下面的表级环检查 E1403），实装状态：

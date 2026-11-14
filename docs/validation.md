@@ -56,15 +56,10 @@ foo:
 The YAML itself is invalid. Cage:
 
 ```text
-ERROR E0001
-
-Source:
-    config/test.yaml
-
-Location:
-    line 3
-
-Invalid YAML syntax.
+ERROR E0001 — Syntax Error
+  Source: config/test.yaml | Format: yaml | Line: 3
+  Message: YAML syntax error: did not find expected ',' or ']' at line 3 column 7, while parsing a flow sequence at line 2 column 7
+  Hint: Check YAML syntax - common issues: indentation, missing colons, unquoted special characters
 ```
 
 For text-based Sources (JSON/YAML/CSV), syntax errors are pinpointed down to the line number.
@@ -76,23 +71,25 @@ Checks that the configuration structure conforms to the Schema.
 A missing field:
 
 ```text
-ERROR E1001
-
-Item[10001]
-
-Missing required field:
-    price
+ERROR E1001 — Missing Required Field
+  Source: ./config/Item.json | Format: json | Row: 1 | Field: price
+  Table: Item
+  Row: 0
+  Field: price
+  Message: Missing required field
+  Hint: Add required field 'price' to this row
 ```
 
 Unknown fields (warning by default, escalated to an error when `warnings_as_errors = true`):
 
 ```text
-WARNING E1002
-
-Item[10001]
-
-Unknown field:
-    pric
+WARNING E1002 — Unknown Field
+  Source: ./config/Item.json | Format: json | Row: 1 | Field: pric
+  Table: Item
+  Row: 0
+  Field: pric
+  Message: Unknown field not defined in schema
+  Hint: Remove this field or add it to the schema
 ```
 
 ### E9006 Field Visibility Conflict (Profile Semantics)
@@ -115,11 +112,12 @@ profiles and takes effect before them: environment patches are applied onto the 
 tightens things, being hidden by the sub-profile is a conflict. Example:
 
 ```text
-ERROR E9006
-
-Account.secret
-
-Required field hidden by profile (targets: ["server"], profile: "client")
+ERROR E9006 — Field Visibility Conflict
+  Source: schema | Field: secret
+  Table: Account
+  Field: secret
+  Message: Required field hidden by profile
+  Hint: field 'secret' is required and targets ["server"], which hides it from profile 'client'; remove 'targets', add 'client', or give the field a default
 ```
 
 ## L2 Type
@@ -141,18 +139,14 @@ Schema:
 The error:
 
 ```text
-ERROR E1101
-
-Item[10001].Level
-
-Expected:
-    UInt32
-
-Actual:
-    string
-
-Value:
-    "abc"
+ERROR E1101 — Type Mismatch
+  Source: ./config/Item.json | Format: json | Row: 1 | Col: Level | Field: Level
+  Table: Item
+  Row: 0
+  Field: Level
+  Value: {"type":"String","value":"abc"}
+  Message: Type mismatch
+  Hint: Expected type: UInt32, got: string
 ```
 
 Map fields are validated key by key and value by value: keys are gated by `key_type` (string keys are
@@ -181,12 +175,14 @@ level = 999
 Result:
 
 ```text
-ERROR E1201
-
-Item[10001].level = 999
-
-Allowed range:
-    1..100
+ERROR E1201 — Value Out of Range
+  Source: ./config/Item.json | Format: json | Row: 1 | Col: level | Field: level
+  Table: Item
+  Row: 0
+  Field: level
+  Value: {"type":"Int","value":999}
+  Message: Value exceeds maximum
+  Hint: Maximum allowed: 100
 ```
 
 Supported value constraints:
@@ -289,20 +285,14 @@ Item.ID
 The Item exists (`Item[10001]`), but `Item[10001].Type = QuestItem`, while Monster drops only allow `Weapon / Armor / Consumable`. Use `compatible_with` to declare the values the target field must be compatible with; violations report `E1411`:
 
 ```text
-ERROR E1411
-
-Monster[20001].DropItemID = 10001
-
-Referenced Item exists,
-but its type is not valid for Monster drops.
-
-Actual:
-    QuestItem
-
-Allowed:
-    Weapon
-    Armor
-    Consumable
+ERROR E1411 — Reference Field Constraint Violation
+  Source: ./config/Item.json | Format: json | Row: 1 | Col: drop_item_id | Field: drop_item_id
+  Table: Monster
+  Row: 0
+  Field: drop_item_id
+  Value: {"type":"Int","value":10001}
+  Message: Referenced object field value not compatible
+  Hint: Referenced Item.type = 'QuestItem', allowed: Weapon, Armor, Consumable
 ```
 
 The reference check surface breaks into four row-level categories (plus the schema-level

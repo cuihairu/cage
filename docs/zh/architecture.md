@@ -210,7 +210,7 @@ Canonical 同构，以（归一化 Document, Schema）表达。**何时再拆**�
 | Profile | 已实装（D3 语义化）：表 + 字段双层面板过滤裁剪 Schema 与 Document 产物视图；校验在**完整** schema/document 上执行（profile 只裁剪产物视图、不豁免数据校验）；ValidationContext 携带 profile，结构不可缺字段（required 无默认 / 主键 / 唯一约束 / 引用目标）被 profile 隐藏报 E9006 冲突而非静默过滤 | 可选字段裁剪保持合法视图语义；整表剔除是表级可见性语义 |
 | Environment | 已实装（§48 分环境验证）：Schema 表级 `env_overrides` 声明「环境名 → 字段 → 约束补丁」（部分补丁、整值替换、类型不可覆盖），`--env` 在校验/生成前解析为一份普通 Schema（校验器与代码生成零改动）；环境名 Schema 自声明（declared_envs 并集），manifest 记 `environment`、schema_hash/build_id 随环境轮换，增量守卫按环境失配 | 坏覆盖 lint 已按条目输出（基线环境）；snapshot / registry publish `--env` 环境化出包已实装（§48） |
 | Manifest | 已实装（D4 + 增量第三层 + 环境 §48）：13 顶层字段（project / profile / environment / cage_version / generator_version / build_id / schema_hash / source_hash / content_hash / dependencies / table_hashes / targets / artifacts；`environment` 基线构建缺省） | — |
-| Snapshot | 已实装（D5）：`cage snapshot` 打包 profile 视图 + `--verify` 校验（`--env` 环境化出包：目录名 `<profile>-<env>-<build_id[..12]>`、包内 manifest 记 environment）；`snapshot/<profile>[-<env>]-<build_id[..12]>` 确定性目录（manifest / schema.json / data / generated / HASHES 逐文件账本），core 提供 verify/load 服务器入口 | 删除/回滚策略（多快照共存管理）见 Registry 阶段——R1–R4 已实装（`cage registry` 本地发布/列表 + `registry:` 源与 schema_path 解析 + `[dependencies]` 版本 pin + 远程 http(s) 只读解析，条目即自校验快照 + verify 全册审计 / gc 滚动窗口 / remove 显式移除与重发）；§47 A 系列分发已实装（export 确定性 tar bundle / import 信任门入册 / push 直推 http(s) 远端根，E21xx 五码接线） |
+| Snapshot | 已实装（D5）：`cage snapshot` 打包 profile 视图 + `--verify` 校验（`--env` 环境化出包：目录名 `<profile>-<env>-<build_id[..12]>`、包内 manifest 记 environment）；`snapshot/<profile>[-<env>]-<build_id[..12]>` 确定性目录（manifest / schema.json / data / generated / HASHES 逐文件账本），core 提供 verify/load 服务器入口 | 删除/回滚策略（多快照共存管理）见 Registry 阶段——R1–R4 已实装（`cage registry` 本地发布/列表 + `registry:` 源与 schema_path 解析 + `[dependencies]` 版本 pin + 远程 http(s) 只读解析，条目即自校验快照 + verify 全册审计 / gc 滚动窗口 / remove 显式移除与重发）；§47 A 系列分发已实装（export 确定性 tar bundle / import 信任门入册 / push 直推 http(s) 远端根，E21xx 七码接线） |
 
 ### 评审对照修正（2026-10 外部评审）
 
@@ -285,6 +285,8 @@ cage/
 │   │       ├── manifest/        # Build Manifest
 │   │       ├── snapshot/        # Configuration Snapshot（打包 / 校验 / 加载）
 │   │       ├── edit/            # Schema ↔ 编辑器交换模型（W1）
+│   │       ├── convention/      # Excel 元行约定引擎（X 系列，§51：meta 行解码 → schema-draft / drift，X2）
+│   │       ├── assets/          # 资产盘点账本（§50 B1：rule/source/build-rule 三类资产逐文件 blake3 基线）
 │   │       ├── registry/          # Configuration Registry（发布 / 解析 / 审计，R1-R4；bundle 导出导入 + http(s) 直推，§47 A 系列）
 │   │       ├── migrate/         # 声明式数据迁移（规则模型 + 执行器 + 回验，M 系列，design §46）
 │   │       └── remote.rs        # Remote Source 共享取数 / 重试 / 缓存键（§45；http_put 直推写通道，§47 A3）
