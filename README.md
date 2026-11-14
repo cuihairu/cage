@@ -37,7 +37,7 @@ Authoring Sources → Source Adapters → Canonical Model
 - Deterministic builds: same input → same artifacts, hashes, and manifest (traceable, revertible, incremental)
 - Profile mechanism: different targets and field visibility for client / server; one configuration serves both ends
 - Configuration Snapshot: `cage snapshot` packs a configuration snapshot (manifest + schema + artifacts + a per-file hash ledger); before loading, it can check whether files match the in-package ledger. That check cannot detect data and ledger being replaced together. Publisher authentication uses the registry's signed-bundle path.
-- Configuration Registry: `cage registry` is a multi-version configuration repository (publish / list / audit / GC / remove + bundle export / import / direct push to a remote, including presigned-URL pushes via `--presign-map`); consumers reference `registry:package@version` and pin versions via `[dependencies]`, with remote http(s) root resolution (the consumer-side cache works offline, and `registry push` pushes directly to a remote)
+- Configuration Registry: `cage registry` is a multi-version configuration repository (publish / list / verify (whole-registry audit) / GC / remove + bundle export / import / direct push to a remote, including presigned-URL pushes via `--presign-map`); consumers reference `registry:package@version` and pin versions via `[dependencies]`, with remote http(s) root resolution (the consumer-side cache works offline, and `registry push` pushes directly to a remote)
 - Schema draft from a live database: `cage schema-draft` introspects MySQL / PostgreSQL tables (read-only, bound parameters) into a reviewable schema draft — tables, primary keys, `NOT NULL → required`, with inline comments where the server's type carries a decision (DECIMAL / temporal / JSON)
 - Declarative data migration: `cage migrate` applies rule transforms to validated configuration along a version-stepped chain (rename / fill defaults / drop fields / widen types / remap values); it reports a dry-run plan by default, and `--write` writes the sources back in place and re-verifies the full stack
 - Target plugins: JSON / CSV data artifacts to start, extended with C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java code bindings and a Template Target (user-defined Tera templates + a language filter library), MessagePack data artifacts, Protobuf `.proto` and FlatBuffers `.fbs` definition files, and standard JSON Schema documents (draft-07 / 2020-12); Binary and others later (data serialization and code generation are separate)
@@ -62,7 +62,7 @@ cd my-game                       # run inside the project root (where cage.toml 
 cage check .                 # validate only, generate nothing
 cage check . --env prod        # validate under a schema-declared environment (env_overrides)
 cage build . --profile client  # validate and generate the target artifacts
-cage snapshot . --profile client  # build + pack a snapshot with a packed hash ledger; --verify checks a snapshot directory against that ledger before loading
+cage snapshot . --profile client  # build + pack a snapshot with a packed hash ledger; --verify checks a snapshot directory against that ledger before loading; --list lists packed snapshots
 cage gen . --profile server    # generate code bindings and definition files only (cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template)
 cage diff build/a build/b          # compare two configuration versions
 cage inspect . Item          # inspect the schema and structure (project path required, table name optional)
@@ -123,12 +123,14 @@ and can answer directly: "set `price` in row 1 of `config/Item.csv` back to ≥ 
 CI and local development are split three ways by change surface — a one-line doc change must not
 trigger a full build.
 
-1. **Docs only** (`*.md`, `docs/**`, images): no build. The main CI workflow's `paths-ignore`
-   already skips those paths.
-2. **Code**: run only the changed subset, never the full suite.
+1. **Docs only**: no build. The main CI workflow's `paths-ignore` skips `**.md`, `docs/**`,
+   `LICENSE`, `.gitignore`, `*.svg` and `.editorconfig` — other paths, including non-SVG
+   images, do trigger CI.
+2. **Code**: run only the changed subset locally, never the full suite.
    - `cargo test -p <changed crate>`
-3. **Full** (`cargo test --workspace --locked`): only for these — `Cargo.toml` / `Cargo.lock`,
-   `.github/**`, Docker/Compose config, pre-release.
+3. **Full** (`cargo test --workspace --locked`): CI runs this on every push to `main` that
+   item 1 did not skip, so any code change reaches it regardless of crate; run it locally for
+   `Cargo.toml` / `Cargo.lock`, `.github/**` and before a release.
 
 ## One-Command Install
 
@@ -192,13 +194,13 @@ sh <(curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/ins
 irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -Version v0.1.0   # Windows
 ```
 
-The install directory can be overridden with the `CAGE_INSTALL_DIR` environment variable (on Windows it is fixed to `%LOCALAPPDATA%\cage`); writing the install directory into your shell profile / user PATH is the default on both platforms (`--path` (sh) is kept as an accepted alias of the default; `--no-path` / `-NoPath` opt out); `--uninstall` (sh) / `-Uninstall` (ps1) uninstalls — after the binary is removed, remove the corresponding entry from your profile / user PATH manually.
+The install directory can be overridden with the `CAGE_INSTALL_DIR` environment variable (on Windows it is fixed to `%LOCALAPPDATA%\cage`); the release repository can be pointed at a fork with `CAGE_REPO` (`-h` / `--help` on the sh installer prints its usage); writing the install directory into your shell profile / user PATH is the default on both platforms (`--path` (sh) is kept as an accepted alias of the default; `--no-path` / `-NoPath` opt out); `--uninstall` (sh) / `-Uninstall` (ps1) uninstalls — after the binary is removed, remove the corresponding entry from your profile / user PATH manually.
 
 Platform coverage: Linux x86_64 (primary track), macOS aarch64 and Windows x86_64 (trial tracks); no assets for other architectures yet. The scripts ship with the `nightly` release just like the binaries themselves (`install.sh` / `install.ps1` assets); their sources live in [`scripts/`](scripts/).
 
 ## Nightly Builds
 
-The binaries can be fetched without a Rust toolchain from the [Nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly), which rolls forward with main daily (Linux x86_64 as the primary track, macOS / Windows as trial tracks). The archive contains a single `cage` file plus a `SHA256SUMS` checksum list.
+The binaries can be fetched without a Rust toolchain from the [Nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly), which rolls forward with main daily (Linux x86_64 as the primary track, macOS / Windows as trial tracks). Each archive holds only the binary (`cage`, or `cage.exe` on Windows); `SHA256SUMS` sits alongside them as a release asset rather than inside the archive. The release also carries `install.sh` / `install.ps1` and the VS Code extension `.vsix`.
 
 ## Documentation
 

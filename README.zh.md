@@ -39,7 +39,7 @@ Authoring Sources → Source Adapters → Canonical Model
 - 确定性构建：相同输入 → 相同产物、哈希与 Manifest（可追踪、可回滚、可增量）
 - Profile 机制：client / server 不同 targets 与字段可见性，一份配置两端复用
 - Configuration Snapshot：`cage snapshot` 打包配置快照（manifest + schema + 产物 + 逐文件哈希账本），加载前可检查文件是否与包内账本一致；若数据与账本被同时替换，该检查无法识别。发布者认证走 registry 签名 bundle 路径
-- Configuration Registry：`cage registry` 多版本配置仓库（发布/列表/审计/GC/移除 + bundle 导出/导入/直推远端，含 `--presign-map` presigned URL 直推），消费方 `registry:包@版本` 引用 + `[dependencies]` 版本 pin，远程 http(s) 根解析（消费侧缓存离线可用，`registry push` 直推远端）
+- Configuration Registry：`cage registry` 多版本配置仓库（发布/列表/`registry verify` 全册审计/GC/移除 + bundle 导出/导入/直推远端，含 `--presign-map` presigned URL 直推），消费方 `registry:包@版本` 引用 + `[dependencies]` 版本 pin，远程 http(s) 根解析（消费侧缓存离线可用，`registry push` 直推远端）
 - 库表内省 Schema 草稿：`cage schema-draft` 只读内省 MySQL / PostgreSQL 表（绑定参数）产出可审阅 schema 草稿——表、主键、`NOT NULL → required`，DECIMAL / 日期时间 / JSON 等需要作者拍板的类型以行内注释标出
 - 声明式数据迁移：`cage migrate` 按版本步进链对已验证配置做规则变换（改名/补默认/删字段/类型加宽/值重映射），默认 dry-run 报告，`--write` 原路写回并全栈回验
 - Target 插件：JSON / CSV 数据产物起步，已扩展 C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java 代码绑定与 Template Target（用户自定义 Tera 模板 + 语言过滤器库），并交付 MessagePack 数据产物、Protobuf `.proto` / FlatBuffers `.fbs` 定义文件与标准 JSON Schema 文档（draft-07 / 2020-12）生成；后续 Binary 等（数据序列化与代码生成分离）
@@ -47,7 +47,7 @@ Authoring Sources → Source Adapters → Canonical Model
 ## 快速开始
 
 ```bash
-bash examples/run.sh   # 一键跑通完整示例工程：校验 → 构建全部 14 个 target → 生成 8 语言代码与 proto/fbs/jsonschema 定义文件 → E1601 坏数据诊断演示
+bash examples/run.sh   # 一键跑通完整示例工程：校验 → 构建全部 14 个 target → 生成 8 语言代码与 proto/fbs/jsonschema 定义文件 → E1501/E1601 坏数据诊断演示
 ```
 
 示例工程详解见 [`examples/game-config/`](examples/game-config/README.md) 与文档站「完整示例」页。其余常用命令：
@@ -63,7 +63,7 @@ cage init my-game --source csv --envs four --targets json,csv --git   # 全 flag
 cd my-game                       # 在项目根（cage.toml 所在目录）内执行
 cage check .                 # 只验证，不生成
 cage build . --profile client  # 验证并生成目标产物
-cage snapshot . --profile client  # 构建 + 打包带哈希账本的快照；快照目录 --verify 载入前按账本校验
+cage snapshot . --profile client  # 构建 + 打包带哈希账本的快照；--verify 载入前按账本校验，--list 列出已打包快照
 cage gen . --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template）
 cage diff build/a build/b          # 比较两个配置版本
 cage inspect . Item          # 查看 Schema 与配置结构（项目路径必填，表名可选）
@@ -122,12 +122,12 @@ cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schem
 
 CI 与本地开发按改动面三路分流——改一行文档不该全量编译。
 
-1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的
-   `paths-ignore` 已跳过这些路径。
-2. **代码改动**：只跑改动子集，不全量。
+1. **文档改动**：不编译。主 CI workflow 的 `paths-ignore` 只跳过 `**.md`、`docs/**`、
+   `LICENSE`、`.gitignore`、`*.svg`、`.editorconfig`——其他路径（含非 SVG 图片）会触发 CI。
+2. **代码改动**：本地只跑改动子集，不全量。
    - `cargo test -p <改动 crate>`
-3. **全量**（`cargo test --workspace --locked`）：仅以下情形触发——Cargo.toml / Cargo.lock、
-   `.github/**`、Docker/Compose 配置、发布前。
+3. **全量**（`cargo test --workspace --locked`）：CI 对第 1 条未跳过的每次 `main` push 都会跑，
+   即任何代码改动都会到达全量；本地在 Cargo.toml / Cargo.lock、`.github/**` 与发布前跑全量。
 
 ## 一键安装
 
@@ -196,13 +196,13 @@ sh <(curl -fsSL https://raw.githubusercontent.com/cuihairu/cage/main/scripts/ins
 irm https://raw.githubusercontent.com/cuihairu/cage/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -Version v0.1.0   # Windows
 ```
 
-安装目录可用环境变量覆盖（`CAGE_INSTALL_DIR`，Windows 固定 `%LOCALAPPDATA%\cage`）；两个平台默认都把安装目录写进 shell profile / 用户级 PATH（`--path`（sh）保留为默认行为的兼容写法；`--no-path` / `-NoPath` 关闭）；`--uninstall`（sh）/ `-Uninstall`（ps1）卸载——删除二进制后，再手动从 profile / 用户级 PATH 移除对应条目即可。
+安装目录可用环境变量覆盖（`CAGE_INSTALL_DIR`，Windows 固定 `%LOCALAPPDATA%\cage`）；Release 仓库可用 `CAGE_REPO` 指向 fork（sh 安装脚本 `-h` / `--help` 打印用法）；两个平台默认都把安装目录写进 shell profile / 用户级 PATH（`--path`（sh）保留为默认行为的兼容写法；`--no-path` / `-NoPath` 关闭）；`--uninstall`（sh）/ `-Uninstall`（ps1）卸载——删除二进制后，再手动从 profile / 用户级 PATH 移除对应条目即可。
 
 平台覆盖：Linux x86_64（正式腿）、macOS aarch64 与 Windows x86_64（试运行腿）；其余架构暂无资产。脚本与本体一样随 `nightly` Release 分发（`install.sh` / `install.ps1` 资产），源码在 [`scripts/`](scripts/)。
 
 ## 每日构建
 
-不装 Rust 工具链可直接取二进制：[Nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly) 每日随 main 滚动更新（Linux x86_64 正式腿，macOS / Windows 试运行腿），压缩包内即 `cage` 单文件，附 `SHA256SUMS` 校验单。
+不装 Rust 工具链可直接取二进制：[Nightly Release](https://github.com/cuihairu/cage/releases/tag/nightly) 每日随 main 滚动更新（Linux x86_64 正式腿，macOS / Windows 试运行腿）。压缩包内只有二进制（`cage`，Windows 为 `cage.exe`）；`SHA256SUMS` 是随 Release 分发的独立资产，不在压缩包内。Release 同时附带 `install.sh` / `install.ps1` 与 VS Code 扩展 `.vsix`。
 
 ## 文档
 

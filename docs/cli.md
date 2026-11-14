@@ -882,7 +882,7 @@ cage verify build/                 # 审计已生成产物（对照 manifest 账
 cage snapshot . --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
 cage web ./                        # 本地 Schema 编辑器与项目状态页服务（只绑 127.0.0.1）
 cage lsp ./                        # stdio Language Server（IDE 诊断，与 check 同一校验管线）
-cage registry publish . --registry reg/      # 配置包仓库：发布/列表/审计/GC/移除/导出/导入/直推/keygen（见 registry 节）
+cage registry publish . --registry reg/      # 配置包仓库：publish/list/verify/gc/remove/export/import/push/keygen（见 registry 节）
 cage migrate .                     # 迁移预演（dry-run；--write 落盘并全栈回验，--all 全链）
 cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
 cage schema-draft . mysql:Items    # 只读内省库表起草 schema（MySQL/PostgreSQL）

@@ -40,23 +40,6 @@ features:
     details: cage migrate 按版本步进链对已验证配置做规则变换（改名 / 补默认 / 删字段 / 类型加宽 / 值重映射），默认 dry-run 报告，--write 原路写回并全栈回验。
 ---
 
-<script setup lang="ts">
-// 记录经 English 链接离开时的手动语言选择，英文首页的首次访问重定向就不会把用户弹回来。
-const KEY = 'cage-lang-auto-picked'
-const BASE = '/cage/'
-const ROOT_PATH = BASE
-const ZH_PATH = BASE + 'zh/'
-if (typeof window !== 'undefined') {{
-  window.addEventListener('click', (e) => {{
-    const a = (e.target as HTMLElement)?.closest?.('a') as HTMLAnchorElement | null
-    const href = a?.getAttribute('href') || ''
-    if (href.startsWith(ZH_PATH)) localStorage.setItem(KEY, ZH_PATH)
-    else if (href === ROOT_PATH || href === ROOT_PATH.slice(0, -1)) localStorage.setItem(KEY, ROOT_PATH)
-  }}, true)
-}}
-</script>
-
-
 [English](/) | 中文
 
 ![Cage 配置编译与验证框架架构](/images/architecture-zh.svg)
@@ -103,7 +86,7 @@ cage verify build/                   # 审计已生成产物（逐文件重算 b
 cage inspect . Item            # 查看 Schema 与配置结构（项目路径必填，表名可选）
 cage assets . --write assets.json   # 资产清单基线（--check 复核缺失/篡改/多余）
 cage snapshot . --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
-cage registry publish . --registry reg/        # 多版本配置仓库（发布/列表/审计/GC/移除/导出/导入/直推）
+cage registry publish . --registry reg/        # 多版本配置仓库（发布/列表/verify/GC/移除/导出/导入/直推）
 cage migrate .                 # 数据迁移预演（dry-run；--write 落盘并全栈回验，--all 全链）
 cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
 cage schema-draft . mysql:Items      # 只读内省库表起草 schema（MySQL/PostgreSQL）

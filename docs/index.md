@@ -21,7 +21,7 @@ hero:
 
 features:
   - title: Source Adapter plugins
-    details: Excel / CSV / JSON / YAML plus HTTP API / MySQL / PostgreSQL / Google Sheets remote sources. They only read and parse, and never perform business validation; XML and SQLite come later.
+    details: Excel / CSV / JSON / YAML / MessagePack plus HTTP API / MySQL / PostgreSQL / Google Sheets remote sources. They only read and parse, and never perform business validation; XML and SQLite come later.
   - title: Schema decoupled from Source
     details: One Schema serves many configuration sources — types, required fields, defaults, ranges, enums, uniqueness and references are each defined independently.
   - title: Eight-level validation pipeline
@@ -35,7 +35,7 @@ features:
   - title: Profile mechanism
     details: client / server profiles configure different targets and field visibility, so one configuration is reused on both ends instead of maintaining two sets of tables.
   - title: Target plugins
-    details: Starting from JSON / CSV data artifacts, extended to MessagePack (deterministic binary), Protobuf `.proto` and FlatBuffers `.fbs` definition files, plus C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java code bindings and a Template Target (custom Tera templates); Binary / SQLite and the rest come later. Data serialization and code generation are kept separate.
+    details: Starting from JSON / CSV data artifacts, extended to MessagePack (deterministic binary), Protobuf `.proto`, FlatBuffers `.fbs` and standard JSON Schema (draft-07 / 2020-12) definition files, plus C# / Python / Lua / TypeScript / JavaScript / C++ / Go / Java code bindings and a Template Target (custom Tera templates); Binary / SQLite and the rest come later. Data serialization and code generation are kept separate.
   - title: Declarative data migration
     details: cage migrate steps through a versioned chain applying rule transforms (rename / fill defaults / drop fields / widen types / remap values) to validated configuration; it reports as a dry run by default, --write writes back in place and re-validates the whole stack.
 ---
@@ -78,24 +78,24 @@ Excel is only one kind of input source for Cage. Every input enters the unified 
 ## Quick start
 
 ```bash
-cage init my-game                    # 新项目：交互式脚手架（终端问答），零改动即可 check/build
-cd my-game                          # 以下命令在项目根（cage.toml 所在目录）执行
-cage check .                   # 只验证，不生成
-cage build . --profile client  # 验证并生成目标产物
-cage gen . --profile server    # 只生成代码绑定与定义文件（cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template）
-cage diff build/a build/b            # 比较两个配置版本
-cage graph .                   # 表引用依赖图（text/dot/json，含拓扑序与环清单）
-cage verify build/                   # 审计已生成产物（逐文件重算 blake3 对照账本）
-cage inspect . Item            # 查看 Schema 与配置结构（项目路径必填，表名可选）
-cage assets . --write assets.json   # 资产清单基线（--check 复核缺失/篡改/多余）
-cage snapshot . --profile client    # 构建 + 打包自校验快照（--verify 载入前校验，--list 列包）
-cage registry publish . --registry reg/        # 多版本配置仓库（发布/列表/审计/GC/移除/导出/导入/直推）
-cage migrate .                 # 数据迁移预演（dry-run；--write 落盘并全栈回验，--all 全链）
-cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # 从两版 schema 起草迁移规则稿
-cage schema-draft . mysql:Items      # 只读内省库表起草 schema（MySQL/PostgreSQL）
-cage web ./                          # 本地 Schema 编辑器与项目状态页（只绑 127.0.0.1）
-cage lsp ./                          # stdio Language Server（IDE 诊断，与 check 同一校验管线）
-cage mcp --stdio                     # AI 助手 MCP server（校验/结构/构建预演做成只读 tools）
+cage init my-game                    # new project: interactive scaffold (terminal Q&A); check/build pass with zero edits
+cd my-game                          # run inside the project root (where cage.toml lives)
+cage check .                   # validate only, generate nothing
+cage build . --profile client  # validate and generate the target artifacts
+cage gen . --profile server    # code bindings and definition files only (cs/python/lua/ts/js/cpp/go/java/proto/flatbuffers/jsonschema/template)
+cage diff build/a build/b            # compare two configuration versions
+cage graph .                   # table reference dependency graph (text/dot/json, topo order and cycle list)
+cage verify build/                   # audit the generated artifacts (re-hash every file against the ledger)
+cage inspect . Item            # schema and configuration structure (project path required, table name optional)
+cage assets . --write assets.json   # asset inventory baseline (--check reports missing / tampered / extra)
+cage snapshot . --profile client    # build + pack a self-verifying snapshot (--verify before loading, --list lists packages)
+cage registry publish . --registry reg/        # multi-version registry (publish / list / verify / GC / remove / export / import / push)
+cage migrate .                 # preview the migration plan (dry-run; --write persists and re-verifies, --all runs the whole chain)
+cage migrate-draft old.yaml new.yaml --from 1.0.0 --to 2.0.0   # draft a migration rule file from two schema versions
+cage schema-draft . mysql:Items      # draft a schema by introspecting tables read-only (MySQL / PostgreSQL)
+cage web ./                          # local Schema editor and project status page (binds 127.0.0.1 only)
+cage lsp ./                          # stdio Language Server (IDE diagnostics, same pipeline as check)
+cage mcp --stdio                     # AI assistant MCP server (validation / structure / build preview as read-only tools)
 ```
 
 ## Documentation sections
