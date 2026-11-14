@@ -10,7 +10,7 @@
 
 - release exe **10.6 MiB**（lto + strip + opt-level=z）。
 - 编辑器页 48 KB（index.html 2.0 / app.js 37.6 / app.css 8.4 KB），
-  `include_str!` 编译期嵌入（web.rs），单二进制自带界面。
+  `include_str!` 编译期嵌入（web/mod.rs），单二进制自带界面。
 - 现有 HTTP 面共 6 条：`GET /`、`/app.js`、`/app.css`、
   `GET /api/schema`、`POST /api/validate`、`POST /api/schema`；
   仅绑 `127.0.0.1`，无鉴权（本地工具定位）。
@@ -191,20 +191,20 @@ build/server/*）；表级与字段级 `targets`（schema）经
       （check / lsp 同源），页面带 `?profile=&env=&level=` 三个旋钮，
       默认值与 `cage check` 一致（首个 profile、semantic、无环境）。
       裸 `/status` 301 到 `/status/`——相对资源引用不会撞编辑器的
-      /app.js。验收：web.rs 单测 6 项 + tests/web.rs 集成 3 项 +
+      /app.js。验收：web/tests.rs 单测 6 项 + tests/web/ 集成 3 项 +
       web-smoke 第 5 步（真实服务：页面 → fresh → up-to-date）。
 - [x] **U2a（P1）产物浏览**：`/api/artifacts`（manifest 账本，单槽跨
       profile 返回空清单 + `manifest_profile`，stale 复用第一层判语）+
       `/api/artifact`（只认 manifest 键 + 伺服前重算 blake3，篡改 409、
       非账本 404）+ 状态页「产物」区（按 output_dir 分组、预览/下载）。
-      验收：web.rs 单测 3 项 + tests/web.rs 集成 1 项（列表 → 逐字节
+      验收：web/tests.rs 单测 3 项 + tests/web/ 集成 1 项（列表 → 逐字节
       伺服 → 404 → 409）+ web-smoke 第 5 步产物断言
 - [x] **U2b（P1）编辑器 targets 徽标 + profile 作用域视图**：
       `GET /api/schema?profile=` 附 `filter_by_profile` 投影（未知
       profile 400）；前端只做集合差，可见性语义零复制进 JS；targets
       非空即渲染徽标（左栏 / 字段行 / 表标题），被剔除项灰显 +
       「本 profile 不可见」而非消失；未保存改动时投影提示语标注
-      「按已保存 schema 投影」。验收：web.rs 单测 +2 + 集成 1 项 +
+      「按已保存 schema 投影」。验收：web/tests.rs 单测 +2 + 集成 1 项 +
       web-smoke 第 7 步（game-config `internal_note` 三态断言）
 - [x] **U3（P2）快照列/验/打包 + registry 条目浏览 + 分层 diff**：
       —— **2026-10-12 已实装**，落地记录：
@@ -227,7 +227,7 @@ build/server/*）；表级与字段级 `targets`（schema）经
       判语；与 `--verify`/`--env` clap 冲突）、`cage diff` 增
       「tables changed / targets affected」分层摘要两行。**Merkle 化
       卡点维持原判**：出现「只拉变化子树」的增量同步需求前不做。
-      验收：web.rs 单测 +3（快照打包/列表/坏体、diff 分层与 400、
+      验收：web/tests.rs 单测 +3（快照打包/列表/坏体、diff 分层与 400、
       registry 浏览与未配置）+ `cage snapshot` CLI 测试 5 项（含
       --list 列包与篡改判语、describe 冲突断言）+ 集成 1 项
       （registry 未配置 → 打包 → 列表自验 → 跨快照 diff → ghost 400
@@ -279,7 +279,7 @@ diff、registry 接上门面——另起子命令会分叉安全边界（loopbac
   JSON；模板库 = 前端静态模板字典生成 schema 片段（数值范围/枚举/
   外键引用起步），落库仍走 schema 保存链，服务端零新面。
 
-**验收口径**：每端点 web.rs 单测 + tests/web.rs 集成 + web-smoke
+**验收口径**：每端点 web/tests.rs 单测 + tests/web/ 集成 + web-smoke
 增步（同 U 系列惯例）；表格视图有分页截断断言；诊断点位断言
 （坏数据 → 点击 → 高亮坐标）；上传按已代决策略实现，验收含拒绝回滚断言。
 
@@ -288,7 +288,7 @@ diff、registry 接上门面——另起子命令会分叉安全边界（loopbac
 规则执行逻辑的新增——校验永远 `validate_project` 单一入口。
 
 **P0 落地记录（2026-10-20）**：数据面板已实装——`GET /api/tables` +
-`GET /api/table`（web.rs，行窗分页 200/上限 1000，主键取 schema 定义）；
+`GET /api/table`（web/handlers.rs，行窗分页 200/上限 1000，主键取 schema 定义）；
 状态页「数据」区（表清单 + 粘性表头表格视图 + 分页）；诊断面板
 severity/错误码过滤与点击跳行高亮（jumpToDiag）。测试：web 单测
 +2（共 32 绿）+ 集成 +1（共 14 绿）+ web-smoke 第 5 步并入断言，

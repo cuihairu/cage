@@ -283,7 +283,7 @@ cage/
 │   │       ├── manifest/        # Build Manifest
 │   │       ├── snapshot/        # Configuration Snapshot（打包 / 校验 / 加载）
 │   │       ├── edit/            # Schema ↔ 编辑器交换模型（W1）
-│   │       ├── registry.rs      # Configuration Registry（发布 / 解析 / 审计，R1-R4；bundle 导出导入 + http(s) 直推，§47 A 系列）
+│   │       ├── registry/          # Configuration Registry（发布 / 解析 / 审计，R1-R4；bundle 导出导入 + http(s) 直推，§47 A 系列）
 │   │       ├── migrate/         # 声明式数据迁移（规则模型 + 执行器 + 回验，M 系列，design §46）
 │   │       └── remote.rs        # Remote Source 共享取数 / 重试 / 缓存键（§45；http_put 直推写通道，§47 A3）
 │   ├── cage-source-excel/   # Excel 输入源（calamine）

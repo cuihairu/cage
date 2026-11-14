@@ -9,7 +9,8 @@
 
 Cage 的 CLI 是编译链事实接口；Web UI 是**同一核心的另一个门面**：
 编辑器不解析、不渲染 YAML，只与 core 交换文档并委托校验。所有编辑
-语义（19 种字段类型、约束、引用、targets 可见性、表达式规则）都来自
+语义（19 种可编辑字段类型——core 共 20 种，`TaggedUnion` 无专属编辑器、
+原样保留——约束、引用、targets 可见性、表达式规则）都来自
 `cage-core`，前端不做任何规则复制。
 
 ## 架构决策
@@ -68,7 +69,7 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       `E1701` 入错误码表（crates/cage-core/src/error/codes.rs
       `editor` 族 + 校验文档）
 
-### W2 已实装：`cage web` 本地 HTTP 服务（cage-cli/src/web.rs）
+### W2 已实装：`cage web` 本地 HTTP 服务（cage-cli/src/web/）
 
 - [x] 项目装载复用 CLI 加载链（`load_project_config` / `load_schema`），
       只绑定 `127.0.0.1`，无鉴权（本地工具）
@@ -92,7 +93,7 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       entry 的 schema 不在编辑器改，须回发布方工程重发布）；未配置 →
       写 `schema.yaml` + note 提醒接线
       cage.toml（服务器绝不改配置文件）
-- [x] 集成测试（crates/cage-cli/tests/web.rs）：真实子进程 + 原始
+- [x] 集成测试（crates/cage-cli/tests/web/）：真实子进程 + 原始
       TCP 请求，覆盖文档伺服 / E1701+E1004 校验 / 保存后重载与
       `cage check` 复跑 / 目录拒写 / 空 schema 起始
 
@@ -168,7 +169,7 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       target 清单、build_id / content_hash 前 12 位、构建按钮）；
       裸 `/status` 301 到 `/status/`（相对资源引用不撞编辑器的
       /app.js）；编辑器顶栏加「项目状态 →」互链
-- [x] 测试：web.rs 单测 6 项（状态默认 profile / 未知 profile 400 /
+- [x] 测试：web/tests.rs 单测 6 项（状态默认 profile / 未知 profile 400 /
       构建后 fresh 与 up-to-date / 改源后 `changed_tables` 命名 /
       坏数据构建被拒带诊断 / 未知 profile 构建拒绝）+ 集成 3 项
       （状态页路由与 301 / 状态-构建端到端 / 坏数据端到端）+
@@ -191,7 +192,7 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       大小 / hash 前缀 / 预览 / 下载），预览对 JSON 格式化、文本原样、
       msgpack 标「二进制不预渲染」；未构建/跨 profile 出说明而非空壳；
       过期产物出过期提示
-- [x] 测试：web.rs 单测 3 项（清单跨 profile 与空态 / 伺服 + 非账本
+- [x] 测试：web/tests.rs 单测 3 项（清单跨 profile 与空态 / 伺服 + 非账本
       404 + 篡改 409 / stale 标注）+ 集成 1 项（列表 → 逐字节伺服 →
       404 → 409 端到端）+ web-smoke 第 5 步补产物断言
 
@@ -206,7 +207,7 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       被投影剔除的表/字段**灰显 + 「本 profile 不可见」徽标**而非消失——
       藏起来的东西要看得见被藏了；投影按已保存 schema 计算，未保存改动
       时提示语显式标注（保存全程作者主导，不自动保存）
-- [x] 测试：web.rs 单测 +2（投影 gate 表与字段 / 未知 profile 400）+
+- [x] 测试：web/tests.rs 单测 +2（投影 gate 表与字段 / 未知 profile 400）+
       集成 1 项（无 profile 无 projection → client 剔除 server-only 字段
       → server 保留 → ghost 400）+ web-smoke 第 7 步（game-config 的
       `internal_note`：client 投影剔除、server 保留、ghost 400）
@@ -235,7 +236,7 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       `--verify`/`--env` 互斥）；`cage diff` 增「tables changed /
       targets affected」分层摘要，与状态页同数据源（manifest
       `table_hashes` 与产物路径）
-- [x] 测试：web.rs 单测 +3（快照打包/列表自验/坏体 400 / diff 分层
+- [x] 测试：web/tests.rs 单测 +3（快照打包/列表自验/坏体 400 / diff 分层
       与缺参、未知基线 400 / registry 未配置说明 + 已配置浏览）+
       `cage snapshot` CLI 测试（--list 列包与篡改判语、--list 与
       --verify/--env 冲突）+ 集成 1 项（registry 未配置 → 打包 →
@@ -260,7 +261,7 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       跳到对应表行高亮（jumpToDiag：pk 匹配 → 换页 → 滚动高亮）
 - [x] 校验本体零新增：数据面板消费的仍是 `/api/status` 同一份
       `validate_project` 诊断（check / lsp / web / 状态页同一入口）
-- [x] 测试：web.rs 单测 +2（表清单事实与 ghost 400 / 分页窗口与
+- [x] 测试：web/tests.rs 单测 +2（表清单事实与 ghost 400 / 分页窗口与
       隐藏表 404）+ 集成 +1（表清单 → 行窗 → ghost 404 → 页面
       引用断言）+ web-smoke 第 5 步并入数据面板断言（/api/tables
       → /api/table → ghost 404）
@@ -291,8 +292,8 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       枚举引用、外键引用 reference），生成草稿走既有保存/校验链
       （与 W10 即时重校验联动），服务端零新面
 - [x] 测试：集成断言（`FIELD_TEMPLATES` / 外键引用、`markDiagDiff` /
-      `diag-new`）+ 两页脚本 `node --check`；web 单测 32 绿 / 集成
-      14 绿不变
+      `diag-new`）+ 两页脚本 `node --check`；web 单测 73 绿 / 集成
+      15 绿不变
 
 ### W12 已实装：表源文件上传替换（策划界面 P0，2026-10-21，路线见 UI 门面）
 

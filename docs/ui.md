@@ -12,7 +12,7 @@ toolchain — all carry forward.
 
 - release exe **12.5 MiB** (lto + strip + opt-level=z).
 - editor page 55 KB (index.html 2.5 / app.js 43.2 / app.css 9.3 KB), embedded at compile
-  time via `include_str!` (web.rs), so the single binary carries its own UI; the
+  time via `include_str!` (web/mod.rs), so the single binary carries its own UI; the
   status page adds a second embedded pair (`/status/app.js` + `/status/app.css`).
 - the HTTP surface has grown past the original 6 routes (see `web.md` for the W-series):
   it now serves the editor and status pages plus the `api/*` surface (schema, validate,
@@ -215,14 +215,14 @@ Four UI expressions:
       as check / lsp), and the page has three knobs, `?profile=&env=&level=`, with defaults
       matching `cage check` (first profile, semantic, no environment). Bare `/status`
       301-redirects to `/status/` — so relative resource references do not collide with the
-      editor's /app.js. Acceptance: 6 unit tests in web.rs + 3 integration tests in
-      tests/web.rs + step 5 of web-smoke (real server: page → fresh → up-to-date).
+      editor's /app.js. Acceptance: 6 unit tests in web/tests.rs + 3 integration tests in
+      tests/web/ + step 5 of web-smoke (real server: page → fresh → up-to-date).
 - [x] **U2a (P1) artifact browsing**: `/api/artifacts` (the manifest ledger; across
       profiles the single slot returns an empty list + `manifest_profile`, and staleness
       reuses the first-layer verdict) + `/api/artifact` (accepts only manifest keys +
       recomputes blake3 before serving; tampering gives 409, a non-ledger path gives 404) +
       an "artifacts" area on the status page (grouped by output_dir, preview/download).
-      Acceptance: 3 unit tests in web.rs + 1 integration test in tests/web.rs (list →
+      Acceptance: 3 unit tests in web/tests.rs + 1 integration test in tests/web/ (list →
       byte-exact serving → 404 → 409) + the artifact assertions in step 5 of web-smoke
 - [x] **U2b (P1) editor targets badges + profile-scoped view**:
       `GET /api/schema?profile=` returns a `filter_by_profile` projection (an unknown
@@ -230,7 +230,7 @@ Four UI expressions:
       semantics copied into JS; non-empty targets always render a badge (left column /
       field row / table title), stripped entries are grayed out with "not visible in this
       profile" instead of disappearing; when there are unsaved edits the projection hint
-      says "projected from the saved schema". Acceptance: +2 unit tests in web.rs + 1
+      says "projected from the saved schema". Acceptance: +2 unit tests in web/tests.rs + 1
       integration test + step 7 of web-smoke (the three-state assertion for game-config's
       `internal_note`)
 - [x] **U3 (P2) snapshot list/verify/package + registry entry browsing + layered diff** —
@@ -257,7 +257,7 @@ Four UI expressions:
       clap-conflicts with `--verify`/`--env`), and `cage diff` gains two layered-summary
       lines, "tables changed / targets affected". **The Merkle sticking point stands**:
       not done until a "pull only the changed subtree" incremental-sync need appears.
-      Acceptance: +3 unit tests in web.rs (snapshot packaging/listing/bad body, diff
+      Acceptance: +3 unit tests in web/tests.rs (snapshot packaging/listing/bad body, diff
       layering and 400, registry browsing and unconfigured) + 5 CLI tests for
       `cage snapshot` (including --list package listing and a tampering verdict, plus
       describe-conflict assertions) + 1 integration test (registry unconfigured → package
@@ -315,7 +315,7 @@ single-entry (`validate_project`, the existing check / lsp / web same-source dis
   schema fragments (numeric range / enum / foreign-key reference to start), saved through
   the same schema save chain — zero new server surface.
 
-**Acceptance**: per endpoint, web.rs unit tests + tests/web.rs integration + a web-smoke
+**Acceptance**: per endpoint, web/tests.rs unit tests + tests/web/ integration + a web-smoke
 step (the U-series convention); the table view gets pagination/truncation assertions; the
 diagnostic anchoring gets a bad-data → click → highlighted-coordinate assertion; the
 upload lands with refusal-and-rollback assertions.
@@ -326,7 +326,7 @@ source file, whole-file replacement with validation rollback); no new rule
 execution logic — validation stays the `validate_project` single entry.
 
 **P0 landing record (2026-10-20)**: the data panel is implemented —
-`GET /api/tables` + `GET /api/table` (web.rs; row window paginated at 200,
+`GET /api/tables` + `GET /api/table` (web/handlers.rs; row window paginated at 200,
 capped at 1000; the primary key taken from the schema definition); the status
 page's "Data" section (table list + sticky-thead table view + pager); the
 diagnostics panel's severity/error-code filters and click-to-jump row highlight

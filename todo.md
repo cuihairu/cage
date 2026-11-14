@@ -474,3 +474,4 @@
 - [ ] [m] 为 output_dir 反斜杠残留补跨平台回归测试（crates/cage-target-json/src/lib.rs:159）
 - [ ] [m] start_server socket drain 时序改客户端先 shutdown 再 read_to_end（crates/cage-source-sheets/src/tests.rs:199）——消除 50ms 读超时竞态
 - [ ] [m] 修正或补充说明 467a413 真实变更范围（crates/cage-target-template/src/lib.rs:174）——提交历史与实际 diff 一致
+- [ ] 浏览器语言自动识别跳转（等用户拍板范围；基线=手动切换+显式链接）——docs/.vitepress/config.mts 现状：root locale=en-US、zh locale 挂载 /zh/，仅有 nav 语言下拉手动切换，config/theme 内无 navigator.language / Accept-Language / localStorage / rootLocale 重定向代码；G2 再审计（2026-11-14）核查双语站点契约（/ vs /zh/）通过，是否做自动识别属产品决策

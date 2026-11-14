@@ -5,7 +5,7 @@ First item of Stage 3: a web-based Schema editing entry point for designers and 
 
 ## Positioning
 
-Cage's CLI is the interface of record for the compile chain; the Web UI is **another front door to the same core**: the editor does not parse or render YAML, it only exchanges documents with the core and delegates validation. All editing semantics (the 19 field types, constraints, references, targets visibility, expression rules) come from `cage-core`; the front end replicates no rules.
+Cage's CLI is the interface of record for the compile chain; the Web UI is **another front door to the same core**: the editor does not parse or render YAML, it only exchanges documents with the core and delegates validation. All editing semantics (the 19 editable field types—core defines 20 kinds, `TaggedUnion` is preserved verbatim with no dedicated editor—constraints, references, targets visibility, expression rules) come from `cage-core`; the front end replicates no rules.
 
 ## Architecture Decisions
 
@@ -44,7 +44,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   root-level error / YAML syntax error),
   shape agreement with the snapshot's `schema.json`; `E1701` added to the error code table (crates/cage-core/src/error/codes.rs `editor` family + validation docs)
 
-### W2 implemented: `cage web` local HTTP service (cage-cli/src/web.rs)
+### W2 implemented: `cage web` local HTTP service (cage-cli/src/web/)
 
 - [x] Project loading reuses the CLI load chain (`load_project_config` / `load_schema`),
   binds `127.0.0.1` only, no authentication (local tool)
@@ -74,7 +74,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   is likewise 409 (the schema of a published entry is not edited here—the publishing
   project must republish); nothing configured → writes `schema.yaml` plus a note
   reminding to wire up cage.toml (the server never modifies configuration files)
-- [x] Integration tests (crates/cage-cli/tests/web.rs): real subprocess + raw TCP requests,
+- [x] Integration tests (crates/cage-cli/tests/web/): real subprocess + raw TCP requests,
   covering document serving / E1701+E1004 validation /
   reload after save and a `cage check` rerun / directory refusal / starting from an empty schema
 
@@ -153,7 +153,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   a target list, the first 12 characters of build_id / content_hash, a Build button);
   a bare `/status` 301-redirects to `/status/` (so relative asset references do not collide with the editor's /app.js);
   the editor's top bar gains a "Project status →" cross-link
-- [x] Tests: 6 web.rs unit tests (status default profile / unknown profile 400 /
+- [x] Tests: 6 web/tests.rs unit tests (status default profile / unknown profile 400 /
   fresh and up-to-date after a build / `changed_tables` naming after a source change /
   a build on bad data refused with diagnostics / a build for an unknown profile refused)
   + 3 integration tests (status page routing and the 301 / status-build end to end /
@@ -176,7 +176,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   size / hash prefix / preview / download); previews format JSON, show text as-is, and mark msgpack "binary,
   not pre-rendered"; an unbuilt or cross-profile case shows an explanation rather than an empty shell;
   stale artifacts show a staleness notice
-- [x] Tests: 3 web.rs unit tests (the list across profiles and the empty case /
+- [x] Tests: 3 web/tests.rs unit tests (the list across profiles and the empty case /
   serving + 404 for a non-ledger path + 409 for tampering / the stale marker)
   + 1 integration test (list → byte-exact serving → 404 → 409 end to end) + artifact assertions added to web-smoke step 5
 
@@ -191,7 +191,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   tables/fields dropped by the projection are greyed out with a "not visible in this profile" badge rather than disappearing—what is hidden should be visible as hidden;
   the projection is computed from the saved schema,
   and the prompt states this explicitly while there are unsaved edits (saving is entirely author-driven, with no autosave)
-- [x] Tests: +2 web.rs unit tests (projection gating tables and fields / unknown profile 400)
+- [x] Tests: +2 web/tests.rs unit tests (projection gating tables and fields / unknown profile 400)
   + 1 integration test (no profile → no projection → client drops the server-only field → server keeps it → ghost 400)
   + web-smoke step 7 (game-config's `internal_note`: dropped by the client projection,
   kept by server, ghost 400)
@@ -220,7 +220,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   verdict for each, mutually exclusive with `--verify`/`--env`); `cage diff`
   gains a layered "tables changed / targets affected" summary from the same
   data source as the status page (manifest `table_hashes` and artifact paths)
-- [x] Tests: +3 web.rs unit tests (snapshot packing / list self-verification /
+- [x] Tests: +3 web/tests.rs unit tests (snapshot packing / list self-verification /
   bad body 400 / diff layering with missing arguments and an unknown base 400 /
   registry not-configured explanation + browsing when configured)
   + `cage snapshot` CLI tests (--list package listing and a tampering verdict, --list conflicting with `--verify`/`--env`)
@@ -251,7 +251,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
 - [x] Zero new validation: what the data panel consumes is still the
       same `/api/status` `validate_project` diagnostics (check / lsp /
       web / status page share the single entry point)
-- [x] Tests: +2 web.rs unit tests (table list facts and ghost 400 /
+- [x] Tests: +2 web/tests.rs unit tests (table list facts and ghost 400 /
       pagination window and hidden-table 404) + 1 integration test
       (table list → row window → ghost 404 → page reference assertion)
       + web-smoke step 5 folds in data panel assertions (/api/tables →
@@ -296,7 +296,7 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       zero new server surface
 - [x] Tests: integration assertions (`FIELD_TEMPLATES` / foreign-key,
       `markDiagDiff` / `diag-new`) + `node --check` on both page scripts;
-      web unit 44 green / integration 15 green unchanged
+      web unit 73 green / integration 15 green unchanged
 
 ### W12 implemented: table source upload (planner interface P0, 2026-10-21, roadmap in UI facade)
 

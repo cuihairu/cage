@@ -87,7 +87,8 @@ Authoring Sources → Source Adapters → Canonical Model → Validation Pipelin
       回退缓存副本 + E1906 WARNING，`--no-cache` 严格模式）、S5 错误
       码接线收口对账已交付（E19xx 全族预留清零、四源码覆盖盘点在案）、
       S6 文档收口已交付（source.md 后续扩展清单转正、cli.md 远程源章节、
-      需求整理.md Remote Source 勾选、architecture.md 工程结构树三 crate 已在列）
+      requirements.md（docs/zh/requirements.md:83）Remote Source 勾选、
+      architecture.md 工程结构树三 crate 已在列）
 - [x] 迁移——已交付（2026-10 拍板，design §46：M 系列声明式数据迁移，
       Canonical Model 层显式规则变换 + 回验，E20xx 族；M1 规则模型 /
       M2 执行器 / M3 CLI 收口全数交付，`cage migrate` dry-run/--write/

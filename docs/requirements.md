@@ -93,7 +93,7 @@ Status as of the 2026-10 code: the MVP is fully delivered, phase two is fully de
       is cleared out and the inventory covering all four sources is on record),
       and S6 documentation is delivered (the follow-up extension list in `docs/source.md` was
       promoted, the remote-source chapter in `docs/cli.md`, the Remote Source checkbox in
-      `docs/需求整理.md`, and the three crates already appear in the project structure tree
+      `docs/requirements.md:87`, and the three crates already appear in the project structure tree
       in `docs/architecture.md`)
 - [x] Migration — delivered (decided 2026-10, design §46: the M series of declarative data
       migration, explicit rule transforms at the Canonical Model layer plus re-validation,

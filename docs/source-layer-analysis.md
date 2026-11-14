@@ -13,33 +13,33 @@ them (for example, Excel and JSON adapters in `crates/cage-cli/Cargo.toml:20-40`
 
 | Layer | Responsibility | Representative entry |
 | --- | --- | --- |
-| Application Interfaces | Accept CLI/HTTP/MCP/LSP requests and drive shared pipelines | `crates/cage-cli/src/main.rs:575` |
-| Project Loading | Read project config, resolve schemas/sources, produce the compiler input | `crates/cage-cli/src/main.rs:787` |
+| Application Interfaces | Accept CLI/HTTP/MCP/LSP requests and drive shared pipelines | `crates/cage-cli/src/main.rs:551` |
+| Project Loading | Read project config, resolve schemas/sources, produce the compiler input | `crates/cage-cli/src/loading.rs:77-175` |
 | Core Model | Represent schema and canonical data independently of any file format | `crates/cage-core/src/schema/mod.rs:9`, `crates/cage-core/src/value/mod.rs:134` |
-| Normalization | Materialize defaults, split cells, coerce values to declared types | `crates/cage-core/src/normalize/mod.rs:116`, `crates/cage-core/src/normalize/mod.rs:232` |
+| Normalization | Materialize defaults, split cells, coerce values to declared types | `crates/cage-core/src/normalize/fields.rs:20-43`, `crates/cage-core/src/normalize/fields.rs:136-286` |
 | Validation | Run L0-L7 checks and return locatable diagnostics | `crates/cage-core/src/validation/mod.rs:168` |
-| Build & Distribution | Hash inputs, incrementally regenerate, pack/verify, and publish artifacts | `crates/cage-cli/src/main.rs:2184`, `crates/cage-core/src/snapshot/mod.rs:83` |
-| Target Generation | Turn schema/document into data, bindings, contracts, or templates | `crates/cage-cli/src/main.rs:3727` |
-| Source Ingestion | Parse external files/tables/APIs into canonical documents | `crates/cage-cli/src/main.rs:1037`, `crates/cage-source-excel/src/lib.rs:54` |
+| Build & Distribution | Hash inputs, incrementally regenerate, pack/verify, and publish artifacts | `crates/cage-cli/src/build.rs:97-431`, `crates/cage-core/src/snapshot/mod.rs:83` |
+| Target Generation | Turn schema/document into data, bindings, contracts, or templates | `crates/cage-cli/src/gen.rs:229-256` |
+| Source Ingestion | Parse external files/tables/APIs into canonical documents | `crates/cage-cli/src/loading.rs:77-175`, `crates/cage-source-excel/src/lib.rs:41-56` |
 | Governance & Diagnostics | Track assets, migrate schema/data, and normalize error reporting | `crates/cage-core/src/assets/mod.rs:86`, `crates/cage-core/src/diagnostics/mod.rs:13` |
 
 ## Application Interfaces
 
-`main` parses CLI arguments and dispatches commands (`crates/cage-cli/src/main.rs:575`).
+`main` parses CLI arguments and dispatches commands (`crates/cage-cli/src/main.rs:551`).
 Four protocol surfaces share the compiler core rather than reimplementing it:
 
 - CLI commands call `build_project`, `run_gen`, migration, snapshot, registry,
-  asset, and verify flows. `build` is the broadest route (`crates/cage-cli/src/main.rs:2184`).
+  asset, and verify flows. `build` is the broadest route (`crates/cage-cli/src/main.rs:585-599`).
 - HTTP serves editor/status APIs on loopback with a single-threaded request
-  loop and embedded UI assets (`crates/cage-cli/src/web.rs:61-77`, `crates/cage-cli/src/web.rs:49-58`).
+  loop and embedded UI assets (`crates/cage-cli/src/web/mod.rs:63-70`, `crates/cage-cli/src/web/mod.rs:44-62`).
 - MCP is a stateless rmcp tool router over stdio; each tool reuses project
-  loading, validation, or target planning (`crates/cage-cli/src/mcp.rs:130-240`).
+  loading, validation, or target planning (`crates/cage-cli/src/mcp.rs:30-109`, `crates/cage-cli/src/mcp/tools.rs:25`, `crates/cage-cli/src/mcp/tools.rs:173`).
 - LSP has no persistent compiler state: framed JSON-RPC requests trigger full
   project validation and publish diagnostics (`crates/cage-cli/src/lsp.rs:97-230`).
 
 There is no Redis or MySQL runtime cache here. The HTTP context keeps only
-project root and deserialized config (`crates/cage-cli/src/web.rs:84-87`);
-MCP has explicitly stateless tools (`crates/cage-cli/src/mcp.rs:130-135`);
+project root and deserialized config (`crates/cage-cli/src/web/mod.rs:63-66`);
+MCP has explicitly stateless tools (`crates/cage-cli/src/mcp.rs:24`);
 LSP holds root, env/level, and open-document URIs (`crates/cage-cli/src/lsp.rs:97-103`).
 
 ## Project Loading
@@ -47,16 +47,16 @@ LSP holds root, env/level, and open-document URIs (`crates/cage-cli/src/lsp.rs:9
 `load_project_impl` resolves one config file, fills environment DSN/credential
 names, loads the schema, and merges each logical source root. Registry roots
 go through ledger verification before their `data/` directory is selected as a
-source (`crates/cage-cli/src/main.rs:1133-1192`). Local and remote roots are
+source (`crates/cage-cli/src/loading.rs:77-175`). Local and remote roots are
 dispatched through the CLI-owned loader, while registry resolution is core
-logic (`crates/cage-cli/src/main.rs:1020-1065`).
+logic (`crates/cage-cli/src/loading.rs:77-175`).
 
 `cage.toml` is the top-level configuration schema: project identity, profiles,
 source roots, schema path, output, registry, dependency pins, remote source
-environment-variable names, and format conventions (`crates/cage-core/src/manifest/mod.rs:523-632`).
+environment-variable names, and format conventions (`crates/cage-core/src/manifest/config.rs:39-79`).
 Remote configuration deliberately stores names, not credentials: `dsn_env`,
 `credential_env`, and named read-only queries are declared in config while
-secrets resolve at load time (`crates/cage-core/src/manifest/mod.rs:610-631`).
+secrets resolve at load time (`crates/cage-core/src/manifest/config.rs:118-135`).
 
 ## Core Model
 
@@ -75,11 +75,11 @@ model: editor JSON and canonical YAML both map through core functions
 ## Normalization
 
 Normalization happens after loading and before validation/generation. It fills
-field defaults (`crates/cage-core/src/normalize/mod.rs:116`), splits arrays
-encoded in one cell (`crates/cage-core/src/normalize/mod.rs:160`), and coerces
-`Value` instances to field types (`crates/cage-core/src/normalize/mod.rs:232`).
+field defaults (`crates/cage-core/src/normalize/fields.rs:20-43`), splits arrays
+encoded in one cell (`crates/cage-core/src/normalize/fields.rs:64-133`), and coerces
+`Value` instances to field types (`crates/cage-core/src/normalize/fields.rs:136-286`).
 It is stateless: each function maps a value/document to another value/document.
-CLI build calls it immediately after profile validation (`crates/cage-cli/src/main.rs:2226-2240`).
+CLI build calls it immediately after profile validation (`crates/cage-cli/src/main.rs:772-801`).
 
 ## Validation
 
@@ -91,8 +91,8 @@ invoked as L7 from the same pipeline. Validation stores no durable state; its
 cache lives only inside `ValidationContext`.
 
 CLI/MCP/LSP all route to this entry rather than re-decoding diagnostics:
-build uses it (`crates/cage-cli/src/main.rs:2226`), MCP tool bodies call
-`validate_project` (`crates/cage-cli/src/mcp.rs:270-420`), and LSP maps its
+build uses it (`crates/cage-cli/src/main.rs:772`, `crates/cage-cli/src/main.rs:801`), MCP tool bodies call
+`validate_project` (`crates/cage-cli/src/mcp/tools.rs:25`, `crates/cage-cli/src/mcp/tools.rs:173`), and LSP maps its
 result to editor diagnostics (`crates/cage-cli/src/lsp.rs:109-177`).
 
 ## Build & Distribution
@@ -100,20 +100,20 @@ result to editor diagnostics (`crates/cage-cli/src/lsp.rs:109-177`).
 The CLI build orchestrates the lifecycle: validate full data, normalize,
 compute schema/source hashes, compare the prior manifest, regenerate only
 affected tables/targets, write artifacts, and write a deterministic manifest
-(`crates/cage-cli/src/main.rs:2184-2520`). Incremental state is the prior
+(`crates/cage-cli/src/build.rs:97-431`). Incremental state is the prior
 `manifest.json` on disk plus artifact files; safe-path checks reject unsafe
-prior records (`crates/cage-cli/src/main.rs:2300-2355`). Snapshots package the
+prior records (`crates/cage-cli/src/build.rs:183-431`). Snapshots package the
 manifest/schema/artifact set with a BLAKE3 ledger and verify it again on load
 (`crates/cage-core/src/snapshot/mod.rs:83-206`). The registry is a directory
 of self-verifying snapshots plus per-package `index.json`; it resolves only
-ledger-verified entries (`crates/cage-core/src/registry.rs:6-31`,
-`crates/cage-core/src/registry.rs:1526-1569`).
+ledger-verified entries (`crates/cage-core/src/registry/model.rs:8-31`,
+`crates/cage-core/src/registry/store.rs:17-37`).
 
 Remote distribution and remote reads use one bounded HTTP/retry policy. Cache
 keys/directories, GET/conditional GET, and PUT live in core
 (`crates/cage-core/src/remote.rs:35-310`, `crates/cage-core/src/remote.rs:524-547`).
 Registry push uploads entry files and then a merged index via PUT
-(`crates/cage-core/src/registry.rs:1078-1330`).
+(`crates/cage-core/src/registry/push.rs:40-137`).
 
 Configuration inputs are the profile/target list plus registry auth-env name;
 artifacts and manifests are the durable state. No daemon holds build state in
@@ -122,19 +122,19 @@ memory between requests.
 ## Target Generation
 
 `generate_target_items` is the shared in-memory dispatch used by build and MCP
-dry runs (`crates/cage-cli/src/main.rs:3727-3768`). Data formats are JSON, CSV,
+dry runs (`crates/cage-cli/src/gen.rs:229-256`). Data formats are JSON, CSV,
 and MessagePack; language/contract/template generators are schema-driven
-(`crates/cage-cli/src/main.rs:3637-3725`). Each target is an independent crate
+(`crates/cage-cli/src/gen.rs:139-221`). Each target is an independent crate
 and constructs its generator from `TargetConfig`
-(`crates/cage-core/src/manifest/mod.rs:508-521`). Target state is only the
+(`crates/cage-core/src/manifest/config.rs:24-35`). Target state is only the
 project's Tera template directory for the template format; all generated bytes
 return through the CLI and are written by one artifact writer.
 
 ## Source Ingestion
 
 Every local parser produces `Document` through a source adapter. Excel uses
-calamine and convention metadata (`crates/cage-source-excel/src/lib.rs:54`,
-`crates/cage-source-excel/src/lib.rs:1284`); CSV/JSON/YAML/MessagePack are
+calamine and convention metadata (`crates/cage-source-excel/src/lib.rs:41-56`,
+`crates/cage-source-excel/src/meta.rs:35`); CSV/JSON/YAML/MessagePack are
 format-specific parser crates. HTTP, database, and Sheets adapters fetch
 remote bytes/rows and reuse the JSON adapter for canonical caching/conversion
 (`crates/cage-source-http/src/lib.rs:133`, `crates/cage-source-db/src/lib.rs:252-360`,
@@ -144,7 +144,7 @@ Remote state is a project-local cache path derived from a deterministic
 source key (`crates/cage-core/src/remote.rs:35-60`). Databases are read-only
 query/introspection inputs, not persistent compiler state. The
 `RemoteSourceConfig` schema carries only environment-variable names and named
-read-only queries (`crates/cage-core/src/manifest/mod.rs:610-631`).
+read-only queries (`crates/cage-core/src/manifest/config.rs:118-135`).
 
 ## Governance & Diagnostics
 
@@ -152,9 +152,9 @@ Asset governance inventories rules, migrations, and local source roots; BLAKE3
 hashes become a deterministic baseline and verification report
 (`crates/cage-core/src/assets/mod.rs:26-177`). Migration parses a declarative
 spec, applies ordered steps, revalidates the document, and reports per-step
-results (`crates/cage-core/src/migrate/mod.rs:35-90`,
-`crates/cage-core/src/migrate/mod.rs:513-880`). Schema diffing derives migration
-drafts (`crates/cage-core/src/migrate/diff.rs:88-220`).
+results (`crates/cage-core/src/migrate/apply.rs:32-39`,
+`crates/cage-core/src/migrate/apply.rs:68-88`). Schema diffing derives migration
+drafts (`crates/cage-core/src/migrate/diff.rs:109-169`).
 
 Diagnostics are first-class pipeline results carrying code, source location,
 table/field context, severity, and rendering. The type lives in core
@@ -173,9 +173,9 @@ see `crates/cage-core/src/error/codes.rs`.
 | Sources | files, SQL result sets, HTTP payloads, Sheets rows | project-local remote cache / canonical cache JSON | ureq HTTP, MySQL/Postgres protocol, filesystem |
 | Registry | snapshot bytes, dependency pins, bearer auth-env name | package directories, `index.json`, `HASHES.json` | filesystem plus optional HTTP PUT |
 
-CLI processes end after one dispatch (`crates/cage-cli/src/main.rs:575-778`);
-Web loops until killed (`crates/cage-cli/src/web.rs:61-79`); MCP ends when the
-stdio client disconnects (`crates/cage-cli/src/mcp.rs:215-242`); LSP exits on
+CLI processes end after one dispatch (`crates/cage-cli/src/main.rs:551-749`);
+Web loops until killed (`crates/cage-cli/src/web/mod.rs:63-70`); MCP ends when the
+stdio client disconnects (`crates/cage-cli/src/mcp.rs:113-134`); LSP exits on
 EOF or after shutdown/exit (`crates/cage-cli/src/lsp.rs:199-278`).
 
 ## Related Pages
