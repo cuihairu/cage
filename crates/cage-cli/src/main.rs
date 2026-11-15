@@ -1615,8 +1615,14 @@ enums: {}
 
         // The normalizer is platform-independent either way: a native
         // separator and a literal backslash both normalize to `/`.
-        assert_eq!(normalize_artifact_rel("build\\client\\json"), "build/client/json");
-        assert_eq!(normalize_artifact_rel("build/client/json"), "build/client/json");
+        assert_eq!(
+            normalize_artifact_rel("build\\client\\json"),
+            "build/client/json"
+        );
+        assert_eq!(
+            normalize_artifact_rel("build/client/json"),
+            "build/client/json"
+        );
     }
 
     #[test]
