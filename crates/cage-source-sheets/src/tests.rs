@@ -196,6 +196,11 @@ fn start_server(status: u16, body: &'static str) -> TestServer {
                     // drained before the drop: Windows resets a socket
                     // closed with unread data pending, and that reset
                     // clobbers the client's in-flight response read.
+                    // Half-close the write side first: the client sees EOF
+                    // on its response read, finalizes and closes, and the
+                    // drain below gets a clean EOF instead of racing the
+                    // 50 ms read timeout.
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
                     let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
                     use std::io::Read as _;
                     let mut drained = Vec::new();

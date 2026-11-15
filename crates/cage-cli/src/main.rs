@@ -1590,6 +1590,35 @@ enums: {}
         assert!(err.starts_with("cannot write"), "{err}");
     }
 
+    /// Regression for a Windows-written `output_dir` on any host: the config
+    /// value is a literal string, so `build\client\json` reaches a Linux box
+    /// verbatim. The recorded key must stay `/`-separated, or the manifest
+    /// entries, the snapshot ledger and `api_artifact` lookups all drift from
+    /// the bytes actually written.
+    #[test]
+    fn artifact_keys_are_separator_portable_for_windows_written_output_dirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut artifacts = Vec::new();
+        write_artifact_files(
+            tmp.path(),
+            vec![("out\\Item.json".to_string(), b"{\"id\":1}".to_vec())],
+            "json",
+            &mut artifacts,
+        )
+        .expect("write");
+        assert_eq!(artifacts.len(), 1);
+        let (rel, _content, _format, table) = &artifacts[0];
+        assert_eq!(rel, "out/Item.json");
+        assert_eq!(table.as_deref(), Some("Item"));
+        // The file itself lands at the normalized location.
+        assert!(tmp.path().join("out/Item.json").is_file());
+
+        // The normalizer is platform-independent either way: a native
+        // separator and a literal backslash both normalize to `/`.
+        assert_eq!(normalize_artifact_rel("build\\client\\json"), "build/client/json");
+        assert_eq!(normalize_artifact_rel("build/client/json"), "build/client/json");
+    }
+
     #[test]
     fn manifest_roundtrip_and_error_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");

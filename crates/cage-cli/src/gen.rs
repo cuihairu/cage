@@ -300,9 +300,12 @@ pub(crate) fn java_holder(target: &TargetConfig) -> String {
 /// separators. The path is a contract key downstream (manifest artifacts,
 /// snapshot ledger, `api_artifact` lookups, diff target mapping) — every
 /// consumer compares it against `/`-separated strings, so the platform
-/// separator must never leak into the recorded form.
+/// separator must never leak into the recorded form. A backslash is
+/// normalized away too: `output_dir` is user config, so a Windows-written
+/// value (`build\client\json`) reaches a Linux host as a literal string and
+/// would otherwise land in the key as one flat segment.
 pub(crate) fn normalize_artifact_rel(rel: &str) -> String {
-    rel.replace(std::path::MAIN_SEPARATOR, "/")
+    rel.replace(['\\', std::path::MAIN_SEPARATOR], "/")
 }
 
 /// Write generated artifacts under `root`, recording manifest entries

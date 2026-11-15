@@ -367,8 +367,7 @@ pub fn drift(
                 .columns
                 .values()
                 .find(|c| !c.cell.is_empty())
-                .map(|c| c.cell.clone())
-                .unwrap_or_default();
+                .map_or_default(|c| c.cell.clone());
             diags.add(drift_diag(
                 source_file,
                 &sheet,
@@ -392,8 +391,7 @@ pub fn drift(
                     .columns
                     .values()
                     .find(|c| c.primary_key == Some(true))
-                    .map(|c| c.cell.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|c| c.cell.clone());
                 diags.add(drift_diag(
                     source_file,
                     &sheet,
@@ -434,8 +432,7 @@ pub fn drift(
                     .columns
                     .values()
                     .find(|c| c.unique == Some(true))
-                    .map(|c| c.cell.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|c| c.cell.clone());
                 diags.add(drift_diag(
                     source_file,
                     &sheet,
