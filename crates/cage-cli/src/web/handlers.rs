@@ -412,8 +412,7 @@ pub(crate) fn api_tables(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
             let pk = schema
                 .tables
                 .get(&t.name)
-                .map(|def| def.primary_key.clone())
-                .unwrap_or_default();
+                .map_or_else(Default::default, |def| def.primary_key.clone());
             serde_json::json!({
                 "name": t.name,
                 "rows": t.rows.len(),

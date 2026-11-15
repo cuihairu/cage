@@ -274,16 +274,13 @@ impl ExcelSourceAdapter {
             let has_nested_columns = convention_meta
                 .as_ref()
                 .is_some_and(|meta| meta.columns.values().any(|c| !c.sub_columns.is_empty()));
-            let multi_row_columns = convention_meta
-                .as_ref()
-                .map(|meta| {
-                    meta.columns
-                        .iter()
-                        .filter(|(_name, column)| column.multi_row)
-                        .map(|(name, _column)| name.clone())
-                        .collect::<IndexSet<String>>()
-                })
-                .unwrap_or_default();
+            let multi_row_columns = convention_meta.as_ref().map_or_else(IndexSet::new, |meta| {
+                meta.columns
+                    .iter()
+                    .filter(|(_name, column)| column.multi_row)
+                    .map(|(name, _column)| name.clone())
+                    .collect::<IndexSet<String>>()
+            });
             let has_structural =
                 is_var_header || has_nested_columns || !multi_row_columns.is_empty();
             let header_groups = (self.has_header && has_structural)

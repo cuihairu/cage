@@ -290,8 +290,7 @@ fn data_table(name: &str, file: &str, rows: Vec<Vec<(&str, Value)>>) -> Table {
                 primary_key: fields
                     .iter()
                     .find(|(k, _)| *k == "id")
-                    .map(|(_, v)| vec![v.clone()])
-                    .unwrap_or_default(),
+                    .map_or_else(Vec::new, |(_, v)| vec![v.clone()]),
                 fields: fields
                     .into_iter()
                     .map(|(k, v)| {

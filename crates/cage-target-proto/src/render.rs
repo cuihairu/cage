@@ -381,11 +381,10 @@ impl ProtoTargetGenerator {
             }
             FieldType::Enum(name) => {
                 if eligible.contains(name) {
-                    let ident = &proto_enums
+                    let ident = proto_enums
                         .iter()
                         .find(|e| e.name == *name)
-                        .map(|e| e.ident.clone())
-                        .unwrap_or_default();
+                        .map_or_else(Default::default, |e| e.ident.clone());
                     ctx.enum_refs.insert(ident.clone());
                     ident.clone()
                 } else {
