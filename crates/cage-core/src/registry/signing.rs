@@ -179,10 +179,10 @@ pub fn write_bundle_signature(
 
 /// The sidecar path for a bundle file: `<bundle>.sig`.
 pub fn sidecar_path(bundle_path: &Path) -> PathBuf {
-    let mut name = bundle_path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let mut name = match bundle_path.file_name() {
+        Some(n) => n.to_string_lossy().into_owned(),
+        None => String::new(),
+    };
     name.push_str(BUNDLE_SIG_SUFFIX);
     bundle_path.with_file_name(name)
 }

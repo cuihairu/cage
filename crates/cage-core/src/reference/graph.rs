@@ -59,18 +59,18 @@ impl DependencyGraph {
 
     /// Get direct dependencies (tables this table references)
     pub fn dependencies(&self, table: &str) -> Vec<&String> {
-        self.forward
-            .get(table)
-            .map(|s| s.iter().collect())
-            .unwrap_or_default()
+        match self.forward.get(table) {
+            Some(s) => s.iter().collect(),
+            None => Vec::new(),
+        }
     }
 
     /// Get direct dependents (tables that reference this table)
     pub fn dependents(&self, table: &str) -> Vec<&String> {
-        self.reverse
-            .get(table)
-            .map(|s| s.iter().collect())
-            .unwrap_or_default()
+        match self.reverse.get(table) {
+            Some(s) => s.iter().collect(),
+            None => Vec::new(),
+        }
     }
 
     /// Get all transitive dependencies (for build order)
