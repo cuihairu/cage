@@ -414,7 +414,7 @@ impl tera::Filter for CamelCaseFilter {
     fn filter(&self, value: &Value, _args: &HashMap<String, Value>) -> tera::Result<Value> {
         let s = as_identifier(value)?;
         let mut ws = words(&s).into_iter();
-        let first = ws.next().map(|w| w.to_lowercase()).unwrap_or_default();
+        let first = ws.next().map_or_default(|w| w.to_lowercase());
         let rest: String = ws.map(|w| capitalized(&w)).collect();
         Ok(Value::String(format!("{first}{rest}")))
     }
