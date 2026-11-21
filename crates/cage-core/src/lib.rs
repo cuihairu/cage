@@ -50,6 +50,7 @@ pub mod refactor;
 pub mod reference;
 pub mod registry;
 pub mod remote;
+pub mod rule_ast;
 pub mod schema;
 pub mod snapshot;
 pub mod validation;

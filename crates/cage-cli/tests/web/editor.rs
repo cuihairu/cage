@@ -171,6 +171,17 @@ fn web_serves_editor_page_and_assets() {
         body.contains("禁三套规则格式"),
         "the one-rule-format contract must be stated: {body}"
     );
+    // P1-2: the visual condition builder posts an AST to /api/rule/compile
+    // (Rust Core turns it into the one ExpressionRule array) and loads an
+    // existing rule back via /api/rule/decompile.
+    assert!(
+        body.contains("builderRowsToAst"),
+        "modes module must expose the AST builder: {body}"
+    );
+    assert!(
+        body.contains("/api/rule/compile"),
+        "the builder must compile through the Rust Core: {body}"
+    );
     // The entry dispatches on the mode: expert renders the raw document,
     // rules renders the rules view — both edit the same state.doc.
     let (_, body) = request(server.port, "GET", "/app.js", None);
@@ -695,4 +706,78 @@ file_template = "{table}.json"
         tmp.path().join("schema.yaml").is_file(),
         "default save target must be schema.yaml"
     );
+}
+
+#[test]
+fn web_compiles_a_visual_condition_into_rules_and_reads_it_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let server = start_server(tmp.path());
+
+    // The builder posts a two-row And: Rust Core compiles it down to the
+    // one ExpressionRule array the Schema carries (one rule per item).
+    let ast = serde_json::json!({
+        "kind": "And",
+        "items": [
+            { "kind": "Compare", "field": "price", "op": ">=", "rhs": { "kind": "Literal", "value": 10 } },
+            { "kind": "Compare", "field": "price", "op": "<=", "rhs": { "kind": "Field", "name": "cap" } }
+        ]
+    });
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/rule/compile",
+        Some(
+            &serde_json::json!({
+                "ast": ast,
+                "meta": { "name": "price_band", "message": null, "warning_only": false }
+            })
+            .to_string(),
+        ),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "body: {body}");
+    assert_eq!(v["rules"].as_array().unwrap().len(), 2, "body: {body}");
+    assert_eq!(v["rules"][0]["name"], "price_band");
+    assert_eq!(v["rules"][0]["assert"], "price >= 10");
+    assert_eq!(v["rules"][1]["name"], "price_band_2");
+    assert_eq!(v["rules"][1]["assert"], "price <= cap");
+
+    // Decompile reads one compiled rule back into the builder's rows.
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/rule/decompile",
+        Some(&serde_json::json!({ "rule": v["rules"][1] }).to_string()),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "body: {body}");
+    assert_eq!(v["ast"]["kind"], "Compare");
+    assert_eq!(v["ast"]["field"], "price");
+    assert_eq!(v["ast"]["op"], "<=");
+    assert_eq!(v["ast"]["rhs"]["kind"], "Field");
+    assert_eq!(v["ast"]["rhs"]["name"], "cap");
+
+    // Anything the expression engine cannot render is refused with a
+    // boundary notice — never silently written into the Schema.
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/rule/compile",
+        Some(
+            &serde_json::json!({
+                "ast": { "kind": "Compare", "field": "note", "op": "==",
+                        "rhs": { "kind": "Literal", "value": "say \"hi\" and 'bye'" } },
+                "meta": { "name": "note_eq", "message": null, "warning_only": false }
+            })
+            .to_string(),
+        ),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], false, "body: {body}");
+    assert_eq!(v["unsupported"], true, "body: {body}");
+    assert!(!v["error"].as_str().unwrap().is_empty(), "body: {body}");
 }

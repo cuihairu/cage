@@ -49,3 +49,35 @@ export function addRule(doc, table, field) {
   f.rules = [...items, { name: `rule_${items.length + 1}`, assert: "" }];
   return { ok: true, doc };
 }
+
+// ── 可视化条件构建器（P1-2）：行模型 → AST ─────────────────────────────
+//
+// 行即一条 `field OP rhs`。单行 → Compare；多行 → And（多行必同时成立，
+// 编译后逐行成规则，Schema 对字段 rules 取 AND）。AST 由 Rust Core
+// 编译回 ExpressionRule（/api/rule/compile），前端不渲染 assert。
+
+/// 行模型 → 结构化 AST（纯函数，node 可测）。行：
+/// `{field, op, rhsKind: "Literal"|"Field", value, fieldName}`。
+export function builderRowsToAst(rows) {
+  const items = rows.map((r) => ({
+    kind: "Compare",
+    field: r.field,
+    op: r.op,
+    rhs: r.rhsKind === "Field"
+      ? { kind: "Field", name: r.fieldName }
+      : { kind: "Literal", value: r.value },
+  }));
+  return items.length === 1 ? items[0] : { kind: "And", items };
+}
+
+/// 字面量输入（文本）→ JSON 值：合法 JSON 取其值；否则按字符串字面量
+/// （策划输入 `hi` 即字符串，`200` 即数字，`true` 即布尔）。
+export function parseLiteralInput(text) {
+  const raw = (text ?? "").trim();
+  if (raw === "") return { error: "字面量为空" };
+  try {
+    return { value: JSON.parse(raw) };
+  } catch {
+    return { value: raw };
+  }
+}

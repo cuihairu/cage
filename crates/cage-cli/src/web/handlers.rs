@@ -9,6 +9,9 @@ use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_editor_json};
 use cage_core::error::codes::Severity;
 use cage_core::refactor::{apply as apply_rename, RenameTarget};
+use cage_core::rule_ast::{
+    compile as compile_rule_ast, decompile as decompile_rule_ast, RuleAst, RuleMeta,
+};
 use cage_core::schema::Schema;
 use cage_core::validation::ValidationLevel;
 use cage_core::value::{Document, Value};
@@ -655,6 +658,89 @@ pub(crate) fn api_schema_rename(body: &str) -> (u16, serde_json::Value) {
             }),
         ),
     }
+}
+
+/// P1-2: compile a structured rule AST down to the Schema's one rule
+/// representation (`ExpressionRule` arrays). The visual builder (规则模式)
+/// produces the AST; the Rust Core turns it into rules — the frontend never
+/// renders an assert, and the AST is never stored in the Schema (no third
+/// rule format). An AST the engine cannot express answers `unsupported: true`
+/// with a human reason — the expressiveness-boundary notice (P1-5).
+pub(crate) fn api_rule_compile(body: &str) -> (u16, serde_json::Value) {
+    let parsed = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("bad request body: {e}")}),
+            );
+        }
+    };
+    let ast: RuleAst = match serde_json::from_value(
+        parsed
+            .get("ast")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("invalid 'ast': {e}")}),
+            );
+        }
+    };
+    let meta = match serde_json::from_value::<RuleMeta>(parsed.get("meta").cloned().unwrap_or_else(
+        || serde_json::json!({"name": "rule", "message": null, "warning_only": false}),
+    )) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("invalid 'meta': {e}")}),
+            );
+        }
+    };
+    match compile_rule_ast(&ast, &meta) {
+        Ok(rules) => (200, serde_json::json!({"ok": true, "rules": rules})),
+        Err(cage_core::rule_ast::CompileError::Unsupported { reason }) => (
+            200,
+            serde_json::json!({"ok": false, "unsupported": true, "error": reason}),
+        ),
+    }
+}
+
+/// P1-2: the inverse — parse an `ExpressionRule` back into the AST so the
+/// visual builder can load and edit an existing rule. An assert the engine
+/// cannot parse yields `RuleAst::Unparseable` (shown read-only).
+pub(crate) fn api_rule_decompile(body: &str) -> (u16, serde_json::Value) {
+    let parsed = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("bad request body: {e}")}),
+            );
+        }
+    };
+    let rule: cage_core::schema::ExpressionRule = match serde_json::from_value(
+        parsed
+            .get("rule")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("invalid 'rule': {e}")}),
+            );
+        }
+    };
+    (
+        200,
+        serde_json::json!({"ok": true, "ast": decompile_rule_ast(&rule)}),
+    )
 }
 
 pub(crate) fn api_status(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {

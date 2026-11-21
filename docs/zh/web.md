@@ -383,6 +383,35 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       规则格式契约、addRule 顺序）+ 集成断言（页面与 `/modes.js` 资产）；
       两页脚本 `node --check`；web 单测 80 绿 / 集成 19 绿；web-smoke 绿
 
+### W14 已实装：结构化规则 AST + 可视化条件构建器（评审 P1-2，2026-11-22）
+
+- [x] `cage_core::rule_ast`——创作期 AST（`Compare{field, op, rhs}` /
+      `And{items}` / `Unparseable{assert}`，rhs = 字面量或同行字段）。它只是
+      创作中间表示：`compile` 把它**向下**编译成 Schema 的唯一规则表示
+      （`field.rules` 上的 `ExpressionRule` 数组——`And` 逐项成规则，Schema
+      对字段 rules 取 AND），`decompile` 把断言解析回构建器的行。Schema
+      永不存储 AST，W13 的「禁三套规则格式」成立
+- [x] 表达能力边界是拒绝而不是假装：引擎渲染不了的字面量（数组/对象/
+      null、同时含两种引号的字符串、超出 `i64` 的 `UInt`）以
+      `CompileError::Unsupported` 拒绝并携带人话原因——编译端点应答
+      `{ok: false, unsupported: true, error}`，编辑器以边界提示呈现
+      （P1-5 使其更醒目）
+- [x] Web API：`POST /api/rule/compile`（AST + `RuleMeta` →
+      `ExpressionRule[]`）与 `POST /api/rule/decompile`（`ExpressionRule` →
+      AST，引擎解析不了的断言得 `Unparseable`）
+- [x] 可视化条件构建器位于编辑器规则模式，在表达式规则编辑器之上：行即
+      `字段 OP 字面量/字段`（操作符 `== != < <= > >=`，跨字段比较从同表
+      选另一字段），带规则名/提示消息/仅警告元数据与「替换全部/追加」
+      写入方式。构建器只产出 AST（`builderRowsToAst` 纯函数 node 可测；
+      `parseLiteralInput`——`200` 即数字、`hi` 即字符串）；断言文本一律由
+      Rust Core 渲染。「从既有规则装载」把字段既有规则反编译回行
+      （无法可视化的跳过并提示）
+- [x] 测试：rule_ast 单测 8（compile/decompile 回环、`And` 命名、不可
+      表示字面量、解析不了断言）+ web 单测 3（端点形状含 unsupported
+      拒绝）+ 集成 1（真实 HTTP：两行 `And` → 两条带后缀命名的规则、
+      反编译回行、unsupported 应答）+ `modes.test.mjs` 12 绿（两个新纯
+      函数）；workspace 1290 全绿；web-smoke 绿
+
 ## 路线图
 
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务

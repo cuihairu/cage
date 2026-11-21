@@ -783,6 +783,123 @@ fn api_schema_rename_patches_every_reference_site_of_the_draft() {
 }
 
 #[test]
+fn api_rule_compile_turns_an_ast_into_expression_rules() {
+    // A single comparison: one rule in the Schema's one representation.
+    let body = serde_json::json!({
+        "ast": {"kind": "Compare", "field": "price", "op": "<=",
+                "rhs": {"kind": "Literal", "value": 200}},
+        "meta": {"name": "price_cap", "message": "price must be <= 200", "warning_only": false},
+    });
+    let (status, out) = api_rule_compile(&body.to_string());
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["ok"], serde_json::json!(true), "{out}");
+    assert_eq!(
+        out["rules"],
+        serde_json::json!([{"name": "price_cap", "assert": "price <= 200",
+                            "message": "price must be <= 200"}]),
+        "{out}"
+    );
+
+    // An AND group: one rule per item, the Schema ANDs a field's rules.
+    let body = serde_json::json!({
+        "ast": {"kind": "And", "items": [
+            {"kind": "Compare", "field": "price", "op": ">=",
+             "rhs": {"kind": "Literal", "value": 10}},
+            {"kind": "Compare", "field": "price", "op": "<=",
+             "rhs": {"kind": "Field", "name": "price_cap_field"}}
+        ]},
+        "meta": {"name": "band", "message": null, "warning_only": true},
+    });
+    let (status, out) = api_rule_compile(&body.to_string());
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["rules"].as_array().unwrap().len(), 2, "{out}");
+    assert_eq!(out["rules"][0]["assert"], serde_json::json!("price >= 10"));
+    assert_eq!(
+        out["rules"][1]["assert"],
+        serde_json::json!("price <= price_cap_field")
+    );
+    for rule in out["rules"].as_array().unwrap() {
+        assert_eq!(rule["warning_only"], serde_json::json!(true));
+    }
+
+    // A malformed AST refuses; the default meta keeps the contract total.
+    let (status, refused) = api_rule_compile(r#"{"ast": {"kind": "Nope"}}"#);
+    assert_eq!(status, 400, "{refused}");
+    let (status, out) = api_rule_compile(
+        r#"{"ast": {"kind": "Compare", "field": "x", "op": ">",
+                    "rhs": {"kind": "Literal", "value": 1}}}"#,
+    );
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["rules"][0]["name"], serde_json::json!("rule"), "{out}");
+}
+
+#[test]
+fn api_rule_compile_answers_unsupported_for_unexpressible_conditions() {
+    for literal in [
+        serde_json::json!(null),
+        serde_json::json!([1]),
+        serde_json::json!({"a": 1}),
+    ] {
+        let body = serde_json::json!({
+            "ast": {"kind": "Compare", "field": "x", "op": "==",
+                    "rhs": {"kind": "Literal", "value": literal}},
+            "meta": {"name": "r", "message": null, "warning_only": false},
+        });
+        let (status, out) = api_rule_compile(&body.to_string());
+        assert_eq!(status, 200, "{out}");
+        assert_eq!(out["ok"], serde_json::json!(false), "{out}");
+        assert_eq!(out["unsupported"], serde_json::json!(true), "{out}");
+        assert!(!out["error"].as_str().unwrap().is_empty(), "{out}");
+    }
+    // A string holding both quote kinds has no engine token.
+    let body = serde_json::json!({
+        "ast": {"kind": "Compare", "field": "x", "op": "==",
+                "rhs": {"kind": "Literal", "value": "say \"hi\" and 'bye'"}},
+        "meta": {"name": "r", "message": null, "warning_only": false},
+    });
+    let (_, out) = api_rule_compile(&body.to_string());
+    assert_eq!(out["unsupported"], serde_json::json!(true), "{out}");
+}
+
+#[test]
+fn api_rule_decompile_parses_a_rule_back_into_an_ast() {
+    let body = serde_json::json!({
+        "rule": {"name": "price_cap", "assert": "price <= 200", "message": null, "warning_only": false},
+    });
+    let (status, out) = api_rule_decompile(&body.to_string());
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(
+        out["ast"],
+        serde_json::json!({"kind": "Compare", "field": "price", "op": "<=",
+                           "rhs": {"kind": "Literal", "value": 200}}),
+        "{out}"
+    );
+
+    // A cross-field assert decompiles to the field rhs.
+    let body = serde_json::json!({
+        "rule": {"name": "r", "assert": "min_level <= max_level"},
+    });
+    let (_, out) = api_rule_decompile(&body.to_string());
+    assert_eq!(
+        out["ast"]["rhs"],
+        serde_json::json!({"kind": "Field", "name": "max_level"}),
+        "{out}"
+    );
+
+    // An assert the engine cannot parse stays visibly unstructured, and a
+    // broken body refuses.
+    let body = serde_json::json!({"rule": {"name": "r", "assert": "a && b"}});
+    let (_, out) = api_rule_decompile(&body.to_string());
+    assert_eq!(
+        out["ast"],
+        serde_json::json!({"kind": "Unparseable", "assert": "a && b"}),
+        "{out}"
+    );
+    let (status, refused) = api_rule_decompile(r#"{"rule": 5}"#);
+    assert_eq!(status, 400, "{refused}");
+}
+
+#[test]
 fn api_save_multi_file_still_needs_the_sources_index_envelope() {
     let dir = TempDir::new().expect("tempdir");
     multi_file_project(&dir);

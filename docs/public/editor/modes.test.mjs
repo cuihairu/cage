@@ -10,6 +10,8 @@ import {
   applyExpertText,
   ruleFormat,
   addRule,
+  builderRowsToAst,
+  parseLiteralInput,
 } from './modes.js'
 
 const DOC = {
@@ -112,4 +114,39 @@ test('ruleFormat reads the single representation and nothing else', () => {
   assert.deepEqual(ruleFormat(DOC, 'Monster', 'id'), undefined)
   assert.equal(ruleFormat(DOC, 'Ghost', 'id'), undefined)
   assert.equal(ruleFormat(null, 'Monster', 'id'), undefined)
+})
+
+test('builderRowsToAst wraps one row as Compare and many rows as And', () => {
+  assert.deepEqual(builderRowsToAst([]), { kind: 'And', items: [] })
+  const one = { field: 'price', op: '<=', rhsKind: 'Literal', value: 200 }
+  assert.deepEqual(builderRowsToAst([one]), {
+    kind: 'Compare',
+    field: 'price',
+    op: '<=',
+    rhs: { kind: 'Literal', value: 200 },
+  })
+  const two = [
+    { field: 'price', op: '>=', rhsKind: 'Literal', value: 10 },
+    { field: 'price', op: '<=', rhsKind: 'Field', fieldName: 'cap' },
+  ]
+  const ast = builderRowsToAst(two)
+  assert.equal(ast.kind, 'And')
+  assert.equal(ast.items.length, 2)
+  assert.deepEqual(ast.items[0], {
+    kind: 'Compare', field: 'price', op: '>=', rhs: { kind: 'Literal', value: 10 },
+  })
+  assert.deepEqual(ast.items[1], {
+    kind: 'Compare', field: 'price', op: '<=', rhs: { kind: 'Field', name: 'cap' },
+  })
+})
+
+test('parseLiteralInput keeps numbers and booleans, falls back to string', () => {
+  assert.deepEqual(parseLiteralInput('200'), { value: 200 })
+  assert.deepEqual(parseLiteralInput('1.5'), { value: 1.5 })
+  assert.deepEqual(parseLiteralInput('true'), { value: true })
+  assert.deepEqual(parseLiteralInput('hi'), { value: 'hi' })
+  assert.deepEqual(parseLiteralInput('"hi"'), { value: 'hi' })
+  assert.deepEqual(parseLiteralInput('  200  '), { value: 200 })
+  assert.ok(parseLiteralInput('').error)
+  assert.ok(parseLiteralInput(null).error)
 })

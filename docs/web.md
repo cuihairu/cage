@@ -410,6 +410,41 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       on all edited scripts; web unit 80 green / integration 19 green;
       web-smoke green.
 
+### W14 implemented: structured rule AST + visual condition builder (review P1-2, 2026-11-22)
+
+- [x] `cage_core::rule_ast` — the authoring AST (`Compare{field, op, rhs}` /
+      `And{items}` / `Unparseable{assert}`, rhs = literal or same-row field).
+      It is an authoring intermediate only: `compile` turns it **down** into
+      the Schema's one rule representation (`ExpressionRule` arrays on
+      `field.rules` — `And` yields one rule per item, the Schema ANDs a
+      field's rules), `decompile` parses an assert back into the builder's
+      rows. The Schema never stores the AST, so W13's "no third rule format"
+      holds.
+- [x] The expressiveness boundary is enforced, not faked: a literal the
+      engine cannot render (array/object/null, a string holding both quote
+      kinds, a `UInt` beyond `i64`) refuses with `CompileError::Unsupported`
+      carrying a human-readable reason — the compile endpoint answers
+      `{ok: false, unsupported: true, error}` and the editor surfaces it as
+      a boundary notice (P1-5 makes it prominent).
+- [x] Web API: `POST /api/rule/compile` (AST + `RuleMeta` → `ExpressionRule[]`)
+      and `POST /api/rule/decompile` (`ExpressionRule` → AST, `Unparseable`
+      for asserts the engine cannot parse).
+- [x] The visual condition builder lives in the editor's 规则模式 (rules
+      tier) above the ExpressionRule editor: rows of `field OP literal/field`
+      (operators `== != < <= > >=`, cross-field comparison picks another
+      field of the same table), rule name / message / warning-only meta,
+      write mode replace-all or append. The builder only produces an AST
+      (`builderRowsToAst`, pure and node-tested; `parseLiteralInput` — `200`
+      is a number, `hi` is a string); the assert text is always rendered by
+      Rust Core. 「从既有规则装载」 decompiles the field's existing rules
+      back into rows (unparseable ones are skipped with a notice).
+- [x] Tests: rule_ast unit tests 8 (compile/decompile round trip, `And`
+      naming, unrepresentable literals, unparseable asserts) + web unit 3
+      (endpoint shapes incl. the unsupported refusal) + integration 1 (real
+      HTTP: two-row `And` → two rules with suffixed names, decompile back,
+      unsupported answer) + `modes.test.mjs` 12 green (the two new pure
+      functions); workspace 1290 green; web-smoke green.
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in UI facade (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in UI facade.

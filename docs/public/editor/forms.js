@@ -1,7 +1,9 @@
 // 表单渲染：表/字段/枚举/树 与模板库（split out of app.js, LAY-027）。
 
 import { apiRename, renderExpertMode } from "./app.js";
+import { api, markDirty } from "./api.js";
 import { FIELD_KEYS, NUMERIC_KINDS, STRING_KIND } from "./constants.js";
+import { builderRowsToAst, parseLiteralInput } from "./modes.js";
 import { enumNames, state, tableNames } from "./state.js";
 import { boolInput, delPathRoot, el, getPath, intInput, jsonInput, listInput, nextName, numberInput, option, setPathRoot, targetsChips, textInput, toast } from "./dom.js";
 import { TypeEditor, typeLabel } from "./types.js";
@@ -398,6 +400,211 @@ function renderRulesEditor(fed, fPath, field) {
   fed.append(rules, addRule);
 }
 
+// ── 可视化条件构建器（P1-2）────────────────────────────────────────────
+//
+// 行模型 → AST（modes.js builderRowsToAst）→ Rust Core 编译
+// （POST /api/rule/compile）→ 该字段的 `field.rules`（ExpressionRule
+// 数组）。构建器只产出 AST，前端从不手写 assert 文本；既有 rules 经
+// POST /api/rule/decompile 反向装载回行。表达式引擎只支持单条件比较
+// （field OP 字面量/字段），无法表达的 AST 以边界提示拒绝（P1-5 使其
+// 更醒目），绝不静默生成规则。
+const RULE_OPS = ["==", "!=", "<", "<=", ">", ">="];
+// 构建器草稿（含行与元数据）随重渲染保留；提交成功后清除。
+const BUILDER_DRAFTS = new Map();
+const builderKey = (table, field) => `${table}.${field}`;
+
+function loadDraft(table, field, count) {
+  return BUILDER_DRAFTS.get(builderKey(table, field))
+    || { rows: [{ field, op: "==", rhsKind: "Literal", value: "", fieldName: "" }], name: `rule_${count + 1}`, message: "", warningOnly: false };
+}
+
+// 行 → 可编译 AST；字面量经 parseLiteralInput（`200`→200，`hi`→"hi"）。
+function rowsToAst(rows) {
+  const items = [];
+  for (const r of rows) {
+    let rhs;
+    if (r.rhsKind === "Field") {
+      if (!r.fieldName) return { error: `第 ${items.length + 1} 行：缺比较字段名` };
+      rhs = { kind: "Field", name: r.fieldName };
+    } else {
+      const p = parseLiteralInput(r.value);
+      if (p.error) return { error: `第 ${items.length + 1} 行：${p.error}` };
+      rhs = { kind: "Literal", value: p.value };
+    }
+    items.push({ kind: "Compare", field: r.field, op: r.op, rhs });
+  }
+  return { ast: builderRowsToAst(items) };
+}
+
+function renderConditionBuilder(fed, tName, table, fPath, field) {
+  const fname = state.field;
+  const fields = table.fields || {};
+  const draft = loadDraft(tName, fname, (field.rules || []).length);
+  const note = el("div", "type-kind-hint");
+  note.textContent =
+    "表达能力边界：规则引擎当前只支持单条件比较（字段 OP 字面量/字段），"
+    + "无 AND/OR、无数学运算。本构建器只生成它能表达的 AST，无法表达的以"
+    + "边界提示拒绝。多行条件同时成立（编译后逐行成规则）。";
+  fed.append(note);
+
+  const sec = el("div", "nested-list");
+  const rowsBox = el("div");
+  sec.append(rowsBox);
+
+  const renderRows = () => {
+    rowsBox.replaceChildren();
+    draft.rows.forEach((r, i) => {
+      const row = el("div", "nested-row");
+      const grid = el("div", "nested-grid cols-4");
+
+      const fsel = el("select");
+      for (const fn of Object.keys(fields)) fsel.append(option(fn, fn));
+      fsel.value = r.field || fname;
+      fsel.addEventListener("change", () => { r.field = fsel.value; refreshEntity(); });
+
+      const osel = el("select");
+      for (const op of RULE_OPS) osel.append(option(op, op));
+      osel.value = r.op;
+      osel.addEventListener("change", () => { r.op = osel.value; refreshEntity(); });
+
+      const kindSel = el("select");
+      kindSel.append(option("Literal", "字面量"), option("Field", "字段"));
+      kindSel.value = r.rhsKind;
+      kindSel.addEventListener("change", () => { r.rhsKind = kindSel.value; refreshEntity(); });
+
+      const del = el("button", "icon danger small", "×");
+      del.addEventListener("click", () => {
+        draft.rows.splice(i, 1);
+        if (!draft.rows.length) draft.rows.push({ field: fname, op: "==", rhsKind: "Literal", value: "", fieldName: "" });
+        BUILDER_DRAFTS.set(builderKey(tName, fname), draft);
+        refreshEntity();
+      });
+
+      grid.append(el("label", null, "字段"), fsel, el("label", null, "操作"), osel);
+      grid.append(el("label", null, "右侧"), kindSel, el("label", null, ""), del);
+
+      const valBox = el("div", "nested-grid cols-4");
+      if (r.rhsKind === "Literal") {
+        valBox.append(el("label", null, "字面量"),
+          (() => {
+            const inp = el("input");
+            inp.value = r.value;
+            inp.placeholder = "200 / \"hi\" / true";
+            inp.addEventListener("change", () => { r.value = inp.value; refreshEntity(); });
+            return inp;
+          })(),
+          el("label", null, ""), el("label", null, ""));
+      } else {
+        const f2 = el("select");
+        for (const fn of Object.keys(fields)) f2.append(option(fn, fn));
+        f2.value = r.fieldName || "";
+        f2.addEventListener("change", () => { r.fieldName = f2.value; refreshEntity(); });
+        valBox.append(el("label", null, "比较字段"), f2, el("label", null, ""), el("label", null, ""));
+      }
+      row.append(grid, valBox);
+      rowsBox.append(row);
+    });
+  };
+  renderRows();
+
+  const addBtn = el("button", "", "＋ 添加条件");
+  addBtn.addEventListener("click", () => {
+    draft.rows.push({ field: fname, op: "==", rhsKind: "Literal", value: "", fieldName: "" });
+    BUILDER_DRAFTS.set(builderKey(tName, fname), draft);
+    refreshEntity();
+  });
+  fed.append(sec, addBtn);
+
+  // 规则元数据（名/消息/仅警告）与写入方式。
+  const metaGrid = el("div", "nested-grid cols-4");
+  const nameInp = el("input");
+  nameInp.value = draft.name;
+  nameInp.addEventListener("change", () => { draft.name = nameInp.value; });
+  const msgInp = el("input");
+  msgInp.value = draft.message;
+  msgInp.placeholder = "提示消息（可空）";
+  msgInp.addEventListener("change", () => { draft.message = msgInp.value; });
+  const warnChk = el("input");
+  warnChk.type = "checkbox";
+  warnChk.checked = draft.warningOnly;
+  warnChk.addEventListener("change", () => { draft.warningOnly = warnChk.checked; });
+  metaGrid.append(el("label", null, "规则名"), nameInp, el("label", null, "提示消息"), msgInp);
+  metaGrid.append(el("label", null, "仅警告"), warnChk, el("label", null, ""), el("label", null, ""));
+
+  const writeSel = el("select");
+  writeSel.append(option("replace", "替换该字段全部规则"), option("append", "追加到现有规则"));
+  const boundary = el("div", "type-kind-hint");
+  boundary.hidden = true;
+  metaGrid.append(el("label", null, "写入方式"), writeSel, el("label", null, ""), el("label", null, ""));
+  fed.append(metaGrid, boundary);
+
+  const compileBtn = el("button", "primary", "编译并写入 rules");
+  compileBtn.addEventListener("click", async () => {
+    const realRows = draft.rows.filter((r) => r.field);
+    if (!realRows.length) return toast("请先填写至少一个条件", "error");
+    const { ast, error } = rowsToAst(realRows);
+    if (error) return toast(error, "error");
+    const meta = {
+      name: draft.name || `rule_${(field.rules || []).length + 1}`,
+      message: draft.message || null,
+      warning_only: draft.warningOnly,
+    };
+    const res = await api("/api/rule/compile", JSON.stringify({ ast, meta }));
+    if (!res.data.ok) {
+      boundary.hidden = false;
+      boundary.textContent = `无法编译（表达能力边界）：${res.data.error}`;
+      toast(res.data.error || "编译失败", "error");
+      return;
+    }
+    const rules = res.data.rules;
+    const mode = writeSel.value;
+    setPathRoot(fPath.concat("rules"),
+      mode === "replace" ? rules : [...(field.rules || []), ...rules]);
+    BUILDER_DRAFTS.delete(builderKey(tName, fname));
+    markDirty();
+    refreshEntity();
+    toast(`已编译 ${rules.length} 条规则（${mode === "replace" ? "替换" : "追加"}）`);
+  });
+
+  const loadBtn = el("button", "", "从既有规则装载");
+  loadBtn.addEventListener("click", async () => {
+    const rules = field.rules || [];
+    if (!rules.length) return toast("该字段还没有规则", "error");
+    const rows = [];
+    let unparseable = 0;
+    for (const r of rules) {
+      const res = await api("/api/rule/decompile", JSON.stringify({ rule: r }));
+      if (!res.data.ok) continue;
+      const ast = res.data.ast;
+      const push = (node) => {
+        if (node.kind === "Compare") {
+          rows.push({
+            field: node.field,
+            op: node.op,
+            rhsKind: node.rhs.kind,
+            value: node.rhs.kind === "Literal" ? node.rhs.value : "",
+            fieldName: node.rhs.kind === "Field" ? node.rhs.name : "",
+          });
+        } else if (node.kind === "And") {
+          node.items.forEach(push);
+        } else {
+          unparseable += 1;
+        }
+      };
+      push(ast);
+    }
+    if (!rows.length) return toast("既有规则都无法表达为可视化条件", "error");
+    if (unparseable) toast(`${unparseable} 条规则无法可视化，已跳过`, "error");
+    BUILDER_DRAFTS.set(builderKey(tName, fname), {
+      rows, name: rules[0].name || `rule_${rules.length}`, message: "", warningOnly: false,
+    });
+    refreshEntity();
+  });
+  const btnRow = el("div", "nested-row");
+  btnRow.append(compileBtn, loadBtn);
+  fed.append(btnRow);
+}
+
 // ── 规则模式（P1-1）────────────────────────────────────────────────────
 //
 // 规则这一层的专用视图，仍编辑同一份 `state.doc` 的 `field.rules`——与
@@ -433,7 +640,11 @@ function renderRulesMode() {
     const fed = el("div");
     const fPath = tPath.concat("fields", state.field);
     fed.append(el("h3", null, `字段 · ${state.field} · rules`));
-    renderRulesEditor(fed, fPath, fields[state.field]);
+    renderConditionBuilder(fed, state.sel.name, table, fPath, fields[state.field]);
+    const editorWrap = el("div");
+    editorWrap.append(el("h4", null, "表达式规则（唯一表示）"));
+    renderRulesEditor(editorWrap, fPath, fields[state.field]);
+    fed.append(editorWrap);
     box.append(fed);
     return;
   }
