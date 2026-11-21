@@ -71,6 +71,28 @@ button.primary:hover { filter: brightness(1.1); }
 button.danger { color: var(--error); }
 button.icon { padding: 2px 8px; }
 
+/* ── 编辑模式切换（P1-1：基础/规则/专家共享一份语义模型）── */
+#mode-switch {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+#mode-switch .mode-btn {
+  border: none;
+  border-radius: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--text-dim);
+}
+#mode-switch .mode-btn:hover { background: var(--bg-hover); }
+#mode-switch .mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* ── 三栏布局 ── */
 #layout {
   flex: 1;
@@ -196,6 +218,13 @@ input[type="text"], input[type="number"], select, textarea {
 }
 
 textarea { resize: vertical; min-height: 52px; }
+#expert-doc {
+  width: 100%;
+  min-height: 420px;
+  font: 12px/1.5 var(--mono);
+  white-space: pre;
+  tab-size: 2;
+}
 
 input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
 

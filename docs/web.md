@@ -382,6 +382,34 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       litter) + web-smoke step 5 folds in the upload round trip (accepted
       → new row in the panel → bad data refused → original restored)
 
+### W13 implemented: three-tier editor modes (review P1-1, 2026-11-21)
+
+- [x] Three editing modes sharing one Schema semantic model — 基础/规则/专家
+      (basic/rules/expert) switch in the editor topbar; all three read and
+      write the same `state.doc` and the same `field.rules` (`ExpressionRule`)
+      array. The "no third rule format" guarantee is a node-testable pure
+      contract in `modes.js` (`MODES` / `isMode` / `applyExpertText` /
+      `ruleFormat` / `addRule`), served as its own embedded asset.
+- [x] Basic mode = the existing field form (fields, types, defaults, ranges,
+      enums, references — no code), unchanged.
+- [x] Rules mode = a dedicated rules view editing the same `field.rules`
+      arrays (reusing the ExpressionRule editor), with a field picker on the
+      table overview; the visual condition builder (P1-2) and the nine
+      templates (P1-3) land in this tier next.
+- [x] Expert mode = a raw document editor (a JSON textarea over the Schema
+      semantic model's serde shape); the editor never parses or renders YAML,
+      save still writes canonical YAML. Apply is atomic (`applyExpertText`):
+      a failed parse keeps the existing document untouched, structure errors
+      surface via 校验 (E1701).
+- [x] The mode choice persists in `localStorage` (`cage-editor-mode`); the
+      author's last mode is restored on load. Switching back to basic/rules
+      clears a now-ghost selection after a whole-document expert rewrite.
+- [x] Tests: `modes.test.mjs` (node --test, 10 cases — round-trip, atomic
+      reject, the one-rule-format contract, addRule sequencing) + integration
+      assertions in the served page and the `/modes.js` asset; `node --check`
+      on all edited scripts; web unit 80 green / integration 19 green;
+      web-smoke green.
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in UI facade (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in UI facade.

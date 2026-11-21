@@ -361,6 +361,28 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       （替换 → 面板可见 → 拒绝回滚 → 无 temp 残留）+ web-smoke 第 5
       步并入上传往返（接受 → 面板见新行 → 坏数据拒 → 原文件还原）
 
+### W13 已实装：三层编辑模式（评审 P1-1，2026-11-21）
+
+- [x] 基础/规则/专家三层编辑模式共享一份 Schema 语义模型：顶栏模式切换，
+      三层读写同一份 `state.doc`、同一个 `field.rules`（ExpressionRule）
+      数组。「禁三套规则格式」的契约落在可 node --test 的纯模块
+      `modes.js`（`MODES` / `isMode` / `applyExpertText` / `ruleFormat` /
+      `addRule`），作为独立嵌入资产伺服
+- [x] 基础模式 = 既有字段表单（字段、类型、默认值、范围、枚举、引用——
+      无代码），不变
+- [x] 规则模式 = 规则专用视图，编辑同一 `field.rules` 数组（复用表达式
+      规则编辑器），表级概览带字段规则入口；可视化条件构建器（P1-2）
+      与九项模板（P1-3）在此层接入
+- [x] 专家模式 = 原始文档编辑（Schema 语义模型 serde 形状的 JSON
+      textarea）；编辑器不解析、不渲染 YAML，保存仍写 canonical YAML。
+      「应用」原子（`applyExpertText`）：解析失败现有文档一字节不动，
+      结构问题由「校验」（E1701）报告
+- [x] 模式选择持久化于 `localStorage`（`cage-editor-mode`），载入时恢复；
+      专家整文档改写后切回基础/规则时清理幽灵选中
+- [x] 测试：`modes.test.mjs`（node --test 10 项——回环、原子拒绝、禁三套
+      规则格式契约、addRule 顺序）+ 集成断言（页面与 `/modes.js` 资产）；
+      两页脚本 `node --check`；web 单测 80 绿 / 集成 19 绿；web-smoke 绿
+
 ## 路线图
 
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务

@@ -1793,6 +1793,7 @@ fn handle_routes_every_static_and_api_route() {
         "/index.html",
         "/app.js",
         "/app.css",
+        "/modes.js",
         "/status/app.js",
         "/status/app.css",
         "/favicon.ico",

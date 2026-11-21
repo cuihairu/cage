@@ -113,6 +113,14 @@ fn web_serves_editor_page_and_assets() {
         body.contains(r#"href="./app.css""#),
         "the page must load its stylesheet: {body}"
     );
+    // P1-1: the page carries the three-tier mode switcher (基础/规则/专家).
+    assert!(body.contains(r#"id="mode-switch""#), "page: {body}");
+    for mode in ["basic", "rules", "expert"] {
+        assert!(
+            body.contains(&format!(r#"data-mode="{mode}""#)),
+            "the mode switcher must offer {mode}: {body}"
+        );
+    }
 
     // Assets are embedded and served with the right media types. The entry
     // is an ES module that imports its split parts (LAY-027), so each part
@@ -153,6 +161,21 @@ fn web_serves_editor_page_and_assets() {
         body.contains("外键引用"),
         "the template library must cover the foreign-key case: {body}"
     );
+    // The P1-1 contract module is served (the mode logic is node-testable
+    // pure code, shared by the entry and the browser wiring).
+    let (status, body) = request(server.port, "GET", "/modes.js", None);
+    assert_eq!(status, 200, "modes module must be served");
+    assert!(body.contains("applyExpertText"), "modes module: {body}");
+    assert!(body.contains("MODES"), "modes module: {body}");
+    assert!(
+        body.contains("禁三套规则格式"),
+        "the one-rule-format contract must be stated: {body}"
+    );
+    // The entry dispatches on the mode: expert renders the raw document,
+    // rules renders the rules view — both edit the same state.doc.
+    let (_, body) = request(server.port, "GET", "/app.js", None);
+    assert!(body.contains("renderExpertMode"), "entry: {body}");
+    assert!(body.contains("setMode"), "entry: {body}");
     // The remaining split parts serve too (constants/state/dom/types).
     for part in ["constants.js", "state.js", "dom.js", "types.js"] {
         let (status, _) = request(server.port, "GET", &format!("/{part}"), None);

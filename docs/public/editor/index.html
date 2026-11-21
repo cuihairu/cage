@@ -18,6 +18,11 @@
     <span id="meta-wae" hidden>| warnings 视为错误</span>
   </div>
   <div id="topbar-actions">
+    <div id="mode-switch" role="tablist" aria-label="编辑模式" title="三层编辑模式共享一份 Schema 语义模型：基础=字段表单；规则=表达式规则视图；专家=原始文档（JSON）">
+      <button type="button" class="mode-btn" data-mode="basic" title="字段、类型、默认值、范围、枚举、引用（无需写代码）">基础</button>
+      <button type="button" class="mode-btn" data-mode="rules" title="表达式规则视图：编辑字段的 rules 数组（与基础/专家模式同一格式）">规则</button>
+      <button type="button" class="mode-btn" data-mode="expert" title="直接编辑文档 JSON（Schema 语义模型的 serde 形状）；保存仍写 canonical YAML">专家</button>
+    </div>
     <label class="knob">作用域
       <select id="scope-sel" title="按 profile 投影：灰显的表/字段对该 profile 不可见（targets 过滤）">
         <option value="">（全部）</option>

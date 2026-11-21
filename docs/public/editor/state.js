@@ -10,6 +10,7 @@ const state = {
   diags: [],         // 最近一次校验结果
   dirty: false,
   scope: null,       // profile 作用域（U2b）：{profile, hiddenTables, hiddenFields}；null = 全部
+  mode: "basic",     // 编辑模式（P1-1）："basic" | "rules" | "expert"，三层共享一份 state.doc
 };
 
 const enumNames = () => (state.doc ? Object.keys(state.doc.enums || {}) : []);

@@ -4,6 +4,7 @@ import { state } from "./state.js";
 import { el, nextName, option, setPathRoot, toast } from "./dom.js";
 import { api, markDirty, resetAutoValidate } from "./api.js";
 import { refreshEntity, renderTree } from "./forms.js";
+import { MODE_STORAGE_KEY, applyExpertText, isMode } from "./modes.js";
 
 // ── 校验与保存 ──────────────────────────────────────────────────────
 
@@ -285,6 +286,84 @@ function updateScopeNote() {
   note.textContent = `作用域 ${state.scope.profile}${caveat}：灰显项对该 profile 不可见`;
 }
 
+// ── 编辑模式（P1-1：基础/规则/专家共享一份语义模型）───────────────────
+//
+// 三层编辑模式（评审 P1-1）：基础=字段表单（forms.js）；规则=表达式规则
+// 视图（forms.js renderRulesMode）；专家=原始文档（本模块）。三者读写
+// 同一份 state.doc、同一个 field.rules 数组——禁三套规则格式的契约在
+// modes.js（node --test 单测锁死）。
+
+function updateModeSwitch() {
+  for (const b of document.querySelectorAll("#mode-switch .mode-btn")) {
+    const on = b.dataset.mode === state.mode;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  }
+}
+
+function setMode(m) {
+  if (!isMode(m) || m === state.mode) return;
+  state.mode = m;
+  try { localStorage.setItem(MODE_STORAGE_KEY, m); } catch { /* 隐私模式下静默放弃持久化 */ }
+  updateModeSwitch();
+  // 专家模式的整文档改写可能让现有选中失效：换模式前清掉幽灵选中。
+  if (state.sel && state.doc) {
+    const known = state.sel.kind === "enum"
+      ? state.doc.enums && state.doc.enums[state.sel.name]
+      : state.doc.tables && state.doc.tables[state.sel.name];
+    if (!known) {
+      state.sel = null;
+      state.field = null;
+    } else if (state.field) {
+      const f = state.doc.tables[state.sel.name].fields;
+      if (!(f && f[state.field])) state.field = null;
+    }
+  }
+  refreshEntity();
+}
+
+/// 专家模式：直接编辑文档 JSON。文档就是 Schema 语义模型的 serde 形状
+/// ——专家层编辑这一份，不是并行表示；保存仍由服务端写 canonical
+/// YAML。「应用」走 modes.applyExpertText：解析失败原子拒绝，现有文档
+/// 一字节不动；形状问题交给「校验」（E1701）报告。
+function renderExpertMode() {
+  const box = document.getElementById("entity");
+  box.replaceChildren();
+  box.append(el("h2", null, "专家模式 · 文档（JSON ≡ Schema 语义模型）"));
+  const note = el("div", "type-kind-hint");
+  note.textContent =
+    "直接编辑 Schema 的 serde 形状（编辑器不解析、不渲染 YAML；保存仍写 canonical YAML）。"
+    + "「应用」仅当文本是合法 JSON 对象时替换文档，失败时现有文档保留；"
+    + "结构问题由「校验」（E1701）与「完整预检」报告。";
+  box.append(note);
+  const ta = el("textarea");
+  ta.id = "expert-doc";
+  ta.spellcheck = false;
+  ta.value = JSON.stringify(state.doc, null, 2);
+  const actions = el("div", "field-actions");
+  const applyBtn = el("button", "primary", "应用");
+  applyBtn.addEventListener("click", () => {
+    const r = applyExpertText(ta.value);
+    if (r.error) {
+      ta.classList.add("json-bad");
+      toast(r.error, "err", 7000);
+      return;
+    }
+    ta.classList.remove("json-bad");
+    state.doc = r.doc;
+    markDirty();
+    refreshEntity(); // 重渲染（含左栏树——文档可能换了表）
+    validate();
+  });
+  const reloadBtn = el("button", "", "重新载入");
+  reloadBtn.addEventListener("click", () => {
+    ta.value = JSON.stringify(state.doc, null, 2);
+    ta.classList.remove("json-bad");
+  });
+  actions.append(applyBtn, reloadBtn);
+  box.append(ta, actions);
+}
+
 // ── 启动 ────────────────────────────────────────────────────────────
 
 async function init() {
@@ -309,6 +388,16 @@ async function init() {
   const scopeSel = document.getElementById("scope-sel");
   for (const p of data.profile_names || []) scopeSel.append(option(p));
   scopeSel.addEventListener("change", () => applyScope(scopeSel.value));
+
+  // 编辑模式（P1-1）：基础/规则/专家三层，共享一份 Schema 语义模型。
+  const savedMode = (() => {
+    try { return localStorage.getItem(MODE_STORAGE_KEY); } catch { return null; }
+  })();
+  if (isMode(savedMode)) state.mode = savedMode;
+  updateModeSwitch();
+  for (const b of document.querySelectorAll("#mode-switch .mode-btn")) {
+    b.addEventListener("click", () => setMode(b.dataset.mode));
+  }
 
   // 枚举名 datalist（枚举类型引用输入用）
   const dl = el("datalist");
@@ -355,4 +444,4 @@ async function init() {
 
 init();
 
-export { validate, precheck, save, apiRename, performSave, savePayload, showDiffModal, flash, renderDiags, focusDiag, applyScope, updateScopeNote, init };
+export { validate, precheck, save, apiRename, performSave, savePayload, showDiffModal, flash, renderDiags, focusDiag, applyScope, updateScopeNote, renderExpertMode, setMode, updateModeSwitch, init };

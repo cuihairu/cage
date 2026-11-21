@@ -1,6 +1,6 @@
 // 表单渲染：表/字段/枚举/树 与模板库（split out of app.js, LAY-027）。
 
-import { apiRename } from "./app.js";
+import { apiRename, renderExpertMode } from "./app.js";
 import { FIELD_KEYS, NUMERIC_KINDS, STRING_KIND } from "./constants.js";
 import { enumNames, state, tableNames } from "./state.js";
 import { boolInput, delPathRoot, el, getPath, intInput, jsonInput, listInput, nextName, numberInput, option, setPathRoot, targetsChips, textInput, toast } from "./dom.js";
@@ -307,46 +307,7 @@ function renderFieldForm(fed, field, fname, tPath) {
   // —— 可见性与规则 ——
   const vis = entitySection("可见性与规则");
   vis.append(entityRow("Targets（profile 可见性）", listInput(fPath.concat("targets"))));
-  const rules = el("div", "nested-list");
-  const rulesArr = field.rules || [];
-  rulesArr.forEach((_, i) => {
-    const row = el("div", "nested-row");
-    const grip = el("div", "nested-grip");
-    grip.append(el("span", null, `规则 #${i}`));
-    const delBtn = el("button", "icon danger small", "删除");
-    delBtn.addEventListener("click", () => {
-      delPathRoot(fPath.concat("rules", String(i)));
-      refreshEntity();
-    });
-    grip.append(delBtn);
-    row.append(grip);
-    const grid = el("div", "nested-grid cols-4");
-    const rPath = fPath.concat("rules", String(i));
-    grid.append(el("label", null, "规则名"),
-      textInput(rPath.concat("name")),
-      el("label", null, "断言表达式"),
-      textInput(rPath.concat("assert")));
-    row.append(grid);
-    const grid2 = el("div", "nested-grid cols-4");
-    grid2.append(el("label", null, "提示消息"),
-      textInput(rPath.concat("message"), { toNull: true }),
-      el("label", null, "仅警告"),
-      (() => {
-        const w = el("div", "checkbox-row");
-        w.append(boolInput(rPath.concat("warning_only")));
-        return w;
-      })());
-    row.append(grid2);
-    rules.append(row);
-  });
-  const addRule = el("button");
-  addRule.textContent = "＋ 表达式规则";
-  addRule.addEventListener("click", () => {
-    const items = field.rules || [];
-    setPathRoot(fPath.concat("rules"), [...items, { name: `rule_${items.length + 1}`, assert: "" }]);
-    refreshEntity();
-  });
-  vis.append(rules, addRule);
+  renderRulesEditor(vis, fPath, field);
   fed.append(vis);
 
   // —— 自定义元数据（flatten 键） ——
@@ -387,6 +348,115 @@ function renderFieldForm(fed, field, fname, tPath) {
   metaBox.append(metaInput);
   meta.append(metaBox);
   fed.append(meta);
+}
+
+// ── 表达式规则编辑器（基础模式字段表单 / 规则模式共用）────────────────
+//
+// 唯一的规则表示：`field.rules`（ExpressionRule 数组，cage-core 语义）。
+// 基础、规则、专家三模式读写同一数组——不存在第二套规则格式（P1-1）。
+// 可视化条件构建器（P1-2）与九项规则模板（P1-3）在此层继续扩展。
+function renderRulesEditor(fed, fPath, field) {
+  const rules = el("div", "nested-list");
+  const rulesArr = field.rules || [];
+  rulesArr.forEach((_, i) => {
+    const row = el("div", "nested-row");
+    const grip = el("div", "nested-grip");
+    grip.append(el("span", null, `规则 #${i}`));
+    const delBtn = el("button", "icon danger small", "删除");
+    delBtn.addEventListener("click", () => {
+      delPathRoot(fPath.concat("rules", String(i)));
+      refreshEntity();
+    });
+    grip.append(delBtn);
+    row.append(grip);
+    const grid = el("div", "nested-grid cols-4");
+    const rPath = fPath.concat("rules", String(i));
+    grid.append(el("label", null, "规则名"),
+      textInput(rPath.concat("name")),
+      el("label", null, "断言表达式"),
+      textInput(rPath.concat("assert")));
+    row.append(grid);
+    const grid2 = el("div", "nested-grid cols-4");
+    grid2.append(el("label", null, "提示消息"),
+      textInput(rPath.concat("message"), { toNull: true }),
+      el("label", null, "仅警告"),
+      (() => {
+        const w = el("div", "checkbox-row");
+        w.append(boolInput(rPath.concat("warning_only")));
+        return w;
+      })());
+    row.append(grid2);
+    rules.append(row);
+  });
+  const addRule = el("button");
+  addRule.textContent = "＋ 表达式规则";
+  addRule.addEventListener("click", () => {
+    const items = field.rules || [];
+    setPathRoot(fPath.concat("rules"), [...items, { name: `rule_${items.length + 1}`, assert: "" }]);
+    refreshEntity();
+  });
+  fed.append(rules, addRule);
+}
+
+// ── 规则模式（P1-1）────────────────────────────────────────────────────
+//
+// 规则这一层的专用视图，仍编辑同一份 `state.doc` 的 `field.rules`——与
+// 基础模式（字段表单里的规则编辑）和专家模式（原始文档）写同一数组，
+// 不引入第二套规则格式。可视化条件构建器（P1-2）与九项模板（P1-3）在
+// 此层接入。
+function renderRulesMode() {
+  const box = document.getElementById("entity");
+  box.replaceChildren();
+  box.append(el("h2", null, "规则模式 · 表达式规则（同一份 Schema 语义模型）"));
+  const note = el("div", "type-kind-hint");
+  note.textContent =
+    "规则挂在字段的 rules 数组（ExpressionRule）。基础、专家模式编辑同一数组——"
+    + "不存在第二套规则格式。可视化条件构建器（P1-2）与九项规则模板（P1-3）在此层接入。";
+  box.append(note);
+
+  const kind = state.sel && state.sel.kind;
+  if (kind === "enum") {
+    box.append(el("div", "type-kind-hint", "枚举取值不挂表达式规则；请选择表字段。"));
+    return;
+  }
+  if (!kind) {
+    box.append(el("div", "type-kind-hint", "请选择表（或表内字段）以编辑其规则。"));
+    return;
+  }
+  const table = state.doc.tables[state.sel.name];
+  if (!table) return;
+  const tPath = ["tables", state.sel.name];
+  const fields = table.fields || {};
+
+  // 选中了字段：直接编辑该字段的规则。
+  if (state.field && fields[state.field]) {
+    const fed = el("div");
+    const fPath = tPath.concat("fields", state.field);
+    fed.append(el("h3", null, `字段 · ${state.field} · rules`));
+    renderRulesEditor(fed, fPath, fields[state.field]);
+    box.append(fed);
+    return;
+  }
+
+  // 未选中字段：表级概览 + 各字段规则入口。
+  const fsec = entitySection("字段规则");
+  const list = el("div", "nested-list");
+  for (const [fname, f] of Object.entries(fields)) {
+    const row = el("div", "nested-row");
+    const grip = el("div", "nested-grip");
+    grip.append(el("span", null, fname));
+    grip.append(el("span", "type-tag", `${(f.rules || []).length} 规则`));
+    const btn = el("button", "", "编辑规则…");
+    btn.addEventListener("click", () => {
+      state.field = fname;
+      refreshEntity();
+    });
+    grip.append(btn);
+    row.append(grip);
+    list.append(row);
+  }
+  fsec.append(list);
+  box.append(fsec);
 }
 
 // 枚举编辑器
@@ -495,6 +565,20 @@ function refreshEntity() {
   renderTree();
   const entity = document.getElementById("entity");
   const hint = document.getElementById("empty-hint");
+  // 编辑模式（P1-1）：专家模式渲染整份文档（无需选中实体）；规则模式
+  // 渲染规则视图。两者都读写同一份 state.doc——三层共享一个语义模型。
+  if (state.mode === "expert") {
+    entity.hidden = false;
+    hint.hidden = true;
+    renderExpertMode();
+    return;
+  }
+  if (state.mode === "rules") {
+    entity.hidden = false;
+    hint.hidden = true;
+    renderRulesMode();
+    return;
+  }
   if (!state.sel) {
     entity.hidden = true;
     hint.hidden = false;
@@ -537,4 +621,4 @@ const FIELD_TEMPLATES = [
   },
 ];
 
-export { FIELD_TEMPLATES, entitySection, entityRow, renderTableForm, renderFieldForm, renderEnumForm, renderTree, selectEntity, refreshEntity };
+export { FIELD_TEMPLATES, entitySection, entityRow, renderTableForm, renderFieldForm, renderEnumForm, renderRulesMode, renderRulesEditor, renderTree, selectEntity, refreshEntity };
