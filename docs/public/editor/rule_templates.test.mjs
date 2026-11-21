@@ -3,7 +3,13 @@
 //   node --test docs/public/editor/rule_templates.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { RULE_TEMPLATES, templateById, planTemplate } from './rule_templates.js'
+import {
+  RULE_TEMPLATES,
+  EXPRESSIVENESS_LIMITS,
+  templateById,
+  planTemplate,
+  boundaryGuidance,
+} from './rule_templates.js'
 
 const DOC = {
   tables: {
@@ -114,4 +120,26 @@ test('unknown fields and unknown templates error out', () => {
   assert.equal(planTemplate('range', { table: 'Monster', field: 'ghost', min: 1, max: 2 }, DOC).kind, 'error')
   assert.equal(planTemplate('range', { table: 'Ghost', field: 'id', min: 1, max: 2 }, DOC).kind, 'error')
   assert.equal(planTemplate('ghost', {}, DOC).kind, 'error')
+})
+
+test('boundaryGuidance names the concrete refusal and never fakes a conversion', () => {
+  const g = boundaryGuidance('字符串同时含两种引号')
+  assert.ok(g.heading.includes('当前规则引擎表达不了'), g.heading)
+  assert.ok(g.heading.includes('字符串同时含两种引号'), g.heading)
+  assert.equal(g.limits, EXPRESSIVENESS_LIMITS)
+  assert.ok(g.limits.length >= 4)
+  assert.equal(g.routes.length, 2)
+  assert.ok(g.routes[0].includes('规则模板'), g.routes[0])
+  assert.ok(g.routes[1].includes('Python') && g.routes[1].includes('P2-2'), g.routes[1])
+  // A missing reason still reads sensibly.
+  assert.ok(boundaryGuidance().heading.includes('该条件'))
+})
+
+test('EXPRESSIVENESS_LIMITS is the stable honest list of engine limits', () => {
+  assert.deepEqual(EXPRESSIVENESS_LIMITS, [
+    '单条件比较：字段 OP 字面量或同行字段——无 AND/OR/NOT 逻辑组合',
+    '无算术与函数（如「攻击力 ≤ 等级 × 100」）',
+    '无跨行聚合（如「一组奖励权重总和为 100」）',
+    '无图上可达性/环检查（如「技能升级链无环」）',
+  ])
 })

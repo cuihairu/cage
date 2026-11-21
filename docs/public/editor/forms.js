@@ -4,7 +4,7 @@ import { apiRename, renderExpertMode } from "./app.js";
 import { api, markDirty } from "./api.js";
 import { FIELD_KEYS, NUMERIC_KINDS, STRING_KIND } from "./constants.js";
 import { builderRowsToAst, mergeHumanLayer, parseLiteralInput } from "./modes.js";
-import { RULE_TEMPLATES, planTemplate, templateById } from "./rule_templates.js";
+import { RULE_TEMPLATES, boundaryGuidance, planTemplate, templateById } from "./rule_templates.js";
 import { enumNames, state, tableNames } from "./state.js";
 import { boolInput, delPathRoot, el, getPath, intInput, jsonInput, listInput, nextName, numberInput, option, setPathRoot, targetsChips, textInput, toast } from "./dom.js";
 import { TypeEditor, typeLabel } from "./types.js";
@@ -488,6 +488,22 @@ function renderRulesEditor(fed, fPath, field) {
   fed.append(rules, addRule);
 }
 
+// ── 表达能力边界提示（P1-5）────────────────────────────────────────────
+//
+// 引擎表达不了时（构建器编译被拒 / 模板不可表达），都用这一份醒目的
+// 边界提示：讲清限制（不夸大）、给出两条诚实出路（九项规则模板 / Python
+// 插件 P2-2 或专门 Rust 校验器 P3-2）。绝不在提示里假装能自动转换。
+function renderBoundaryNotice(reason) {
+  const g = boundaryGuidance(reason);
+  const box = el("div", "type-kind-hint");
+  box.append(el("div", null, `⚠ ${g.heading}`));
+  const list = el("div", "nested-list");
+  for (const limit of g.limits) list.append(el("span", null, `· ${limit}`));
+  for (const route of g.routes) list.append(el("span", null, `→ ${route}`));
+  box.append(list);
+  return box;
+}
+
 // ── 可视化条件构建器（P1-2）────────────────────────────────────────────
 //
 // 行模型 → AST（modes.js builderRowsToAst）→ Rust Core 编译
@@ -634,10 +650,10 @@ function renderConditionBuilder(fed, tName, table, fPath, field) {
 
   const writeSel = el("select");
   writeSel.append(option("replace", "替换该字段全部规则"), option("append", "追加到现有规则"));
-  const boundary = el("div", "type-kind-hint");
-  boundary.hidden = true;
+  const boundaryBox = el("div");
+  boundaryBox.hidden = true;
   metaGrid.append(el("label", null, "写入方式"), writeSel, el("label", null, ""), el("label", null, ""));
-  fed.append(metaGrid, boundary);
+  fed.append(metaGrid, boundaryBox);
 
   const compileBtn = el("button", "primary", "编译并写入 rules");
   compileBtn.addEventListener("click", async () => {
@@ -654,9 +670,11 @@ function renderConditionBuilder(fed, tName, table, fPath, field) {
     };
     const res = await api("/api/rule/compile", JSON.stringify({ ast, meta }));
     if (!res.data.ok) {
-      boundary.hidden = false;
-      boundary.textContent = `无法编译（表达能力边界）：${res.data.error}`;
-      toast(res.data.error || "编译失败", "error");
+      // 引擎表达不了：醒目的边界提示（讲清限制 + 两条诚实出路），
+      // 不假装能自动转换（P1-5）。
+      boundaryBox.replaceChildren(renderBoundaryNotice(res.data.error));
+      boundaryBox.hidden = false;
+      toast(`无法编译：${res.data.error}`, "error");
       return;
     }
     const rules = res.data.rules;
@@ -816,18 +834,19 @@ function renderRuleTemplates(box, tName, fieldName) {
 
   const refresh = () => {
     paramBox.replaceChildren();
+    note.replaceChildren();
     note.hidden = true;
     applyBtn.disabled = true;
     const tpl = templateById(tplSel.value);
     if (!tpl) return;
     if (!tpl.expressible) {
+      note.replaceChildren(renderBoundaryNotice(tpl.guidance));
       note.hidden = false;
-      note.textContent = `表达能力边界：${tpl.guidance}`;
       return;
     }
     if (!fieldName && !fieldSel.value) {
+      note.replaceChildren(el("span", null, "该模板作用于字段：请先选择字段。"));
       note.hidden = false;
-      note.textContent = "该模板作用于字段：请先选择字段。";
       return;
     }
     applyBtn.disabled = false;
@@ -891,8 +910,8 @@ function renderRuleTemplates(box, tName, fieldName) {
     const plan = planTemplate(tplSel.value, params, state.doc);
     if (plan.kind === "error") return toast(plan.error, "error");
     if (plan.kind === "boundary") {
+      note.replaceChildren(renderBoundaryNotice(plan.guidance));
       note.hidden = false;
-      note.textContent = `表达能力边界：${plan.guidance}`;
       toast("该模板超出当前引擎表达能力，见引导说明", "error");
       return;
     }
@@ -906,8 +925,8 @@ function renderRuleTemplates(box, tName, fieldName) {
     // 字段比较：AST 交给 Rust Core 编译（前端不写 assert）。
     const res = await api("/api/rule/compile", JSON.stringify({ ast: plan.ast, meta: plan.meta }));
     if (!res.data.ok) {
+      note.replaceChildren(renderBoundaryNotice(res.data.error));
       note.hidden = false;
-      note.textContent = `无法编译（表达能力边界）：${res.data.error}`;
       toast(res.data.error || "编译失败", "error");
       return;
     }

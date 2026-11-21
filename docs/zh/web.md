@@ -459,6 +459,21 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       单测 1（端点形状）+ 集成 1（真实 HTTP 判定）+ modes.test.mjs 15
       （mergeHumanLayer 三个用例）；workspace 全绿；web-smoke 绿
 
+### W17 已实装：表达能力边界提示（评审 P1-5，2026-11-22）
+
+- [x] 所有被拒路径共用同一份诚实的边界提示：可视化构建器编译出引擎表达
+      不了的规则、或模板落在 `{kind:"boundary"}`（或其 AST 编译被拒）时，
+      编辑器显示 `renderBoundaryNotice(reason)`——`⚠` 标题点名具体原因、
+      稳定的 `EXPRESSIVENESS_LIMITS` 限制清单、两条诚实出路（内置规则模板 /
+      Python 插件 P2-2 或专门 Rust 校验器 P3-2）。绝不假装能自动把规则转成
+      `assert`（评审 141 行）
+- [x] `boundaryGuidance(reason)` 与 `EXPRESSIVENESS_LIMITS` 放在
+      `rule_templates.js`（纯数据、node 可测、无 DOM），构建器（`boundaryBox`）
+      与模板区（`note`）都经 `forms.js` 的 `renderBoundaryNotice` 复用——单一
+      事实源，不再有三处近似的重复文案
+- [x] 测试：`rule_templates.test.mjs` 增 2 项（提示标题点名具体原因、不假装
+      能转换；限制清单钉住）——共 10 项；workspace 全绿；web-smoke 绿
+
 ## 路线图
 
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务

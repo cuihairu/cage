@@ -506,6 +506,25 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       modes.test.mjs 15 (the three new mergeHumanLayer cases); workspace
       green; web-smoke green.
 
+### W17 implemented: expressiveness boundary notice (review P1-5, 2026-11-22)
+
+- [x] One honest, shared boundary notice for every refusal: when the visual
+      builder compiles to something the engine cannot express, or a rule
+      template lands on `{kind:"boundary"}` (or its AST compile is refused),
+      the editor shows `renderBoundaryNotice(reason)` — a `⚠` heading naming
+      the concrete reason, the stable `EXPRESSIVENESS_LIMITS` list of engine
+      limits, and two honest routes (内置规则模板 / Python 插件 P2-2 or a
+      dedicated Rust validator P3-2). It never pretends to auto-convert the
+      rule into an `assert` (review line 141).
+- [x] `boundaryGuidance(reason)` + `EXPRESSIVENESS_LIMITS` live in
+      `rule_templates.js` as pure, node-testable data (no DOM) and are reused
+      by both the builder (`boundaryBox`) and the templates pane (`note`)
+      through `renderBoundaryNotice` in `forms.js` — one source of truth, no
+      three near-duplicate strings.
+- [x] Tests: `rule_templates.test.mjs` 2 more (the notice's heading carries
+      the concrete reason and never fakes a conversion; the limits list is
+      pinned) — 10 total; workspace green; web-smoke green.
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in UI facade (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in UI facade.
