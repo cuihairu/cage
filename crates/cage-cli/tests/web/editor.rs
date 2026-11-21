@@ -296,6 +296,141 @@ fn web_save_refuses_directory_schema_path() {
     assert!(json(&resp)["schema"]["tables"].get("Monster").is_some());
 }
 
+/// Directory-schema project with two fragments and data, for the save
+/// envelope end-to-end test (multi-file incremental save over real HTTP).
+const MULTI_TOML: &str = r#"output_dir = "build"
+schema_path = "schemas"
+
+[source_roots]
+main = "config"
+
+[project]
+name = "multi-file"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/json"
+file_template = "{table}.json"
+"#;
+
+fn write_multi_file_project(root: &Path) {
+    fs::write(root.join("cage.toml"), MULTI_TOML).unwrap();
+    fs::create_dir_all(root.join("schemas")).unwrap();
+    fs::write(
+        root.join("schemas/monster.yaml"),
+        r#"tables:
+  Monster:
+    name: Monster
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("schemas/item.yaml"),
+        r#"tables:
+  Item:
+    name: Item
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+enums: {}
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::write(
+        root.join("config/monster.json"),
+        r#"{"Monster": [{"id": 1}]}"#,
+    )
+    .unwrap();
+    fs::write(root.join("config/item.json"), r#"{"Item": [{"id": 1}]}"#).unwrap();
+}
+
+#[test]
+fn web_save_envelope_over_http_incremental() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_multi_file_project(tmp.path());
+    let server = start_server(tmp.path());
+    let item_before = fs::read_to_string(tmp.path().join("schemas/item.yaml")).unwrap();
+
+    // Load the merged schema + per-source-file index.
+    let (status, body) = request(server.port, "GET", "/api/schema", None);
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "body: {body}");
+    let sources = v["sources"].clone();
+    assert_eq!(sources["files"].as_array().unwrap().len(), 2);
+    let mut doc = v["schema"].clone();
+
+    // Edit only the Monster fragment (add an `hp` field).
+    doc["tables"]["Monster"]["fields"]["hp"] =
+        serde_json::json!({"name": "hp", "type": {"kind": "Int32"}});
+    let envelope = serde_json::json!({"schema": doc, "sources": sources});
+    let payload = serde_json::to_string(&envelope).unwrap();
+
+    let (status, body) = request(server.port, "POST", "/api/schema", Some(&payload));
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "body: {body}");
+    assert_eq!(
+        v["written"],
+        serde_json::json!(["schemas/monster.yaml"]),
+        "only the changed fragment is rewritten: {body}"
+    );
+    assert_eq!(v["unchanged"], 1);
+
+    // The edited fragment carries the new field; the untouched one is
+    // byte-identical (comments/format preserved by not being rewritten).
+    let monster = fs::read_to_string(tmp.path().join("schemas/monster.yaml")).unwrap();
+    assert!(monster.contains("hp:"), "{monster}");
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("schemas/item.yaml")).unwrap(),
+        item_before,
+        "untouched fragment must stay byte-identical"
+    );
+    // Atomic writes leave no temp litter.
+    let litter = fs::read_dir(tmp.path().join("schemas"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+        .count();
+    assert_eq!(litter, 0, "no leftover temp files");
+
+    // The saved schema is what the real build path reads: check passes.
+    let out = run_cage(&["check", tmp.path().to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Re-saving with the now-stale index conflicts (409) and writes nothing.
+    let stale = serde_json::json!({"schema": doc, "sources": sources});
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/schema",
+        Some(&serde_json::to_string(&stale).unwrap()),
+    );
+    assert_eq!(status, 409, "body: {body}");
+    assert!(
+        json(&body)["error"].as_str().unwrap().contains("conflict"),
+        "body: {body}"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("schemas/monster.yaml")).unwrap(),
+        monster,
+        "a refused save must not rewrite the fragment"
+    );
+}
+
 /// Registry-schema project (R2): the schema is owned by a published entry,
 /// so the editor must refuse to save over it.
 const REG_TOML: &str = r#"schema_path = "registry:common"

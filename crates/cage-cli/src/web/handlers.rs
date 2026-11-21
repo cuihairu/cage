@@ -6,7 +6,7 @@ use super::{query_params, rel_of_root, Ctx};
 use crate::load_schema_for_config;
 use crate::schema_save::{SaveError, SchemaSourceIndex};
 use cage_core::diagnostics::Diagnostics;
-use cage_core::edit::{from_editor_json, to_canonical_yaml, to_editor_json};
+use cage_core::edit::{from_editor_json, to_editor_json};
 use cage_core::error::codes::Severity;
 use cage_core::value::{Document, Value};
 use std::path::{Path, PathBuf};
@@ -243,9 +243,9 @@ pub(crate) fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
         }
     }
 
-    let yaml = to_canonical_yaml(&schema);
-    let bytes = yaml.len();
-    if let Err(e) = crate::schema_save::atomic_write(&target, yaml.as_bytes()) {
+    let rendered = crate::schema_save::render_schema_file(&target, &schema);
+    let bytes = rendered.len();
+    if let Err(e) = crate::schema_save::atomic_write(&target, rendered.as_bytes()) {
         return (500, serde_json::json!({"ok": false, "error": e}));
     }
     let mut payload = serde_json::json!({

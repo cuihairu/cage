@@ -1,7 +1,7 @@
 //! `cage web` process-level coverage (W2): the local HTTP API serves the
 //! merged schema as the editor document, validates edited documents
-//! (E1701 / E1004), and writes canonical YAML back — multi-file schemas
-//! are refused with a 409 instead of being rewritten.
+//! (E1701 / E1004), and writes canonical YAML back — directory schemas
+//! save per-source-file through the `{schema, sources}` envelope.
 
 use std::fs;
 use std::io::{Read, Write};

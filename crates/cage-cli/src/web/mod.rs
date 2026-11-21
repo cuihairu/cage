@@ -4,7 +4,10 @@
 //! A local tool: binds `127.0.0.1` only, no authentication. The API
 //! exchanges the same documents as [`cage_core::edit`] — the frontend
 //! edits the canonical editor JSON, the server validates it and writes
-//! schemas back as canonical YAML. U1 adds the status face: validation
+//! schemas back as canonical YAML (a `schema_path` directory saves
+//! per-source-file: only files owning a changed table/enum/metadata are
+//! rewritten, each one after a sha256 conflict check, atomically).
+//! U1 adds the status face: validation
 //! through the same `validate_project` entry `check` and the LSP use,
 //! per-profile build freshness (the layer-1 comparison `build_project`
 //! makes, reported instead of acted on), and a build trigger:
@@ -13,7 +16,9 @@
 //! GET  /api/schema      → editor document of the merged schema (+ project);
 //!                         ?profile= adds the projected (filtered) schema
 //! POST /api/validate    → E1701 / E1004 diagnostics for an edited document
-//! POST /api/schema      → save the canonical YAML (single-file schema only)
+//! POST /api/schema      → save the schema back: canonical YAML/JSON, and for a
+//!                         directory schema_path a per-source-file incremental
+//!                         save conflict-checked against the sources index
 //! GET  /api/status      → validation panel + per-profile build facts
 //! POST /api/build       → run the build pipeline for one profile
 //! GET  /api/artifacts   → the build manifest as the artifact ledger

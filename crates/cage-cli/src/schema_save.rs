@@ -364,10 +364,10 @@ pub(crate) fn save_schema_incremental(
         if ownership.metadata.as_deref() == Some(file.as_str()) {
             fragment.metadata.clone_from(&edited.metadata);
         }
-        let yaml = to_canonical_yaml(&fragment);
-        bytes += yaml.len();
         let path = resolve_index_path(root, &file);
-        atomic_write(&path, yaml.as_bytes()).map_err(SaveError::Io)?;
+        let rendered = render_schema_file(&path, &fragment);
+        bytes += rendered.len();
+        atomic_write(&path, rendered.as_bytes()).map_err(SaveError::Io)?;
         written.push(file);
     }
     written.sort();
@@ -390,6 +390,22 @@ pub(crate) fn save_schema_incremental(
         bytes,
         sources,
     })
+}
+
+/// Render a schema fragment as the text of `path`, honoring its format:
+/// `.json` fragments stay JSON (pretty-printed), everything else is
+/// canonical YAML. One rendering entry point for both the incremental and
+/// the single-file save paths, so a `.json` schema is never clobbered into
+/// YAML text.
+pub(crate) fn render_schema_file(path: &Path, schema: &Schema) -> String {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("json") => {
+            let mut s = serde_json::to_string_pretty(schema).expect("Schema always serializes");
+            s.push('\n');
+            s
+        }
+        _ => to_canonical_yaml(schema),
+    }
 }
 
 /// Write `bytes` to `path` atomically: sibling temp file + rename, so a
@@ -582,6 +598,45 @@ mod uncovered_paths {
             .expect_err("non-UTF-8 refused");
         assert!(err.contains("is not UTF-8"), "{err}");
         assert!(err.contains("broken.yaml"), "{err}");
+    }
+
+    /// A `.json` fragment is written back as JSON, never clobbered into
+    /// YAML text; a `.yaml` fragment stays YAML.
+    #[test]
+    fn json_fragment_stays_json_on_save() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("schemas")).unwrap();
+        fs::write(
+            dir.path().join("schemas/item.json"),
+            r#"{
+  "tables": {
+    "Item": {
+      "name": "Item",
+      "primary_key": ["id"],
+      "fields": {
+        "id": { "name": "id", "type": { "kind": "UInt32" }, "required": true }
+      }
+    }
+  },
+  "enums": {}
+}
+"#,
+        )
+        .unwrap();
+        let (mut edited, index) = load(&dir);
+        edited.tables["Item"].description = Some("changed".to_string());
+
+        let out = save_schema_incremental(dir.path(), &dir.path().join("schemas"), &edited, &index)
+            .expect("save");
+        assert_eq!(out.written, ["schemas/item.json"]);
+        let text = fs::read_to_string(dir.path().join("schemas/item.json")).unwrap();
+        assert!(text.starts_with('{'), "stays JSON, got: {text}");
+        // Round-trips as JSON.
+        let reloaded: Schema = serde_json::from_str(&text).expect("valid json schema");
+        assert_eq!(
+            reloaded.tables["Item"].description.as_deref(),
+            Some("changed")
+        );
     }
 
     /// Enum and metadata fragments merge into the merged schema and the
