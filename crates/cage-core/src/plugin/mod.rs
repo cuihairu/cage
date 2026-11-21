@@ -38,6 +38,12 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub mod attestation;
+
+pub use attestation::{
+    AttestationOutcome, PluginAttestation, ValidationAttestation, ValidationEnvironment,
+};
+
 /// Default plugin timeout: a validation plugin is expected to finish fast.
 pub const DEFAULT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -389,6 +395,20 @@ impl WorkerFailure {
             | WorkerFailure::Crash { plugin_id, .. }
             | WorkerFailure::InvalidOutput { plugin_id, .. }
             | WorkerFailure::PluginError { plugin_id, .. } => plugin_id,
+        }
+    }
+
+    /// Stable machine name of the failure class (one of the seven). Used by
+    /// the [`crate::plugin::attestation`] record and any downstream audit.
+    pub fn class(&self) -> &'static str {
+        match self {
+            WorkerFailure::Missing { .. } => "missing",
+            WorkerFailure::ProtocolVersionMismatch { .. } => "protocol_version_mismatch",
+            WorkerFailure::PythonVersionMismatch { .. } => "python_version_mismatch",
+            WorkerFailure::Timeout { .. } => "timeout",
+            WorkerFailure::Crash { .. } => "crash",
+            WorkerFailure::InvalidOutput { .. } => "invalid_output",
+            WorkerFailure::PluginError { .. } => "plugin_error",
         }
     }
 

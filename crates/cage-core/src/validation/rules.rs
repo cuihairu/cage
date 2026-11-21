@@ -14,6 +14,10 @@
 
 use crate::diagnostics::{Diagnostic, DiagnosticBuilder, Diagnostics};
 use crate::error::codes::gamerule;
+use crate::plugin::attestation::{
+    dir_digest, value_digest, AttestationOutcome, PluginAttestation, ValidationAttestation,
+    ValidationEnvironment,
+};
 use crate::plugin::{run_plugin, PluginManifest, WorkerOutcome, WorkerRun};
 use crate::schema::Schema;
 use crate::value::{Document, Value};
@@ -181,6 +185,10 @@ struct WorkerRule {
     order: u32,
     /// The project root the worker process is spawned in.
     root: PathBuf,
+    /// The plugin directory (`plugins/<id>`) — kept even when the manifest
+    /// failed to load, so the content lock and the audit record still name
+    /// what was attempted.
+    dir: PathBuf,
     /// The loaded manifest, or the load failure to report at run time — a
     /// missing or unreadable plugin fails validation rather than being
     /// silently skipped (review §四.2 插件缺失 → 校验失败).
@@ -263,7 +271,8 @@ impl GameRuleRegistry {
         manifest: PluginManifest,
         options: serde_json::Value,
     ) -> &mut Self {
-        self.push_worker(root.into(), Ok(manifest), options);
+        let dir = manifest.dir.clone();
+        self.push_worker(root.into(), dir, Ok(manifest), options);
         self
     }
 
@@ -276,7 +285,12 @@ impl GameRuleRegistry {
         options: serde_json::Value,
     ) -> &mut Self {
         let root = root.into();
-        self.push_worker(root.clone(), PluginManifest::load(dir), options);
+        self.push_worker(
+            root.clone(),
+            dir.to_path_buf(),
+            PluginManifest::load(dir),
+            options,
+        );
         self
     }
 
@@ -306,6 +320,7 @@ impl GameRuleRegistry {
     fn push_worker(
         &mut self,
         root: PathBuf,
+        dir: PathBuf,
         manifest: Result<PluginManifest, Diagnostics>,
         options: serde_json::Value,
     ) {
@@ -314,6 +329,7 @@ impl GameRuleRegistry {
         self.entries.push(RuleEntry::Worker(WorkerRule {
             order,
             root,
+            dir,
             manifest,
             options,
         }));
@@ -325,6 +341,17 @@ impl GameRuleRegistry {
     /// Worker findings and worker failures land on the same diagnostics
     /// surface as the in-process rules.
     pub fn run(&self, schema: &Schema, document: &Document) -> Vec<Diagnostic> {
+        self.run_attested(schema, document).0
+    }
+
+    /// [`Self::run`] plus the [`ValidationAttestation`] for this pass: plugin
+    /// ids/versions, option and content digests, the environment fingerprint
+    /// and per-plugin outcomes — the auditable record of review P2-4.
+    pub fn run_attested(
+        &self,
+        schema: &Schema,
+        document: &Document,
+    ) -> (Vec<Diagnostic>, ValidationAttestation) {
         let mut order: Vec<&RuleEntry> = self.entries.iter().collect();
         order.sort_by_key(|entry| match entry {
             RuleEntry::Plugin { order, .. } | RuleEntry::Worker(WorkerRule { order, .. }) => *order,
@@ -332,6 +359,8 @@ impl GameRuleRegistry {
         });
 
         let mut out = Vec::new();
+        let mut plugin_records = Vec::new();
+        let mut worker_root: Option<&Path> = None;
         for entry in order {
             match entry {
                 RuleEntry::Plugin { validator, .. } => {
@@ -341,10 +370,25 @@ impl GameRuleRegistry {
                     out.extend(run_rule(config, schema, document));
                 }
                 RuleEntry::Declarative(_) => {}
-                RuleEntry::Worker(worker) => run_worker(worker, schema, document, &mut out),
+                RuleEntry::Worker(worker) => {
+                    worker_root.get_or_insert(&worker.root);
+                    plugin_records.push(run_worker(worker, schema, document, &mut out));
+                }
             }
         }
-        out
+        // The environment is probed once per pass, only when a worker plugin
+        // actually participated (the interpreter probe is a subprocess).
+        let environment = match worker_root {
+            Some(root) => ValidationEnvironment::probe(root),
+            None => ValidationEnvironment::without_python(),
+        };
+        let attestation = ValidationAttestation::new(
+            schema_digest(schema),
+            document_digest(document),
+            environment,
+            plugin_records,
+        );
+        (out, attestation)
     }
 
     /// Number of registered entries (plugins + declarative rules).
@@ -373,22 +417,39 @@ fn run_rule(config: &RuleConfig, schema: &Schema, document: &Document) -> Vec<Di
     }
 }
 
-/// Execute one worker plugin and append its diagnostics to `out`. A worker
-/// that fails is reported as its failure diagnostic (E1602/E1603) — never a
-/// silent skip — so the build gate treats plugin failures as validation
-/// failures on the same surface.
+/// Execute one worker plugin, append its diagnostics to `out`, and return its
+/// attestation record. A worker that fails is reported as its failure
+/// diagnostic (E1602/E1603) — never a silent skip — so the build gate treats
+/// plugin failures as validation failures on the same surface.
 fn run_worker(
     worker: &WorkerRule,
     schema: &Schema,
     document: &Document,
     out: &mut Vec<Diagnostic>,
-) {
-    let manifest = match &worker.manifest {
-        Ok(manifest) => manifest,
-        Err(load_errors) => {
-            out.extend(load_errors.iter().cloned());
-            return;
-        }
+) -> PluginAttestation {
+    let options_digest = value_digest(&worker.options);
+    let content_digest = dir_digest(&worker.dir);
+    let Ok(manifest) = &worker.manifest else {
+        let detail = worker
+            .manifest
+            .as_ref()
+            .err()
+            .and_then(|errors| errors.errors().first().map(|d| d.message.clone()))
+            .unwrap_or_else(|| "plugin manifest could not be loaded".to_string());
+        out.push(Diagnostic::error(gamerule::E1602, detail.clone()));
+        return PluginAttestation {
+            id: worker
+                .dir
+                .file_name()
+                .map_or_else(|| "plugin".to_string(), |n| n.to_string_lossy().to_string()),
+            version: String::new(),
+            options_digest,
+            content_digest,
+            outcome: AttestationOutcome::Failed {
+                class: "missing".to_string(),
+                detail,
+            },
+        };
     };
     let run = WorkerRun {
         request_id: format!("l7-{}", manifest.id),
@@ -396,10 +457,44 @@ fn run_worker(
         document,
         options: worker.options.clone(),
     };
-    match run_plugin(&worker.root, manifest, &run) {
-        WorkerOutcome::Ok(findings) => out.extend(findings.iter().cloned()),
-        WorkerOutcome::Failed(failure) => out.push(failure.to_diagnostic()),
+    let outcome = match run_plugin(&worker.root, manifest, &run) {
+        WorkerOutcome::Ok(findings) => {
+            out.extend(findings.iter().cloned());
+            AttestationOutcome::Ran {
+                errors: findings.errors().len(),
+                warnings: findings.warnings().len(),
+                infos: findings.infos().len(),
+            }
+        }
+        WorkerOutcome::Failed(failure) => {
+            let diag = failure.to_diagnostic();
+            let detail = diag.message.clone();
+            out.push(diag);
+            AttestationOutcome::Failed {
+                class: failure.class().to_string(),
+                detail,
+            }
+        }
+    };
+    PluginAttestation {
+        id: manifest.id.clone(),
+        version: manifest.version.clone(),
+        options_digest,
+        content_digest,
+        outcome,
     }
+}
+
+/// blake3 over the canonical schema JSON.
+fn schema_digest(schema: &Schema) -> String {
+    let value = serde_json::to_value(schema).unwrap_or(serde_json::Value::Null);
+    value_digest(&value)
+}
+
+/// blake3 over the canonical document (data) JSON.
+fn document_digest(document: &Document) -> String {
+    let value = serde_json::to_value(document).unwrap_or(serde_json::Value::Null);
+    value_digest(&value)
 }
 
 /// L7.1 declarative rule: every skill must reference an item whose category

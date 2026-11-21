@@ -2,6 +2,7 @@
 //! independent-process worker plugins merge onto one diagnostics surface.
 
 use super::*;
+use crate::plugin::AttestationOutcome;
 use crate::value::{Row, SourceLocation, Table, TypedValue};
 use indexmap::IndexMap;
 use std::path::PathBuf;
@@ -167,4 +168,118 @@ fn a_missing_plugins_directory_is_no_plugins() {
     registry.discover_workers(tmp.path());
     assert_eq!(registry.len(), 0);
     assert!(registry.run(&Schema::new(), &monster_doc(1, 1)).is_empty());
+}
+
+// ---- P2-4: the auditable validation record ----
+
+#[test]
+#[cfg(unix)]
+fn attested_run_records_plugin_identity_and_environment() {
+    if !python3_available() {
+        eprintln!("skip: no python3");
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_plugin(
+        tmp.path(),
+        "id = \"level_cap\"\nversion = \"1.2.3\"\nentry = \"plugin.py\"\n",
+        &sdk_script(LEVEL_CAP_PLUGIN),
+    );
+    let manifest = crate::plugin::PluginManifest::load(tmp.path()).expect("manifest");
+    let mut registry = GameRuleRegistry::with_builtins();
+    registry.register_worker(tmp.path(), manifest, serde_json::json!({"cap": 10}));
+
+    let (diags, attestation) = registry.run_attested(&Schema::new(), &monster_doc(12, 1300));
+    assert!(!diags.is_empty());
+
+    assert_eq!(attestation.plugins.len(), 1);
+    let plugin = &attestation.plugins[0];
+    assert_eq!(plugin.id, "level_cap");
+    assert_eq!(plugin.version, "1.2.3");
+    // Only the worker plugin is recorded — built-ins are not plugin outputs.
+    assert!(matches!(
+        plugin.outcome,
+        AttestationOutcome::Ran { errors: 1, .. }
+    ));
+    // The environment fingerprint names the interpreter that actually ran.
+    assert!(attestation.environment.python.is_some());
+    assert_eq!(
+        attestation.environment.protocol_version,
+        cage_plugin_protocol::PROTOCOL_VERSION
+    );
+    assert!(attestation.passed);
+
+    // The same inputs reproduce the same digest; a changed option changes it.
+    let (_, again) = registry.run_attested(&Schema::new(), &monster_doc(12, 1300));
+    assert_eq!(attestation.digest(), again.digest());
+
+    let manifest2 = crate::plugin::PluginManifest::load(tmp.path()).expect("manifest");
+    let mut other = GameRuleRegistry::with_builtins();
+    other.register_worker(tmp.path(), manifest2, serde_json::json!({"cap": 1000}));
+    let (_, changed) = other.run_attested(&Schema::new(), &monster_doc(12, 1300));
+    assert_ne!(attestation.digest(), changed.digest());
+    assert_ne!(
+        attestation.plugins[0].options_digest,
+        changed.plugins[0].options_digest
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn attested_failure_still_records_the_attempt() {
+    if !python3_available() {
+        eprintln!("skip: no python3");
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_plugin(
+        tmp.path(),
+        "id = \"crasher\"\nversion = \"1\"\nentry = \"plugin.py\"\n",
+        "import sys\nsys.exit(3)\n",
+    );
+    let manifest = crate::plugin::PluginManifest::load(tmp.path()).expect("manifest");
+    let mut registry = GameRuleRegistry::new();
+    registry.register_worker(tmp.path(), manifest, serde_json::json!({}));
+
+    let (diags, attestation) = registry.run_attested(&Schema::new(), &monster_doc(1, 1));
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, gamerule::E1603);
+    assert!(!attestation.passed);
+    match &attestation.plugins[0].outcome {
+        AttestationOutcome::Failed { class, .. } => assert_eq!(class, "crash"),
+        AttestationOutcome::Ran { .. } => panic!("expected a failed record"),
+    }
+}
+
+#[test]
+fn an_unloadable_plugin_is_attested_as_missing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let plugin_dir = tmp.path().join("plugins").join("ghost");
+    std::fs::create_dir_all(&plugin_dir).expect("mkdir");
+    std::fs::write(plugin_dir.join("plugin.py"), "print('x')\n").expect("write");
+
+    let mut registry = GameRuleRegistry::new();
+    registry.register_worker_dir(tmp.path(), &plugin_dir, serde_json::json!({}));
+
+    let (diags, attestation) = registry.run_attested(&Schema::new(), &monster_doc(1, 1));
+    assert_eq!(diags[0].code, gamerule::E1602);
+    assert_eq!(attestation.plugins.len(), 1);
+    assert_eq!(attestation.plugins[0].id, "ghost");
+    assert!(matches!(
+        attestation.plugins[0].outcome,
+        AttestationOutcome::Failed { .. }
+    ));
+    assert!(!attestation.passed);
+}
+
+#[test]
+fn a_run_without_workers_has_no_python_in_the_fingerprint() {
+    let registry = GameRuleRegistry::with_builtins();
+    let (_, attestation) = registry.run_attested(&Schema::new(), &monster_doc(1, 1));
+    assert_eq!(attestation.plugins.len(), 0);
+    assert!(attestation.environment.python.is_none());
+    assert!(attestation.passed);
+    // The data actually validated is fingerprinted.
+    assert_eq!(attestation.document_digest.len(), 64);
+    assert_eq!(attestation.schema_digest.len(), 64);
 }

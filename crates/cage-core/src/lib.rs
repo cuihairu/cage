@@ -74,8 +74,8 @@ pub use normalize::{
     coerce_to_type, fill_field_defaults, normalize_document, normalize_typed_value, normalize_value,
 };
 pub use plugin::{
-    run_plugin, PluginManifest, PythonConstraint, WorkerFailure, WorkerOutcome, WorkerRun,
-    DEFAULT_PLUGIN_TIMEOUT,
+    attestation::ValidationAttestation, run_plugin, PluginManifest, PythonConstraint,
+    WorkerFailure, WorkerOutcome, WorkerRun, DEFAULT_PLUGIN_TIMEOUT,
 };
 pub use refactor::{
     apply, find_references, preview, rename_enum, rename_field, rename_table, RefactorChange,
