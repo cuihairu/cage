@@ -18,6 +18,10 @@ indexmap = { workspace = true }
 regex = { workspace = true }
 blake3 = { workspace = true }
 console = { workspace = true }
+# §17 / P2-2: the host-side plugin worker speaks the versioned JSON IPC
+# protocol; the manifest is TOML (same parser as cage.toml).
+cage-plugin-protocol = { path = "../cage-plugin-protocol" }
+toml = { workspace = true }
 # §47 A series: deterministic bundle export/import
 tar = { workspace = true }
 # §47 A1: fixed-level zstd frame wrapping the deterministic tar bundle

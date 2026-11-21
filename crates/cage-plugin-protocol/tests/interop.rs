@@ -6,9 +6,7 @@
 //! `cage_sdk` decodes it, runs a plugin, and returns a `Response` the Rust
 //! side decodes back. (Same python3 gate as `convention/tests/script.rs`.)
 
-use cage_plugin_protocol::{
-    PluginInfo, Request, Response, RowPayload, RunParams, TablePayload,
-};
+use cage_plugin_protocol::{PluginInfo, Request, Response, RowPayload, RunParams, TablePayload};
 use serde_json::json;
 use std::io::Write;
 use std::process::{Command, Stdio};

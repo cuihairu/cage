@@ -257,6 +257,17 @@ impl Request {
             params,
         }
     }
+
+    /// Serialize to the wire form: compact JSON + trailing `\n`.
+    ///
+    /// The trailing newline is part of the framing (one request per line), so a
+    /// request is a complete message with no length header.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes =
+            serde_json::to_vec(self).expect("protocol requests are always serializable");
+        bytes.push(b'\n');
+        bytes
+    }
 }
 
 impl Response {

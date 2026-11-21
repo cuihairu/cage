@@ -272,6 +272,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "cage-plugin-protocol",
  "console",
  "ed25519-dalek",
  "indexmap",
@@ -283,6 +284,7 @@ dependencies = [
  "serde_yaml",
  "tar",
  "tempfile",
+ "toml",
  "ureq",
  "zstd",
 ]
