@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/cage-core",
+    "crates/cage-plugin-protocol",
     "crates/cage-source-excel",
     "crates/cage-source-csv",
     "crates/cage-source-json",

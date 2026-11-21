@@ -45,6 +45,7 @@ const enTheme = {
       { text: 'Target', link: '/target' },
       { text: 'CLI', link: '/cli' },
       { text: 'Build', link: '/build' },
+      { text: 'Plugins', link: '/plugins' },
       { text: 'Web', link: '/web' },
       { text: 'UI', link: '/ui' },
       { text: 'UI Prototypes', link: '/design-prototypes' },
@@ -78,6 +79,7 @@ const enTheme = {
           items: [
             { text: 'CLI', link: '/cli' },
             { text: 'Build', link: '/build' },
+            { text: 'Plugins', link: '/plugins' },
             { text: 'Assets', link: '/assets' },
             { text: 'Web', link: '/web' },
             { text: 'UI', link: '/ui' },
@@ -133,6 +135,7 @@ const zhTheme = {
       { text: 'Target', link: '/zh/target' },
       { text: 'CLI', link: '/zh/cli' },
       { text: 'Build', link: '/zh/build' },
+      { text: '插件', link: '/zh/plugins' },
       { text: 'Web', link: '/zh/web' },
       { text: 'UI', link: '/zh/ui' },
       { text: 'UI 原型', link: '/zh/design-prototypes' },
@@ -166,6 +169,7 @@ const zhTheme = {
           items: [
             { text: 'CLI', link: '/zh/cli' },
             { text: 'Build：确定性构建', link: '/zh/build' },
+            { text: '插件：插件协议与 Python SDK', link: '/zh/plugins' },
             { text: '资产：Schema 管理与加载', link: '/zh/assets' },
             { text: 'Web：Schema 编辑器', link: '/zh/web' },
             { text: 'UI：界面门面', link: '/zh/ui' },

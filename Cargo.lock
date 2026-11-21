@@ -288,6 +288,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cage-plugin-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cage-source-csv"
 version = "0.1.0"
 dependencies = [

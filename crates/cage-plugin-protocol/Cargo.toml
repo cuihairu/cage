@@ -1,0 +1,20 @@
+[package]
+name = "cage-plugin-protocol"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+description = "Versioned, language-agnostic JSON IPC protocol for Cage validation plugins"
+
+[dependencies]
+serde = { workspace = true }
+# preserve_order keeps JSON object keys in declaration order on the wire, so
+# the protocol's canonical form is stable regardless of which host language
+# serialized the message (see cage-core for the same rationale).
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

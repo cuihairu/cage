@@ -1,0 +1,22 @@
+{
+  "protocol": 1,
+  "id": "demo-run-1",
+  "method": "run",
+  "params": {
+    "plugin": { "id": "monster_balance", "version": "1.0.0" },
+    "schema": { "name": "Monster", "tables": [] },
+    "tables": [
+      {
+        "name": "Monster",
+        "primary_key": ["id"],
+        "rows": [
+          { "index": 0, "location": "Monster.xlsx#Sheet1!A2", "fields": { "id": 1, "level": 1, "cost": 100 } },
+          { "index": 1, "location": "Monster.xlsx#Sheet1!A3", "fields": { "id": 2, "level": 3, "cost": 100 } },
+          { "index": 2, "location": "Monster.xlsx#Sheet1!A4", "fields": { "id": 3, "level": 5, "cost": 190 } },
+          { "index": 3, "location": "Monster.xlsx#Sheet1!A5", "fields": { "id": 4, "level": 12, "cost": 200 } }
+        ]
+      }
+    ],
+    "options": { "base_cost": 100, "growth": 1.2, "max_level": 10 }
+  }
+}
