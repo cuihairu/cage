@@ -775,6 +775,90 @@ pub(crate) fn api_rule_examples(body: &str) -> (u16, serde_json::Value) {
     (200, serde_json::json!({"ok": true, "checks": checks}))
 }
 
+/// POST /api/import/schema — P1-6: read a data file (Excel/CSV) and infer a
+/// draft Schema from it. The path is relative to the project root or
+/// absolute; the file is parsed through the same source adapters the build
+/// pipeline uses, then `cage_core::schema_infer` proposes the draft. The
+/// editor previews and applies it — nothing is written by this endpoint.
+pub(crate) fn api_import_schema(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        path: String,
+    }
+    let req: Req = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("bad request body: {e}")}),
+            );
+        }
+    };
+    if req.path.trim().is_empty() {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": "missing required 'path'"}),
+        );
+    }
+    // `join` with an absolute path replaces the base, so one call covers
+    // both project-relative and absolute inputs. The format is checked
+    // first: an unsupported extension answers its own refusal even when the
+    // file is absent.
+    let full = ctx.root.join(&req.path);
+    let ext = full
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !matches!(ext.as_str(), "xlsx" | "xlsm" | "xls" | "ods" | "csv") {
+        return (
+            400,
+            serde_json::json!({
+                "ok": false,
+                "error": format!("unsupported import format '{ext}' (expected csv/xlsx/xls)")
+            }),
+        );
+    }
+    if !full.exists() {
+        return (
+            404,
+            serde_json::json!({"ok": false, "error": format!("no such file: {}", req.path)}),
+        );
+    }
+    let parsed = if ext == "csv" {
+        cage_source_csv::CsvSourceAdapter::default().parse_file(&full)
+    } else {
+        cage_source_excel::ExcelSourceAdapter::default().parse_file(&full)
+    };
+    let document = match parsed {
+        Ok(d) => d,
+        Err(diags) => {
+            return (
+                200,
+                serde_json::json!({"ok": false, "error": diags.render(false)}),
+            );
+        }
+    };
+    let inferred = match cage_core::schema_infer::infer_schema(
+        &document,
+        &cage_core::schema_infer::InferOptions::default(),
+    ) {
+        Ok(i) => i,
+        Err(e) => return (200, serde_json::json!({"ok": false, "error": e})),
+    };
+    let tables: Vec<String> = inferred.schema.tables.keys().cloned().collect();
+    (
+        200,
+        serde_json::json!({
+            "ok": true,
+            "schema": to_editor_json(&inferred.schema),
+            "tables": tables,
+            "warnings": inferred.warnings,
+            "source": req.path,
+        }),
+    )
+}
+
 pub(crate) fn api_status(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
     let params = query_params(query);
     let get = |key: &str| {

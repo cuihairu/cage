@@ -474,6 +474,28 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
 - [x] 测试：`rule_templates.test.mjs` 增 2 项（提示标题点名具体原因、不假装
       能转换；限制清单钉住）——共 10 项；workspace 全绿；web-smoke 绿
 
+### W18 已实装：数据文件 → Schema 草稿导入（评审 P1-6，2026-11-22）
+
+- [x] `cage_core::schema_infer`——构建管线的反向：一份已解析的
+      `Document`（Excel/CSV）提出一份 `Schema` 草稿。逐列按观测值推断类型
+      （Bool / Int32-Int64 / UInt32-UInt64 / Float64 / String / Null）、
+      必填/可空（按空白单元格）、数值 min/max、低基数字符串列（2..=16 个
+      不同取值）建议行内 `enum_values`；主键取「每行都有值且唯一」的首列。
+      空表头与重名表头合成新名。附带 `warnings` 标注枚举提升与混型回退。
+      纯函数——CLI、Web 端点与测试共用同一套推断
+- [x] Web API：`POST /api/import/schema` `{path}`——文件经构建管线同一套
+      源适配器解析（`.xlsx/.xls/.ods` → Excel，`.csv` → CSV）再推断；端点
+      不写任何文件，只回 `{ok, schema, tables, warnings, source}`
+- [x] 编辑器：「导入草稿」按钮开模态框——路径输入以项目已知数据文件
+      （`/api/tables`）作候选，「生成草稿」预览草稿（逐表字段清单：名称/
+      类型/必填/枚举，主键标 🔑），展示建议性 warnings，「应用为当前文档」
+      替换 `state.doc`（同一 Schema 形状，P1-1）并标脏走常规保存/预检链
+- [x] 测试：schema_infer 单测 13（整数/浮点/布尔/枚举/必填/可空/min-max/
+      全空/混型/表头合成/回环/编辑器桥接/UInt64）+ web 单测 1（CSV 草稿
+      形状 + 404/400 拒绝）+ web 集成 1（真实 HTTP 草稿）+ 资产断言（页面
+      带导入按钮/模态框、入口调用端点）；workspace 1315 全绿；node 25 绿；
+      web-smoke 绿
+
 ## 路线图
 
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务

@@ -217,6 +217,21 @@ fn web_serves_editor_page_and_assets() {
         body.contains("RULE_TEMPLATES"),
         "forms must import the nine templates: {body}"
     );
+    // P1-6: the import-draft flow — the page offers the button/modal and
+    // the entry posts the data-file path to the inference endpoint.
+    let (status, page) = request(server.port, "GET", "/", None);
+    assert_eq!(status, 200, "editor page must be served");
+    assert!(page.contains("import-btn"), "page: {page}");
+    assert!(page.contains("import-modal"), "page: {page}");
+    let (_, body) = request(server.port, "GET", "/app.js", None);
+    assert!(
+        body.contains("/api/import/schema"),
+        "the entry must call the import endpoint: {body}"
+    );
+    assert!(
+        body.contains("applyImport"),
+        "the entry must apply an imported draft onto state.doc: {body}"
+    );
 
     let (status, body) = request(server.port, "GET", "/app.css", None);
     assert_eq!(status, 200, "editor stylesheet must be served");
@@ -848,5 +863,47 @@ fn web_tries_a_rules_human_layer_examples_over_http() {
     assert!(
         !checks[2]["ok"].as_bool().unwrap(),
         "mismatch must be flagged"
+    );
+}
+
+#[test]
+fn web_infers_a_schema_draft_from_an_imported_data_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    // P1-6: a CSV data file in the project, imported through the real HTTP
+    // route and parsed by the same adapter the build pipeline uses.
+    fs::create_dir_all(tmp.path().join("data")).unwrap();
+    fs::write(
+        tmp.path().join("data/Monster.csv"),
+        "id,level,kind\n1,3,weapon\n2,7,armor\n3,5,weapon\n",
+    )
+    .unwrap();
+    let server = start_server(tmp.path());
+
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/import/schema",
+        Some(r#"{"path": "data/Monster.csv"}"#),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "body: {body}");
+    assert_eq!(v["tables"], serde_json::json!(["Monster"]), "body: {body}");
+    let fields = &v["schema"]["tables"]["Monster"]["fields"];
+    assert_eq!(fields["id"]["type"]["kind"], "UInt32", "body: {body}");
+    assert_eq!(
+        fields["kind"]["enum_values"],
+        serde_json::json!(["weapon", "armor"]),
+        "body: {body}"
+    );
+    assert_eq!(
+        v["schema"]["tables"]["Monster"]["primary_key"],
+        serde_json::json!(["id"]),
+        "body: {body}"
+    );
+    assert!(
+        v["warnings"].as_array().is_some_and(|w| !w.is_empty()),
+        "an enum promotion must be reported: {body}"
     );
 }

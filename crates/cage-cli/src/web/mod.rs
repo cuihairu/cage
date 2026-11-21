@@ -29,6 +29,8 @@
 //!                         returned with every reference site patched
 //!                         through `cage_core::refactor`, plus the change
 //!                         report (the server stays stateless)
+//! POST /api/import/schema → infer a Schema draft from a data file
+//!                         (Excel/CSV, P1-6) — nothing written
 //! GET  /api/status      → validation panel + per-profile build facts
 //! POST /api/build       → run the build pipeline for one profile
 //! GET  /api/artifacts   → the build manifest as the artifact ledger
@@ -320,6 +322,10 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
                 let (status, value) = api_rule_examples(&body);
                 json_response(status, &value)
             }
+            (tiny_http::Method::Post, "/api/import/schema") => {
+                let (status, value) = api_import_schema(ctx, &body);
+                json_response(status, &value)
+            }
             (tiny_http::Method::Get, "/api/status") => {
                 let (status, value) = api_status(ctx, &query);
                 json_response(status, &value)
@@ -529,8 +535,8 @@ mod handlers;
 mod tests;
 
 pub(crate) use handlers::{
-    api_artifact, api_artifacts, api_build, api_diff, api_registry, api_rule_compile,
-    api_rule_decompile, api_rule_examples, api_save, api_schema, api_schema_preview,
-    api_schema_rename, api_snapshot, api_snapshots, api_status, api_table, api_tables, api_upload,
-    api_validate, api_validate_data, json,
+    api_artifact, api_artifacts, api_build, api_diff, api_import_schema, api_registry,
+    api_rule_compile, api_rule_decompile, api_rule_examples, api_save, api_schema,
+    api_schema_preview, api_schema_rename, api_snapshot, api_snapshots, api_status, api_table,
+    api_tables, api_upload, api_validate, api_validate_data, json,
 };

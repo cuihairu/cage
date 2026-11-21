@@ -53,6 +53,7 @@ pub mod remote;
 pub mod rule_ast;
 pub mod rule_examples;
 pub mod schema;
+pub mod schema_infer;
 pub mod snapshot;
 pub mod validation;
 pub mod value;
@@ -84,6 +85,7 @@ pub use schema::{
     ReferenceSchema, RuleExample, Schema, SchemaMetadata, TableSchema, UniqueConstraint,
     ValidatedSchema, ValidationContext,
 };
+pub use schema_infer::{infer_schema, InferOptions, InferredSchema};
 pub use validation::{validate, ValidationContext as ValidationCtx, ValidationLevel};
 pub use value::{Document, DocumentMetadata, Row, SourceLocation, Table, TypedValue, Value};
 

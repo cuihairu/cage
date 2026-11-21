@@ -364,6 +364,112 @@ function renderExpertMode() {
   box.append(ta, actions);
 }
 
+// ── 导入数据文件 → Schema 草稿（P1-6）──────────────────────────────
+
+/// The draft the preview holds (editor JSON straight from the endpoint);
+/// null until a draft was generated in this modal session.
+let importedDraft = null;
+
+/// Render the inferred draft as a per-table field list: name (primary key
+/// marked), type, required, enum values.
+function renderImportPreview(schema) {
+  const box = el("div");
+  for (const [tName, table] of Object.entries((schema && schema.tables) || {})) {
+    const tbl = el("table");
+    const head = el("tr");
+    for (const h of ["字段", "类型", "必填", "枚举/说明"]) head.append(el("th", null, h));
+    tbl.append(head);
+    for (const f of Object.values((table && table.fields) || {})) {
+      const isPk = ((table && table.primary_key) || []).includes(f.name);
+      const tr = el("tr");
+      tr.append(el("td", isPk ? "pk" : null, isPk ? `${f.name} 🔑` : f.name));
+      tr.append(el("td", null, (f.type && f.type.kind) || "?"));
+      tr.append(el("td", null, f.required ? "必填" : "可空"));
+      tr.append(
+        el("td", "enum",
+          f.enum_values ? `枚举: ${f.enum_values.join(", ")}` : (f.description || ""))
+      );
+      tbl.append(tr);
+    }
+    const block = el("div", "diff-file");
+    const h = el("div", "diff-file-head");
+    h.append(
+      el("span", "diff-file-name", tName),
+      el("span", "diff-file-action",
+        `主键 ${((table && table.primary_key) || []).join(", ") || "—"} · `
+        + `${Object.keys((table && table.fields) || {}).length} 字段`)
+    );
+    block.append(h, tbl);
+    box.append(block);
+  }
+  return box;
+}
+
+function openImportModal() {
+  const modal = document.getElementById("import-modal");
+  importedDraft = null;
+  document.getElementById("import-path").value = "";
+  const preview = document.getElementById("import-preview");
+  preview.replaceChildren();
+  preview.hidden = true;
+  const warn = document.getElementById("import-warnings");
+  warn.replaceChildren();
+  warn.hidden = true;
+  document.getElementById("import-apply").disabled = true;
+  // The project's known data files seed the path datalist (the same table
+  // inventory the data panel shows), so the planner picks rather than types.
+  api("/api/tables").then(({ data }) => {
+    const dl = document.getElementById("import-files");
+    dl.replaceChildren();
+    const seen = new Set();
+    for (const t of (data && data.tables) || []) {
+      if (t.source_file && !seen.has(t.source_file)) {
+        seen.add(t.source_file);
+        dl.append(option(t.source_file));
+      }
+    }
+  });
+  modal.hidden = false;
+}
+
+async function runImport() {
+  const path = document.getElementById("import-path").value.trim();
+  if (!path) return toast("请先填写数据文件路径", "err");
+  const { status, data } = await api("/api/import/schema", JSON.stringify({ path }));
+  const preview = document.getElementById("import-preview");
+  const warn = document.getElementById("import-warnings");
+  if (!data || !data.ok) {
+    importedDraft = null;
+    preview.replaceChildren();
+    preview.hidden = true;
+    warn.replaceChildren(el("div", null, (data && data.error) || `HTTP ${status}`));
+    warn.hidden = false;
+    document.getElementById("import-apply").disabled = true;
+    return;
+  }
+  importedDraft = data.schema;
+  preview.replaceChildren(renderImportPreview(data.schema));
+  preview.hidden = false;
+  warn.replaceChildren(...(data.warnings || []).map((w) => el("div", null, `· ${w}`)));
+  warn.hidden = !(data.warnings || []).length;
+  document.getElementById("import-apply").disabled = false;
+}
+
+function applyImport() {
+  if (!importedDraft) return;
+  state.doc = importedDraft;
+  importedDraft = null;
+  document.getElementById("import-modal").hidden = true;
+  markDirty();
+  refreshEntity(); // 文档可能换了表：左栏树一起重渲染
+  validate();
+  toast("已应用导入草稿：校验通过后「保存」写回 canonical YAML", "ok", 6000);
+}
+
+function closeImportModal() {
+  document.getElementById("import-modal").hidden = true;
+}
+
 // ── 启动 ────────────────────────────────────────────────────────────
 
 async function init() {
@@ -420,6 +526,12 @@ async function init() {
   document.getElementById("validate-btn").addEventListener("click", validate);
   document.getElementById("precheck-btn").addEventListener("click", precheck);
   document.getElementById("save-btn").addEventListener("click", save);
+  document.getElementById("import-btn").addEventListener("click", openImportModal);
+  document.getElementById("import-run").addEventListener("click", runImport);
+  document.getElementById("import-apply").addEventListener("click", applyImport);
+  document.getElementById("import-cancel").addEventListener("click", closeImportModal);
+  document.getElementById("import-close").addEventListener("click", closeImportModal);
+  document.getElementById("import-backdrop").addEventListener("click", closeImportModal);
 
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") {

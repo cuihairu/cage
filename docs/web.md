@@ -525,6 +525,35 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       the concrete reason and never fakes a conversion; the limits list is
       pinned) — 10 total; workspace green; web-smoke green.
 
+### W18 implemented: data-file → Schema draft import (review P1-6, 2026-11-22)
+
+- [x] `cage_core::schema_infer` — the reverse of the build pipeline: a parsed
+      `Document` (Excel/CSV) proposes a draft `Schema`. Per column it infers
+      a type from the observed values (Bool / Int32-Int64 / UInt32-UInt64 /
+      Float64 / String / Null), required/nullable from blank cells, a numeric
+      min/max, and an inline `enum_values` for a low-cardinality string
+      column (2..=16 distinct values); the primary key is the first column
+      present and unique on every row. Empty and duplicate headers get
+      synthesized names. Advisory `warnings` flag enum promotions and
+      mixed-type fallbacks. Pure — the CLI, the web endpoint and the tests
+      share one inference.
+- [x] Web API: `POST /api/import/schema` `{path}` — the file is parsed
+      through the same source adapter the build pipeline uses (`.xlsx/.xls/
+      .ods` → Excel, `.csv` → CSV), then inferred; the endpoint writes
+      nothing, it only returns `{ok, schema, tables, warnings, source}`.
+- [x] Editor: an「导入草稿」button opens a modal — a path input seeded from
+      the project's known data files (`/api/tables`), a 生成草稿 action that
+      previews the draft (per-table field list: name/type/required/enum,
+      primary key marked), the advisory warnings, and an 应用为当前文档
+      action that replaces `state.doc` (one schema shape, P1-1) and marks
+      the document dirty for the normal save/precheck chain.
+- [x] Tests: `schema_infer` unit 13 (integer/float/bool/enum/required/
+      nullable/min-max/blank/mixed/header synthesis/round trip/editor bridge/
+      UInt64) + web unit 1 (CSV draft shape + 404/400 refusals) + web
+      integration 1 (real HTTP draft over a CSV source) + asset assertions
+      (page carries the import button/modal; the entry calls the endpoint);
+      workspace 1315 green; node 25 green; web-smoke green.
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in UI facade (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in UI facade.

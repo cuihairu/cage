@@ -36,6 +36,7 @@
     <button id="save-btn" type="button" class="primary" title="Ctrl/Cmd+S">保存</button>
     <button id="validate-btn" type="button" title="Ctrl/Cmd+Enter">校验</button>
     <button id="precheck-btn" type="button" title="草稿 Schema 对真实数据完整预检（与 cage check 同口径）：Ctrl/Cmd+Shift+Enter">完整预检</button>
+    <button id="import-btn" type="button" title="从 Excel/CSV 数据文件推断 Schema 草稿并预览（P1-6）；需「应用」才替换当前文档">导入草稿</button>
     <a id="status-link" href="/status/">项目状态 →</a>
   </div>
 </header>
@@ -85,6 +86,31 @@
     </div>
   </div>
 </div>
+<div id="import-modal" hidden>
+  <div id="import-backdrop"></div>
+  <div id="import-panel">
+    <div id="import-head">
+      <h3>导入数据文件 → Schema 草稿</h3>
+      <button id="import-close" type="button" aria-label="关闭" title="关闭">×</button>
+    </div>
+    <div id="import-meta">从 Excel/CSV 数据文件推断 Schema 草稿（P1-6）：类型 / 必填 / 枚举 / 主键按观测值推荐。不会写入任何文件，点「应用」才替换当前文档。</div>
+    <div id="import-body">
+      <div class="import-row">
+        <label for="import-path">数据文件路径</label>
+        <input id="import-path" placeholder="相对项目根或绝对路径，如 data/Monster.xlsx" list="import-files">
+        <datalist id="import-files"></datalist>
+        <button id="import-run" type="button" class="primary">生成草稿</button>
+      </div>
+      <div id="import-preview" hidden></div>
+      <div id="import-warnings" class="import-warnings" hidden></div>
+    </div>
+    <div id="import-actions">
+      <button id="import-cancel" type="button">取消</button>
+      <button id="import-apply" type="button" class="primary" disabled>应用为当前文档</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" hidden></div>
 <script type="module" src="./app.js"></script>
 </body>

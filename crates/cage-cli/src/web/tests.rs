@@ -941,6 +941,60 @@ fn api_rule_examples_tries_a_rules_human_layer_examples() {
 }
 
 #[test]
+fn api_import_schema_infers_a_draft_from_a_csv_file() {
+    // P1-6: read a data file through the same source adapter the build
+    // pipeline uses and infer a Schema draft. Nothing is written.
+    let dir = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("data")).expect("data dir");
+    std::fs::write(
+        dir.path().join("data/Monster.csv"),
+        "id,level,kind\n1,3,weapon\n2,7,armor\n3,5,weapon\n",
+    )
+    .expect("write csv");
+    let ctx = ctx_in(&dir, None);
+
+    let (status, out) = api_import_schema(&ctx, r#"{"path": "data/Monster.csv"}"#);
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["ok"], serde_json::json!(true), "{out}");
+    assert_eq!(out["source"], "data/Monster.csv");
+    assert_eq!(out["tables"], serde_json::json!(["Monster"]), "{out}");
+    let fields = &out["schema"]["tables"]["Monster"]["fields"];
+    assert_eq!(fields["id"]["type"]["kind"], "UInt32", "{out}");
+    assert_eq!(fields["level"]["type"]["kind"], "UInt32", "{out}");
+    // kind has two distinct values → an inline enum draft.
+    assert_eq!(fields["kind"]["type"]["kind"], "String", "{out}");
+    assert_eq!(
+        fields["kind"]["enum_values"],
+        serde_json::json!(["weapon", "armor"]),
+        "{out}"
+    );
+    assert_eq!(
+        out["schema"]["tables"]["Monster"]["primary_key"],
+        serde_json::json!(["id"])
+    );
+    assert!(
+        out["warnings"].as_array().is_some_and(|w| w
+            .iter()
+            .any(|x| x.as_str().is_some_and(|s| s.contains("kind")))),
+        "{out}"
+    );
+
+    // A missing file and an unsupported extension refuse cleanly.
+    let (status, missing) = api_import_schema(&ctx, r#"{"path": "data/ghost.csv"}"#);
+    assert_eq!(status, 404, "{missing}");
+    let (status, bad_ext) = api_import_schema(&ctx, r#"{"path": "data/other.json"}"#);
+    assert_eq!(status, 400, "{bad_ext}");
+    assert!(
+        bad_ext["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("unsupported import format")),
+        "{bad_ext}"
+    );
+    let (status, no_path) = api_import_schema(&ctx, r"{}");
+    assert_eq!(status, 400, "{no_path}");
+}
+
+#[test]
 fn api_save_multi_file_still_needs_the_sources_index_envelope() {
     let dir = TempDir::new().expect("tempdir");
     multi_file_project(&dir);
