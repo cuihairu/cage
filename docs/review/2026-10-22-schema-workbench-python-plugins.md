@@ -797,7 +797,7 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 - [x] P0-4 安全重命名：SchemaRefactor（rename_table/rename_field/find_references/preview/apply 放 Rust Core，覆盖主键/跨表引用/规则表达式）——5163bfa（cage_core::refactor + `/api/schema/rename` + 前端接线；单测 9 + web 单测 +1 + 集成 +1 全绿，examples/run.sh 与 web-smoke 均 EXIT=0）
 - [x] P0-5 修「新增引用字段默认目标表选择异常」等具体 UI 问题（走查取证后修）——14ceb7b
 - [x] P0-6 P0 验收流程实测：打开 Monster→加字段→改名→关联 Item→范围规则→Excel 数据验证→准确报错行→修后 diff 预览→保存回源文件，全程不手编 YAML；CLI 与 Web 校验结果一致——9526c61（crates/cage-cli/tests/web/p0_acceptance.rs：真实子进程 + 真实 HTTP + 真实 Excel 数据（merged_cells.xlsx）；循环全绿，CLI `check` 对同一份草稿报出与 Web 相同的单一 E1501、同一 Excel 行（Sheet Items / Row 4）；workspace 1278 测试 + run.sh + web-smoke 全绿）
-- [ ] P1-1 三层编辑模式（基础/规则/专家）共享一份 Schema 语义模型（禁三套规则格式）
+- [x] P1-1 三层编辑模式（基础/规则/专家）共享一份 Schema 语义模型（禁三套规则格式）——6953b63（顶栏模式切换，三层读写同一 `state.doc` / 同一 `field.rules`（ExpressionRule）数组；「禁三套规则格式」契约落 node --test 纯模块 `docs/public/editor/modes.js`（10 项：回环/原子拒绝/契约/addRule 顺序）+ 规则模式（复用表达式规则编辑器，P1-2/P1-3 接入层）+ 专家模式（原始 JSON 文档，`applyExpertText` 原子应用）；web 单测 80 绿 / 集成 19 绿（页面带 mode-switch 三档 + `/modes.js` 资产断言）/ workspace 1278 全绿 / web-smoke 绿）
 - [ ] P1-2 结构化规则 AST + 可视化条件构建器（生成 AST 由 Rust Core 转规范化 Schema）
 - [ ] P1-3 内置规则模板九项（主键唯一/范围/枚举/外键/字段比较/条件必填/数值成长/跨表总量/可达性）
 - [ ] P1-4 规则人话层：中文标题/业务说明/错误信息/正反例入规则定义
