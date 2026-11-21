@@ -117,7 +117,12 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   data and the structure — one merged list, one scope badge per side) /
   the safe rename (a field renamed across its primary key, row rule, cross-table reference
   and predicate — every site patched in the returned document, disk byte-identical, a
-  collision refused)
+  collision refused) /
+  the P0-6 acceptance loop (open Monster → add a field → rename it → relate Items →
+  a range rule → Excel data validation that names the exact violating row → post-fix diff
+  preview → incremental save back to the source files; no YAML is hand-written during the
+  loop, and the CLI `check` reports the same single violation at the same Excel row the
+  Web reported — see `p0_acceptance.rs`)
 
 ### W3 implemented: Schema editor front end (docs/public/editor/, compiled in at build time)
 

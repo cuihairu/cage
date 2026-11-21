@@ -251,5 +251,6 @@ fn write_dir_project(root: &Path) {
 
 mod data;
 mod editor;
+mod p0_acceptance;
 mod snapshots;
 mod status;
