@@ -222,11 +222,14 @@ python3 examples/plugin-python/monster_balance.py \
 - 跨语言互操作测试：Rust 构造的请求经真实子进程被 Python SDK 解码，其应答
   再被 Rust 解码回读。
 
-尚未覆盖，留待后续项：
+P2-1 之后已交付（各自在 `cage_core`，已接入 CLI）：
 
 - **P2-2** — 宿主侧 worker：spawn、超时、崩溃恢复，以及失败行为表（插件缺失、
-  版本不符、超时、崩溃、非法输出）到 Cage 诊断的映射。
-- **P2-3** — 统一 L7 执行器，让 Rust 内置校验器与 worker 插件走同一诊断面。
+  版本不符、超时、崩溃、非法输出）到 Cage 诊断的映射（`cage_core::plugin`）。
+- **P2-3** — 统一 L7 执行器，让 Rust 内置校验器与 worker 插件走同一诊断面
+  （`GameRuleRegistry`）。
 - **P2-4** — `ValidationAttestation`：插件标识/版本、配置摘要、依赖锁定、
   环境指纹进入可审计记录。
-- **P2-5** — CLI 默认等级策略：由项目策略决定必需插件校验是否默认执行。
+- **P2-5** — `[validation]` 项目策略：`required_level` 抬高 CLI 默认等级使 L7
+  真正运行，`required_plugins` 使校验以 `E1602` 失败于声明 id 的缺失——由
+  `check`、`build`、LSP 通道与 Web 编辑器数据预检一致应用。

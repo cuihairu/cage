@@ -418,6 +418,7 @@ fn test_project_config_roundtrip_full() {
         dependencies: IndexMap::new(),
         remote: IndexMap::new(),
         source: None,
+        validation: None,
     };
 
     let json = serde_json::to_string(&cfg).expect("serialize");
@@ -466,6 +467,7 @@ fn test_project_config_minimal_json_omits_optionals() {
         dependencies: IndexMap::new(),
         remote: IndexMap::new(),
         source: None,
+        validation: None,
     };
     let json = serde_json::to_string(&cfg).expect("serialize");
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -552,6 +554,40 @@ fn test_project_config_default_shape_and_roundtrip() {
     assert!(!back.warnings_as_errors);
     assert_eq!(back.profiles.len(), 2);
     assert_eq!(back.output_dir.as_deref(), Some("build"));
+    // The default project declares no validation policy (review P2-5).
+    assert!(back.validation.is_none());
+}
+
+#[test]
+fn test_project_config_validation_policy_roundtrip() {
+    let toml = r#"
+[project]
+name = "game"
+
+[profiles.client]
+name = "client"
+
+[[profiles.client.targets]]
+format = "json"
+output_dir = "build/json"
+
+[validation]
+required_level = "gamerule"
+required_plugins = ["drop_rewards", "quest_consistency"]
+"#;
+    let cfg: ProjectConfig = toml::from_str(toml).expect("parse policy");
+    let policy = cfg.validation.as_ref().expect("policy present");
+    assert_eq!(policy.required_level.as_deref(), Some("gamerule"));
+    assert_eq!(
+        policy.required_plugins,
+        vec!["drop_rewards".to_string(), "quest_consistency".to_string()]
+    );
+    // Both knobs survive a round-trip.
+    let back: ProjectConfig =
+        toml::from_str(&toml::to_string(&cfg).expect("serialize policy")).expect("reparse");
+    let back_policy = back.validation.as_ref().expect("policy round-trips");
+    assert_eq!(back_policy.required_level.as_deref(), Some("gamerule"));
+    assert_eq!(back_policy.required_plugins.len(), 2);
 }
 
 #[test]

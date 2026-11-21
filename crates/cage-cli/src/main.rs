@@ -750,11 +750,64 @@ fn main() {
 }
 
 /// What one validation pass produces for both `check` (renders + exit
-/// code) and `lsp` (publishes): the diagnostics plus the profile-gated
-/// table count the summary line reports.
+/// code) and `lsp` (publishes): the diagnostics, the profile-gated table
+/// count the summary line reports, and the level that actually ran after
+/// the project policy was applied.
 pub(crate) struct ValidationOutcome {
     pub diagnostics: Diagnostics,
     pub visible_tables: usize,
+    pub effective_level: ValidationLevel,
+}
+
+/// Resolve the effective validation level and the L7 registry under the
+/// project policy (review P2-5). The CLI default level is `semantic`, which
+/// never reaches the game-rule pass; `[validation] required_level` raises it
+/// (never silently lowers it), and a non-empty `[validation] required_plugins`
+/// forces the L7 pass to run so the declared plugins are actually executed and
+/// enforced. An unparseable `required_level` is a hard error — never a silent
+/// downgrade to a level that skips the rules the project declared.
+pub(crate) fn effective_validation(
+    root: &Path,
+    config: &cage_core::manifest::ProjectConfig,
+    level: ValidationLevel,
+) -> Result<
+    (
+        ValidationLevel,
+        Option<cage_core::validation::rules::GameRuleRegistry>,
+    ),
+    String,
+> {
+    let mut effective = level;
+    let mut need_gamerule = false;
+    if let Some(policy) = &config.validation {
+        if let Some(required) = &policy.required_level {
+            let required = required.parse::<ValidationLevel>().map_err(|_| {
+                format!(
+                    "invalid [validation] required_level '{required}' \
+                     (expected a level name such as \"gamerule\")"
+                )
+            })?;
+            if required > effective {
+                effective = required;
+            }
+        }
+        // Declaring required plugins is meaningless unless L7 runs.
+        need_gamerule = !policy.required_plugins.is_empty();
+    }
+    if need_gamerule && effective < ValidationLevel::GameRule {
+        effective = ValidationLevel::GameRule;
+    }
+    if effective < ValidationLevel::GameRule {
+        return Ok((effective, None));
+    }
+    let mut registry = cage_core::validation::rules::GameRuleRegistry::with_builtins();
+    registry.discover_workers(root);
+    if let Some(policy) = &config.validation {
+        if !policy.required_plugins.is_empty() {
+            registry.require_plugins(root, &policy.required_plugins);
+        }
+    }
+    Ok((effective, Some(registry)))
 }
 
 /// The check pipeline's single validation entry — load the project, apply
@@ -785,16 +838,22 @@ pub(crate) fn validate_project(
         schema: project.schema.clone(),
         dependency_graph: DependencyGraph::from_schema(&project.schema),
     };
-    let diagnostics = cage_core::validation::validate_with_profile(
+    // Project policy (review P2-5): raise the level when `[validation]`
+    // declares one, and run the policy-built registry (discovered workers +
+    // required plugins) once the effective level reaches the L7 pass.
+    let (effective, registry) = effective_validation(root, &project.config, level)?;
+    let diagnostics = cage_core::validation::validate_with_policy(
         &validated,
         &project.document,
-        level,
+        effective,
         project.config.warnings_as_errors,
         Some(profile),
+        registry.as_ref(),
     );
     Ok(ValidationOutcome {
         diagnostics,
         visible_tables: document.tables.len(),
+        effective_level: effective,
     })
 }
 
@@ -821,9 +880,7 @@ fn run_check(path: &Path, level: &str, profile: &str, env: Option<&str>, no_cach
             "cage check: OK ({} tables, {} warnings, level <= {})",
             outcome.visible_tables,
             outcome.diagnostics.warnings().len(),
-            level
-                .parse::<ValidationLevel>()
-                .map_or(level, |l| l.as_str())
+            outcome.effective_level.as_str()
         );
         0
     }
@@ -873,6 +930,93 @@ mod tests {
         assert_eq!(convention.preset_for("Skill.xlsx"), Preset::MarkerRows);
         assert!(!convention.uses_script());
         assert_eq!(adapter.project_root.as_deref(), Some(Path::new("project")));
+    }
+
+    // ---- review P2-5: `[validation]` policy → effective level + L7 registry ----
+
+    /// Build a policy fixture (review P2-5).
+    fn policy(
+        required_level: Option<&str>,
+        required_plugins: &[&str],
+    ) -> cage_core::ValidationPolicy {
+        cage_core::ValidationPolicy {
+            required_level: required_level.map(str::to_string),
+            required_plugins: required_plugins.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    #[test]
+    fn no_policy_keeps_the_cli_default_level() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig::default();
+        let (effective, registry) =
+            effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
+        assert_eq!(effective, ValidationLevel::Semantic);
+        assert!(registry.is_none());
+    }
+
+    #[test]
+    fn required_level_raises_the_level_but_never_lowers_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig {
+            validation: Some(policy(Some("gamerule"), &[])),
+            ..Default::default()
+        };
+        // The default CLI level (semantic) escalates to the declared level.
+        let (effective, registry) =
+            effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
+        assert_eq!(effective, ValidationLevel::GameRule);
+        assert!(registry.is_some(), "the L7 pass needs a registry");
+        // A higher CLI level is never silently downgraded by the policy.
+        let (effective, _) =
+            effective_validation(tmp.path(), &config, ValidationLevel::GameRule).unwrap();
+        assert_eq!(effective, ValidationLevel::GameRule);
+    }
+
+    #[test]
+    fn an_invalid_required_level_is_a_hard_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig {
+            validation: Some(policy(Some("banana"), &[])),
+            ..Default::default()
+        };
+        let err = effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap_err();
+        assert!(err.contains("required_level"), "{err}");
+        assert!(err.contains("banana"), "{err}");
+    }
+
+    #[test]
+    fn required_plugins_force_the_l7_pass_and_fail_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig {
+            validation: Some(policy(None, &["drop_rewards"])),
+            ..Default::default()
+        };
+        let (effective, registry) =
+            effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
+        assert_eq!(effective, ValidationLevel::GameRule);
+        let registry = registry.expect("L7 registry built");
+        // The absent id is enforced as a synthetic unloadable worker.
+        assert_eq!(registry.worker_ids(), vec!["drop_rewards".to_string()]);
+        // The required-but-absent plugin fails the run (E1602), never a silent pass.
+        let diags = registry.run(&Schema::new(), &Document::new());
+        assert!(
+            diags.iter().any(|d| d.code == cage_core::gamerule::E1602),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn a_semantic_required_level_with_no_required_plugins_stays_semantic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig {
+            validation: Some(policy(Some("semantic"), &[])),
+            ..Default::default()
+        };
+        let (effective, registry) =
+            effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
+        assert_eq!(effective, ValidationLevel::Semantic);
+        assert!(registry.is_none());
     }
 
     /// Manifest paths are trusted only when normalized and relative

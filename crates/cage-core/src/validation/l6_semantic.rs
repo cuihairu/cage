@@ -102,11 +102,18 @@ pub(crate) fn validate_semantic(ctx: &mut ValidationContext) {
 
 /// L7: Game Rule validation - plugin validators (see [`rules`]).
 ///
-/// Runs the built-in registry today; the trait + registry are the stable
-/// extension point for embedder-supplied and (phase 2) dynamic-library
-/// validators — see design §17「插件沙箱方案定稿」.
+/// Runs the context's injected registry when the project policy built one
+/// (review P2-5); otherwise the built-in registry. The trait + registry are
+/// the stable extension point for embedder-supplied and (phase 2)
+/// dynamic-library validators — see design §17「插件沙箱方案定稿」.
 pub(crate) fn validate_game_rule(ctx: &mut ValidationContext) {
-    let registry = rules::GameRuleRegistry::with_builtins();
+    let builtins;
+    let registry = if let Some(registry) = ctx.registry {
+        registry
+    } else {
+        builtins = rules::GameRuleRegistry::with_builtins();
+        &builtins
+    };
     for diagnostic in registry.run(&ctx.schema.schema, ctx.document) {
         ctx.diagnostics.add(diagnostic);
     }

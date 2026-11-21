@@ -333,6 +333,62 @@ fn web_validate_data_prechecks_the_draft_against_the_real_data() {
     assert_eq!(v["diagnostics"][0]["scope"], "schema", "{body}");
 }
 
+/// Review P2-5: the editor precheck honors `[validation] required_level`
+/// exactly as `cage check` does, so the page cannot report a level the CLI
+/// would not run.
+#[test]
+fn web_validate_data_honors_the_project_validation_policy() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    // Declare the escalating policy in the served project config.
+    let toml = fs::read_to_string(tmp.path().join("cage.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cage.toml"),
+        format!("{toml}\n[validation]\nrequired_level = \"gamerule\"\n"),
+    )
+    .unwrap();
+    let server = start_server(tmp.path());
+
+    let (_, schema_doc) = request(server.port, "GET", "/api/schema", None);
+    let draft = json(&schema_doc)["schema"].clone();
+    let body = serde_json::to_string(&draft).expect("doc string");
+    let (status, body) = request(server.port, "POST", "/api/validate/data", Some(&body));
+    assert_eq!(status, 200, "{body}");
+    let v = json(&body);
+    // No `?level=` query: the policy raised the effective level past the
+    // `semantic` default.
+    assert_eq!(v["level"], "gamerule", "{body}");
+}
+
+/// Review P2-5: a required plugin absent from `plugins/` fails the editor
+/// precheck (E1602), the same verdict `cage check` gives.
+#[test]
+fn web_validate_data_fails_on_a_missing_required_plugin() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let toml = fs::read_to_string(tmp.path().join("cage.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cage.toml"),
+        format!("{toml}\n[validation]\nrequired_plugins = [\"drop_rewards\"]\n"),
+    )
+    .unwrap();
+    let server = start_server(tmp.path());
+
+    let (_, schema_doc) = request(server.port, "GET", "/api/schema", None);
+    let draft = json(&schema_doc)["schema"].clone();
+    let body = serde_json::to_string(&draft).expect("doc string");
+    let (status, body) = request(server.port, "POST", "/api/validate/data", Some(&body));
+    assert_eq!(status, 200, "{body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], false, "{body}");
+    assert!(
+        v["diagnostics"].as_array().unwrap().iter().any(
+            |d| d["code"] == "E1602" && d["message"].as_str().unwrap().contains("drop_rewards")
+        ),
+        "diagnostics: {v}"
+    );
+}
+
 #[test]
 fn web_rename_patches_every_reference_site_and_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();

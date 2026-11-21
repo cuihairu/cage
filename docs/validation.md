@@ -409,9 +409,9 @@ Besides the trait plugin path, the rule engine also carries a **declarative** da
 (`RuleConfig` entries registered via `GameRuleRegistry::with_rules`, design §53): the built-in
 rule kinds `skill_item_category` / `reference_cycle` / `drop_reward` / `dungeon_stage` /
 `client_server_field` produce `E1604`–`E1608` and are covered by library tests. They are **not yet
-wired into `cage check`** — the CLI's L7 runs only `GameRuleRegistry::with_builtins()`, which
-registers the `PowerCurveValidator` plugin alone — so today they are reachable only by embedders
-who assemble a registry in-process.
+wired into `cage check`** — the CLI's L7 registry is assembled from the project (built-ins plus
+every `plugins/<id>` worker directory) but does not read declarative `RuleConfig` entries yet, so
+today those are reachable only by embedders who assemble a registry in-process.
 
 This way Cage Core does not need to understand specific game business. For the execution model
 choice (in-process trait → dynamic library → sandbox) and the trust boundary, see
@@ -430,6 +430,30 @@ cage check --level gamerule     # 加上 L7 业务规则插件
 ```
 
 See CLI for details.
+
+### Project Validation Policy (`[validation]`, review P2-5)
+
+The CLI default level is `semantic`, which never reaches the L7 pass. A project that needs its
+plugin rules to actually run declares that in `cage.toml` instead of relying on every operator to
+pass `--level gamerule`:
+
+```toml
+[validation]
+required_level = "gamerule"
+required_plugins = ["drop_rewards", "quest_consistency"]
+```
+
+- `required_level` — the minimum level the CLI must run. It **raises** the default; it is never
+  silently lowered. An unparseable value is a hard error (exit code 2), never a silent downgrade to
+  a level that skips the declared rules.
+- `required_plugins` — plugin ids that must be discovered and run. An id not present under
+  `plugins/` fails validation with `E1602` instead of passing silently; declaring plugins forces
+  the L7 pass to run even without a `required_level`.
+
+The policy is applied by `cage check`, `cage build`, the LSP editor lane and the web editor's
+`/api/validate/data` precheck — the same rule set for local runs, the editor and CI. The page can
+no longer show "rules passed" while the build ran no plugin, nor can a build "pass" while a
+required plugin is missing.
 
 ## Diagnostics: First-Class Citizens
 

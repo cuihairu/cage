@@ -495,5 +495,5 @@ mod tests;
 
 pub use config::{
     BuildProfile, ProjectConfig, ProjectInfo, RegistryConfig, RemoteSourceConfig, SourceConfig,
-    TargetConfig,
+    TargetConfig, ValidationPolicy,
 };

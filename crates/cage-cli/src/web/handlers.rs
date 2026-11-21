@@ -185,6 +185,15 @@ pub(crate) fn api_validate_data(ctx: &Ctx, body: &str, query: &str) -> (u16, ser
             serde_json::json!({"ok": false, "error": format!("unknown level '{level}'")}),
         );
     };
+    // Project policy (review P2-5): the editor precheck honors `[validation]`
+    // exactly as `cage check` does, so the page and CI never diverge — the
+    // editor cannot show "passed" while the build runs (or misses) plugins.
+    let (level, registry) = match crate::effective_validation(&ctx.root, &ctx.config, level) {
+        Ok(pair) => pair,
+        Err(e) => {
+            return (500, serde_json::json!({"ok": false, "error": e}));
+        }
+    };
     let env = get("env");
 
     // Editor-state parse (E1701): without a parseable draft there is
@@ -232,12 +241,13 @@ pub(crate) fn api_validate_data(ctx: &Ctx, body: &str, query: &str) -> (u16, ser
         schema: project.schema.clone(),
         dependency_graph: cage_core::reference::DependencyGraph::from_schema(&project.schema),
     };
-    let data = cage_core::validation::validate_with_profile(
+    let data = cage_core::validation::validate_with_policy(
         &validated,
         &project.document,
         level,
         ctx.config.warnings_as_errors,
         Some(&profile),
+        registry.as_ref(),
     );
     // Editor-state structural lint on the schema the data pass used, so both
     // sides describe one coherent schema.

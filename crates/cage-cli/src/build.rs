@@ -136,12 +136,19 @@ pub(crate) fn build_project(
         schema: project.schema.clone(),
         dependency_graph: DependencyGraph::from_schema(&project.schema),
     };
-    let diagnostics = cage_core::validation::validate_with_profile(
+    // Project policy (review P2-5): `[validation]` raises the effective level
+    // and, once it reaches the L7 pass, runs the policy-built registry
+    // (discovered workers + required-plugin enforcement) so CI cannot pass
+    // without the plugins the project declared.
+    let (effective, registry) =
+        crate::effective_validation(path, &project.config, level).map_err(BuildFailure::Io)?;
+    let diagnostics = cage_core::validation::validate_with_policy(
         &validated,
         &project.document,
-        level,
+        effective,
         project.config.warnings_as_errors,
         Some(profile),
+        registry.as_ref(),
     );
     if !diagnostics.is_empty() {
         println!("{}", diagnostics.render(false));

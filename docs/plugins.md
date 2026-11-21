@@ -228,14 +228,16 @@ In scope for this protocol MVP:
 - Cross-language interop tests: a Rust-built request is decoded by the Python
   SDK over a real subprocess and its response decodes back in Rust.
 
-Out of scope until the next items:
+Delivered since P2-1 (each in `cage_core`, wired into the CLI):
 
 - **P2-2** — the host-side worker: spawn, timeout, crash recovery, and the
   failure-behaviour table (missing plugin, version mismatch, timeout, crash,
-  invalid output) mapped onto Cage diagnostics.
+  invalid output) mapped onto Cage diagnostics (`cage_core::plugin`).
 - **P2-3** — the unified L7 executor that runs built-in Rust validators and
-  worker plugins on the same diagnostic surface.
+  worker plugins on the same diagnostic surface (`GameRuleRegistry`).
 - **P2-4** — `ValidationAttestation`: plugin id/version, config digest,
   dependency lock, environment fingerprint in an auditable record.
-- **P2-5** — CLI default level policy: project strategy decides whether
-  required plugin validation runs by default.
+- **P2-5** — the `[validation]` project policy: `required_level` raises the
+  CLI default so L7 actually runs, and `required_plugins` fails validation
+  with `E1602` when a declared id is missing — applied by `check`, `build`,
+  the LSP lane and the web editor's data precheck.

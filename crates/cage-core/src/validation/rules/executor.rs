@@ -283,3 +283,74 @@ fn a_run_without_workers_has_no_python_in_the_fingerprint() {
     assert_eq!(attestation.document_digest.len(), 64);
     assert_eq!(attestation.schema_digest.len(), 64);
 }
+
+// ---- P2-5: the project policy's required-plugin enforcement ----
+
+#[test]
+fn require_plugins_fails_when_the_required_plugin_is_absent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut registry = GameRuleRegistry::new();
+    // No plugins/ directory: discovery finds nothing, the requirement stands.
+    registry.discover_workers(tmp.path());
+    registry.require_plugins(tmp.path(), &["drop_rewards".to_string()]);
+    assert_eq!(registry.len(), 1);
+
+    let (diags, attestation) = registry.run_attested(&Schema::new(), &monster_doc(1, 1));
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, gamerule::E1602);
+    assert!(diags[0].message.contains("drop_rewards"), "{diags:?}");
+    assert!(diags[0].message.contains("required"), "{diags:?}");
+    // The missing plugin is still attested — the record names what was required.
+    assert_eq!(attestation.plugins.len(), 1);
+    assert_eq!(attestation.plugins[0].id, "drop_rewards");
+    match &attestation.plugins[0].outcome {
+        AttestationOutcome::Failed { class, .. } => assert_eq!(class, "missing"),
+        AttestationOutcome::Ran { .. } => panic!("an absent plugin cannot run"),
+    }
+    assert!(!attestation.passed);
+}
+
+#[test]
+fn require_plugins_does_not_flag_a_present_plugin_as_missing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_plugin(
+        &tmp.path().join("plugins").join("level_cap"),
+        "id = \"level_cap\"\nversion = \"1.0.0\"\nentry = \"plugin.py\"\n",
+        "print('placeholder')\n",
+    );
+    let mut registry = GameRuleRegistry::new();
+    registry.discover_workers(tmp.path());
+    assert_eq!(registry.worker_ids(), vec!["level_cap".to_string()]);
+    registry.require_plugins(tmp.path(), &["level_cap".to_string()]);
+    // A satisfied requirement adds no entry.
+    assert_eq!(registry.len(), 1);
+
+    // The placeholder script is not valid NDJSON (invalid_output) — the point
+    // here is only that the id is recognised as present, never as missing.
+    let diags = registry.run(&Schema::new(), &monster_doc(1, 1));
+    assert!(
+        diags.iter().all(|d| d.code != gamerule::E1602),
+        "a present required plugin must not read as missing: {diags:?}"
+    );
+}
+
+#[test]
+fn require_plugins_does_not_duplicate_a_broken_manifest() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_plugin(
+        &tmp.path().join("plugins").join("broken"),
+        "id = \"broken\"\nversion = \"1\"\nentry = \"plugin.py\"\npython = \"not a version\"\n",
+        "print('placeholder')\n",
+    );
+    let mut registry = GameRuleRegistry::new();
+    registry.discover_workers(tmp.path());
+    registry.require_plugins(tmp.path(), &["broken".to_string()]);
+    // Discovery already registered it (as a load failure): no second entry.
+    assert_eq!(registry.len(), 1);
+    let diags = registry.run(&Schema::new(), &monster_doc(1, 1));
+    let missing = diags.iter().filter(|d| d.code == gamerule::E1602).count();
+    assert_eq!(
+        missing, 1,
+        "one diagnostic for one absent plugin: {diags:?}"
+    );
+}

@@ -76,6 +76,33 @@ pub struct ProjectConfig {
     /// silently meaning "no convention".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceConfig>,
+    /// Project-level validation policy (review P2-5): the CLI default level
+    /// is `semantic`, so a project that needs L7 plugin rules to actually
+    /// run declares that here instead of relying on every operator to pass
+    /// `--level gamerule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ValidationPolicy>,
+}
+
+/// Project-level validation policy (`[validation]` in cage.toml).
+///
+/// The CLI `check`/`build` default to `semantic`, which never reaches the
+/// L7 game-rule pass. Without a policy, a local run can pass while CI ran
+/// no plugin at all — or worse, CI passed because a required plugin was
+/// missing and was silently skipped (review 2026-10-22 §六.1). This section
+/// is what makes the declared level and plugin set part of the project.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ValidationPolicy {
+    /// Minimum level the CLI must run (a level name: `parse`, `semantic`,
+    /// `gamerule`, …). Raises the CLI default; it is never silently lowered.
+    /// `None` keeps the CLI default (`semantic`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_level: Option<String>,
+    /// Plugin ids that must be discovered and run. An id that is not present
+    /// under `plugins/` fails validation (E1602) rather than passing
+    /// silently. A non-empty list also forces the L7 pass to run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_plugins: Vec<String>,
 }
 
 /// The `[source.<format>]` tables in cage.toml (design §51).
@@ -203,6 +230,7 @@ impl Default for ProjectConfig {
             dependencies: IndexMap::new(),
             remote: IndexMap::new(),
             source: None,
+            validation: None,
         }
     }
 }

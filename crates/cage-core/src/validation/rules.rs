@@ -317,6 +317,55 @@ impl GameRuleRegistry {
         self
     }
 
+    /// The ids of every registered worker: the loaded manifest id, or the
+    /// `plugins/<id>` directory name when the manifest failed to load. Used
+    /// by the project policy's required-plugin check.
+    pub fn worker_ids(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                RuleEntry::Worker(worker) => Some(match &worker.manifest {
+                    Ok(manifest) => manifest.id.clone(),
+                    Err(_) => worker
+                        .dir
+                        .file_name()
+                        .map_or_else(|| "plugin".to_string(), |n| n.to_string_lossy().to_string()),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Enforce the project policy's required-plugin list (review P2-5): every
+    /// required id that is not a registered worker is pushed as an
+    /// unloadable worker whose run fails with E1602 — a required plugin that
+    /// is absent fails validation instead of passing silently (review §六.1
+    /// 「CI 构建通过但实际缺失必需插件」). Ids already registered (even with a
+    /// broken manifest) are not duplicated; their own load failure is the
+    /// diagnostic.
+    pub fn require_plugins(&mut self, root: impl AsRef<Path>, required: &[String]) -> &mut Self {
+        let root = root.as_ref();
+        let have = self.worker_ids();
+        for id in required {
+            if have.contains(id) {
+                continue;
+            }
+            let detail = format!(
+                "required validator plugin '{id}' is not present in plugins/ \
+                 (declared in [validation] required_plugins)"
+            );
+            let mut failure = Diagnostics::new();
+            failure.add(Diagnostic::error(gamerule::E1602, detail));
+            self.push_worker(
+                root.to_path_buf(),
+                root.join("plugins").join(id),
+                Err(failure),
+                serde_json::json!({}),
+            );
+        }
+        self
+    }
+
     fn push_worker(
         &mut self,
         root: PathBuf,
@@ -399,6 +448,17 @@ impl GameRuleRegistry {
     /// Whether no entry is registered.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+// The entry list holds trait objects (`Box<dyn GameRuleValidator>`), so a
+// derive is impossible; the registry-level summary is what debugging needs.
+impl std::fmt::Debug for GameRuleRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GameRuleRegistry")
+            .field("entries", &self.entries.len())
+            .field("next_order", &self.next_order)
+            .finish()
     }
 }
 

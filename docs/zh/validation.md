@@ -405,9 +405,9 @@ ERROR E1601 — Game Rule Validation Failed
 `GameRuleRegistry::with_rules` 注册的 `RuleConfig` 条目，design §53）：
 内建规则种类 `skill_item_category` / `reference_cycle` / `drop_reward` /
 `dungeon_stage` / `client_server_field` 产出 `E1604`–`E1608`，由库级测试覆盖。
-它们**尚未接入 `cage check`**——CLI 的 L7 只跑 `GameRuleRegistry::with_builtins()`，
-而该注册表只登记 `PowerCurveValidator` 一个插件——所以今天只有进程内自行组装
-注册表的嵌入方可达。
+它们**尚未接入 `cage check`**——CLI 的 L7 注册表由项目组装（内建规则加上
+全部 `plugins/<id>` worker 目录），但今天并不读取声明式的 `RuleConfig` 条目
+——所以这些规则目前只有进程内自行组装注册表的嵌入方可达。
 
 这样 Cage Core 不需要理解具体游戏业务。执行模型的选型（进程内
 trait → 动态库 → 沙箱）与信任边界见
@@ -426,6 +426,28 @@ cage check --level gamerule     # 加上 L7 业务规则插件
 ```
 
 详见 CLI。
+
+### 项目校验策略（`[validation]`，评审 P2-5）
+
+CLI 默认级别是 `semantic`，永远到不了 L7 关卡。需要真正跑插件规则的项目，应在
+`cage.toml` 里声明，而不是依赖每个操作员都手动加 `--level gamerule`：
+
+```toml
+[validation]
+required_level = "gamerule"
+required_plugins = ["drop_rewards", "quest_consistency"]
+```
+
+- `required_level` — CLI 必须运行的最低级别。它只会**抬高**默认值，绝不静默降级。
+  无法解析的值是硬错误（退出码 2），绝不降级到跳过声明规则的级别。
+- `required_plugins` — 必须被发现并运行的插件 id。不在 `plugins/` 下的 id 以
+  `E1602` 使校验失败，而不是静默通过；声明插件即使没有 `required_level`
+  也会强制 L7 关卡运行。
+
+该策略被 `cage check`、`cage build`、LSP 编辑通道以及 Web 编辑器的
+`/api/validate/data` 预检一致应用——本地、编辑器和 CI 用同一套规则。
+页面再也不能出现「规则校验通过，但构建没跑插件」，构建也不能出现
+「通过，但缺少必需插件」。
 
 ## Diagnostics：一等公民
 

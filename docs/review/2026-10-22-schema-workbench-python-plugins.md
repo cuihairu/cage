@@ -527,19 +527,11 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 
 ```toml
 [validation]
-required_level = \\
-
-
-
-
-
-
-## （续）
-
-
-                ),
-            )
+required_level = "gamerule"
+required_plugins = ["drop_rewards"]
 ```
+
+策略声明后，CLI 的默认级别被抬高到声明的级别（绝不静默降级），必需插件缺失时以 E1602 使校验失败而非静默跳过。
 
 这段代码背后，Cage 应自动完成数据读取、类型映射、错误收集和源位置关联。
 

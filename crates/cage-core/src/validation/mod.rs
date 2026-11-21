@@ -15,6 +15,8 @@ use crate::schema::{
 use crate::value::{Document, Row, SourceLocation, TypedValue, Value};
 use std::collections::HashMap;
 
+use self::rules::GameRuleRegistry;
+
 /// Validation level enumeration
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -110,6 +112,10 @@ pub struct ValidationContext<'a> {
     /// Active profile (E9006 field-visibility checks); None = no profile
     /// semantics: every field is visible
     pub profile: Option<&'a str>,
+    /// The L7 registry to run when `max_level` reaches `GameRule` (review
+    /// P2-5): the policy-built registry with discovered worker plugins.
+    /// `None` falls back to the built-in registry inside `validate_game_rule`.
+    pub registry: Option<&'a GameRuleRegistry>,
     /// Resolved references cache for L5
     pub reference_cache: ReferenceCache,
 }
@@ -166,13 +172,37 @@ pub fn validate(
 }
 
 /// Profile-aware entry point. `profile` gates the E9006 field-visibility
-/// checks (L1) and is carried in the validation context.
+/// checks (L1) and is carried in the validation context. The L7 pass runs the
+/// built-in registry; use [`validate_with_policy`] to inject a project-built
+/// registry (review P2-5).
 pub fn validate_with_profile(
     schema: &ValidatedSchema,
     document: &Document,
     max_level: ValidationLevel,
     warnings_as_errors: bool,
     profile: Option<&str>,
+) -> Diagnostics {
+    validate_with_policy(
+        schema,
+        document,
+        max_level,
+        warnings_as_errors,
+        profile,
+        None,
+    )
+}
+
+/// Policy-aware entry point (review P2-5): [`validate_with_profile`] plus an
+/// injected L7 registry. `registry` is the project-built [`GameRuleRegistry`]
+/// (built-ins + discovered workers + required-plugin enforcement) when the
+/// policy escalates the level to `gamerule`; `None` runs the built-ins only.
+pub fn validate_with_policy(
+    schema: &ValidatedSchema,
+    document: &Document,
+    max_level: ValidationLevel,
+    warnings_as_errors: bool,
+    profile: Option<&str>,
+    registry: Option<&GameRuleRegistry>,
 ) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
     let mut ctx = ValidationContext {
@@ -182,6 +212,7 @@ pub fn validate_with_profile(
         max_level,
         warnings_as_errors,
         profile,
+        registry,
         reference_cache: ReferenceCache::build(document, schema),
     };
 

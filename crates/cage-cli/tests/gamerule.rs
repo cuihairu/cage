@@ -9,12 +9,19 @@ use std::process::Command;
 /// Monster table with level/attack — the two fields the built-in
 /// `power_curve` rule keys on. `rows` is `(id, level, attack)` tuples.
 fn write_project(root: &Path, rows: &[(i32, i32, i32)]) {
+    write_project_with_policy(root, rows, "");
+}
+
+/// Same fixture plus a `[validation]` policy section (review P2-5); an empty
+/// `validation` string writes the plain project.
+fn write_project_with_policy(root: &Path, rows: &[(i32, i32, i32)], validation: &str) {
     fs::create_dir_all(root.join("config")).unwrap();
     fs::create_dir_all(root.join("schemas")).unwrap();
 
     fs::write(
         root.join("cage.toml"),
-        r#"output_dir = "build"
+        format!(
+            r#"output_dir = "build"
 schema_path = "schemas"
 
 [project]
@@ -30,7 +37,9 @@ name = "client"
 [[profiles.client.targets]]
 format = "json"
 output_dir = "build/json"
+{validation}
 "#,
+        ),
     )
     .unwrap();
 
@@ -129,4 +138,116 @@ fn default_level_does_not_run_game_rules() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("E1601"), "stdout:\n{stdout}");
+}
+
+// ---- review P2-5: the project policy raises the CLI default level ----
+
+/// `required_level = "gamerule"` escalates the default (semantic) check: the
+/// violating row fails without any `--level` flag, and a clean run reports the
+/// level that actually ran.
+#[test]
+fn required_level_raises_the_cli_default_to_gamerule() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project_with_policy(
+        root,
+        &[(1, 1, 500)],
+        "\n[validation]\nrequired_level = \"gamerule\"\n",
+    );
+
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the policy must run L7 even at the default level"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E1601"), "stdout:\n{stdout}");
+    assert!(stdout.contains("power curve"), "stdout:\n{stdout}");
+
+    // Clean data passes and the summary names the effective level.
+    write_project_with_policy(
+        root,
+        &[(1, 1, 150)],
+        "\n[validation]\nrequired_level = \"gamerule\"\n",
+    );
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "clean data must pass: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("level <= gamerule"),
+        "the summary must report the effective level: {stdout}"
+    );
+}
+
+/// A required plugin that is not under `plugins/` fails the check (E1602)
+/// instead of passing silently — the review §六.1 scenario.
+#[test]
+fn required_plugins_missing_fails_the_check() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project_with_policy(
+        root,
+        &[(1, 1, 150)],
+        "\n[validation]\nrequired_plugins = [\"drop_rewards\"]\n",
+    );
+
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a missing required plugin must fail validation"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E1602"), "stdout:\n{stdout}");
+    assert!(stdout.contains("drop_rewards"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("required validator plugin"),
+        "stdout:\n{stdout}"
+    );
+}
+
+/// An unparseable `required_level` is a hard usage error — never a silent
+/// downgrade to a level that skips the declared rules.
+#[test]
+fn an_invalid_required_level_is_a_usage_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project_with_policy(
+        root,
+        &[(1, 1, 150)],
+        "\n[validation]\nrequired_level = \"banana\"\n",
+    );
+
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("required_level"), "stderr:\n{stderr}");
+    assert!(stderr.contains("banana"), "stderr:\n{stderr}");
+}
+
+/// The same policy gates `cage build` — CI cannot pass without the plugins
+/// the project declared.
+#[test]
+fn required_level_gates_the_build_too() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project_with_policy(
+        root,
+        &[(1, 1, 500)],
+        "\n[validation]\nrequired_level = \"gamerule\"\n",
+    );
+
+    let out = run_cage(&["build", root.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the policy must gate the build pipeline as well"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E1601"), "stdout:\n{stdout}");
 }

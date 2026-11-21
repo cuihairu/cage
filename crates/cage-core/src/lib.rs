@@ -68,7 +68,7 @@ pub use error::codes::{
 };
 pub use manifest::{
     verify_manifest, ArtifactInfo, BuildManifest, BuildProfile, ManifestGenerator, ProjectConfig,
-    ProjectInfo, RegistryConfig, TargetConfig,
+    ProjectInfo, RegistryConfig, TargetConfig, ValidationPolicy,
 };
 pub use normalize::{
     coerce_to_type, fill_field_defaults, normalize_document, normalize_typed_value, normalize_value,
