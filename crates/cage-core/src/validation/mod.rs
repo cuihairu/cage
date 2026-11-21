@@ -3,7 +3,9 @@
 
 pub mod rules;
 
-mod expr;
+// Crate-visible (not public API): `refactor` rewrites rule expressions
+// through the same lexer/renderer the L6 stage evaluates with.
+pub(crate) mod expr;
 
 use crate::diagnostics::{Diagnostic, DiagnosticBuilder, Diagnostics, Severity};
 use crate::error::codes::{build, parse, reference, schema, semantic, table, type_val, value};

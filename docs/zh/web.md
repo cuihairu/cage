@@ -98,6 +98,20 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       （`files: [{file, action: "write"|"create", diff}]`，另有
       `unchanged`/`bytes`）。编辑器保存前先调它并弹确认对话框，
       作者没见过 diff 之前绝不落盘
+- [x] `POST /api/schema/rename`：安全重命名（P0-4）。body
+      `{"schema": <编辑文档>, "target": {"kind": "table"|"field"|"enum", …},
+      "new_name": "…"}`；改名在 `cage_core::refactor`（Rust Core，非 JS）
+      执行——唯一一处知道名字出现的每个站点：表/字段/枚举的映射键**与**
+      实体自身 `name` 成员、主键项、`unique_constraints[].fields`、`order_by`、
+      各环境覆盖键、跨表 `reference.table`/`reference.field`、类型树里任意
+      深度的 `Enum(name)`、规则表达式的字段操作数（属主表的行规则 +
+      过滤被引用表行的 `reference.predicate`）。应答返回改名后的文档 +
+      改动清单（`changes: [{path, kind, before, after}]`，path 即编辑器
+      `data-path` 锚点；`notes` 点名一处改名碰不了的站点——如解析不了的
+      规则表达式，按原文逐字节保留）。重名目标、幽灵目标、非标识符新名
+      （`1bad`）→ 400 带原因且文档不动；文档无法反序列化 → 200 带 E1701。
+      不写盘：编辑器先看清单、作者确认后草稿才采纳。文档顺序保留（改名
+      保持索引位，canonical YAML 不因改名乱序）
 - [x] `POST /api/validate/data`：草稿 Schema 完整预检（P0-3）。编辑文档
       顶替磁盘 schema，载入项目真实数据，走 `cage check` 完全一致的
       `load → validate_with_profile` 管线——编辑器能看到一份还没保存的
@@ -113,7 +127,9 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       `cage check` 复跑 / 目录拒写 / 空 schema 起始 /
       保存信封过 HTTP（只重写变更片段、未动片段字节不变、过期索引 →
       409）/ 保存预览 / 草稿预检（干净草稿对真实数据；一份同时破坏数据
-      与结构的草稿——一条合并列表、每侧一个 scope 徽标）
+      与结构的草稿——一条合并列表、每侧一个 scope 徽标）/
+      安全重命名（一个字段跨主键、行规则、跨表引用与 predicate
+      改名——返回文档每个站点都已补、磁盘逐字节不动、重名拒绝）
 
 ### W3 已实装：Schema 编辑器前端（docs/public/editor/，编译期嵌入）
 

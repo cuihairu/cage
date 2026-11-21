@@ -1,8 +1,9 @@
 // 表单渲染：表/字段/枚举/树 与模板库（split out of app.js, LAY-027）。
 
+import { apiRename } from "./app.js";
 import { FIELD_KEYS, NUMERIC_KINDS, STRING_KIND } from "./constants.js";
 import { enumNames, state, tableNames } from "./state.js";
-import { boolInput, delPathRoot, el, getPath, intInput, jsonInput, listInput, nextName, numberInput, option, renameKey, setPathRoot, targetsChips, textInput, toast } from "./dom.js";
+import { boolInput, delPathRoot, el, getPath, intInput, jsonInput, listInput, nextName, numberInput, option, setPathRoot, targetsChips, textInput, toast } from "./dom.js";
 import { TypeEditor, typeLabel } from "./types.js";
 
 // ── 表单渲染 ────────────────────────────────────────────────────────
@@ -19,6 +20,18 @@ function entityRow(labelText, ctl, dataPath) {
   if (dataPath) ctl.setAttribute("data-path", dataPath);
   row.append(ctl);
   return row;
+}
+
+/// 改名称统一走服务端的安全重命名（P0-4，`POST /api/schema/rename`）：
+/// 表/字段/枚举的键名与自身 `name` 成员、主键、唯一约束、排序、env_overrides、
+/// 跨表引用（及其谓词）、Enum 类型、规则表达式逐处同步——这些站点由
+/// `cage_core::refactor` 一次性给出，作者先看到清单再采纳。改名只改文档，
+/// 不碰磁盘；被拒时把输入框还原回原名。
+async function renameEntity(target, oldName, input) {
+  const newName = input.value.trim();
+  if (!newName) { input.value = oldName; return; }
+  const done = await apiRename(target, newName);
+  if (!done) input.value = oldName;
 }
 
 // 表编辑器
@@ -38,15 +51,8 @@ function renderTableForm() {
   const def = entitySection("表定义");
   const nameInput = textInput(tPath.concat("name"));
   nameInput.setAttribute("data-path", tPath.concat("name").join("."));
-  nameInput.addEventListener("change", () => {
-    const target = nameInput.value.trim();
-    const next = renameKey(state.doc.tables, state.sel.name, target);
-    if (next) {
-      state.doc.tables = next;
-      state.sel = { kind: "table", name: target };
-      refreshEntity();
-    } else nameInput.value = state.sel.name;
-  });
+  nameInput.addEventListener("change", () =>
+    renameEntity({ kind: "table", name: state.sel.name }, state.sel.name, nameInput));
   def.append(entityRow("名称", nameInput));
   def.append(entityRow("描述", textInput(tPath.concat("description"), { toNull: true })));
   def.append(entityRow("主键", listInput(tPath.concat("primary_key")), tPath.concat("primary_key").join(".")));
@@ -187,15 +193,8 @@ function renderFieldForm(fed, field, fname, tPath) {
   const def = entitySection("字段定义");
   const nameInput = textInput(fPath.concat("name"));
   nameInput.setAttribute("data-path", fPath.concat("name").join("."));
-  nameInput.addEventListener("change", () => {
-    const target = nameInput.value.trim();
-    const next = renameKey(tableFieldsAt(tPath), fname, target);
-    if (next) {
-      setPathRoot(tPath.concat("fields"), next);
-      state.field = target;
-      refreshEntity();
-    } else nameInput.value = fname;
-  });
+  nameInput.addEventListener("change", () =>
+    renameEntity({ kind: "field", table: state.sel.name, field: fname }, fname, nameInput));
   def.append(entityRow("名称", nameInput));
   def.append(entityRow("类型", new TypeEditor({ path: fPath.concat("type"), depth: 0 })));
   const reqWrap = el("div", "checkbox-row");
@@ -390,10 +389,6 @@ function renderFieldForm(fed, field, fname, tPath) {
   fed.append(meta);
 }
 
-function tableFieldsAt(tPath) {
-  return getPath(state.doc, tPath.concat("fields")) || {};
-}
-
 // 枚举编辑器
 function renderEnumForm() {
   const box = document.getElementById("entity");
@@ -408,15 +403,8 @@ function renderEnumForm() {
   const def = entitySection("枚举定义");
   const nameInput = textInput(ePath.concat("name"));
   nameInput.setAttribute("data-path", ePath.concat("name").join("."));
-  nameInput.addEventListener("change", () => {
-    const target = nameInput.value.trim();
-    const next = renameKey(state.doc.enums, state.sel.name, target);
-    if (next) {
-      state.doc.enums = next;
-      state.sel = { kind: "enum", name: target };
-      refreshEntity();
-    } else nameInput.value = state.sel.name;
-  });
+  nameInput.addEventListener("change", () =>
+    renameEntity({ kind: "enum", name: state.sel.name }, state.sel.name, nameInput));
   def.append(entityRow("名称", nameInput));
   def.append(entityRow("描述", textInput(ePath.concat("description"), { toNull: true })));
   box.append(def);
@@ -549,4 +537,4 @@ const FIELD_TEMPLATES = [
   },
 ];
 
-export { FIELD_TEMPLATES, entitySection, entityRow, renderTableForm, renderFieldForm, tableFieldsAt, renderEnumForm, renderTree, selectEntity, refreshEntity };
+export { FIELD_TEMPLATES, entitySection, entityRow, renderTableForm, renderFieldForm, renderEnumForm, renderTree, selectEntity, refreshEntity };

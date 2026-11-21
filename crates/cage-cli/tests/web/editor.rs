@@ -260,6 +260,90 @@ fn web_validate_data_prechecks_the_draft_against_the_real_data() {
 }
 
 #[test]
+fn web_rename_patches_every_reference_site_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let server = start_server(tmp.path());
+    let schema_file = tmp.path().join("schema.yaml");
+    let before = fs::read(&schema_file).unwrap();
+
+    // The editor's draft gains a second table that references `Item.name`,
+    // with a predicate on it, and a row rule that names the field too —
+    // every site the safe rename owns.
+    let (_, schema_doc) = request(server.port, "GET", "/api/schema", None);
+    let mut draft = json(&schema_doc)["schema"].clone();
+    draft["tables"]["Item"]["fields"]["id"]["rules"] = serde_json::json!([
+        {"name": "r", "assert": "name > 1"}
+    ]);
+    draft["tables"]["Monster"] = serde_json::json!({
+        "name": "Monster",
+        "primary_key": ["id"],
+        "fields": {
+            "id": {"name": "id", "type": {"kind": "Int32"}},
+            "loot": {"name": "loot", "type": {"kind": "Int32"},
+                     "reference": {"table": "Item", "field": "name",
+                                   "predicate": {"name": "p", "assert": "name > 0"}}}
+        }
+    });
+    let body = serde_json::to_string(&serde_json::json!({
+        "schema": draft,
+        "target": {"kind": "field", "table": "Item", "field": "name"},
+        "new_name": "label"
+    }))
+    .expect("request body");
+    let (status, body) = request(server.port, "POST", "/api/schema/rename", Some(&body));
+    assert_eq!(status, 200, "{body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "{body}");
+    assert_eq!(v["notes"].as_array().unwrap().len(), 0, "{body}");
+
+    // Every site the report names is actually patched in the returned document.
+    let out = &v["schema"]["tables"]["Item"]["fields"];
+    assert!(out.get("name").is_none(), "{body}");
+    assert_eq!(out["label"]["name"], "label", "{body}");
+    assert_eq!(
+        v["schema"]["tables"]["Item"]["fields"]["id"]["rules"][0]["assert"], "label > 1",
+        "{body}"
+    );
+    let reference = &v["schema"]["tables"]["Monster"]["fields"]["loot"]["reference"];
+    assert_eq!(reference["field"], "label", "{body}");
+    assert_eq!(reference["predicate"]["assert"], "label > 0", "{body}");
+    let kinds: Vec<&str> = v["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["kind"].as_str().unwrap())
+        .collect();
+    for expected in ["field_key", "field_name", "rule_assert", "reference_field"] {
+        assert!(kinds.contains(&expected), "{body}");
+    }
+
+    // The rename is a document edit: nothing reaches the disk.
+    assert_eq!(
+        fs::read(&schema_file).unwrap(),
+        before,
+        "rename writes nothing"
+    );
+
+    // A collision refuses.
+    let collision = serde_json::to_string(&serde_json::json!({
+        "schema": draft,
+        "target": {"kind": "field", "table": "Item", "field": "name"},
+        "new_name": "id"
+    }))
+    .expect("request body");
+    let (status, body) = request(server.port, "POST", "/api/schema/rename", Some(&collision));
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        json(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("already exists"),
+        "{body}"
+    );
+}
+
+#[test]
 fn web_save_writes_canonical_yaml_that_builds_and_reloads() {
     let tmp = tempfile::tempdir().unwrap();
     write_project(tmp.path());

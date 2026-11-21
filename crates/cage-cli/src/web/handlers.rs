@@ -8,6 +8,7 @@ use crate::schema_save::{SaveError, SchemaSourceIndex};
 use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_editor_json};
 use cage_core::error::codes::Severity;
+use cage_core::refactor::{apply as apply_rename, RenameTarget};
 use cage_core::schema::Schema;
 use cage_core::validation::ValidationLevel;
 use cage_core::value::{Document, Value};
@@ -570,6 +571,90 @@ pub(crate) fn api_schema_preview(ctx: &Ctx, body: &str) -> (u16, serde_json::Val
             "bytes": bytes,
         }),
     )
+}
+
+/// POST /api/schema/rename — the safe rename (P0-4).
+///
+/// Body: the edited document plus the rename —
+/// `{"schema": <editor document>, "target": {"kind": "table"|"field"|"enum",
+/// …}, "new_name": "…"}` — and the response carries the renamed document
+/// back with the change report. The server stays stateless (the same shape as
+/// the save and the preview lanes): the editor sends its own draft and swaps
+/// it for what comes back, so an unsaved draft is never lost to the rename.
+///
+/// The rename itself is `cage_core::refactor::apply` — the one place that
+/// knows every site a name appears in (primary keys, unique constraints,
+/// `order_by`, environment overrides, cross-table references and their
+/// predicates, `Enum(name)` types, rule-assert operands). The editor used to
+/// rewrite its own document keys, which left the entity's own `name` stale
+/// and every reference dangling.
+pub(crate) fn api_schema_rename(body: &str) -> (u16, serde_json::Value) {
+    let parsed = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("bad request body: {e}")}),
+            );
+        }
+    };
+    let bad = |field: &str, detail: String| {
+        (
+            400,
+            serde_json::json!({"ok": false, "error": format!("missing or invalid '{field}': {detail}")}),
+        )
+    };
+    let Some(document) = parsed.get("schema") else {
+        return bad("schema", "the editor document".to_string());
+    };
+    let Some(new_name) = parsed.get("new_name").and_then(|v| v.as_str()) else {
+        return bad("new_name", "the replacement name".to_string());
+    };
+    let target: RenameTarget = match serde_json::from_value(
+        parsed
+            .get("target")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            return bad(
+                "target",
+                format!("expected {{\"kind\": \"table\"|\"field\"|\"enum\", …}}: {e}"),
+            );
+        }
+    };
+    let document = match serde_json::to_string(document) {
+        Ok(d) => d,
+        Err(e) => return bad("schema", format!("cannot reserialize: {e}")),
+    };
+    let mut schema = match from_editor_json(&document) {
+        Ok(schema) => schema,
+        Err(diags) => {
+            return (
+                200,
+                serde_json::json!({"ok": false, "diagnostics": diags_json(&diags)}),
+            );
+        }
+    };
+    let before = target.clone();
+    match apply_rename(&mut schema, &target, new_name) {
+        Err(error) => (
+            400,
+            serde_json::json!({"ok": false, "target": before, "error": error}),
+        ),
+        Ok(report) => (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "target": before,
+                "new_name": new_name,
+                "changes": report.changes,
+                "notes": report.notes,
+                "schema": to_editor_json(&schema),
+            }),
+        ),
+    }
 }
 
 pub(crate) fn api_status(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {

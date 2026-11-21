@@ -2,7 +2,7 @@
 
 import { state } from "./state.js";
 import { el, nextName, option, setPathRoot, toast } from "./dom.js";
-import { api, resetAutoValidate } from "./api.js";
+import { api, markDirty, resetAutoValidate } from "./api.js";
 import { refreshEntity, renderTree } from "./forms.js";
 
 // ── 校验与保存 ──────────────────────────────────────────────────────
@@ -129,6 +129,48 @@ async function precheck() {
   if (data.ok) toast(`预检通过：草稿 Schema 与真实数据一致（${lane}）`, "ok");
   else if (data.error) toast(`预检失败：${data.error}`, "err", 9000);
   else toast(`预检未通过：${data.errors || 0} 错误 · ${data.warnings || 0} 警告（${lane}）`, "err", 9000);
+}
+
+/// The safe rename (P0-4): the server runs `cage_core::refactor::apply` on
+/// this draft — the one place that knows every site a name appears in
+/// (primary key, unique constraints, `order_by`, environment overrides,
+/// cross-table references and their predicates, `Enum(name)` types, rule
+/// operands) — and answers with the renamed document plus the change report.
+/// The author sees that report before the draft adopts it; declining
+/// discards it. The server never writes to disk here, so an unsaved draft is
+/// never lost to a rename. `target` is `{kind:"table",name}` /
+/// `{kind:"field",table,field}` / `{kind:"enum",name}`.
+async function apiRename(target, newName) {
+  const name = (newName || "").trim();
+  if (!name) return false;
+  const docText = JSON.stringify({ schema: state.doc, target, new_name: name });
+  const { status, data } = await api("/api/schema/rename", docText);
+  void status;
+  if (!data) return false;
+  if (data.diagnostics) { // E1701: the draft does not even parse into a Schema
+    state.diags = data.diagnostics;
+    renderDiags(false);
+    toast("改名被拒：编辑文档未通过 E1701（见诊断面板）", "err");
+    return false;
+  }
+  if (!data.ok) { // collision / ghost target / non-identifier new name
+    toast(`改名失败：${data.error}`, "err", 7000);
+    return false;
+  }
+  const lines = data.changes.map((c) => `${c.kind}: ${c.path}`).join("\n");
+  const notes = data.notes && data.notes.length ? `\n\n未处理（保持不变）：\n${data.notes.join("\n")}` : "";
+  const ok = window.confirm(`「改名」将同步更新 ${data.changes.length} 处：\n\n${lines}${notes}\n\n应用吗？`);
+  if (!ok) return false;
+  state.doc = data.schema;
+  if (target.kind === "table") state.sel = { kind: "table", name: data.new_name };
+  else if (target.kind === "field") {
+    state.sel = { kind: "table", name: target.table };
+    state.field = data.new_name;
+  } else state.sel = { kind: "enum", name: data.new_name };
+  refreshEntity();
+  markDirty();
+  toast(`已改名：${data.changes.length} 处同步更新`, "ok", 6000);
+  return true;
 }
 
 // ── 诊断面板 ────────────────────────────────────────────────────────
@@ -313,4 +355,4 @@ async function init() {
 
 init();
 
-export { validate, precheck, save, performSave, savePayload, showDiffModal, flash, renderDiags, focusDiag, applyScope, updateScopeNote, init };
+export { validate, precheck, save, apiRename, performSave, savePayload, showDiffModal, flash, renderDiags, focusDiag, applyScope, updateScopeNote, init };

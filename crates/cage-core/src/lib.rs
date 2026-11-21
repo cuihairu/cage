@@ -46,6 +46,7 @@ pub mod error;
 pub mod manifest;
 pub mod migrate;
 pub mod normalize;
+pub mod refactor;
 pub mod reference;
 pub mod registry;
 pub mod remote;
@@ -67,6 +68,10 @@ pub use manifest::{
 };
 pub use normalize::{
     coerce_to_type, fill_field_defaults, normalize_document, normalize_typed_value, normalize_value,
+};
+pub use refactor::{
+    apply, find_references, preview, rename_enum, rename_field, rename_table, RefactorChange,
+    RefactorReport, ReferenceSite, RenameTarget,
 };
 pub use reference::{
     DependencyGraph, IncrementalPlanner, ReferenceResolver, ResolvedReference, UnresolvedReference,

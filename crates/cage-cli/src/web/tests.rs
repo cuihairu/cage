@@ -663,6 +663,126 @@ fn api_validate_data_merges_the_data_and_structural_scopes() {
 }
 
 #[test]
+fn api_schema_rename_patches_every_reference_site_of_the_draft() {
+    // A document with the field-rename surface spread across every site the
+    // refactor face owns: primary key, unique constraint, order_by, an
+    // environment override, a row assert, a cross-table reference and the
+    // reference's predicate.
+    let doc = serde_json::json!({
+        "tables": {
+            "Item": {
+                "name": "Item",
+                "primary_key": ["id", "tier"],
+                "unique_constraints": [{"name": "u1", "fields": ["tier"]}],
+                "order_by": ["tier"],
+                "env_overrides": {"client": {"tier": {"min": 1}}},
+                "fields": {
+                    "id": {"name": "id", "type": {"kind": "Int32"}},
+                    "tier": {"name": "tier", "type": {"kind": "Int32"}},
+                    "min_level": {"name": "min_level", "type": {"kind": "Int32"},
+                                  "rules": [{"name": "r", "assert": "tier >= 1"}]},
+                    "max_level": {"name": "max_level", "type": {"kind": "Int32"}}
+                }
+            },
+            "Monster": {
+                "name": "Monster",
+                "primary_key": ["id"],
+                "fields": {
+                    "id": {"name": "id", "type": {"kind": "Int32"}},
+                    "loot": {"name": "loot", "type": {"kind": "Int32"},
+                             "reference": {"table": "Item", "field": "tier",
+                                           "predicate": {"name": "p", "assert": "tier > 1"}}}
+                }
+            }
+        },
+        "enums": {}
+    });
+    let body = serde_json::json!({
+        "schema": doc,
+        "target": {"kind": "field", "table": "Item", "field": "tier"},
+        "new_name": "rarity",
+    });
+    let (status, out) = api_schema_rename(&body.to_string());
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["ok"], serde_json::json!(true), "{out}");
+
+    let schema = &out["schema"];
+    let item = &schema["tables"]["Item"];
+    assert!(item["fields"].get("tier").is_none(), "old key gone");
+    assert_eq!(
+        item["fields"]["rarity"]["name"],
+        serde_json::json!("rarity")
+    );
+    assert_eq!(item["primary_key"], serde_json::json!(["id", "rarity"]));
+    assert_eq!(
+        item["unique_constraints"][0]["fields"],
+        serde_json::json!(["rarity"])
+    );
+    assert_eq!(item["order_by"], serde_json::json!(["rarity"]));
+    assert!(item["env_overrides"]["client"].get("rarity").is_some());
+    // The sibling rule that names a different field stays put.
+    assert_eq!(
+        item["fields"]["min_level"]["rules"][0]["assert"],
+        serde_json::json!("rarity >= 1")
+    );
+
+    let reference = &schema["tables"]["Monster"]["fields"]["loot"]["reference"];
+    assert_eq!(reference["table"], serde_json::json!("Item"));
+    assert_eq!(reference["field"], serde_json::json!("rarity"));
+    assert_eq!(
+        reference["predicate"]["assert"],
+        serde_json::json!("rarity > 1")
+    );
+
+    // The report names all nine sites; nothing was left to a note.
+    let changes = out["changes"].as_array().expect("changes list");
+    assert_eq!(changes.len(), 9, "{out}");
+    assert_eq!(out["notes"].as_array().unwrap().len(), 0, "{out}");
+
+    // A collision refuses and touches nothing.
+    let collision = serde_json::json!({
+        "schema": doc,
+        "target": {"kind": "field", "table": "Item", "field": "tier"},
+        "new_name": "id",
+    });
+    let (status, refused) = api_schema_rename(&collision.to_string());
+    assert_eq!(status, 400, "{refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("already exists"),
+        "{refused}"
+    );
+    // A ghost target refuses.
+    let ghost = serde_json::json!({
+        "schema": doc,
+        "target": {"kind": "field", "table": "Item", "field": "ghost"},
+        "new_name": "whatever",
+    });
+    let (status, refused) = api_schema_rename(&ghost.to_string());
+    assert_eq!(status, 400, "{refused}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("no such field"),
+        "{refused}"
+    );
+    // An unparseable document is reported with the editor's E1701 shape.
+    let bad = serde_json::json!({
+        "schema": {"tables": "not a map"},
+        "target": {"kind": "field", "table": "Item", "field": "tier"},
+        "new_name": "rarity",
+    });
+    let (status, out) = api_schema_rename(&bad.to_string());
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["ok"], serde_json::json!(false), "{out}");
+    assert_eq!(
+        out["diagnostics"][0]["code"],
+        serde_json::json!("E1701"),
+        "{out}"
+    );
+}
+
+#[test]
 fn api_save_multi_file_still_needs_the_sources_index_envelope() {
     let dir = TempDir::new().expect("tempdir");
     multi_file_project(&dir);

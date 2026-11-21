@@ -80,6 +80,23 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   rewrite with its unified diff (`files: [{file, action: "write"|"create", diff}]`,
   plus `unchanged`/`bytes`). The editor calls it before saving and shows the diff in a
   confirm dialog, so no write happens before the author has seen it
+- [x] `POST /api/schema/rename`: the safe rename (P0-4). Body
+  `{"schema": <editor document>, "target": {"kind": "table"|"field"|"enum", …}, "new_name": "…"}`;
+  the rename runs in `cage_core::refactor` (Rust Core, not JavaScript) — the one place
+  that knows every site a name appears in: the table/field/enum map key **and** the entity's
+  own `name` member, primary-key entries, `unique_constraints[].fields`, `order_by`, the
+  per-environment override keys, every cross-table `reference.table`/`reference.field`,
+  `Enum(name)` field types anywhere in the type tree, and the field operands of rule
+  expressions (row asserts of the owning table, plus the `reference.predicate` that filters
+  rows of the referenced table). The answer is the renamed document plus the change report
+  (`changes: [{path, kind, before, after}]` — each path is the editor's `data-path` anchor,
+  and `notes` names a site the rename could not touch, such as a rule assert it could not
+  parse, which is left byte-for-byte as written). A name that already exists, a ghost target,
+  or a non-identifier new name (`1bad`) is 400 with the reason and the document unchanged;
+  an unparseable document is 200 with the E1701 diagnostics. Nothing is written — the editor
+  shows the change list, the author confirms, and only then does it adopt the returned
+  document into its draft. Document order is preserved (a rename keeps its index, so the
+  canonical YAML does not shuffle)
 - [x] `POST /api/validate/data`: the draft-schema precheck (P0-3). The edited document
   stands in for the on-disk schema and is loaded against the project's real data through
   the exact `load → validate_with_profile` pipeline `cage check` runs — the editor sees the
@@ -97,7 +114,10 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   the save envelope over HTTP (only the changed fragment rewritten, the untouched one
   byte-identical, stale index → 409) / the save preview /
   the draft precheck (a clean draft against the real data, and a draft that breaks both the
-  data and the structure — one merged list, one scope badge per side)
+  data and the structure — one merged list, one scope badge per side) /
+  the safe rename (a field renamed across its primary key, row rule, cross-table reference
+  and predicate — every site patched in the returned document, disk byte-identical, a
+  collision refused)
 
 ### W3 implemented: Schema editor front end (docs/public/editor/, compiled in at build time)
 
