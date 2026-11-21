@@ -93,9 +93,27 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       entry 的 schema 不在编辑器改，须回发布方工程重发布）；未配置 →
       写 `schema.yaml` + note 提醒接线
       cage.toml（服务器绝不改配置文件）
+- [x] `POST /api/schema/preview`：保存预演。同 body、同拒绝与冲突检查，
+      但什么都不写；应答列出保存将改写的每个文件及其 unified diff
+      （`files: [{file, action: "write"|"create", diff}]`，另有
+      `unchanged`/`bytes`）。编辑器保存前先调它并弹确认对话框，
+      作者没见过 diff 之前绝不落盘
+- [x] `POST /api/validate/data`：草稿 Schema 完整预检（P0-3）。编辑文档
+      顶替磁盘 schema，载入项目真实数据，走 `cage check` 完全一致的
+      `load → validate_with_profile` 管线——编辑器能看到一份还没保存的
+      schema 对数据造成的影响。编辑态口径（E1701 解析 + 结构
+      `Schema::validate` lint）与数据口径合并为一个诊断列表；每条带
+      `scope`——`"data"`（真实数据上的全管线）或 `"schema"`（纯结构），
+      两侧都报的发现只出现一次并保留 `data` 侧。旋钮同 `/api/status`
+      （`?profile=`/`?env=`/`?level=`），默认与 `cage check` 一致：首个
+      配置 profile、无环境、级别 `semantic`（上面的快 `POST /api/validate`
+      保持编辑态——数据载入不能挂在编辑器 700ms 自动重校验上）
 - [x] 集成测试（crates/cage-cli/tests/web/）：真实子进程 + 原始
       TCP 请求，覆盖文档伺服 / E1701+E1004 校验 / 保存后重载与
-      `cage check` 复跑 / 目录拒写 / 空 schema 起始
+      `cage check` 复跑 / 目录拒写 / 空 schema 起始 /
+      保存信封过 HTTP（只重写变更片段、未动片段字节不变、过期索引 →
+      409）/ 保存预览 / 草稿预检（干净草稿对真实数据；一份同时破坏数据
+      与结构的草稿——一条合并列表、每侧一个 scope 徽标）
 
 ### W3 已实装：Schema 编辑器前端（docs/public/editor/，编译期嵌入）
 
@@ -116,10 +134,14 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
 - [x] E 码诊断面板：校验按钮 / Ctrl+Enter → `POST /api/validate`；按
       严重级配色计数；点诊断 → 定位字段（`data-path` 精确锚点 +
       滚动高亮）；保存被拒（E1701）诊断同样入面板
-- [x] 保存：Ctrl/Cmd+S 或保存按钮 → `POST /api/schema`（GET 交付过
-      `sources` 索引时随信封交回，启用多文件增量保存）；未保存标记 +
-      beforeunload 拦截；409（过期索引或 `registry:` schema_path）/ 未接线
-      note / 500 均以错误 toast 呈现
+- [x] 完整预检：「完整预检」按钮 / Ctrl+Shift+Enter → `POST /api/validate/data`；
+      合并列表每条打「结构」（`scope: "schema"`）或「数据」（`scope: "data"`）徽标；
+      点数据类诊断 → 选中该表与该列，编辑态诊断仍走 JSON 路径锚点
+- [x] 保存：Ctrl/Cmd+S 或保存按钮 → 先 `POST /api/schema/preview`，
+      确认对话框展示逐文件 unified diff（服务端算出、不写盘），确认后
+      才 `POST /api/schema`（GET 交付过 `sources` 索引时随信封交回，
+      启用多文件增量保存）；未保存标记 + beforeunload 拦截；409（过期
+      索引或 `registry:` schema_path）/ 未接线 note / 500 均以错误 toast 呈现
 - [x] 外科手术式文档编辑：未知/遗留键原样保留，只改可控键，与
       「编辑器 JSON ≡ canonical 形状」的交换契约一致；保存全程不经
       前端渲染 YAML

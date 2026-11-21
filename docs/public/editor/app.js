@@ -111,6 +111,26 @@ async function save() {
   }
 }
 
+/// Ctrl/Cmd+Shift+Enter — the full precheck (P0-3): the server loads this
+/// draft against the project's real data through the very pipeline
+/// `cage check` runs, and answers with one merged diagnostic list. A
+/// scope badge per finding (结构 = pure structural, 数据 = data-side) is the
+/// merge口径: the fast「校验」above stays editor-state only, because data
+/// loading cannot ride the 700ms auto-revalidate.
+async function precheck() {
+  resetAutoValidate();
+  const docText = JSON.stringify(state.doc);
+  const { status, data } = await api("/api/validate/data", docText);
+  void status;
+  state.diags = (data && data.diagnostics) || [];
+  renderDiags(false);
+  if (!data) return;
+  const lane = `${data.level || "?"} · ${data.profile || "?"}`;
+  if (data.ok) toast(`预检通过：草稿 Schema 与真实数据一致（${lane}）`, "ok");
+  else if (data.error) toast(`预检失败：${data.error}`, "err", 9000);
+  else toast(`预检未通过：${data.errors || 0} 错误 · ${data.warnings || 0} 警告（${lane}）`, "err", 9000);
+}
+
 // ── 诊断面板 ────────────────────────────────────────────────────────
 
 function flash(node) {
@@ -125,7 +145,7 @@ function renderDiags(initial) {
   list.replaceChildren();
   if (!state.diags || state.diags.length === 0) {
     count.textContent = initial ? "" : "通过";
-    const li = el("li", "diag", initial ? "尚未校验——点「校验」跑编辑态检查（E1701 / E1004）" : "无诊断");
+    const li = el("li", "diag", initial ? "尚未校验——点「校验」跑编辑态检查，「完整预检」跑数据口径（E1701 / E1004）" : "无诊断");
     li.style.cursor = "default";
     list.append(li);
     return;
@@ -136,7 +156,9 @@ function renderDiags(initial) {
   state.diags.forEach((d) => {
     const li = el("li", `diag severity-${d.severity || "info"}`);
     const line1 = el("div", "diag-line1");
-    line1.append(el("span", "diag-code", d.code || "?"), el("div", "diag-msg", d.message || ""));
+    line1.append(el("span", "diag-code", d.code || "?"));
+    if (d.scope) line1.append(el("span", `diag-scope scope-${d.scope}`, d.scope === "data" ? "数据" : "结构"));
+    line1.append(el("div", "diag-msg", d.message || ""));
     li.append(line1);
     if (d.field && d.field !== ".") li.append(el("div", "diag-field", d.field));
     if (d.hint) li.append(el("div", "diag-hint", d.hint));
@@ -147,15 +169,22 @@ function renderDiags(initial) {
 
 function focusDiag(d) {
   const field = d.field || "";
-  if (!field || field === ".") { flash(document.getElementById("diag-list")); return; }
   const seg = field.split(".");
-  if (seg[0] === "tables" && seg[1] && state.doc.tables[seg[1]]) {
-    state.sel = { kind: "table", name: seg[1] };
-    if (seg[3] === "fields" && seg[4] && state.doc.tables[seg[1]].fields[seg[4]]) state.field = seg[4];
+  // A data-side finding (the precheck's 数据 scope) names its table outright
+  // and its column; an editor-state one carries a JSON path instead.
+  const table = d.table || (seg[0] === "tables" ? seg[1] : null);
+  const column = seg[3] === "fields" && seg[4] ? seg[4] : (d.table ? (d.column || field) : null);
+  const enumName = !table && seg[0] === "enums" ? seg[1] : null;
+  if (table && state.doc.tables[table]) {
+    state.sel = { kind: "table", name: table };
+    if (column && state.doc.tables[table].fields[column]) state.field = column;
     refreshEntity();
-  } else if (seg[0] === "enums" && seg[1] && state.doc.enums[seg[1]]) {
-    state.sel = { kind: "enum", name: seg[1] };
+  } else if (enumName && state.doc.enums[enumName]) {
+    state.sel = { kind: "enum", name: enumName };
     refreshEntity();
+  } else if (!table && !enumName && (!field || field === ".")) {
+    flash(document.getElementById("diag-list"));
+    return;
   } else {
     refreshEntity();
   }
@@ -258,12 +287,16 @@ async function init() {
     refreshEntity();
   });
   document.getElementById("validate-btn").addEventListener("click", validate);
+  document.getElementById("precheck-btn").addEventListener("click", precheck);
   document.getElementById("save-btn").addEventListener("click", save);
 
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") {
       e.preventDefault();
       save();
+    } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && e.shiftKey) {
+      e.preventDefault();
+      precheck();
     } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       validate();
@@ -280,4 +313,4 @@ async function init() {
 
 init();
 
-export { validate, save, performSave, savePayload, showDiffModal, flash, renderDiags, focusDiag, applyScope, updateScopeNote, init };
+export { validate, precheck, save, performSave, savePayload, showDiffModal, flash, renderDiags, focusDiag, applyScope, updateScopeNote, init };

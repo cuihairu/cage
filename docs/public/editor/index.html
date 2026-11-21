@@ -30,6 +30,7 @@
     <span id="dirty-flag" hidden>● 未保存</span>
     <button id="save-btn" type="button" class="primary" title="Ctrl/Cmd+S">保存</button>
     <button id="validate-btn" type="button" title="Ctrl/Cmd+Enter">校验</button>
+    <button id="precheck-btn" type="button" title="草稿 Schema 对真实数据完整预检（与 cage check 同口径）：Ctrl/Cmd+Shift+Enter">完整预检</button>
     <a id="status-link" href="/status/">项目状态 →</a>
   </div>
 </header>
@@ -58,8 +59,9 @@
     </div>
     <ul id="diag-list"></ul>
     <div class="diags-foot">
-      校验 = 编辑态检查：E1701（文档无法解析，JSON 路径定位）+ L1 一致性（E1004 族）。
-      完整 L2-L7 校验请用 <code>cage check</code>。
+      「校验」= 编辑态检查：E1701（无法解析，JSON 路径定位）+ 结构一致性（E1004 族）。
+      「完整预检」= 草稿 Schema 载入真实数据走 <code>cage check</code> 同一口径，
+      数据侧发现标记「数据」，纯结构发现标记「结构」。
     </div>
   </aside>
 </div>

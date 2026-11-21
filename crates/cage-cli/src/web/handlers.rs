@@ -9,7 +9,9 @@ use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_editor_json};
 use cage_core::error::codes::Severity;
 use cage_core::schema::Schema;
+use cage_core::validation::ValidationLevel;
 use cage_core::value::{Document, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// target). With a `profile` the payload also carries the projected
@@ -104,6 +106,181 @@ pub(crate) fn api_validate(body: &str) -> serde_json::Value {
 /// render as `{"items": [...]}` — the API flattens that wrapper.
 pub(crate) fn diags_json(diags: &Diagnostics) -> serde_json::Value {
     serde_json::to_value(diags.iter().collect::<Vec<_>>()).expect("diagnostics serialize")
+}
+
+/// The editor contract with a `scope` member on every item: "schema" for
+/// the editor-state checks (E1701 parse, the structural `Schema::validate`
+/// lint) and "data" for the full pipeline over the project's real data, so
+/// the merged precheck list shows which side a finding came from.
+fn diags_json_scoped(diags: &Diagnostics, scope: &str) -> serde_json::Value {
+    serde_json::to_value(
+        diags
+            .iter()
+            .map(|d| {
+                let mut item = serde_json::to_value(d).expect("diagnostic serializes");
+                item["scope"] = serde_json::Value::String(scope.to_string());
+                item
+            })
+            .collect::<Vec<_>>(),
+    )
+    .expect("diagnostics serialize")
+}
+
+/// POST /api/validate/data — the draft-schema precheck (P0-3): the edited
+/// document stands in for the on-disk schema, is loaded against the
+/// project's real data and run through the same
+/// `load → validate_with_profile` pipeline `cage check` uses, so the editor
+/// sees the data consequences of a schema nobody has saved yet.
+///
+/// The two口径 merge into one diagnostic list: the data pass first (at the
+/// requested level it subsumes the L1 consistency `cage check` reports),
+/// then the editor-state structural lint minus the findings the data pass
+/// already named. Every item carries `scope` — "data" or "schema".
+///
+/// Knobs mirror `/api/status` (`?profile=`/`?env=`/`?level=`) and default
+/// the way `cage check` does: the first configured profile, no environment,
+/// level `semantic`. Remote sources load with the LSP lane's offline-friendly
+/// default (the web editor is a local authoring surface, not a CI gate).
+pub(crate) fn api_validate_data(ctx: &Ctx, body: &str, query: &str) -> (u16, serde_json::Value) {
+    let params = query_params(query);
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+
+    let profile = match get("profile") {
+        Some(p) => p,
+        // No query → the first configured profile (the same default
+        // `/api/status` applies).
+        None => match ctx.config.profiles.keys().next() {
+            Some(first) => first.clone(),
+            None => {
+                return (
+                    500,
+                    serde_json::json!({"ok": false, "error": "no build profile is configured"}),
+                )
+            }
+        },
+    };
+    if !ctx.config.profiles.contains_key(&profile) {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": format!(
+                "unknown profile '{profile}' (available: {})",
+                ctx.config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+            )}),
+        );
+    }
+    // Default matches `cage check --level` (semantic).
+    let level = get("level").unwrap_or_else(|| "semantic".to_string());
+    let Ok(level) = level.parse::<ValidationLevel>() else {
+        return (
+            400,
+            serde_json::json!({"ok": false, "error": format!("unknown level '{level}'")}),
+        );
+    };
+    let env = get("env");
+
+    // Editor-state parse (E1701): without a parseable draft there is
+    // nothing to load against the data — answer with the parse diagnostics.
+    let schema = match from_editor_json(body) {
+        Ok(schema) => schema,
+        Err(diags) => {
+            return (
+                200,
+                serde_json::json!({
+                    "ok": false,
+                    "profile": profile,
+                    "level": level.as_str(),
+                    "scope": "schema",
+                    "diagnostics": diags_json_scoped(&diags, "schema"),
+                }),
+            );
+        }
+    };
+
+    // The real load with the draft substituted for the on-disk schema. A
+    // load failure here (unresolvable source, a convention Excel drifting
+    // from the draft) is the same error `cage check` raises after a save.
+    let load = |schema: &Schema| {
+        crate::load_project_with_schema(&ctx.root, false, true, ctx.config.clone(), schema.clone())
+    };
+    let project = match load(&schema).and_then(|p| crate::project_with_env(p, env.as_deref())) {
+        Ok(project) => project,
+        Err(e) => {
+            return (
+                200,
+                serde_json::json!({
+                    "ok": false,
+                    "profile": profile,
+                    "level": level.as_str(),
+                    "scope": "schema",
+                    "error": e,
+                    "diagnostics": diags_json(&Diagnostics::new()),
+                }),
+            );
+        }
+    };
+
+    let validated = cage_core::ValidatedSchema {
+        schema: project.schema.clone(),
+        dependency_graph: cage_core::reference::DependencyGraph::from_schema(&project.schema),
+    };
+    let data = cage_core::validation::validate_with_profile(
+        &validated,
+        &project.document,
+        level,
+        ctx.config.warnings_as_errors,
+        Some(&profile),
+    );
+    // Editor-state structural lint on the schema the data pass used, so both
+    // sides describe one coherent schema.
+    let structural = project.schema.validate();
+
+    // Merge: data findings first, then the structural lint deduped against
+    // them (key = the serialized finding, `scope` aside).
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for item in diags_json_scoped(&data, "data")
+        .as_array()
+        .expect("diagnostic list")
+    {
+        let key = serde_json::to_string(item).expect("finding serializes");
+        seen.insert(key);
+        items.push(item.clone());
+    }
+    for item in diags_json_scoped(&structural, "schema")
+        .as_array()
+        .expect("diagnostic list")
+    {
+        let key = serde_json::to_string(item).expect("finding serializes");
+        if seen.insert(key) {
+            items.push(item.clone());
+        }
+    }
+
+    let errors = items
+        .iter()
+        .filter(|i| i["severity"] == serde_json::Value::String("error".into()))
+        .count();
+    let warnings = items
+        .iter()
+        .filter(|i| i["severity"] == serde_json::Value::String("warning".into()))
+        .count();
+    (
+        200,
+        serde_json::json!({
+            "ok": errors == 0,
+            "profile": profile,
+            "level": level.as_str(),
+            "env": env,
+            "errors": errors,
+            "warnings": warnings,
+            "diagnostics": items,
+        }),
+    )
 }
 
 /// POST /api/schema — save the given editor document as canonical YAML.
@@ -289,7 +466,7 @@ pub(crate) fn api_schema_preview(ctx: &Ctx, body: &str) -> (u16, serde_json::Val
         Err(refused) => return refused,
     };
 
-    let (mut files, unchanged, bytes) = if target.is_dir() {
+    let (files, unchanged, bytes) = if target.is_dir() {
         let Some(index) = client_index else {
             return (
                 409,

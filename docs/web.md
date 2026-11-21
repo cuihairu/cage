@@ -80,11 +80,24 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   rewrite with its unified diff (`files: [{file, action: "write"|"create", diff}]`,
   plus `unchanged`/`bytes`). The editor calls it before saving and shows the diff in a
   confirm dialog, so no write happens before the author has seen it
+- [x] `POST /api/validate/data`: the draft-schema precheck (P0-3). The edited document
+  stands in for the on-disk schema and is loaded against the project's real data through
+  the exact `load → validate_with_profile` pipeline `cage check` runs — the editor sees the
+  data consequences of a schema nobody has saved yet. The editor-state口径 (E1701 parse +
+  the structural `Schema::validate` lint) and the data口径 merge into one diagnostic list;
+  every item carries `scope` — `"data"` (the full pipeline over the real data) or
+  `"schema"` (pure structural), and a finding both sides report appears once, keeping the
+  `data` scope. Knobs mirror `/api/status` (`?profile=`/`?env=`/`?level=`) and default the
+  way `cage check` does: the first configured profile, no environment, level `semantic`
+  (the fast `POST /api/validate` above stays editor-state only — data loading cannot ride
+  the editor's 700 ms auto-revalidate)
 - [x] Integration tests (crates/cage-cli/tests/web/): real subprocess + raw TCP requests,
   covering document serving / E1701+E1004 validation /
   reload after save and a `cage check` rerun / directory refusal / starting from an empty schema /
   the save envelope over HTTP (only the changed fragment rewritten, the untouched one
-  byte-identical, stale index → 409) / the save preview
+  byte-identical, stale index → 409) / the save preview /
+  the draft precheck (a clean draft against the real data, and a draft that breaks both the
+  data and the structure — one merged list, one scope badge per side)
 
 ### W3 implemented: Schema editor front end (docs/public/editor/, compiled in at build time)
 
@@ -105,6 +118,10 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
 - [x] An E-code diagnostics panel: the Validate button / Ctrl+Enter → `POST /api/validate`;
   counted and color-coded by severity; clicking a diagnostic → locates the field (`data-path` exact anchor + scroll highlight);
   diagnostics from a refused save (E1701) also go into the panel
+- [x] The full precheck: the 完整预检 button / Ctrl+Shift+Enter → `POST /api/validate/data`.
+  The merged list badges each finding 「结构」(structural, `scope: "schema"`) or
+  「数据」(data-side, `scope: "data"`); clicking a data finding selects its table and
+  column, an editor-state one its JSON-path anchor, exactly as before
 - [x] Save: Ctrl/Cmd+S or the Save button → `POST /api/schema/preview` first, a
   confirm dialog showing the per-file unified diff (the exact bytes the save would
   write, computed without writing), then on confirm `POST /api/schema` (the sources

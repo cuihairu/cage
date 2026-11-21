@@ -590,6 +590,79 @@ fn api_schema_preview_single_file_reports_one_diff() {
 }
 
 #[test]
+fn api_validate_data_prechecks_a_clean_draft_against_the_real_data() {
+    let dir = TempDir::new().expect("tempdir");
+    let ctx = demo_ctx(&dir);
+
+    // The document the editor handed out, sent straight back: the on-disk
+    // schema and the on-disk data agree, so the precheck is clean. The
+    // default lane is `cage check`'s (semantic, the first profile).
+    let (_, served) = api_schema(&ctx, "");
+    let doc = served["schema"].clone();
+    let (status, out) = api_validate_data(&ctx, &doc.to_string(), "");
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["ok"], serde_json::json!(true), "{out}");
+    assert_eq!(out["level"], serde_json::json!("semantic"), "{out}");
+    assert_eq!(out["profile"], serde_json::json!("client"), "{out}");
+    assert!(
+        out["diagnostics"].as_array().expect("list").is_empty(),
+        "{out}"
+    );
+}
+
+#[test]
+fn api_validate_data_merges_the_data_and_structural_scopes() {
+    let dir = TempDir::new().expect("tempdir");
+    let ctx = demo_ctx(&dir);
+    let (_, served) = api_schema(&ctx, "");
+    let mut doc = served["schema"].clone();
+
+    // Break the draft two ways: `name` holds "Sword" in the data (a data
+    // side finding), and a new table's primary key dangles (a structural
+    // finding only `Schema::validate` sees).
+    doc["tables"]["Item"]["fields"]["name"]["type"] = serde_json::json!({"kind": "Float64"});
+    doc["tables"]["Ghost"] = serde_json::json!({
+        "name": "Ghost", "description": null,
+        "primary_key": ["ghost"], "fields": {}
+    });
+
+    let (status, out) = api_validate_data(&ctx, &doc.to_string(), "");
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["ok"], serde_json::json!(false), "{out}");
+    let items = out["diagnostics"]
+        .as_array()
+        .expect("one merged list, not two")
+        .clone();
+    let mut data_side = items.iter().filter(|i| i["scope"] == "data");
+    assert!(
+        data_side.any(|i| i["code"].as_str() != Some("E1004")),
+        "the draft's data consequences show up: {items:?}"
+    );
+    // The dangling primary key is reported exactly once — the structural
+    // lint names it, and the merge keeps that scope rather than
+    // duplicating it as a data finding.
+    let pk: Vec<&serde_json::Value> = items
+        .iter()
+        .filter(|i| i["code"] == "E1004" && i["message"].as_str().unwrap().contains("Primary key"))
+        .collect();
+    assert_eq!(pk.len(), 1, "{items:?}");
+    assert_eq!(pk[0]["scope"], serde_json::json!("schema"), "{items:?}");
+
+    // Unparseable draft: the editor-state parse diagnostics, scoped.
+    let (_, bad) = api_validate_data(&ctx, "{not json", "");
+    assert_eq!(bad["ok"], serde_json::json!(false));
+    assert_eq!(bad["diagnostics"][0]["code"], serde_json::json!("E1701"));
+    assert_eq!(bad["diagnostics"][0]["scope"], serde_json::json!("schema"));
+    // A request knob rejects like /api/status does.
+    let (status, unknown) = api_validate_data(&ctx, "", "level=nonsense");
+    assert_eq!(status, 400);
+    assert!(
+        unknown["error"].as_str().unwrap().contains("unknown level"),
+        "{unknown}"
+    );
+}
+
+#[test]
 fn api_save_multi_file_still_needs_the_sources_index_envelope() {
     let dir = TempDir::new().expect("tempdir");
     multi_file_project(&dir);

@@ -84,7 +84,8 @@ pub(crate) use build::{
 
 pub(crate) use loading::{
     collect_files, excel_adapter, filter_by_profile, load_project, load_project_config,
-    load_project_impl, load_schema, load_schema_for_config, project_with_env,
+    load_project_impl, load_project_with_schema, load_schema, load_schema_for_config,
+    project_with_env,
 };
 
 /// Game configuration compilation and validation framework

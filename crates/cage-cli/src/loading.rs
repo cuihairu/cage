@@ -80,18 +80,31 @@ pub(crate) fn load_project_impl(
     fill: bool,
 ) -> Result<Project, String> {
     let config = load_project_config(root)?;
+    let schema = load_schema_for_config(root, &config)?;
+    load_project_with_schema(root, no_cache, fill, config, schema)
+}
 
-    let mut schema = load_schema_for_config(root, &config)?;
-
+/// The same pipeline with a supplied schema instead of the one on disk.
+///
+/// The web editor's draft-schema precheck (P0-3) needs exactly this seam:
+/// the draft the author is editing, loaded against the project's real data,
+/// so the precheck口径 equals what `cage check` runs after a save. Loading
+/// needs the schema twice — the convention-Excel drift cross-check and the
+/// default fill (回流-1) — and both run against the draft here, which is the
+/// difference a save would make.
+pub(crate) fn load_project_with_schema(
+    root: &Path,
+    no_cache: bool,
+    fill: bool,
+    config: ProjectConfig,
+    mut schema: Schema,
+) -> Result<Project, String> {
+    let excel = config.source_excel().map(|c| (c, root));
     let mut document = Document {
         tables: IndexMap::new(),
         source_files: Vec::new(),
         metadata: DocumentMetadata::default(),
     };
-    // `[source.excel]` (design §51): the meta-row convention and the root a
-    // declared script path resolves against. `None` is the baseline — every
-    // Excel file reads exactly as before.
-    let excel = config.source_excel().map(|c| (c, root));
     // Convention metadata each Excel file decoded, per file (X2): the
     // derived/drift chain runs once all sources are in.
     let mut excel_metas: Vec<(PathBuf, IndexMap<String, TableMeta>)> = Vec::new();

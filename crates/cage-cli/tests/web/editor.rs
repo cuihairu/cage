@@ -210,6 +210,56 @@ fn web_validate_reports_e1701_and_e1004() {
 }
 
 #[test]
+fn web_validate_data_prechecks_the_draft_against_the_real_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let server = start_server(tmp.path());
+
+    let (_, schema_doc) = request(server.port, "GET", "/api/schema", None);
+    let mut draft = json(&schema_doc)["schema"].clone();
+
+    // The served document prechecks clean against the served data.
+    let body = serde_json::to_string(&draft).expect("doc string");
+    let (status, body) = request(server.port, "POST", "/api/validate/data", Some(&body));
+    assert_eq!(status, 200, "{body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "{body}");
+    assert_eq!(v["level"], "semantic", "{body}");
+    assert_eq!(v["profile"], "client", "{body}");
+    assert_eq!(v["diagnostics"].as_array().unwrap().len(), 0, "{body}");
+
+    // A draft that breaks the data (name holds "Sword") and the structure
+    // (a table whose primary key dangles): one merged list, one scope per side.
+    draft["tables"]["Item"]["fields"]["name"]["type"] = serde_json::json!({"kind": "Float64"});
+    draft["tables"]["Ghost"] = serde_json::json!({
+        "name": "Ghost", "description": null,
+        "primary_key": ["ghost"], "fields": {}
+    });
+    let body = serde_json::to_string(&draft).expect("doc string");
+    let (_, body) = request(server.port, "POST", "/api/validate/data", Some(&body));
+    let v = json(&body);
+    assert_eq!(v["ok"], false, "{body}");
+    let items = v["diagnostics"].as_array().expect("merged list");
+    assert!(
+        items.iter().any(|i| i["scope"] == "data"),
+        "data-side findings are scoped: {v}"
+    );
+    let pk: Vec<&serde_json::Value> = items
+        .iter()
+        .filter(|i| i["code"] == "E1004" && i["message"].as_str().unwrap().contains("Primary key"))
+        .collect();
+    assert_eq!(pk.len(), 1, "the dangling key reports once: {v}");
+    assert_eq!(pk[0]["scope"], "schema", "{v}");
+
+    // An unparseable draft answers with the editor-state parse, scoped.
+    let (_, body) = request(server.port, "POST", "/api/validate/data", Some("{not json"));
+    let v = json(&body);
+    assert_eq!(v["ok"], false, "{body}");
+    assert_eq!(v["diagnostics"][0]["code"], "E1701", "{body}");
+    assert_eq!(v["diagnostics"][0]["scope"], "schema", "{body}");
+}
+
+#[test]
 fn web_save_writes_canonical_yaml_that_builds_and_reloads() {
     let tmp = tempfile::tempdir().unwrap();
     write_project(tmp.path());

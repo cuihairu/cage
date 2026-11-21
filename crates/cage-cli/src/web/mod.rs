@@ -21,6 +21,10 @@
 //!                         save conflict-checked against the sources index
 //! POST /api/schema/preview → the save dry-run: unified diff of every file the
 //!                         save would rewrite, nothing written (P0-2)
+//! POST /api/validate/data → the draft-schema precheck: the edited document
+//!                         loaded against the project's real data through the
+//!                         `cage check` pipeline, the editor-state and the
+//!                         data findings merged, each scoped (P0-3)
 //! GET  /api/status      → validation panel + per-profile build facts
 //! POST /api/build       → run the build pipeline for one profile
 //! GET  /api/artifacts   → the build manifest as the artifact ledger
@@ -281,6 +285,10 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
                 json_response(status, &value)
             }
             (tiny_http::Method::Post, "/api/validate") => json_response(200, &api_validate(&body)),
+            (tiny_http::Method::Post, "/api/validate/data") => {
+                let (status, value) = api_validate_data(ctx, &body, &query);
+                json_response(status, &value)
+            }
             (tiny_http::Method::Post, "/api/schema") => {
                 let (status, value) = api_save(ctx, &body);
                 json_response(status, &value)
@@ -490,5 +498,5 @@ mod tests;
 pub(crate) use handlers::{
     api_artifact, api_artifacts, api_build, api_diff, api_registry, api_save, api_schema,
     api_schema_preview, api_snapshot, api_snapshots, api_status, api_table, api_tables, api_upload,
-    api_validate, json,
+    api_validate, api_validate_data, json,
 };

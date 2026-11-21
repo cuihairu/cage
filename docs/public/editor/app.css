@@ -268,6 +268,8 @@ input.num-bad, textarea.json-bad { border-color: var(--error); }
 .diag.severity-error .diag-code { color: var(--error); }
 .diag.severity-warning .diag-code { color: var(--warning); }
 .diag .diag-msg { font-size: 12.5px; }
+.diag .diag-scope { font: 10px var(--mono); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-dim); white-space: nowrap; }
+.diag .diag-scope.scope-data { color: var(--info); border-color: var(--info); }
 .diag .diag-field { font: 11px var(--mono); color: var(--text-dim); margin-top: 3px; word-break: break-all; }
 .diag .diag-hint { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
 
