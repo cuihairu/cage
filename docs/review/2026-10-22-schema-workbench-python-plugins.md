@@ -791,11 +791,11 @@ Python 插件不应该自行打开 `Monster.xlsx`，也不应该自行理解 CSV
 
 ## 落地跟踪（勾一项补 commit hash+证据）
 
-- [ ] P0-1 多文件 Schema 按源文件增量保存（来源索引 source_file/revision、版本冲突检查、只改涉及文件、原子替换、保留未改文件注释格式）
-- [ ] P0-2 保存差异预览（修改 diff 展示后再落盘）
-- [ ] P0-3 草稿 Schema 对真实数据的完整预检（编辑态校验与数据校验合并口径）
-- [ ] P0-4 安全重命名：SchemaRefactor（rename_table/rename_field/find_references/preview/apply 放 Rust Core，覆盖主键/跨表引用/规则表达式）
-- [ ] P0-5 修「新增引用字段默认目标表选择异常」等具体 UI 问题（走查取证后修）
+- [x] P0-1 多文件 Schema 按源文件增量保存（来源索引 source_file/revision、版本冲突检查、只改涉及文件、原子替换、保留未改文件注释格式）——13f2d7c
+- [x] P0-2 保存差异预览（修改 diff 展示后再落盘）——764a155
+- [x] P0-3 草稿 Schema 对真实数据的完整预检（编辑态校验与数据校验合并口径）——84673da
+- [x] P0-4 安全重命名：SchemaRefactor（rename_table/rename_field/find_references/preview/apply 放 Rust Core，覆盖主键/跨表引用/规则表达式）——5163bfa（cage_core::refactor + `/api/schema/rename` + 前端接线；单测 9 + web 单测 +1 + 集成 +1 全绿，examples/run.sh 与 web-smoke 均 EXIT=0）
+- [x] P0-5 修「新增引用字段默认目标表选择异常」等具体 UI 问题（走查取证后修）——14ceb7b
 - [ ] P0-6 P0 验收流程实测：打开 Monster→加字段→改名→关联 Item→范围规则→Excel 数据验证→准确报错行→修后 diff 预览→保存回源文件，全程不手编 YAML；CLI 与 Web 校验结果一致
 - [ ] P1-1 三层编辑模式（基础/规则/专家）共享一份 Schema 语义模型（禁三套规则格式）
 - [ ] P1-2 结构化规则 AST + 可视化条件构建器（生成 AST 由 Rust Core 转规范化 Schema）
