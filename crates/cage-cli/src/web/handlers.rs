@@ -8,6 +8,7 @@ use crate::schema_save::{SaveError, SchemaSourceIndex};
 use cage_core::diagnostics::Diagnostics;
 use cage_core::edit::{from_editor_json, to_editor_json};
 use cage_core::error::codes::Severity;
+use cage_core::schema::Schema;
 use cage_core::value::{Document, Value};
 use std::path::{Path, PathBuf};
 
@@ -124,7 +125,14 @@ pub(crate) fn diags_json(diags: &Diagnostics) -> serde_json::Value {
 /// With no `schema_path` configured the document is written to
 /// `schema.yaml` and the response reminds the user to wire it into the
 /// config; the server never rewrites `cage.toml`.
-pub(crate) fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
+/// Shared prologue of the save and the save preview: parse the body into an
+/// in-memory schema plus the echoed sources index, refuse a registry
+/// `schema_path` (published, not edited), and resolve the write target.
+/// On a refused request returns `(status, payload)`.
+fn parse_save_request(
+    ctx: &Ctx,
+    body: &str,
+) -> Result<(Schema, Option<SchemaSourceIndex>, PathBuf), (u16, serde_json::Value)> {
     // The envelope is detected by its `schema` member — a raw editor
     // document can never carry one (the Schema shape has no such key).
     let (document, client_index) = match serde_json::from_str::<serde_json::Value>(body) {
@@ -133,10 +141,10 @@ pub(crate) fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
             match serde_json::to_string(&v["schema"]) {
                 Ok(doc) => (doc, index),
                 Err(e) => {
-                    return (
+                    return Err((
                         400,
                         serde_json::json!({"ok": false, "error": format!("bad save envelope: {e}")}),
-                    );
+                    ));
                 }
             }
         }
@@ -146,16 +154,16 @@ pub(crate) fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
     let schema = match from_editor_json(&document) {
         Ok(schema) => schema,
         Err(diags) => {
-            return (
+            return Err((
                 200,
                 serde_json::json!({"ok": false, "diagnostics": diags_json(&diags)}),
-            );
+            ));
         }
     };
 
     if let Some(rel) = ctx.config.schema_path.as_deref() {
         if rel.starts_with("registry:") {
-            return (
+            return Err((
                 409,
                 serde_json::json!({
                     "ok": false,
@@ -166,13 +174,21 @@ pub(crate) fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
                          publisher project and re-publish"
                     ),
                 }),
-            );
+            ));
         }
     }
 
     let target: PathBuf = match &ctx.config.schema_path {
         Some(rel) => ctx.root.join(rel),
         None => ctx.root.join("schema.yaml"),
+    };
+    Ok((schema, client_index, target))
+}
+
+pub(crate) fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
+    let (schema, client_index, target) = match parse_save_request(ctx, body) {
+        Ok(parsed) => parsed,
+        Err(refused) => return refused,
     };
 
     // ── multi-file schema_path: incremental save over the sources index ──
@@ -260,6 +276,123 @@ pub(crate) fn api_save(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
         );
     }
     (200, payload)
+}
+
+/// POST /api/schema/preview — the save dry-run (P0-2): run the exact
+/// incremental-save planning the real save would run, and answer with the
+/// unified diff of every file that would be rewritten, so the editor can
+/// show the changes before they land on disk. Nothing is written. Body
+/// shape and refusals match `api_save`.
+pub(crate) fn api_schema_preview(ctx: &Ctx, body: &str) -> (u16, serde_json::Value) {
+    let (schema, client_index, target) = match parse_save_request(ctx, body) {
+        Ok(parsed) => parsed,
+        Err(refused) => return refused,
+    };
+
+    let (mut files, unchanged, bytes) = if target.is_dir() {
+        let Some(index) = client_index else {
+            return (
+                409,
+                serde_json::json!({
+                    "ok": false,
+                    "save_target": target.display().to_string(),
+                    "error": format!(
+                        "schema_path '{}' is a directory; saving it needs the sources index \
+                         from GET /api/schema (reload the schema and save through the editor, \
+                         which echoes the index back)",
+                        ctx.config.schema_path.as_deref().unwrap_or("schemas")
+                    ),
+                }),
+            );
+        };
+        match crate::schema_save::plan_incremental(&ctx.root, &target, &schema, &index) {
+            Ok(plan) => {
+                let mut files = Vec::new();
+                for f in &plan.files {
+                    let diff =
+                        crate::schema_save::unified_diff(f.before.as_deref(), &f.after, &f.file);
+                    if !diff.is_empty() {
+                        files.push(serde_json::json!({
+                            "file": f.file,
+                            "action": if f.before.is_none() { "create" } else { "write" },
+                            "diff": diff,
+                        }));
+                    }
+                }
+                (files, plan.untouched, plan.bytes)
+            }
+            Err(SaveError::Conflict(error)) => {
+                return (
+                    409,
+                    serde_json::json!({
+                        "ok": false,
+                        "save_target": target.display().to_string(),
+                        "error": error,
+                    }),
+                );
+            }
+            Err(SaveError::Io(error)) => {
+                return (500, serde_json::json!({"ok": false, "error": error}));
+            }
+        }
+    } else {
+        // Single-file target: the same conflict check as the save, then the
+        // whole-document diff. `unchanged` counts the one file that would be
+        // written; it stays 1 when the rendered text is identical.
+        if let Some(index) = &client_index {
+            let target_rel = rel_of_root(&ctx.root, &target);
+            if let Some(f) = index.files.iter().find(|f| f.file == target_rel) {
+                let current = std::fs::read(&target)
+                    .ok()
+                    .map(|b| crate::schema_save::sha256_hex(&b));
+                if current.as_deref() != Some(f.sha256.as_str()) {
+                    return (
+                        409,
+                        serde_json::json!({
+                            "ok": false,
+                            "save_target": target.display().to_string(),
+                            "error": format!(
+                                "conflict: schema source '{}' changed on disk since it was \
+                                 loaded — reload the schema and re-apply the edit",
+                                target_rel
+                            ),
+                        }),
+                    );
+                }
+            }
+        }
+        let rendered = crate::schema_save::render_schema_file(&target, &schema);
+        let before = std::fs::read_to_string(&target).ok();
+        let diff = crate::schema_save::unified_diff(
+            before.as_deref(),
+            &rendered,
+            rel_of_root(&ctx.root, &target).as_str(),
+        );
+        if diff.is_empty() {
+            (Vec::new(), 1usize, 0usize)
+        } else {
+            (
+                vec![serde_json::json!({
+                    "file": rel_of_root(&ctx.root, &target),
+                    "action": if before.is_none() { "create" } else { "write" },
+                    "diff": diff,
+                })],
+                0usize,
+                rendered.len(),
+            )
+        }
+    };
+
+    (
+        200,
+        serde_json::json!({
+            "ok": true,
+            "save_target": target.display().to_string(),
+            "files": files,
+            "unchanged": unchanged,
+            "bytes": bytes,
+        }),
+    )
 }
 
 pub(crate) fn api_status(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {

@@ -21,7 +21,7 @@ Editor JSON preserves insertion order (tables/fields in document order), omits t
 
 ### Save = canonical YAML write-back (whole-file / per-source incremental)
 
-The editor works on the **merged canonical Schema** (the CLI merges the multiple files under schemas/ into one `Schema` at load time, and the editor builds on that shape). Write-back is canonical YAML (`to_canonical_yaml`): the same Schema → the same bytes (including a single trailing newline), and the round trip through `from_canonical_yaml` is idempotent. A single-file `schema_path` is overwritten whole (atomic replace: sibling temp file + rename). A multi-file (directory) `schema_path` saves incrementally: `GET /api/schema` carries a `sources` index (per-file sha256 revision + table/enum ownership), the save envelope `{"schema": …, "sources": …}` echoes it back — the index is conflict-checked (any file whose on-disk sha256 no longer matches its load-time revision → 409 refused, nothing written), only the files owning a changed table/enum/metadata are rewritten (each atomically), and the response returns the post-save index for the client's next save. Determinism contract: artifacts produced by `cage build` from editor-saved YAML are byte-identical to those built from the same hand-written Schema. The generator only ever sees `Schema` values, so any value-preserving edit round-trip is sufficient.
+The editor works on the **merged canonical Schema** (the CLI merges the multiple files under schemas/ into one `Schema` at load time, and the editor builds on that shape). Write-back is canonical YAML (`to_canonical_yaml`); a `.json` schema file is written back as pretty-printed JSON (its format is honored, never clobbered into YAML): the same Schema → the same bytes (including a single trailing newline), and the round trip through `from_canonical_yaml` is idempotent. A single-file `schema_path` is overwritten whole (atomic replace: sibling temp file + rename). A multi-file (directory) `schema_path` saves incrementally: `GET /api/schema` carries a `sources` index (per-file sha256 revision + table/enum ownership), the save envelope `{"schema": …, "sources": …}` echoes it back — the index is conflict-checked (any file whose on-disk sha256 no longer matches its load-time revision → 409 refused, nothing written), only the files owning a changed table/enum/metadata are rewritten (each atomically), and the response returns the post-save index for the client's next save. `POST /api/schema/preview` is the same planning run without writing: it answers with the unified diff of exactly the files the save would rewrite, so the editor shows the changes before they land. Determinism contract: artifacts produced by `cage build` from editor-saved YAML are byte-identical to those built from the same hand-written Schema. The generator only ever sees `Schema` values, so any value-preserving edit round-trip is sufficient.
 
 ### The E1701 editing-state error family
 
@@ -62,7 +62,8 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
 - [x] `POST /api/validate`: editing-state validation. E1701 (document cannot be deserialized,
   located by JSON path) → L1 consistency (the E1004 family);
   diagnostics are emitted as a bare array (the `Diagnostics` serde `{"items": [...]}` envelope is flattened at the API layer)
-- [x] `POST /api/schema`: canonical YAML write-back. A single-file `schema_path`
+- [x] `POST /api/schema`: canonical YAML/JSON write-back (`.json` files stay JSON).
+  A single-file `schema_path`
   is overwritten in place (atomic temp-file + rename). A directory (multi-file
   schema) is saved incrementally against the `sources` index `GET /api/schema`
   delivers: the envelope `{"schema": …, "sources": …}` echoes the index back,
@@ -74,9 +75,16 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
   is likewise 409 (the schema of a published entry is not edited here—the publishing
   project must republish); nothing configured → writes `schema.yaml` plus a note
   reminding to wire up cage.toml (the server never modifies configuration files)
+- [x] `POST /api/schema/preview`: the save dry-run. Same body, refusals and conflict
+  check as the save, but nothing is written; the answer lists each file the save would
+  rewrite with its unified diff (`files: [{file, action: "write"|"create", diff}]`,
+  plus `unchanged`/`bytes`). The editor calls it before saving and shows the diff in a
+  confirm dialog, so no write happens before the author has seen it
 - [x] Integration tests (crates/cage-cli/tests/web/): real subprocess + raw TCP requests,
   covering document serving / E1701+E1004 validation /
-  reload after save and a `cage check` rerun / directory refusal / starting from an empty schema
+  reload after save and a `cage check` rerun / directory refusal / starting from an empty schema /
+  the save envelope over HTTP (only the changed fragment rewritten, the untouched one
+  byte-identical, stale index → 409) / the save preview
 
 ### W3 implemented: Schema editor front end (docs/public/editor/, compiled in at build time)
 
@@ -97,8 +105,10 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
 - [x] An E-code diagnostics panel: the Validate button / Ctrl+Enter → `POST /api/validate`;
   counted and color-coded by severity; clicking a diagnostic → locates the field (`data-path` exact anchor + scroll highlight);
   diagnostics from a refused save (E1701) also go into the panel
-- [x] Save: Ctrl/Cmd+S or the Save button → `POST /api/schema` (the sources index
-  rides along when `GET /api/schema` delivered one, enabling the multi-file
+- [x] Save: Ctrl/Cmd+S or the Save button → `POST /api/schema/preview` first, a
+  confirm dialog showing the per-file unified diff (the exact bytes the save would
+  write, computed without writing), then on confirm `POST /api/schema` (the sources
+  index rides along when `GET /api/schema` delivered one, enabling the multi-file
   incremental save); an unsaved marker + beforeunload interception; 409 (a stale
   index or a `registry:` schema_path)
   / an unwired-up note / 500 all surface as error toasts

@@ -497,6 +497,98 @@ fn api_save_multi_file_rejects_a_stale_sources_index_without_writing() {
     }
 }
 
+/// POST /api/schema/preview is the save dry-run: it reports the unified
+/// diff of exactly the file the save would rewrite, and writes nothing.
+#[test]
+fn api_schema_preview_reports_diffs_without_writing() {
+    let dir = TempDir::new().expect("tempdir");
+    let before = multi_file_project(&dir);
+    let ctx = ctx_in(&dir, Some("schemas"));
+
+    let (envelope, _, _) = edited_envelope(&dir, |doc| {
+        doc["tables"]["Item"]["fields"]["id"]["min"] = serde_json::json!(1);
+    });
+
+    let (status, payload) = api_schema_preview(&ctx, &envelope);
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(payload["ok"], serde_json::json!(true));
+    assert_eq!(payload["unchanged"], serde_json::json!(2));
+    let files = payload["files"].as_array().expect("files");
+    assert_eq!(files.len(), 1, "{payload}");
+    assert_eq!(files[0]["file"], serde_json::json!("schemas/a.yaml"));
+    assert_eq!(files[0]["action"], serde_json::json!("write"));
+    let diff = files[0]["diff"].as_str().expect("diff text");
+    assert!(diff.contains("--- a/schemas/a.yaml"), "{diff}");
+    assert!(diff.contains("+++ b/schemas/a.yaml"), "{diff}");
+    assert!(
+        diff.contains("min"),
+        "the change shows up in the diff: {diff}"
+    );
+
+    // Nothing was written by the preview.
+    for f in ["schemas/a.yaml", "schemas/b.yaml", "schemas/c.yaml"] {
+        let now = fs::read(dir.path().join(f)).expect("file");
+        assert_eq!(now, before[f], "{f} must be untouched by a preview");
+    }
+}
+
+/// A stale index is refused by the preview exactly like the save (409).
+#[test]
+fn api_schema_preview_rejects_a_stale_index_like_save() {
+    let dir = TempDir::new().expect("tempdir");
+    multi_file_project(&dir);
+    let ctx = ctx_in(&dir, Some("schemas"));
+    let (envelope, _, _) = edited_envelope(&dir, |doc| {
+        doc["tables"]["Item"]["fields"]["id"]["min"] = serde_json::json!(1);
+    });
+    fs::write(
+            dir.path().join("schemas/c.yaml"),
+            "enums: {}\ntables:\n  Shop:\n    name: Shop\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: UInt32 }\n        required: true\n      price:\n        name: price\n        type: { kind: Int32 }\n",
+        )
+        .expect("concurrent edit");
+    let (status, payload) = api_schema_preview(&ctx, &envelope);
+    assert_eq!(status, 409);
+    assert!(payload["error"].as_str().unwrap().contains("conflict"));
+}
+
+/// Single-file projects preview the whole-document diff (create vs write).
+#[test]
+fn api_schema_preview_single_file_reports_one_diff() {
+    let dir = TempDir::new().expect("tempdir");
+    fs::write(
+        dir.path().join("schema.yaml"),
+        "tables:\n  Item:\n    name: Item\n    primary_key: [id]\n    fields:\n      id:\n        name: id\n        type: { kind: Int32 }\n        required: true\nenums: {}\n",
+    )
+    .expect("schema");
+    let ctx = ctx_in(&dir, Some("schema.yaml"));
+    let (merged, index) =
+        crate::schema_save::load_schema_indexed(dir.path(), &dir.path().join("schema.yaml"))
+            .expect("indexed load");
+    let mut doc = to_editor_json(&merged);
+    doc["tables"]["Item"]["fields"]["rank"] = serde_json::json!({
+        "name": "rank", "type": {"kind": "UInt8"}
+    });
+    let envelope = serde_json::json!({
+        "schema": doc,
+        "sources": index.to_json(),
+    });
+    let envelope = serde_json::to_string(&envelope).unwrap();
+
+    let (status, payload) = api_schema_preview(&ctx, &envelope);
+    assert_eq!(status, 200, "{payload}");
+    let files = payload["files"].as_array().expect("files");
+    assert_eq!(files.len(), 1, "{payload}");
+    assert_eq!(files[0]["file"], serde_json::json!("schema.yaml"));
+    assert_eq!(files[0]["action"], serde_json::json!("write"));
+    assert!(
+        files[0]["diff"].as_str().unwrap().contains("rank"),
+        "{payload}"
+    );
+    // The file on disk is unchanged by the preview.
+    let text = fs::read_to_string(dir.path().join("schema.yaml")).unwrap();
+    assert!(!text.contains("rank"), "preview must not write");
+}
+
 #[test]
 fn api_save_multi_file_still_needs_the_sources_index_envelope() {
     let dir = TempDir::new().expect("tempdir");

@@ -21,14 +21,17 @@ async function validate(silent) {
   else toast(`校验未通过：${errs} 错误 · ${warns} 警告`, "err");
 }
 
-async function save() {
-  // 多文件 schema（schema_path 指目录）走保存信封：把 GET 返回的
-  // sources 索引（每份源文件的 sha256 revision + 表/枚举归属）一并交回，
-  // 服务端做冲突检查后只改写涉及变更的源文件；单文件 schema 沿用
-  // 原样提交整份编辑文档。保存成功后采纳服务端回传的新索引。
-  const payload = state.meta && state.meta.sources
+/// Build the save payload (envelope for multi-file, raw document for
+/// single-file).
+function savePayload() {
+  return state.meta && state.meta.sources
     ? { schema: state.doc, sources: state.meta.sources }
     : state.doc;
+}
+
+/// POST /api/schema — the real write. Adopts the returned index and clears
+/// the dirty flag on success.
+async function performSave(payload) {
   const docText = JSON.stringify(payload);
   const { status, data } = await api("/api/schema", docText);
   if (data && data.ok) {
@@ -36,7 +39,6 @@ async function save() {
     state.dirty = false;
     document.getElementById("dirty-flag").hidden = true;
     toast(`已保存 → ${data.save_target}（${data.bytes} 字节）`, "ok", 6000);
-    // 校验通过才允许静默；此处不自动校验（作者主导）
     renderDiags(false);
     if (data.note) toast(`已保存，注意：${data.note}`, "ok", 9000);
   } else if (data && data.diagnostics) {
@@ -46,6 +48,66 @@ async function save() {
   } else {
     const msg = (data && (data.error || `HTTP ${status}`)) || "保存失败";
     toast(`保存失败：${msg}`, "err", 7000);
+  }
+}
+
+/// One diff file as a colored <pre> block (per-line span by prefix).
+function diffHtml(diff) {
+  const pre = el("pre", "diff-text");
+  diff.split("\n").forEach((ln) => {
+    const cls =
+      ln.startsWith("+") && !ln.startsWith("+++") ? "diff-add"
+        : ln.startsWith("-") && !ln.startsWith("---") ? "diff-del"
+          : ln.startsWith("@@") ? "diff-hunk"
+            : ln.startsWith("---") || ln.startsWith("+++") ? "diff-meta"
+              : "";
+    pre.append(el("span", cls, ln), document.createTextNode("\n"));
+  });
+  return pre;
+}
+
+/// Show the save-diff modal; confirm runs the real save, cancel/close just
+/// dismisses. Listeners are reassigned per open, so no stacking.
+function showDiffModal(payload, preview) {
+  const modal = document.getElementById("diff-modal");
+  document.getElementById("diff-meta").textContent =
+    `将改写 ${preview.files.length} 个文件 · ${preview.bytes} 字节 · 未改动 ${preview.unchanged} 个`;
+  const filesBox = document.getElementById("diff-files");
+  filesBox.replaceChildren();
+  (preview.files || []).forEach((f) => {
+    const block = el("div", "diff-file");
+    const head = el("div", "diff-file-head");
+    head.append(
+      el("span", "diff-file-name", f.file),
+      el("span", "diff-file-action", f.action === "create" ? "新建" : "改写")
+    );
+    block.append(head, diffHtml(f.diff));
+    filesBox.append(block);
+  });
+  modal.hidden = false;
+  const close = () => { modal.hidden = true; };
+  document.getElementById("diff-confirm").onclick = () => { close(); performSave(payload); };
+  document.getElementById("diff-cancel").onclick = close;
+  document.getElementById("diff-close").onclick = close;
+}
+
+/// Ctrl/Cmd+S — first preview the write (the exact diff the save would
+/// make, computed server-side without writing), then on confirm perform it.
+/// An empty preview saves directly (nothing to review).
+async function save() {
+  const payload = savePayload();
+  const docText = JSON.stringify(payload);
+  const { status, data } = await api("/api/schema/preview", docText);
+  if (data && data.ok) {
+    if (data.files && data.files.length) showDiffModal(payload, data);
+    else performSave(payload);
+  } else if (data && data.diagnostics) {
+    state.diags = data.diagnostics;
+    renderDiags(false);
+    toast("保存被拒：编辑文档未通过 E1701（见诊断面板）", "err");
+  } else {
+    const msg = (data && (data.error || `HTTP ${status}`)) || "预览失败";
+    toast(`保存预览失败：${msg}`, "err", 7000);
   }
 }
 
@@ -218,4 +280,4 @@ async function init() {
 
 init();
 
-export { validate, save, flash, renderDiags, focusDiag, applyScope, updateScopeNote, init };
+export { validate, save, performSave, savePayload, showDiffModal, flash, renderDiags, focusDiag, applyScope, updateScopeNote, init };

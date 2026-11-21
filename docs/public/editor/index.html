@@ -63,6 +63,21 @@
     </div>
   </aside>
 </div>
+<div id="diff-modal" hidden>
+  <div id="diff-backdrop"></div>
+  <div id="diff-panel">
+    <div id="diff-head">
+      <h3>保存差异预览</h3>
+      <button id="diff-close" type="button" aria-label="关闭" title="关闭">×</button>
+    </div>
+    <div id="diff-meta"></div>
+    <div id="diff-files"></div>
+    <div id="diff-actions">
+      <button id="diff-cancel" type="button">取消</button>
+      <button id="diff-confirm" type="button" class="primary">确认保存</button>
+    </div>
+  </div>
+</div>
 <div id="toast" hidden></div>
 <script type="module" src="./app.js"></script>
 </body>

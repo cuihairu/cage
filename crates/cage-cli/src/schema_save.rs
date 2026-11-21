@@ -212,18 +212,46 @@ fn serialized<T: serde::Serialize>(v: &T) -> serde_json::Value {
     serde_json::to_value(v).expect("schema members serialize")
 }
 
-/// Save the edited merged schema back to a directory `schema_path`,
-/// rewriting only the files that own a changed entry.
-///
-/// `client_index` is the index the editor received at load time; it is
-/// required (the caller refuses directory saves without one) and is
-/// conflict-checked against the files on disk before anything is written.
-pub(crate) fn save_schema_incremental(
+/// One file a save would rewrite, with its before/after text so a preview
+/// can show the exact diff.
+#[derive(Debug)]
+pub(crate) struct PlanFile {
+    /// Project-relative path with `/` separators.
+    pub(crate) file: String,
+    /// Current disk text, `None` when the file does not exist yet (a new
+    /// fragment the save would create).
+    pub(crate) before: Option<String>,
+    /// Text the save would write.
+    pub(crate) after: String,
+}
+
+/// The outcome of planning an incremental save: which files would be
+/// rewritten (with before/after text), the counts, and the index the
+/// client would adopt afterwards. Producing a plan is pure — it reads the
+/// disk but writes nothing — so both the save and its preview share it.
+#[derive(Debug)]
+pub(crate) struct SavePlan {
+    /// Involved files (sorted), each with before/after text.
+    pub(crate) files: Vec<PlanFile>,
+    /// Files left byte-identical on disk.
+    pub(crate) untouched: usize,
+    /// Total bytes the save would write.
+    pub(crate) bytes: usize,
+    /// The index *after* the save (revisions of the new bytes) — the client
+    /// adopts it so its next save does not conflict with itself.
+    pub(crate) sources: SchemaSourceIndex,
+}
+
+/// Compute the incremental save plan for a directory `schema_path`:
+/// conflict-check the client's revisions, find the changed entries, route
+/// them to their owning files, and compose each involved file's before and
+/// after text. Writes nothing.
+pub(crate) fn plan_incremental(
     root: &Path,
     schema_path: &Path,
     edited: &Schema,
     client_index: &SchemaSourceIndex,
-) -> Result<SaveOutcome, SaveError> {
+) -> Result<SavePlan, SaveError> {
     let (current, disk_index) = load_schema_indexed(root, schema_path).map_err(SaveError::Io)?;
 
     // ── conflict check: the loaded revisions must still be current ──
@@ -346,8 +374,8 @@ pub(crate) fn save_schema_incremental(
         }
     }
 
-    // ── compose and atomically replace each involved file ──
-    let mut written = Vec::new();
+    // ── compose each involved file's before/after text (no write) ──
+    let mut files: Vec<PlanFile> = Vec::new();
     let mut bytes = 0usize;
     for file in involved {
         let mut fragment = Schema::new();
@@ -365,30 +393,57 @@ pub(crate) fn save_schema_incremental(
             fragment.metadata.clone_from(&edited.metadata);
         }
         let path = resolve_index_path(root, &file);
-        let rendered = render_schema_file(&path, &fragment);
-        bytes += rendered.len();
-        atomic_write(&path, rendered.as_bytes()).map_err(SaveError::Io)?;
-        written.push(file);
+        let after = render_schema_file(&path, &fragment);
+        bytes += after.len();
+        let before = std::fs::read_to_string(&path).ok();
+        files.push(PlanFile {
+            file,
+            before,
+            after,
+        });
     }
-    written.sort();
+    files.sort_by(|a, b| a.file.cmp(&b.file));
 
-    // Revisions of the bytes just written — read back from disk, so the
-    // client's next save does not conflict with this one.
+    // Revisions of the bytes to be written (hash the composed text, not the
+    // disk — nothing was written), so the client's next save does not
+    // conflict with this one.
     let mut sources = ownership;
-    for file in &written {
-        let path = resolve_index_path(root, file);
-        let content = std::fs::read(&path)
-            .map_err(|e| SaveError::Io(format!("cannot read {}: {e}", path.display())))?;
-        if let Some(f) = sources.files.iter_mut().find(|f| f.file == *file) {
-            f.sha256 = sha256_hex(&content);
+    for f in &files {
+        if let Some(meta) = sources.files.iter_mut().find(|m| m.file == f.file) {
+            meta.sha256 = sha256_hex(f.after.as_bytes());
         }
     }
-    let untouched = sources.files.len() - written.len();
-    Ok(SaveOutcome {
-        written,
+    let untouched = sources.files.len() - files.len();
+    Ok(SavePlan {
+        files,
         untouched,
         bytes,
         sources,
+    })
+}
+
+/// Save the edited merged schema back to a directory `schema_path`,
+/// rewriting only the files that own a changed entry.
+///
+/// `client_index` is the index the editor received at load time; it is
+/// required (the caller refuses directory saves without one) and is
+/// conflict-checked against the files on disk before anything is written.
+pub(crate) fn save_schema_incremental(
+    root: &Path,
+    schema_path: &Path,
+    edited: &Schema,
+    client_index: &SchemaSourceIndex,
+) -> Result<SaveOutcome, SaveError> {
+    let plan = plan_incremental(root, schema_path, edited, client_index)?;
+    for file in &plan.files {
+        let path = resolve_index_path(root, &file.file);
+        atomic_write(&path, file.after.as_bytes()).map_err(SaveError::Io)?;
+    }
+    Ok(SaveOutcome {
+        written: plan.files.iter().map(|f| f.file.clone()).collect(),
+        untouched: plan.untouched,
+        bytes: plan.bytes,
+        sources: plan.sources,
     })
 }
 
@@ -406,6 +461,24 @@ pub(crate) fn render_schema_file(path: &Path, schema: &Schema) -> String {
         }
         _ => to_canonical_yaml(schema),
     }
+}
+
+/// Line-based unified diff (3 lines of context) of one file's before/after
+/// text, git-style header. Empty when there is no change. A `before` of
+/// `None` means the file would be created (header `a//dev/null`).
+pub(crate) fn unified_diff(before: Option<&str>, after: &str, file: &str) -> String {
+    let before_text = before.unwrap_or("");
+    if before_text == after {
+        return String::new();
+    }
+    let diff = similar::TextDiff::from_lines(before_text, after);
+    let left = before
+        .map(|_| format!("a/{file}"))
+        .unwrap_or_else(|| "/dev/null".to_string());
+    diff.unified_diff()
+        .context_radius(3)
+        .header(&left, &format!("b/{file}"))
+        .to_string()
 }
 
 /// Write `bytes` to `path` atomically: sibling temp file + rename, so a

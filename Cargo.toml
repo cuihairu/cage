@@ -45,6 +45,8 @@ serde_yaml = "0.9"
 serde_path_to_error = "0.1"
 indexmap = { version = "2.0", features = ["serde"] }
 regex = "1.10"
+# Line-based unified diff for the schema save preview (P0-2)
+similar = "2"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
