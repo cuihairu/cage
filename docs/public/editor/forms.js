@@ -1,7 +1,7 @@
 // 表单渲染：表/字段/枚举/树 与模板库（split out of app.js, LAY-027）。
 
 import { FIELD_KEYS, NUMERIC_KINDS, STRING_KIND } from "./constants.js";
-import { enumNames, state } from "./state.js";
+import { enumNames, state, tableNames } from "./state.js";
 import { boolInput, delPathRoot, el, getPath, intInput, jsonInput, listInput, nextName, numberInput, option, renameKey, setPathRoot, targetsChips, textInput, toast } from "./dom.js";
 import { TypeEditor, typeLabel } from "./types.js";
 
@@ -232,7 +232,9 @@ function renderFieldForm(fed, field, fname, tPath) {
   refCheck.checked = hasRef;
   refCheck.addEventListener("change", () => {
     if (refCheck.checked) {
-      setPathRoot(fPath.concat("reference"), { table: enumNames()[0] || "", field: "", cardinality: "one" });
+      // 默认目标表取当前表之外的第一张表（无表时留空，下拉显示占位项）。
+      // REF-FIX-001：旧实现误用 enumNames()[0] 当默认表，导致下拉空白。
+      setPathRoot(fPath.concat("reference"), { table: tableNames(state.sel && state.sel.name)[0] || "", field: "", cardinality: "one" });
       refreshEntity();
     } else {
       delPathRoot(fPath.concat("reference"));
@@ -243,13 +245,49 @@ function renderFieldForm(fed, field, fname, tPath) {
   ref.append(refToggle);
   if (hasRef) {
     const rPath = fPath.concat("reference");
+    // —— 目标表下拉（REF-FIX-001）——
+    // 占位项兜底空值；存量值不在表名集合（如历史 bug 写入的枚举名/已删表）
+    // 时就地治愈为占位，避免浏览器把显示回退到第一项造成“所见非所存”。
     const tableSel = el("select");
+    tableSel.append(option("", "（选择目标表…）"));
     Object.keys(state.doc.tables).forEach((n) => tableSel.append(option(n)));
-    tableSel.value = field.reference.table || "";
+    const storedTable = field.reference.table || "";
+    tableSel.value = storedTable;
+    if (tableSel.value !== storedTable) {
+      field.reference.table = "";
+      setPathRoot(rPath.concat("table"), "");
+    }
     tableSel.setAttribute("data-path", rPath.concat("table").join("."));
     tableSel.addEventListener("change", () => setPathRoot(rPath.concat("table"), tableSel.value));
-    ref.append(entityRow("目标表", tableSel));
-    ref.append(entityRow("目标字段", textInput(rPath.concat("field")), rPath.concat("field").join(".")));
+    if (!Object.keys(state.doc.tables).length) {
+      const noneRow = el("div", "type-kind-hint");
+      noneRow.textContent = "当前 Schema 没有可引用的表，请先创建表。";
+      ref.append(entityRow("目标表", noneRow));
+    } else {
+      ref.append(entityRow("目标表", tableSel));
+    }
+    // —— 目标字段下拉：随目标表联动，只列该表字段 ——
+    const fieldSel = el("select");
+    const relinkFieldSel = () => {
+      const target = state.doc.tables[getPath(state.doc, rPath.concat("table"))] || null;
+      fieldSel.replaceChildren();
+      fieldSel.append(option("", "（选择目标字段…）"));
+      const stored = getPath(state.doc, rPath.concat("field")) || "";
+      const known = target ? Object.keys(target.fields || {}) : [];
+      known.forEach((n) => fieldSel.append(option(n)));
+      fieldSel.value = stored;
+      if (fieldSel.value !== stored) {
+        // 目标表变了或存量字段不存在：治愈为占位，等用户选。
+        setPathRoot(rPath.concat("field"), "");
+      }
+      fieldSel.disabled = !target;
+    };
+    relinkFieldSel();
+    fieldSel.setAttribute("data-path", rPath.concat("field").join("."));
+    fieldSel.addEventListener("change", () => setPathRoot(rPath.concat("field"), fieldSel.value));
+    ref.append(entityRow("目标字段", fieldSel));
+    // 表切换后联动重建目标字段选项。
+    tableSel.addEventListener("change", relinkFieldSel);
     const cardSel = el("select");
     ["one", "many", "optional"].forEach((c) => cardSel.append(option(c, c === "one" ? "one（一对一）" : c === "many" ? "many（一对多）" : "optional（可选）")));
     cardSel.value = field.reference.cardinality || "one";
@@ -505,7 +543,8 @@ const FIELD_TEMPLATES = [
     make: (names) => ({
       name: nextName(names, "fk_field"), type: { kind: "String" },
       description: "外键引用字段（模板：请改目标表/字段）", default: null,
-      reference: { table: Object.keys(state.doc.tables)[0] || "", field: "", cardinality: "one" },
+      // REF-FIX-001：默认取当前表之外的第一张表，避免一键自引用。
+      reference: { table: tableNames(state.sel && state.sel.name)[0] || "", field: "", cardinality: "one" },
     }),
   },
 ];

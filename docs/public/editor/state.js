@@ -14,5 +14,12 @@ const state = {
 
 const enumNames = () => (state.doc ? Object.keys(state.doc.enums || {}) : []);
 
+// 表名列表（文档顺序）。exclude 传入当前正在编辑的表名，用于引用下拉
+// 排除自身，避免自引用默认值（REF-FIX-001）。
+const tableNames = (exclude) => {
+  if (!state.doc) return [];
+  return Object.keys(state.doc.tables || {}).filter((n) => n !== exclude);
+};
 
-export { state, enumNames };
+
+export { state, enumNames, tableNames };
