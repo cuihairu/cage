@@ -139,7 +139,7 @@ mod tests {
     use crate::schema::ExpressionRule;
     use serde_json::json;
 
-    fn rule(assert: &str, examples: serde_json::Value) -> ExpressionRule {
+    fn rule(assert: &str, examples: &serde_json::Value) -> ExpressionRule {
         ExpressionRule {
             name: "r".to_string(),
             assert: assert.to_string(),
@@ -159,7 +159,7 @@ mod tests {
         }
     }
 
-    fn check(assert: &str, examples: serde_json::Value) -> Vec<ExampleCheck> {
+    fn check(assert: &str, examples: &serde_json::Value) -> Vec<ExampleCheck> {
         check_examples(&rule(assert, examples))
     }
 
@@ -171,7 +171,7 @@ mod tests {
     fn positive_and_negative_examples_report_what_the_engine_answers() {
         let checks = check(
             "price <= cap",
-            json!([
+            &json!([
                 { "row": { "price": 10, "cap": 20 }, "expected": "pass" },
                 { "row": { "price": 30, "cap": 20 }, "expected": "violate" }
             ]),
@@ -187,11 +187,11 @@ mod tests {
     fn a_mismatched_expectation_is_flagged_with_a_note() {
         let checks = check(
             "price <= cap",
-            json!([
+            &json!([
                 { "row": { "price": 30, "cap": 20 }, "expected": "pass" }
             ]),
         );
-        assert_eq!(checks[0].ok, false);
+        assert!(!checks[0].ok);
         assert_eq!(checks[0].actual, "violate");
         assert!(checks[0].note.as_deref().unwrap().contains("期望满足"));
     }
@@ -200,7 +200,7 @@ mod tests {
     fn a_missing_optional_field_counts_as_pass_like_l6() {
         let checks = check(
             "level >= 10",
-            json!([
+            &json!([
                 { "row": {}, "expected": "pass" }
             ]),
         );
@@ -212,7 +212,7 @@ mod tests {
     fn a_bad_example_shape_is_invalid_not_a_pass() {
         let checks = check(
             "price <= cap",
-            json!([
+            &json!([
                 { "row": [1, 2], "expected": "pass" },
                 { "row": { "price": 1 }, "expected": "maybe" }
             ]),
@@ -226,7 +226,7 @@ mod tests {
     fn an_unparseable_assert_is_unparseable() {
         let checks = check(
             "price << cap",
-            json!([
+            &json!([
                 { "row": { "price": 1 }, "expected": "pass" }
             ]),
         );
@@ -245,7 +245,7 @@ mod tests {
             description: None,
             examples: None,
         };
-        assert!(check_examples(&rule).is_empty());
+        assert_eq!(check_examples(&rule).len(), 0);
     }
 
     #[test]
