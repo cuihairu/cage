@@ -472,9 +472,10 @@ pub(crate) fn unified_diff(before: Option<&str>, after: &str, file: &str) -> Str
         return String::new();
     }
     let diff = similar::TextDiff::from_lines(before_text, after);
-    let left = before
-        .map(|_| format!("a/{file}"))
-        .unwrap_or_else(|| "/dev/null".to_string());
+    let left = match before {
+        Some(_) => format!("a/{file}"),
+        None => "/dev/null".to_string(),
+    };
     diff.unified_diff()
         .context_radius(3)
         .header(&left, &format!("b/{file}"))
