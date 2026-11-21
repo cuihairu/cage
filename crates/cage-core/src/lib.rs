@@ -51,6 +51,7 @@ pub mod reference;
 pub mod registry;
 pub mod remote;
 pub mod rule_ast;
+pub mod rule_examples;
 pub mod schema;
 pub mod snapshot;
 pub mod validation;
@@ -77,10 +78,11 @@ pub use refactor::{
 pub use reference::{
     DependencyGraph, IncrementalPlanner, ReferenceResolver, ResolvedReference, UnresolvedReference,
 };
+pub use rule_examples::{check_examples, ExampleCheck};
 pub use schema::{
     EnumSchema, EnumValue, ExpressionRule, FieldSchema, FieldType, MapField, MapKeyType,
-    ReferenceSchema, Schema, SchemaMetadata, TableSchema, UniqueConstraint, ValidatedSchema,
-    ValidationContext,
+    ReferenceSchema, RuleExample, Schema, SchemaMetadata, TableSchema, UniqueConstraint,
+    ValidatedSchema, ValidationContext,
 };
 pub use validation::{validate, ValidationContext as ValidationCtx, ValidationLevel};
 pub use value::{Document, DocumentMetadata, Row, SourceLocation, Table, TypedValue, Value};

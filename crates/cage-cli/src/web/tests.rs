@@ -900,6 +900,47 @@ fn api_rule_decompile_parses_a_rule_back_into_an_ast() {
 }
 
 #[test]
+fn api_rule_examples_tries_a_rules_human_layer_examples() {
+    // P1-4: the endpoint runs each 正反例 through the same engine as the
+    // validation main chain and answers 期望 vs 实际 per example.
+    let body = serde_json::json!({
+        "rule": {
+            "name": "price_cap",
+            "assert": "price <= cap",
+            "title": "价格上限",
+            "description": "价格不得超过同行的上限",
+            "examples": [
+                { "row": { "price": 10, "cap": 20 }, "expected": "pass" },
+                { "row": { "price": 30, "cap": 20 }, "expected": "violate" },
+                { "row": { "price": 30, "cap": 20 }, "expected": "pass" }
+            ]
+        }
+    });
+    let (status, out) = api_rule_examples(&body.to_string());
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["ok"], true, "{out}");
+    let checks = out["checks"].as_array().expect("checks array");
+    assert_eq!(checks.len(), 3, "{out}");
+    assert_eq!(checks[0]["actual"], "pass");
+    assert_eq!(checks[0]["ok"], true);
+    assert_eq!(checks[1]["actual"], "violate");
+    assert_eq!(checks[1]["ok"], true);
+    assert_eq!(checks[2]["actual"], "violate");
+    assert_eq!(checks[2]["ok"], false);
+    assert!(
+        !checks[2]["note"].as_str().unwrap_or("").is_empty(),
+        "{out}"
+    );
+
+    // A rule without examples answers an empty list; a broken body refuses.
+    let (status, empty) = api_rule_examples(r#"{"rule":{"name":"r","assert":"a <= b"}}"#);
+    assert_eq!(status, 200, "{empty}");
+    assert_eq!(empty["checks"], serde_json::json!([]), "{empty}");
+    let (status, refused) = api_rule_examples(r#"{"rule": "nope"}"#);
+    assert_eq!(status, 400, "{refused}");
+}
+
+#[test]
 fn api_save_multi_file_still_needs_the_sources_index_envelope() {
     let dir = TempDir::new().expect("tempdir");
     multi_file_project(&dir);
@@ -1943,6 +1984,11 @@ fn handle_routes_every_static_and_api_route() {
         ),
         ("POST", "/api/build", br#"{"profile":"client"}"#),
         ("POST", "/api/snapshot", br#"{"profile":"client"}"#),
+        (
+            "POST",
+            "/api/rule/examples",
+            br#"{"rule":{"name":"r","assert":"a <= b"}}"#,
+        ),
         (
             "POST",
             "/api/upload?name=Item",

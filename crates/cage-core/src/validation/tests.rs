@@ -1366,6 +1366,9 @@ fn l5_predicate_gate_accepts_when_target_row_satisfies_it() {
                 assert: "tradable == true".to_string(),
                 message: None,
                 warning_only: false,
+                title: None,
+                description: None,
+                examples: None,
             }),
             cardinality: "one".to_string(),
             compatible_with: None,
@@ -1762,6 +1765,9 @@ fn l6_rejects_violating_rule_with_e1501() {
             assert: "price <= 10000".to_string(),
             message: Some("price must stay under 10000".to_string()),
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }],
         ..plain_field("price", FieldType::UInt32)
     };
@@ -1800,6 +1806,9 @@ fn l6_satisfying_rule_and_absent_optional_field_pass() {
             assert: "price <= bonus".to_string(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }],
         ..plain_field("price", FieldType::UInt32)
     };
@@ -1809,6 +1818,9 @@ fn l6_satisfying_rule_and_absent_optional_field_pass() {
             assert: "bonus >= 0".to_string(),
             message: None,
             warning_only: true,
+            title: None,
+            description: None,
+            examples: None,
         }],
         ..plain_field("bonus", FieldType::UInt32)
     };
@@ -1837,6 +1849,9 @@ fn l6_warning_only_rule_reports_a_warning_not_an_error() {
             assert: "price <= 10".to_string(),
             message: None,
             warning_only: true,
+            title: None,
+            description: None,
+            examples: None,
         }],
         ..plain_field("price", FieldType::UInt32)
     };
@@ -1874,6 +1889,9 @@ fn l6_incomparable_operands_report_e1501_with_types() {
             assert: "kind <= price".to_string(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }],
         ..plain_field("kind", FieldType::String)
     };
@@ -1917,6 +1935,9 @@ fn l6_malformed_assert_and_unknown_ref_are_schema_defects() {
             assert: "price <=".to_string(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }],
         ..plain_field("price", FieldType::UInt32)
     };
@@ -1926,6 +1947,9 @@ fn l6_malformed_assert_and_unknown_ref_are_schema_defects() {
             assert: "ghost >= 1".to_string(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }],
         ..plain_field("desc", FieldType::String)
     };
@@ -1970,6 +1994,9 @@ fn l6_schema_defects_report_even_when_the_table_has_no_rows() {
             assert: "price ==".to_string(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }],
         ..plain_field("price", FieldType::UInt32)
     };
@@ -2481,6 +2508,9 @@ fn l5_malformed_reference_assert_reports_e1004() {
             assert: "not an assert".to_string(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }),
         cardinality: "one".to_string(),
         compatible_with: None,
@@ -2523,6 +2553,9 @@ fn l5_assert_on_undeclared_target_field_reports_e1004() {
             assert: "ghost == 1".to_string(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }),
         cardinality: "one".to_string(),
         compatible_with: None,
@@ -2657,6 +2690,9 @@ fn l5_incomparable_predicate_reports_not_evaluable() {
             assert: "tradable == 1".to_string(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         }),
         cardinality: "one".to_string(),
         compatible_with: None,

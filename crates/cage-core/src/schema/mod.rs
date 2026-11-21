@@ -314,7 +314,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Expression rule for semantic validation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExpressionRule {
     /// Rule name
     pub name: String,
@@ -326,6 +326,30 @@ pub struct ExpressionRule {
     /// Whether a violation is reported as a warning
     #[serde(default, skip_serializing_if = "is_false")]
     pub warning_only: bool,
+    // ── 规则人话层（评审 P1-4）：机器逻辑之外的面向人的说明信息 ──
+    // 全部可省，不省则写进 canonical 形状（契约层原样承载，前端直接读写）。
+    /// 规则的中文标题（策划一眼看懂这条规则管什么）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// 业务说明：这条规则为什么存在、判的是什么业务语义
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// 正反例（样例行 + 期望结果 + 备注），编辑器可一键试算
+    /// （[`crate::rule_examples::check_examples`]）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub examples: Option<Vec<RuleExample>>,
+}
+
+/// 规则人话层的一条正/反例（评审 P1-4）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuleExample {
+    /// 样例行：字段名 → 值（JSON 对象）
+    pub row: serde_json::Value,
+    /// 期望结果：`"pass"`（正例，应满足规则）或 `"violate"`（反例，应违反规则）
+    pub expected: String,
+    /// 备注（正例说明什么、反例为什么该被拦）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Enum schema definition

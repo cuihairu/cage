@@ -3,7 +3,7 @@
 import { apiRename, renderExpertMode } from "./app.js";
 import { api, markDirty } from "./api.js";
 import { FIELD_KEYS, NUMERIC_KINDS, STRING_KIND } from "./constants.js";
-import { builderRowsToAst, parseLiteralInput } from "./modes.js";
+import { builderRowsToAst, mergeHumanLayer, parseLiteralInput } from "./modes.js";
 import { RULE_TEMPLATES, planTemplate, templateById } from "./rule_templates.js";
 import { enumNames, state, tableNames } from "./state.js";
 import { boolInput, delPathRoot, el, getPath, intInput, jsonInput, listInput, nextName, numberInput, option, setPathRoot, targetsChips, textInput, toast } from "./dom.js";
@@ -353,6 +353,84 @@ function renderFieldForm(fed, field, fname, tPath) {
   fed.append(meta);
 }
 
+// ── 规则人话层：正反例（P1-4）──────────────────────────────────────────
+//
+// 样例行（JSON 对象）+ 期望结果 + 备注。「试例」把规则连同正反例 POST
+// /api/rule/examples，由校验主链同一套表达式引擎试算，逐例回报「期望 vs
+// 实际」——策划当场确认规则读起来是不是这个意思。试算只是提示，不改文档。
+const EXAMPLE_EXPECTED = ["pass", "violate"];
+
+/// 路径绑定的下拉（人话层的期望结果用；dom.js 的输入只覆盖文本/数字/列表）。
+function selectInput(path, values) {
+  const sel = el("select");
+  for (const v of values) sel.append(option(v, v));
+  const cur = getPath(state.doc, path);
+  sel.value = values.includes(cur) ? cur : values[0];
+  sel.addEventListener("change", () => setPathRoot(path, sel.value));
+  return sel;
+}
+
+function renderRuleExamples(rPath, rule) {
+  const boxPath = rPath.concat("examples");
+  const examples = Array.isArray(rule && rule.examples) ? rule.examples : [];
+  const box = el("div", "nested-list");
+  box.append(el("span", "type-tag", "正反例"));
+
+  examples.forEach((_, i) => {
+    const ePath = boxPath.concat(String(i));
+    const row = el("div", "nested-row");
+    const g = el("div", "nested-grid cols-4");
+    g.append(el("label", null, "样例行"),
+      jsonInput(ePath.concat("row")),
+      el("label", null, "期望"),
+      selectInput(ePath.concat("expected"), EXAMPLE_EXPECTED));
+    const del = el("button", "icon danger small", "删除");
+    del.addEventListener("click", () => {
+      const items = getPath(state.doc, boxPath) || [];
+      setPathRoot(boxPath, items.filter((_, j) => j !== i));
+      refreshEntity();
+    });
+    g.append(el("label", null, ""), del, el("label", null, ""), el("label", null, ""));
+    const g2 = el("div", "nested-grid cols-4");
+    g2.append(el("label", null, "备注"), textInput(ePath.concat("note"), { toNull: true }));
+    row.append(g, g2);
+    box.append(row);
+  });
+
+  const add = el("button", "", "＋ 加正反例");
+  add.addEventListener("click", () => {
+    const items = getPath(state.doc, boxPath) || [];
+    setPathRoot(boxPath, [...items, { row: {}, expected: "pass" }]);
+    refreshEntity();
+  });
+
+  const tryBtn = el("button", "", "试例");
+  const summary = el("div", "type-kind-hint");
+  const detail = el("div", "nested-list");
+  tryBtn.addEventListener("click", async () => {
+    detail.replaceChildren();
+    const r = getPath(state.doc, rPath);
+    if (!r) return;
+    const res = await api("/api/rule/examples", JSON.stringify({ rule: r }));
+    if (!res.data.ok) { summary.textContent = `试算失败：${res.data.error}`; return; }
+    const checks = res.data.checks || [];
+    const good = checks.filter((c) => c.ok).length;
+    summary.textContent = checks.length
+      ? `试算：${good}/${checks.length} 例符合期望`
+      : "还没有正反例可试（先「＋ 加正反例」）";
+    for (const [i, c] of checks.entries()) {
+      detail.append(el("span", null,
+        `${c.ok ? "✔" : "✘"} 例 ${i + 1}：期望 ${c.expected}，实际 ${c.actual}`
+        + (c.note ? `（${c.note}）` : "")));
+    }
+  });
+
+  const btnRow = el("div", "nested-row");
+  btnRow.append(tryBtn);
+  box.append(add, btnRow, summary, detail);
+  return box;
+}
+
 // ── 表达式规则编辑器（基础模式字段表单 / 规则模式共用）────────────────
 //
 // 唯一的规则表示：`field.rules`（ExpressionRule 数组，cage-core 语义）。
@@ -389,6 +467,15 @@ function renderRulesEditor(fed, fPath, field) {
         return w;
       })());
     row.append(grid2);
+    // ── 规则人话层（P1-4）：中文标题 / 业务说明 ──
+    const grid3 = el("div", "nested-grid cols-4");
+    grid3.append(el("label", null, "中文标题"),
+      textInput(rPath.concat("title"), { toNull: true }),
+      el("label", null, "业务说明"),
+      textInput(rPath.concat("description"), { toNull: true }));
+    row.append(grid3);
+    // ── 正反例（P1-4）：样例行 + 期望结果 + 备注，可一键试算 ──
+    row.append(renderRuleExamples(rPath, rulesArr[i]));
     rules.append(row);
   });
   const addRule = el("button");
@@ -416,7 +503,11 @@ const builderKey = (table, field) => `${table}.${field}`;
 
 function loadDraft(table, field, count) {
   return BUILDER_DRAFTS.get(builderKey(table, field))
-    || { rows: [{ field, op: "==", rhsKind: "Literal", value: "", fieldName: "" }], name: `rule_${count + 1}`, message: "", warningOnly: false };
+    || {
+      rows: [{ field, op: "==", rhsKind: "Literal", value: "", fieldName: "" }],
+      name: `rule_${count + 1}`, message: "", warningOnly: false,
+      title: "", description: "",
+    };
 }
 
 // 行 → 可编译 AST；字面量经 parseLiteralInput（`200`→200，`hi`→"hi"）。
@@ -529,8 +620,17 @@ function renderConditionBuilder(fed, tName, table, fPath, field) {
   warnChk.type = "checkbox";
   warnChk.checked = draft.warningOnly;
   warnChk.addEventListener("change", () => { draft.warningOnly = warnChk.checked; });
+  const titleInp = el("input");
+  titleInp.value = draft.title;
+  titleInp.placeholder = "中文标题（人话层，P1-4）";
+  titleInp.addEventListener("change", () => { draft.title = titleInp.value; });
+  const descInp = el("input");
+  descInp.value = draft.description;
+  descInp.placeholder = "业务说明（人话层，P1-4）";
+  descInp.addEventListener("change", () => { draft.description = descInp.value; });
   metaGrid.append(el("label", null, "规则名"), nameInp, el("label", null, "提示消息"), msgInp);
-  metaGrid.append(el("label", null, "仅警告"), warnChk, el("label", null, ""), el("label", null, ""));
+  metaGrid.append(el("label", null, "仅警告"), warnChk, el("label", null, "中文标题"), titleInp);
+  metaGrid.append(el("label", null, "业务说明"), descInp, el("label", null, ""), el("label", null, ""));
 
   const writeSel = el("select");
   writeSel.append(option("replace", "替换该字段全部规则"), option("append", "追加到现有规则"));
@@ -549,6 +649,8 @@ function renderConditionBuilder(fed, tName, table, fPath, field) {
       name: draft.name || `rule_${(field.rules || []).length + 1}`,
       message: draft.message || null,
       warning_only: draft.warningOnly,
+      title: draft.title || null,
+      description: draft.description || null,
     };
     const res = await api("/api/rule/compile", JSON.stringify({ ast, meta }));
     if (!res.data.ok) {
@@ -559,8 +661,12 @@ function renderConditionBuilder(fed, tName, table, fPath, field) {
     }
     const rules = res.data.rules;
     const mode = writeSel.value;
-    setPathRoot(fPath.concat("rules"),
-      mode === "replace" ? rules : [...(field.rules || []), ...rules]);
+    // 替换时把既有规则的人话层（标题/说明/正反例）带回同样 assert 的
+    // 新规则上——一次无关的重编译不丢策划填写的说明（P1-4）。
+    const written = mode === "replace"
+      ? mergeHumanLayer(rules, field.rules || [])
+      : [...(field.rules || []), ...rules];
+    setPathRoot(fPath.concat("rules"), written);
     BUILDER_DRAFTS.delete(builderKey(tName, fname));
     markDirty();
     refreshEntity();
@@ -597,7 +703,13 @@ function renderConditionBuilder(fed, tName, table, fPath, field) {
     if (!rows.length) return toast("既有规则都无法表达为可视化条件", "error");
     if (unparseable) toast(`${unparseable} 条规则无法可视化，已跳过`, "error");
     BUILDER_DRAFTS.set(builderKey(tName, fname), {
-      rows, name: rules[0].name || `rule_${rules.length}`, message: "", warningOnly: false,
+      rows,
+      name: rules[0].name || `rule_${rules.length}`,
+      message: rules[0].message || "",
+      warningOnly: Boolean(rules[0].warning_only),
+      // 人话层随规则带上，替换重编译不丢（P1-4）。
+      title: rules[0].title || "",
+      description: rules[0].description || "",
     });
     refreshEntity();
   });

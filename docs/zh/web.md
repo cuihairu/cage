@@ -433,6 +433,32 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       forms.js 已接线）+ 改动脚本 `node --check`；web 集成 20 绿；
       workspace 全绿；web-smoke 绿
 
+### W16 已实装：规则人话层（评审 P1-4，2026-11-22）
+
+- [x] `ExpressionRule` 增补可选的人话层字段：`title`（中文标题）、
+      `description`（业务说明）、`examples`（正反例）。错误信息原本就有
+      （`message`）。三者省略时不序列化——老 Schema 一字节不变（测试钉住），
+      编辑器文档（`to_editor_json`）原样透传——任何地方都没有第二套规则
+      格式
+- [x] 正反例是可执行的：`cage_core::rule_examples::check_examples` 用与
+      校验主链同一套表达式引擎试算（沿用 L6 语义：缺/为 null 的字段视为
+      通过、类型不可比视为违反），逐例回报「期望 vs 实际」，不符时带人话
+      备注。纯提示性——不改文档、不改数据
+- [x] Web API：`POST /api/rule/examples`（规则 → 每例一个判定：
+      `{index, expected, actual, ok, note}`）
+- [x] 编辑器（基础模式字段表单与规则模式共用）在同一个表达式规则编辑器
+      里编辑人话层：中文标题 / 业务说明输入、每条规则的正反例子编辑器
+      （样例行 JSON、期望 pass/violate、备注）与「试例」按钮——POST 规则，
+      显示「试算：N/M 例符合期望」并逐例给判定
+- [x] 可视化构建器（P1-2）的 `RuleMeta` 携带中文标题 / 业务说明（编译到
+      每条产出规则），替换写入时把既有规则中同 assert 的人话层合并回来
+      （`mergeHumanLayer`，纯函数 node 可测）——一次无关的重编译不丢策划
+      填写的内容。「从既有规则装载」从被载规则带上人话层
+- [x] 测试：rule_examples 单测 8（引擎判定含不符备注、缺字段按通过、样例
+      形状非法、断言解析不了、serde 回环、无人话层时一字节不写）+ web
+      单测 1（端点形状）+ 集成 1（真实 HTTP 判定）+ modes.test.mjs 15
+      （mergeHumanLayer 三个用例）；workspace 全绿；web-smoke 绿
+
 ## 路线图
 
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务

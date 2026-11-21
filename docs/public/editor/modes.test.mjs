@@ -12,6 +12,7 @@ import {
   addRule,
   builderRowsToAst,
   parseLiteralInput,
+  mergeHumanLayer,
 } from './modes.js'
 
 const DOC = {
@@ -149,4 +150,38 @@ test('parseLiteralInput keeps numbers and booleans, falls back to string', () =>
   assert.deepEqual(parseLiteralInput('  200  '), { value: 200 })
   assert.ok(parseLiteralInput('').error)
   assert.ok(parseLiteralInput(null).error)
+})
+
+test('mergeHumanLayer keeps the human layer when the assert is unchanged', () => {
+  const oldRules = [{
+    name: 'cap', assert: 'price <= cap', message: 'too pricey', warning_only: true,
+    title: '价格上限', description: '价格不得超过同行的 cap', examples: [{ row: { price: 1 }, expected: 'pass' }],
+  }]
+  const newRules = [
+    { name: 'cap', assert: 'price <= cap', message: 'too pricey', warning_only: true },
+    { name: 'other', assert: 'price >= 0' },
+  ]
+  const merged = mergeHumanLayer(newRules, oldRules)
+  // Same assert → the human layer carries over.
+  assert.equal(merged[0].title, '价格上限')
+  assert.equal(merged[0].description, '价格不得超过同行的 cap')
+  assert.equal(merged[0].examples, oldRules[0].examples)
+  // Different assert → no carry-over, and inputs are not mutated.
+  assert.equal(merged[1].title, undefined)
+  assert.equal(newRules[0].title, undefined)
+  assert.equal(oldRules[0].title, '价格上限')
+})
+
+test('mergeHumanLayer keeps a fresh title over the carried one', () => {
+  const merged = mergeHumanLayer(
+    [{ name: 'r', assert: 'a <= b', title: '新标题' }],
+    [{ name: 'r', assert: 'a <= b', title: '旧标题' }]
+  )
+  assert.equal(merged[0].title, '新标题')
+})
+
+test('mergeHumanLayer tolerates missing arrays and unknown rules', () => {
+  assert.deepEqual(mergeHumanLayer([{ assert: 'a' }], undefined), [{ assert: 'a' }])
+  assert.deepEqual(mergeHumanLayer([{ assert: 'a' }], [{ assert: 'b' }]), [{ assert: 'a' }])
+  assert.deepEqual(mergeHumanLayer([], [{ assert: 'a' }]), [])
 })

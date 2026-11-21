@@ -81,3 +81,27 @@ export function parseLiteralInput(text) {
     return { value: raw };
   }
 }
+
+// ── 规则人话层（P1-4）：编译回写时保留既有规则的人话信息 ───────────────
+//
+// 编译会产出新的 ExpressionRule（`field.rules` 是唯一规则表示）。若编译
+// 后某条规则的 `assert` 与既有规则一致（例如「从既有规则装载」→ 只改
+// 元数据 → 替换全部），把它的人话层（中文标题/业务说明/正反例）原样带
+// 过来，避免一次无关的重编译丢策划填写的说明。新规则自带人话层时（来自
+// 构建器元数据）以新的为准。
+
+/// 编译后规则数组 × 既有规则数组 → 合并人话层（纯函数，node 可测）。
+/// 不修改入参；对每条新规则，找到第一条 `assert` 相同的既有规则，补上
+/// 新规则缺少的 `title` / `description` / `examples`。
+export function mergeHumanLayer(newRules, oldRules) {
+  const olds = Array.isArray(oldRules) ? oldRules : [];
+  return newRules.map((nr) => {
+    const old = olds.find((or) => or && or.assert === nr.assert);
+    if (!old) return nr;
+    const out = { ...nr };
+    if (out.title === undefined && old.title !== undefined) out.title = old.title;
+    if (out.description === undefined && old.description !== undefined) out.description = old.description;
+    if (out.examples === undefined && old.examples !== undefined) out.examples = old.examples;
+    return out;
+  });
+}

@@ -806,3 +806,47 @@ fn web_compiles_a_visual_condition_into_rules_and_reads_it_back() {
     assert_eq!(v["unsupported"], true, "body: {body}");
     assert!(!v["error"].as_str().unwrap().is_empty(), "body: {body}");
 }
+
+#[test]
+fn web_tries_a_rules_human_layer_examples_over_http() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_project(tmp.path());
+    let server = start_server(tmp.path());
+
+    // P1-4: the editor POSTs the rule (with its 正反例) and gets back one
+    // verdict per example, computed by the same engine as the main chain.
+    let (status, body) = request(
+        server.port,
+        "POST",
+        "/api/rule/examples",
+        Some(
+            &serde_json::json!({
+                "rule": {
+                    "name": "price_cap",
+                    "assert": "price <= cap",
+                    "title": "价格上限",
+                    "description": "价格不得超过同行的 cap",
+                    "examples": [
+                        { "row": { "price": 10, "cap": 20 }, "expected": "pass" },
+                        { "row": { "price": 30, "cap": 20 }, "expected": "violate" },
+                        { "row": { "price": 30, "cap": 20 }, "expected": "pass" }
+                    ]
+                }
+            })
+            .to_string(),
+        ),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let v = json(&body);
+    assert_eq!(v["ok"], true, "body: {body}");
+    let checks = v["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 3, "body: {body}");
+    assert_eq!(checks[0]["actual"], "pass");
+    assert!(checks[0]["ok"].as_bool().unwrap());
+    assert_eq!(checks[1]["actual"], "violate");
+    assert!(checks[1]["ok"].as_bool().unwrap());
+    assert!(
+        !checks[2]["ok"].as_bool().unwrap(),
+        "mismatch must be flagged"
+    );
+}

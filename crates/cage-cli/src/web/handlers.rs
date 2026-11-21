@@ -743,6 +743,38 @@ pub(crate) fn api_rule_decompile(body: &str) -> (u16, serde_json::Value) {
     )
 }
 
+/// P1-4: try a rule's 正反例 with the same expression engine the validation
+/// main chain uses — each example answers 期望 vs 实际, so the planner sees
+/// immediately whether the rule reads as intended. Purely advisory: it never
+/// touches the Schema or the data.
+pub(crate) fn api_rule_examples(body: &str) -> (u16, serde_json::Value) {
+    let parsed = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("bad request body: {e}")}),
+            );
+        }
+    };
+    let rule: cage_core::schema::ExpressionRule = match serde_json::from_value(
+        parsed
+            .get("rule")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                400,
+                serde_json::json!({"ok": false, "error": format!("invalid 'rule': {e}")}),
+            );
+        }
+    };
+    let checks = cage_core::rule_examples::check_examples(&rule);
+    (200, serde_json::json!({"ok": true, "checks": checks}))
+}
+
 pub(crate) fn api_status(ctx: &Ctx, query: &str) -> (u16, serde_json::Value) {
     let params = query_params(query);
     let get = |key: &str| {

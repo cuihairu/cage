@@ -140,6 +140,12 @@ pub struct RuleMeta {
     pub message: Option<String>,
     /// Whether a violation reports as a warning.
     pub warning_only: bool,
+    /// 规则人话层：中文标题（P1-4），编译到每条产出规则。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// 规则人话层：业务说明（P1-4），编译到每条产出规则。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Why an AST could not compile to the Schema's rule representation.
@@ -238,6 +244,10 @@ fn compile_into(
                 assert,
                 message: meta.message.clone(),
                 warning_only: meta.warning_only,
+                title: meta.title.clone(),
+                description: meta.description.clone(),
+                // 正反例属于单条规则，不由构建器产生。
+                examples: None,
             });
             Ok(())
         }
@@ -257,6 +267,8 @@ fn compile_into(
                     name: sub,
                     message: meta.message.clone(),
                     warning_only: meta.warning_only,
+                    title: meta.title.clone(),
+                    description: meta.description.clone(),
                 };
                 compile_into(item, &sub_meta, out)?;
             }
@@ -318,6 +330,8 @@ mod tests {
             name: name.to_string(),
             message: Some("hint".to_string()),
             warning_only: false,
+            title: None,
+            description: None,
         }
     }
 
@@ -550,6 +564,9 @@ mod tests {
             assert: "not an assert".into(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         };
         assert_eq!(
             decompile(&rule),
@@ -563,6 +580,9 @@ mod tests {
             assert: "5 > price".into(),
             message: None,
             warning_only: false,
+            title: None,
+            description: None,
+            examples: None,
         };
         assert_eq!(
             decompile(&rule),

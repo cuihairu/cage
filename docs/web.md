@@ -472,6 +472,40 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       forms.js wires it) + `node --check` on the edited scripts; web
       integration 20 green; workspace tests green; web-smoke green.
 
+### W16 implemented: rule human layer (review P1-4, 2026-11-22)
+
+- [x] `ExpressionRule` gains the human layer as optional fields — `title`
+      (中文标题), `description` (业务说明), `examples` (正反例). The error
+      message was already there (`message`). All three skip serialization
+      when absent, so an old Schema stays byte-identical (test-pinned), and
+      the editor document (`to_editor_json`) carries them straight through —
+      no second rule format anywhere.
+- [x] 正反例 are executable: `cage_core::rule_examples::check_examples`
+      runs each example row through the same expression engine as the
+      validation main chain (`L6` semantics: a missing/null field counts as
+      a pass, incomparable types as a violation) and answers per example
+      期望 vs 实际, with a human note on mismatch. Purely advisory — it
+      never touches the Schema or the data.
+- [x] Web API: `POST /api/rule/examples` (a rule → one verdict per example:
+      `{index, expected, actual, ok, note}`).
+- [x] The editor (both the basic-tier field form and the rules tier) edits
+      the human layer in the same ExpressionRule editor: 中文标题 /
+      业务说明 inputs, a 正反例 sub-editor per rule (sample row JSON,
+      expected pass/violate, note) and a 试例 button that posts the rule and
+      shows `试算：N/M 例符合期望` with a per-example verdict line.
+- [x] The visual builder (P1-2) carries 中文标题 / 业务说明 in its `RuleMeta`
+      (compiled onto every produced rule), and a replace-write now merges
+      the human layer of same-assert existing rules back in
+      (`mergeHumanLayer`, pure and node-tested) — an unrelated recompile
+      never drops what the planner wrote. 从既有规则装载 seeds the meta
+      from the loaded rule.
+- [x] Tests: rule_examples unit tests 8 (engine verdicts incl. mismatch
+      notes, missing-field-as-pass, invalid example shapes, unparseable
+      asserts, serde round trip, byte-exact absence without the layer) +
+      web unit 1 (endpoint shapes) + integration 1 (real HTTP verdicts) +
+      modes.test.mjs 15 (the three new mergeHumanLayer cases); workspace
+      green; web-smoke green.
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in UI facade (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in UI facade.
