@@ -1911,6 +1911,7 @@ fn handle_routes_every_static_and_api_route() {
         "/app.js",
         "/app.css",
         "/modes.js",
+        "/rule_templates.js",
         "/status/app.js",
         "/status/app.css",
         "/favicon.ico",

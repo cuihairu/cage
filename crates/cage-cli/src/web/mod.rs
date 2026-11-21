@@ -69,6 +69,8 @@ const EDITOR_API_JS: &str = include_str!("../../../../docs/public/editor/api.js"
 const EDITOR_TYPES_JS: &str = include_str!("../../../../docs/public/editor/types.js");
 const EDITOR_FORMS_JS: &str = include_str!("../../../../docs/public/editor/forms.js");
 const EDITOR_MODES_JS: &str = include_str!("../../../../docs/public/editor/modes.js");
+const EDITOR_RULE_TEMPLATES_JS: &str =
+    include_str!("../../../../docs/public/editor/rule_templates.js");
 
 /// U1 status page and assets, embedded the same way.
 const STATUS_INDEX: &str = include_str!("../../../../docs/public/status/index.html");
@@ -400,6 +402,11 @@ fn handle(mut request: tiny_http::Request, ctx: &Ctx) {
                 200,
                 "text/javascript; charset=utf-8",
                 EDITOR_MODES_JS.to_string(),
+            ),
+            (tiny_http::Method::Get, "/rule_templates.js") => text_response(
+                200,
+                "text/javascript; charset=utf-8",
+                EDITOR_RULE_TEMPLATES_JS.to_string(),
             ),
             (tiny_http::Method::Get, "/app.css") => {
                 text_response(200, "text/css; charset=utf-8", EDITOR_APP_CSS.to_string())

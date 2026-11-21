@@ -445,6 +445,33 @@ The front end is a static single page under `docs/public` (vanilla ES modules), 
       unsupported answer) + `modes.test.mjs` 12 green (the two new pure
       functions); workspace 1290 green; web-smoke green.
 
+### W15 implemented: nine built-in rule templates (review P1-3, 2026-11-22)
+
+- [x] `rule_templates.js` — a pure, node-tested catalog of the nine templates
+      from the review table (主键唯一 / 数值范围 / 枚举选择 / 外键关系 /
+      字段比较 / 条件必填 / 数值成长 / 跨表总量 / 配置可达性), each with
+      its 底层实现 and a planner-facing hint.
+- [x] `planTemplate` only lands rules on the Schema's existing
+      representations — never a new rule format. The five expressible ones
+      produce path patches (primary_key, min/max, enum type, reference) or an
+      AST (字段比较, compiled by `/api/rule/compile` into the one
+      `field.rules` array); the frontend still never writes an assert.
+- [x] The four templates the expression engine cannot express (条件必填,
+      数值成长, 跨表总量, 配置可达性) do **not** pretend to auto-convert:
+      they answer `{kind:"boundary"}` with guidance toward the Python
+      extension (P2-2) or a dedicated Rust validator (P3-2), surfaced in the
+      rules tier as a prominent notice (P1-5 makes it more prominent).
+- [x] The rules tier carries a template library section (pick a template →
+      a small parameter form → apply). The parameter forms are built from the
+      document (field/enum/table selects), so a template is never misapplied
+      to an unknown field.
+- [x] Tests: `rule_templates.test.mjs` (node --test, 8 cases — catalog
+      id/engine/boundary flags, each patch shape, the boundary refusal, the
+      no-self-compare and unknown-field errors) + integration asset
+      assertions (the module serves with `RULE_TEMPLATES` / `planTemplate`,
+      forms.js wires it) + `node --check` on the edited scripts; web
+      integration 20 green; workspace tests green; web-smoke green.
+
 ## Roadmap
 
 With this, the whole Stage 3 W series and the subsequent UI increments are complete (W1 swap model → W2 local service → W3 editor front end → W4 docs and example → W5 project status panel → W6 artifact browsing → W7 scoped view → W8 snapshots / layered diff / registry browsing; the planner-interface increments are in UI facade (the data panel, W9, has landed). Example entry point: `examples/web-smoke.sh` (the same one CI runs). The roadmap and decisions for later UI increments are in UI facade.

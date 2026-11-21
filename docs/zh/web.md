@@ -412,6 +412,27 @@ revision + 表/枚举归属），保存信封 `{"schema": …, "sources": …}` 
       反编译回行、unsupported 应答）+ `modes.test.mjs` 12 绿（两个新纯
       函数）；workspace 1290 全绿；web-smoke 绿
 
+### W15 已实装：内置规则模板九项（评审 P1-3，2026-11-22）
+
+- [x] `rule_templates.js`——纯逻辑、node 可测的九项模板目录（主键唯一 /
+      数值范围 / 枚举选择 / 外键关系 / 字段比较 / 条件必填 / 数值成长 /
+      跨表总量 / 配置可达性），每项带底层实现与面向策划的提示
+- [x] `planTemplate` 只把规则落到 Schema 的既有表示——绝不引入新的规则
+      格式。可表达的五项产出 path 补丁（primary_key、min/max、枚举类型、
+      reference）或 AST（字段比较，经 `/api/rule/compile` 编译进唯一的
+      `field.rules` 数组）；前端仍不手写 assert
+- [x] 表达式引擎表达不了的四项（条件必填 / 数值成长 / 跨表总量 / 配置
+      可达性）**不假装能自动转换**：应答 `{kind:"boundary"}` 并引导
+      Python 扩展（P2-2）或专门 Rust 校验器（P3-2），规则模式以醒目
+      提示呈现（P1-5 使其更醒目）
+- [x] 规则模式带模板库区（选模板 → 小参数表单 → 应用）。参数表单的选项
+      取自文档本身（字段/枚举/表下拉），模板不会误配到不存在的字段
+- [x] 测试：`rule_templates.test.mjs`（node --test 8 项——目录 id/engine/
+      boundary 旗标、各补丁形状、boundary 拒绝、自比较与未知字段报错）
+      + 集成资产断言（模块带 `RULE_TEMPLATES` / `planTemplate` 伺服、
+      forms.js 已接线）+ 改动脚本 `node --check`；web 集成 20 绿；
+      workspace 全绿；web-smoke 绿
+
 ## 路线图
 
 第三阶段 W 系列与后续 UI 增量至此全部完成（W1 交换模型 → W2 本地服务

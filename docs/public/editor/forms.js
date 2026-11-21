@@ -4,6 +4,7 @@ import { apiRename, renderExpertMode } from "./app.js";
 import { api, markDirty } from "./api.js";
 import { FIELD_KEYS, NUMERIC_KINDS, STRING_KIND } from "./constants.js";
 import { builderRowsToAst, parseLiteralInput } from "./modes.js";
+import { RULE_TEMPLATES, planTemplate, templateById } from "./rule_templates.js";
 import { enumNames, state, tableNames } from "./state.js";
 import { boolInput, delPathRoot, el, getPath, intInput, jsonInput, listInput, nextName, numberInput, option, setPathRoot, targetsChips, textInput, toast } from "./dom.js";
 import { TypeEditor, typeLabel } from "./types.js";
@@ -645,6 +646,7 @@ function renderRulesMode() {
     editorWrap.append(el("h4", null, "表达式规则（唯一表示）"));
     renderRulesEditor(editorWrap, fPath, fields[state.field]);
     fed.append(editorWrap);
+    renderRuleTemplates(fed, state.sel.name, state.field);
     box.append(fed);
     return;
   }
@@ -668,6 +670,148 @@ function renderRulesMode() {
   }
   fsec.append(list);
   box.append(fsec);
+  renderRuleTemplates(box, state.sel.name, "");
+}
+
+// ── 内置规则模板九项（P1-3）────────────────────────────────────────────
+//
+// 规划逻辑是纯函数（rule_templates.js，node 可测）：可表达的模板产出
+// Schema 补丁或 AST（字段比较仍经 /api/rule/compile 编译进唯一的
+// `field.rules`），表达不了的四项返回 boundary 引导（P1-5 醒目呈现），
+// 绝不假装自动转换。DOM 层只收集参数并应用。
+function renderRuleTemplates(box, tName, fieldName) {
+  const sec = entitySection(`规则模板（九项）· ${fieldName || tName}`);
+  const fields = (state.doc.tables[tName] || {}).fields || {};
+
+  const tplSel = el("select");
+  tplSel.append(option("", "选择规则模板…"));
+  RULE_TEMPLATES.forEach((t) => {
+    const o = option(t.id, `${t.name}（${t.engine}）`);
+    o.title = t.expressible ? t.hint : t.guidance;
+    tplSel.append(o);
+  });
+  const paramBox = el("div", "nested-grid cols-4");
+  const note = el("div", "type-kind-hint");
+  note.hidden = true;
+  const applyBtn = el("button", "primary", "应用模板");
+  applyBtn.disabled = true;
+
+  const fieldSel = el("select");
+  if (!fieldName) {
+    fieldSel.append(option("", "选择字段…"));
+    for (const fn of Object.keys(fields)) fieldSel.append(option(fn, fn));
+  }
+
+  const refresh = () => {
+    paramBox.replaceChildren();
+    note.hidden = true;
+    applyBtn.disabled = true;
+    const tpl = templateById(tplSel.value);
+    if (!tpl) return;
+    if (!tpl.expressible) {
+      note.hidden = false;
+      note.textContent = `表达能力边界：${tpl.guidance}`;
+      return;
+    }
+    if (!fieldName && !fieldSel.value) {
+      note.hidden = false;
+      note.textContent = "该模板作用于字段：请先选择字段。";
+      return;
+    }
+    applyBtn.disabled = false;
+    switch (tpl.id) {
+      case "primary_key":
+        paramBox.append(el("label", null, "字段"), el("span", "type-tag", fieldName || fieldSel.value),
+          el("label", null, ""), el("label", null, ""));
+        break;
+      case "range": {
+        const min = el("input"); min.type = "number"; min.placeholder = "min";
+        const max = el("input"); max.type = "number"; max.placeholder = "max";
+        min.dataset.tpl = "min"; max.dataset.tpl = "max";
+        paramBox.append(el("label", null, "最小值"), min, el("label", null, "最大值"), max);
+        break;
+      }
+      case "enum": {
+        const es = el("select");
+        for (const en of enumNames()) es.append(option(en, en));
+        es.dataset.tpl = "enumName";
+        paramBox.append(el("label", null, "枚举"), es, el("label", null, ""), el("label", null, ""));
+        break;
+      }
+      case "reference": {
+        const ts = el("select");
+        for (const tn of tableNames()) ts.append(option(tn, tn));
+        ts.dataset.tpl = "refTable";
+        const fs = el("select");
+        const fillRefFields = (tn) => {
+          fs.replaceChildren();
+          const rf = (state.doc.tables[tn] || {}).fields || {};
+          for (const fn of Object.keys(rf)) fs.append(option(fn, fn));
+        };
+        fillRefFields(ts.value);
+        ts.addEventListener("change", () => fillRefFields(ts.value));
+        fs.dataset.tpl = "refField";
+        paramBox.append(el("label", null, "目标表"), ts, el("label", null, "目标字段"), fs);
+        break;
+      }
+      case "field_compare": {
+        const ops = el("select");
+        for (const op of ["==", "!=", "<", "<=", ">", ">="]) ops.append(option(op, op));
+        ops.dataset.tpl = "op";
+        const os = el("select");
+        for (const fn of Object.keys(fields)) {
+          if (fn !== (fieldName || fieldSel.value)) os.append(option(fn, fn));
+        }
+        os.dataset.tpl = "otherField";
+        paramBox.append(el("label", null, "操作"), ops, el("label", null, "另一字段"), os);
+        break;
+      }
+    }
+  };
+  tplSel.addEventListener("change", refresh);
+  fieldSel.addEventListener("change", refresh);
+
+  applyBtn.addEventListener("click", async () => {
+    const params = { table: tName, field: fieldName || fieldSel.value };
+    paramBox.querySelectorAll("[data-tpl]").forEach((n) => {
+      params[n.dataset.tpl] = n.value;
+    });
+    const plan = planTemplate(tplSel.value, params, state.doc);
+    if (plan.kind === "error") return toast(plan.error, "error");
+    if (plan.kind === "boundary") {
+      note.hidden = false;
+      note.textContent = `表达能力边界：${plan.guidance}`;
+      toast("该模板超出当前引擎表达能力，见引导说明", "error");
+      return;
+    }
+    if (plan.kind === "patches") {
+      for (const p of plan.patches) setPathRoot(p.path, p.value);
+      markDirty();
+      refreshEntity();
+      toast(`模板已应用：${plan.summary}`);
+      return;
+    }
+    // 字段比较：AST 交给 Rust Core 编译（前端不写 assert）。
+    const res = await api("/api/rule/compile", JSON.stringify({ ast: plan.ast, meta: plan.meta }));
+    if (!res.data.ok) {
+      note.hidden = false;
+      note.textContent = `无法编译（表达能力边界）：${res.data.error}`;
+      toast(res.data.error || "编译失败", "error");
+      return;
+    }
+    const rulesPath = ["tables", tName, "fields", params.field, "rules"];
+    const existing = getPath(state.doc, rulesPath) || [];
+    setPathRoot(rulesPath, [...existing, ...res.data.rules]);
+    markDirty();
+    refreshEntity();
+    toast(`模板已编译 ${res.data.rules.length} 条规则：${plan.summary}`);
+  });
+
+  const head = el("div", "nested-row");
+  if (!fieldName) head.append(el("label", null, "字段"), fieldSel);
+  head.append(el("label", null, "模板"), tplSel, applyBtn);
+  sec.append(head, paramBox, note);
+  box.append(sec);
 }
 
 // 枚举编辑器

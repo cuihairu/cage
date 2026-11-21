@@ -192,6 +192,31 @@ fn web_serves_editor_page_and_assets() {
         let (status, _) = request(server.port, "GET", &format!("/{part}"), None);
         assert_eq!(status, 200, "module {part} must be served");
     }
+    // P1-3: the nine built-in rule templates are a served pure module
+    // (planTemplate is node-testable); forms.js wires the rules tier to it.
+    let (status, body) = request(server.port, "GET", "/rule_templates.js", None);
+    assert_eq!(status, 200, "rule templates module must be served");
+    assert!(
+        body.contains("RULE_TEMPLATES"),
+        "rule templates module: {body}"
+    );
+    assert!(
+        body.contains("planTemplate"),
+        "rule templates module: {body}"
+    );
+    assert!(
+        body.contains("config reachability") || body.contains("reachability"),
+        "the nine templates must include config reachability: {body}"
+    );
+    let (_, body) = request(server.port, "GET", "/forms.js", None);
+    assert!(
+        body.contains("renderRuleTemplates"),
+        "forms must wire the template library into the rules tier: {body}"
+    );
+    assert!(
+        body.contains("RULE_TEMPLATES"),
+        "forms must import the nine templates: {body}"
+    );
 
     let (status, body) = request(server.port, "GET", "/app.css", None);
     assert_eq!(status, 200, "editor stylesheet must be served");
