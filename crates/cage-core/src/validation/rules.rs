@@ -12,10 +12,12 @@
 //! untrusted code (Registry) is never executed — see the design doc for the
 //! full comparison and the migration path.
 
-use crate::diagnostics::{Diagnostic, DiagnosticBuilder};
+use crate::diagnostics::{Diagnostic, DiagnosticBuilder, Diagnostics};
 use crate::error::codes::gamerule;
+use crate::plugin::{run_plugin, PluginManifest, WorkerOutcome, WorkerRun};
 use crate::schema::Schema;
 use crate::value::{Document, Value};
+use std::path::{Path, PathBuf};
 
 use declarative::{
     run_client_server_field, run_drop_reward, run_dungeon_stage, run_reference_cycle,
@@ -172,9 +174,25 @@ impl RuleConfig {
     }
 }
 
-/// One executable rule in the registry: either an embedder-supplied plugin
-/// (kept for the trait extension point / phase-2 dynamic libraries) or a
-/// data-declared built-in rule. Both carry an explicit execution order.
+/// A worker plugin (an independent-process validator) registered with the
+/// unified L7 executor, together with the project context it needs to run.
+struct WorkerRule {
+    /// Deterministic run position, from the shared registration order.
+    order: u32,
+    /// The project root the worker process is spawned in.
+    root: PathBuf,
+    /// The loaded manifest, or the load failure to report at run time — a
+    /// missing or unreadable plugin fails validation rather than being
+    /// silently skipped (review §四.2 插件缺失 → 校验失败).
+    manifest: Result<PluginManifest, Diagnostics>,
+    /// Project options forwarded to the plugin (read-only for it).
+    options: serde_json::Value,
+}
+
+/// One executable rule in the registry: an in-process Rust validator, a
+/// data-declared built-in rule, or an independent-process worker plugin. All
+/// three are driven by the same `run` and merge into one diagnostics surface
+/// (review P2-3: Rust built-ins and worker plugins share the L7 surface).
 enum RuleEntry {
     /// Plugin validator with the stable registration order (insertion index).
     Plugin {
@@ -185,15 +203,18 @@ enum RuleEntry {
     },
     /// Data-declared rule; order and enable flag come from [`RuleConfig`].
     Declarative(RuleConfig),
+    /// Independent-process worker plugin (P2-2); runs as `python3 <entry>`.
+    Worker(WorkerRule),
 }
 
-/// Registry of game rule validators and declarative rules. `cage check
-/// --level gamerule` runs every registered entry and merges its diagnostics
-/// into the pipeline.
+/// The unified L7 executor: runs in-process Rust validators, data-declared
+/// built-in rules and independent-process worker plugins, merging their
+/// diagnostics into one surface for the build gate. `cage check
+/// --level gamerule` runs every registered entry through a single `run`.
 #[derive(Default)]
 pub struct GameRuleRegistry {
     entries: Vec<RuleEntry>,
-    next_plugin_order: u32,
+    next_order: u32,
 }
 
 impl GameRuleRegistry {
@@ -221,8 +242,8 @@ impl GameRuleRegistry {
 
     /// Register one validator plugin (chainable).
     pub fn register(&mut self, validator: Box<dyn GameRuleValidator>) -> &mut Self {
-        let order = self.next_plugin_order;
-        self.next_plugin_order += 1;
+        let order = self.next_order;
+        self.next_order += 1;
         self.entries.push(RuleEntry::Plugin { order, validator });
         self
     }
@@ -233,13 +254,80 @@ impl GameRuleRegistry {
         self
     }
 
+    /// Register a loaded worker plugin (chainable). The worker runs as an
+    /// independent process at `run` time, in the same ordered pass as the
+    /// in-process validators.
+    pub fn register_worker(
+        &mut self,
+        root: impl Into<PathBuf>,
+        manifest: PluginManifest,
+        options: serde_json::Value,
+    ) -> &mut Self {
+        self.push_worker(root.into(), Ok(manifest), options);
+        self
+    }
+
+    /// Register a worker plugin from a `plugins/<id>` directory, keeping a
+    /// load failure as a run-time E1602 instead of dropping the plugin.
+    pub fn register_worker_dir(
+        &mut self,
+        root: impl Into<PathBuf>,
+        dir: &Path,
+        options: serde_json::Value,
+    ) -> &mut Self {
+        let root = root.into();
+        self.push_worker(root.clone(), PluginManifest::load(dir), options);
+        self
+    }
+
+    /// Discover every `plugins/<id>/plugin.toml` under `root` and register it
+    /// as a worker. A missing `plugins/` directory is not an error (no plugins
+    /// is a valid project); a malformed manifest surfaces as E1602 at `run`
+    /// time.
+    pub fn discover_workers(&mut self, root: impl AsRef<Path>) -> &mut Self {
+        let root = root.as_ref();
+        let plugins_dir = root.join("plugins");
+        let Ok(entries) = std::fs::read_dir(&plugins_dir) else {
+            return self;
+        };
+        let mut dirs: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.path())
+            .collect();
+        // Deterministic discovery order: id order, not filesystem order.
+        dirs.sort();
+        for dir in dirs {
+            self.register_worker_dir(root, &dir, serde_json::json!({}));
+        }
+        self
+    }
+
+    fn push_worker(
+        &mut self,
+        root: PathBuf,
+        manifest: Result<PluginManifest, Diagnostics>,
+        options: serde_json::Value,
+    ) {
+        let order = self.next_order;
+        self.next_order += 1;
+        self.entries.push(RuleEntry::Worker(WorkerRule {
+            order,
+            root,
+            manifest,
+            options,
+        }));
+    }
+
     /// Run every registered entry, concatenating diagnostics in deterministic
-    /// execution order (plugin registration order, then declarative `order`;
-    /// the pipeline sorts by location afterwards).
+    /// execution order (shared registration order for plugins and workers,
+    /// then declarative `order`; the pipeline sorts by location afterwards).
+    /// Worker findings and worker failures land on the same diagnostics
+    /// surface as the in-process rules.
     pub fn run(&self, schema: &Schema, document: &Document) -> Vec<Diagnostic> {
         let mut order: Vec<&RuleEntry> = self.entries.iter().collect();
         order.sort_by_key(|entry| match entry {
-            RuleEntry::Plugin { order, .. } => *order,
+            RuleEntry::Plugin { order, .. } | RuleEntry::Worker(WorkerRule { order, .. }) => *order,
             RuleEntry::Declarative(config) => config.order,
         });
 
@@ -253,6 +341,7 @@ impl GameRuleRegistry {
                     out.extend(run_rule(config, schema, document));
                 }
                 RuleEntry::Declarative(_) => {}
+                RuleEntry::Worker(worker) => run_worker(worker, schema, document, &mut out),
             }
         }
         out
@@ -281,6 +370,35 @@ fn run_rule(config: &RuleConfig, schema: &Schema, document: &Document) -> Vec<Di
         RuleParams::ClientServerField(params) => {
             run_client_server_field(config, schema, document, params)
         }
+    }
+}
+
+/// Execute one worker plugin and append its diagnostics to `out`. A worker
+/// that fails is reported as its failure diagnostic (E1602/E1603) — never a
+/// silent skip — so the build gate treats plugin failures as validation
+/// failures on the same surface.
+fn run_worker(
+    worker: &WorkerRule,
+    schema: &Schema,
+    document: &Document,
+    out: &mut Vec<Diagnostic>,
+) {
+    let manifest = match &worker.manifest {
+        Ok(manifest) => manifest,
+        Err(load_errors) => {
+            out.extend(load_errors.iter().cloned());
+            return;
+        }
+    };
+    let run = WorkerRun {
+        request_id: format!("l7-{}", manifest.id),
+        schema,
+        document,
+        options: worker.options.clone(),
+    };
+    match run_plugin(&worker.root, manifest, &run) {
+        WorkerOutcome::Ok(findings) => out.extend(findings.iter().cloned()),
+        WorkerOutcome::Failed(failure) => out.push(failure.to_diagnostic()),
     }
 }
 
@@ -347,5 +465,7 @@ impl GameRuleValidator for PowerCurveValidator {
 }
 
 mod declarative;
+#[cfg(test)]
+mod executor;
 #[cfg(test)]
 mod tests;
