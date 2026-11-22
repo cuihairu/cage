@@ -328,6 +328,13 @@ If projects are allowed to write their own business Validators, keep in mind: a 
 
 This is an issue that deserves serious attention later on.
 
+The `cage web` surface follows the same posture, at the deployment level: it is a
+local-first, single-user workbench for a trusted environment — binds `127.0.0.1` only,
+loopback `Host`/`Origin` gate, bounded request reads — and it is not a public multi-user
+management service (review P3-3; collaboration is Git, not the server). See the web
+facade's trusted-environment boundary decision for the record and the re-evaluation
+condition.
+
 ## What Cage Should Not Do
 
 Cage should not become:

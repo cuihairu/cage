@@ -79,6 +79,17 @@ registered as a sticking-point condition and is not done this phase — exposing
 unauthenticated local service onto a LAN is a security regression, and no exception is made
 for convenience.
 
+**Trusted-environment boundary (review P3-3, decided 2026-11-22)**: `cage web` stays a
+local-first, single-user workbench for a trusted environment — not a hosted multi-user
+management service. No accounts/login/roles, no remote administration, no secret
+management, no multi-user coordination between authors: the collaboration model is **Git**
+(schema files are the source of truth in the repo; merge conflicts are resolved by Git's
+own tooling, `cage check` is the shared arbiter), never the web server. The full record,
+including the enforced mechanism (loopback bind, Host/Origin gate, body caps, upload
+guards) and the re-evaluation condition, lives in the web facade's trusted-environment
+boundary decision. Centralized multi-planner collaboration (auth / permissions / review /
+conflict-merge / release flow) is only designed as a product if a real scenario demands it.
+
 **How d is absorbed (not a separate project)**: CLI readability was already a first-class
 citizen (E codes + location + hints), and it is absorbed as two disciplines: ① when a new
 UI endpoint lands, the same parameter semantics are reflected in the CLI output (the text

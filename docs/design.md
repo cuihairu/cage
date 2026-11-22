@@ -1755,6 +1755,26 @@ Therefore:
 
 This is an issue that needs serious consideration in a later phase.
 
+### The `cage web` trusted-environment boundary (review P3-3, 2026-11-22)
+
+`cage web` is a **local-first, single-user workbench for a trusted environment**, not a
+hosted multi-user management service. It has no accounts/logins/roles, no remote
+administration, no secret management, and no multi-author coordination — the collaboration
+model is **Git** (schema files are the source of truth in the repo; merge conflicts resolve
+through Git's own tooling and `cage check` is the shared arbiter), never the web server.
+
+The boundary is enforced, not aspirational, and test-pinned: the serve loop binds
+`127.0.0.1` only (a change of the bind address fails the suite), a request with a
+non-loopback `Host`, a missing `Host`, or a POST with a non-loopback `Origin` is refused
+403 (`local_boundary_violation` — the DNS-rebinding / cross-site-write guard), and the
+single-threaded loop is bounded (8 MiB body cap, 30-second read budget). A remote client
+reaches the workbench via SSH port forwarding; `--bind`/LAN exposure requires
+authentication first and stays a registered sticking-point condition.
+
+Re-evaluation condition: only a real centralized multi-planner scenario. Then
+authentication, permissions, review flow, conflict-merge and release workflow get designed
+as a product (review §八 / P3-3) — not bolted onto this tool.
+
 ---
 
 # 36. MVP

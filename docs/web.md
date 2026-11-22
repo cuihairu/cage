@@ -31,6 +31,28 @@ When the editor document cannot be deserialized into `Schema` (syntax / shape / 
 
 The front end is a static single page under `docs/public` (vanilla ES modules), served directly by `cage web`. The editor path introduces no Node/npm build chain; cargo does it in one step (the docs site itself is built with VitePress, unrelated to the editor).
 
+### The trusted-environment boundary (P3-3, 2026-11-22)
+
+`cage web` is a **local-first, single-user workbench for a trusted environment** — one machine, one author, the browser on the same box. It is not a server product, and it does not grow into one incrementally:
+
+- **No accounts, logins or roles.** There is no identity to authenticate; the tool assumes the author already owns the machine (the same trust model as the plugin decision, §17.1 — locally trusted code).
+- **No remote administration.** The only clients are the local browser and local tooling; there is no admin surface to secure because there is none by design.
+- **No secret management.** Passwords, tokens and keys do not belong in ordinary game configuration — the standing "what Cage should not do" red line applies here too.
+- **No multi-user coordination.** The server never mediates between two authors; review/approval/conflict-resolution between people is out of scope.
+
+The collaboration model is **Git, not the server**. Schema files are the source of truth in the repo; planners share work through Git (push/pull/branch/merge — merge conflicts are resolved by Git's own tooling, and `cage check` is the shared arbiter of a merged tree). The web workbench is what each author edits *with*; a second author is never served a second session.
+
+**Do not expose the port.** The listener binds `127.0.0.1` only and the CLI offers no `--bind` (the `--port` flag's own doc says "binds 127.0.0.1 only"). A remote client reaches the workbench through SSH port forwarding (the UI facade's remote-access policy, decided). `--bind`/LAN exposure would need authentication first and stays a registered sticking-point condition — exposing an unauthenticated local service onto a LAN is a security regression, and no exception is made for convenience.
+
+**The boundary as enforced** (as-built, test-pinned):
+
+- **Bind**: `tiny_http::Server::http(("127.0.0.1", port))` in `cage-cli/src/web/mod.rs`; the bind-failure test holds a port and asserts the serve loop tried `127.0.0.1` — changing the bind address fails the suite.
+- **Host/Origin gate**: a request whose `Host` does not name `127.0.0.1`/`localhost`/`::1`, a missing `Host` (HTTP/1.0), or a POST carrying a non-loopback `Origin` gets 403 (`local_boundary_violation` — the DNS-rebinding / cross-site-write guard); pinned by `local_boundary_checks_host_and_origin` (foreign Host, missing Host, cross-origin write refused; every loopback spelling passes).
+- **Bounds**: 8 MiB body cap (413) and a 30-second read budget (408) on the single-threaded serve loop.
+- **Data discipline**: uploads are double-guarded to the project root **and** a registered `source_roots` entry after canonicalization (symlink escapes refused); artifacts are served only from the build-manifest ledger and re-verified (blake3) before send.
+
+**Re-evaluation condition**: only if a real scenario demands centralized multi-planner coordination — then authentication, permissions, review flow, conflict-merge and release workflow get designed *as a product* (review §八 / P3-3), not bolted onto this tool. Until then the boundary stands.
+
 ## Status
 
 ### W1 implemented: editor swap model (cage-core::edit)
