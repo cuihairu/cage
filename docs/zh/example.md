@@ -151,7 +151,7 @@ cage build: OK (profile 'client', 6 artifacts, manifest /tmp/tmp.tYqNXtE0u0/cons
 ============================================================
 ==> [13/15] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称
 ============================================================
-$ cage check examples/game-config/bad   # 期望 E1501（hp > attack，L6 语义规则）+ 退出码 1
+$ cage check examples/game-config/bad   # 选包强制 L7（[validation] rule_packages）→ 默认级即 E1501 + E1601，退出码 1
 ERROR E1501 — Assertion Failed
   Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1
   Table: Character
@@ -159,8 +159,15 @@ ERROR E1501 — Assertion Failed
   Message: Semantic rule violation
   Hint: hp must not exceed attack
 
+ERROR E1601 — Game Rule Validation Failed
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1
+  Table: Character
+  Row: 0
+  Message: Game rule violation: power curve
+  Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 
-cage check: FAILED (1 errors, 0 warnings)
+
+cage check: FAILED (2 errors, 0 warnings)
 $ cage check examples/game-config/bad --level gamerule   # 期望 E1601 + 退出码 1
 ERROR E1501 — Assertion Failed
   Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1
@@ -178,7 +185,7 @@ ERROR E1601 — Game Rule Validation Failed
 
 
 cage check: FAILED (2 errors, 0 warnings)
-$ cage check examples/game-config/bad --env prod   # prod 收紧 nickname 必填 → E1001
+$ cage check examples/game-config/bad --env prod   # prod 收紧 nickname 必填 → E1001（选包强制 L7：同跑 E1501 + E1601）
 ERROR E1001 — Missing Required Field
   Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1 | Field: nickname
   Table: Character
@@ -218,8 +225,15 @@ ERROR E1501 — Assertion Failed
   Message: Semantic rule violation
   Hint: hp must not exceed attack
 
+ERROR E1601 — Game Rule Validation Failed
+  Source: /home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1
+  Table: Character
+  Row: 0
+  Message: Game rule violation: power curve
+  Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 
-cage check: FAILED (5 errors, 0 warnings)
+
+cage check: FAILED (6 errors, 0 warnings)
 
 ============================================================
 ==> [14/15] cage inspect examples/game-config   —— 查看表结构
@@ -275,7 +289,7 @@ $ cage lsp examples/game-config   # stdin: initialize → didOpen → shutdown �
   "id": 2,
   "result": null
 }
-$ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501（与 cage check 同一管线）
+$ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501 + E1601（与 cage check 同一管线）
 {
   "jsonrpc": "2.0",
   "id": 1,
@@ -313,6 +327,22 @@ $ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501（与 cage
         "code": "E1501",
         "source": "cage",
         "message": "E1501: Semantic rule violation (/home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1) [hint: hp must not exceed attack]"
+      },
+      {
+        "range": {
+          "start": {
+            "line": 0,
+            "character": 0
+          },
+          "end": {
+            "line": 0,
+            "character": 0
+          }
+        },
+        "severity": 1,
+        "code": "E1601",
+        "source": "cage",
+        "message": "E1601: Game rule violation: power curve (/home/cui/workspaces/cage/examples/game-config/bad/config/Character.csv | Format: csv | Row: 1) [hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)]"
       }
     ]
   }
@@ -560,7 +590,7 @@ cage build: OK (profile 'client', 6 artifacts, manifest ./consumer/build/manifes
 
 ### cage check（坏数据）—— E1601 行级诊断 + 分环境 E1001
 
-`bad/` 与好数据两处差别：`Character.csv` 首行 `hp` 从 120 改成 600、`attack` 从 120 改成 500（`hp > attack` 触发 E1501，`attack` 500 触发 E1601 的 level=1 上限），且全行没有 `nickname` 列。内置 power_curve 规则要求 `attack <= level * 100 + 50`，level=1 时上限 150：
+`bad/` 与好数据两处差别：`Character.csv` 首行 `hp` 从 120 改成 600、`attack` 从 120 改成 500（`hp > attack` 触发 E1501，`attack` 500 触发 E1601 的 level=1 上限），且全行没有 `nickname` 列。内置 power_curve 规则要求 `attack <= level * 100 + 50`，level=1 时上限 150；坏工程在 `cage.toml` 里显式选中该包，默认校验级随之抬升到 L7：
 
 ```console
 $ cage check examples/game-config/bad --level gamerule
@@ -571,10 +601,12 @@ ERROR E1601 — Game Rule Validation Failed
   Message: Game rule violation: power curve
   Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 
-cage check: FAILED (1 errors, 0 warnings)
+cage check: FAILED (2 errors, 0 warnings)
 $ echo $?
 1
 ```
+
+该次运行同时报 L6 `E1501`（hp > attack）与 L7 `E1601`（power curve）——上面摘录只保留 `E1601` 诊断；完整逐字记录见第 13 步。
 
 同一份坏数据在 prod 环境下换一种烂法——`nickname` 必填后 4 行全缺：
 
@@ -612,7 +644,7 @@ ERROR E1001 — Missing Required Field
   Message: Missing required field
   Hint: Add required field 'nickname' to this row
 
-cage check: FAILED (4 errors, 0 warnings)
+cage check: FAILED (6 errors, 0 warnings)
 ```
 
 诊断带文件/行/表/行号定位，hint 给出计算过程；退出码 1 可直接接入 CI。

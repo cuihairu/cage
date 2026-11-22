@@ -20,3 +20,9 @@ workbooks = { "Skill.xlsx" = "marker_rows" }
 [profiles.client]
 name = "client"
 targets = []
+
+# 显式选包（P3-1）：power_curve 是内置样例规则包，通用工程默认不套用游戏数值
+# 曲线——选中才在 L7 运行，且选中即强制 L7 关卡。默认参数 level * 100 + 50，
+# 首行 attack=500 越过 level=1 的上限 150 → E1601 行级诊断。
+[validation]
+rule_packages = ["power_curve"]

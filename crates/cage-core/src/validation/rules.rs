@@ -191,7 +191,7 @@ impl RuleConfig {
 /// registry. Each package ships a version ([`RulePackage::version`]),
 /// declares the fields it needs ([`RulePackage::required_fields`]) and lets a
 /// project pin its version and override its parameters
-/// ([`crate::manifest::config::RulePackageConfig`]); a package is
+/// ([`crate::manifest::RulePackageConfig`]); a package is
 /// name-addressed and stateless, so one selection block is reusable across
 /// projects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -224,7 +224,7 @@ impl RulePackage {
     }
 
     /// The version this cage ships for the package (review P3-2). A project
-    /// may pin a version via [`crate::manifest::config::RulePackageConfig`];
+    /// may pin a version via [`crate::manifest::RulePackageConfig`];
     /// a pin on a different *major* version is refused as an upgrade-
     /// compatibility error, while a pin on the same major is accepted (semver:
     /// the same major stays behavior-compatible).

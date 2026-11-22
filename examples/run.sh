@@ -268,7 +268,7 @@ kill $SRV_PID_A $SRV_PID_B 2>/dev/null
 rm -rf "$SRV_DIR" "$CONS_DIR" "$EX/reg"
 
 step "[13/15] 坏数据诊断   —— L6 E1501 违反 hp<=attack + E1601 越过 power curve + --env prod E1001 缺昵称"
-echo "\$ cage check examples/game-config/bad   # 期望 E1501（hp > attack，L6 语义规则）+ 退出码 1"
+echo "\$ cage check examples/game-config/bad   # 选包强制 L7（[validation] rule_packages）→ 默认级即 E1501 + E1601，退出码 1"
 set +e
 L6_OUT="$("$CAGE_BIN" check "$EX/bad" 2>&1)"
 L6_CODE=$?
@@ -284,7 +284,7 @@ set -e
 echo "$BAD_OUT"
 [ "$BAD_CODE" -eq 1 ] || { echo "FAIL: 坏数据期望退出码 1，实际 ${BAD_CODE}" >&2; exit 1; }
 case "$BAD_OUT" in *E1601*) ;; *) echo "FAIL: 输出未包含 E1601" >&2; exit 1 ;; esac
-echo "\$ cage check examples/game-config/bad --env prod   # prod 收紧 nickname 必填 → E1001"
+echo "\$ cage check examples/game-config/bad --env prod   # prod 收紧 nickname 必填 → E1001（选包强制 L7：同跑 E1501 + E1601）"
 set +e
 PROD_OUT="$("$CAGE_BIN" check "$EX/bad" --env prod 2>&1)"
 PROD_CODE=$?
@@ -330,7 +330,7 @@ grep -q '"cage-lsp"' "$LSP_SESSION" || { echo "FAIL: initialize 应答缺 server
 grep -q 'textDocument/publishDiagnostics' "$LSP_SESSION" || { echo "FAIL: didOpen 应推 publishDiagnostics" >&2; exit 1; }
 grep -q '"diagnostics":\[\]' "$LSP_SESSION" || { echo "FAIL: 干净工程应为空面板" >&2; exit 1; }
 rm -f "$LSP_SESSION"
-echo "\$ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501（与 cage check 同一管线）"
+echo "\$ cage lsp examples/game-config/bad   # 坏工程 → 面板带 E1501 + E1601（与 cage check 同一管线）"
 LSP_BAD="$(mktemp)"
 LSP_DEMO "$EX/bad" "$LSP_BAD" \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
