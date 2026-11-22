@@ -779,6 +779,7 @@ pub(crate) fn effective_validation(
 > {
     let mut effective = level;
     let mut need_gamerule = false;
+    let mut packages: Vec<cage_core::validation::rules::RulePackage> = Vec::new();
     if let Some(policy) = &config.validation {
         if let Some(required) = &policy.required_level {
             let required = required.parse::<ValidationLevel>().map_err(|_| {
@@ -791,8 +792,23 @@ pub(crate) fn effective_validation(
                 effective = required;
             }
         }
-        // Declaring required plugins is meaningless unless L7 runs.
+        // Declaring required plugins or rule packages is meaningless unless L7 runs.
         need_gamerule = !policy.required_plugins.is_empty();
+        // Review P3-1: game-specific sample rules are opt-in packages; an
+        // unknown name is a hard usage error, never a silent skip.
+        for name in &policy.rule_packages {
+            let package =
+                cage_core::validation::rules::RulePackage::parse(name).ok_or_else(|| {
+                    format!(
+                        "unknown [validation] rule_packages '{name}' (known: {})",
+                        cage_core::validation::rules::RulePackage::all_names().join(", ")
+                    )
+                })?;
+            packages.push(package);
+        }
+        if !packages.is_empty() {
+            need_gamerule = true;
+        }
     }
     if need_gamerule && effective < ValidationLevel::GameRule {
         effective = ValidationLevel::GameRule;
@@ -800,7 +816,7 @@ pub(crate) fn effective_validation(
     if effective < ValidationLevel::GameRule {
         return Ok((effective, None));
     }
-    let mut registry = cage_core::validation::rules::GameRuleRegistry::with_builtins();
+    let mut registry = cage_core::validation::rules::GameRuleRegistry::with_packages(&packages);
     registry.discover_workers(root);
     if let Some(policy) = &config.validation {
         if !policy.required_plugins.is_empty() {
@@ -906,7 +922,7 @@ mod tests {
     use cage_core::manifest::ManifestGenerator;
     use cage_core::manifest::ProjectConfig;
     use cage_core::schema::Schema;
-    use cage_core::value::Document;
+    use cage_core::value::{Document, Row, SourceLocation, Table, TypedValue, Value};
     use indexmap::IndexMap;
     use std::fs;
 
@@ -934,14 +950,16 @@ mod tests {
 
     // ---- review P2-5: `[validation]` policy → effective level + L7 registry ----
 
-    /// Build a policy fixture (review P2-5).
+    /// Build a policy fixture (review P2-5/P3-1).
     fn policy(
         required_level: Option<&str>,
         required_plugins: &[&str],
+        rule_packages: &[&str],
     ) -> cage_core::ValidationPolicy {
         cage_core::ValidationPolicy {
             required_level: required_level.map(str::to_string),
             required_plugins: required_plugins.iter().map(ToString::to_string).collect(),
+            rule_packages: rule_packages.iter().map(ToString::to_string).collect(),
         }
     }
 
@@ -959,7 +977,7 @@ mod tests {
     fn required_level_raises_the_level_but_never_lowers_it() {
         let tmp = tempfile::tempdir().unwrap();
         let config = ProjectConfig {
-            validation: Some(policy(Some("gamerule"), &[])),
+            validation: Some(policy(Some("gamerule"), &[], &[])),
             ..Default::default()
         };
         // The default CLI level (semantic) escalates to the declared level.
@@ -977,7 +995,7 @@ mod tests {
     fn an_invalid_required_level_is_a_hard_error() {
         let tmp = tempfile::tempdir().unwrap();
         let config = ProjectConfig {
-            validation: Some(policy(Some("banana"), &[])),
+            validation: Some(policy(Some("banana"), &[], &[])),
             ..Default::default()
         };
         let err = effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap_err();
@@ -989,7 +1007,7 @@ mod tests {
     fn required_plugins_force_the_l7_pass_and_fail_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
         let config = ProjectConfig {
-            validation: Some(policy(None, &["drop_rewards"])),
+            validation: Some(policy(None, &["drop_rewards"], &[])),
             ..Default::default()
         };
         let (effective, registry) =
@@ -1010,13 +1028,98 @@ mod tests {
     fn a_semantic_required_level_with_no_required_plugins_stays_semantic() {
         let tmp = tempfile::tempdir().unwrap();
         let config = ProjectConfig {
-            validation: Some(policy(Some("semantic"), &[])),
+            validation: Some(policy(Some("semantic"), &[], &[])),
             ..Default::default()
         };
         let (effective, registry) =
             effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
         assert_eq!(effective, ValidationLevel::Semantic);
         assert!(registry.is_none());
+    }
+
+    /// Review P3-1: selecting a built-in rule package forces the L7 pass and
+    /// the registry runs exactly that package's validator.
+    #[test]
+    fn rule_packages_force_the_l7_pass_and_select_the_sample() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig {
+            validation: Some(policy(None, &[], &["power_curve"])),
+            ..Default::default()
+        };
+        // The default CLI level (semantic) escalates: a declared package is
+        // meaningless unless L7 runs.
+        let (effective, registry) =
+            effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
+        assert_eq!(effective, ValidationLevel::GameRule);
+        let registry = registry.expect("L7 registry built");
+        assert_eq!(registry.len(), 1, "one selected package = one validator");
+
+        // The sample fires on its own fields (level 1 → cap 150; 500 violates).
+        let fields = IndexMap::from([
+            (
+                "level".to_string(),
+                TypedValue::new(Value::Int(1), SourceLocation::default()),
+            ),
+            (
+                "attack".to_string(),
+                TypedValue::new(Value::Int(500), SourceLocation::default()),
+            ),
+        ]);
+        let row = Row {
+            primary_key: vec![Value::Int(1)],
+            fields,
+            location: SourceLocation::default(),
+            index: 0,
+        };
+        let mut doc = Document::new();
+        doc.add_table(Table {
+            name: "Monster".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![row],
+            source_file: "config/monster.json".to_string(),
+            sheet: None,
+        });
+        let diags = registry.run(&Schema::new(), &doc);
+        assert!(
+            diags.iter().any(|d| d.code == cage_core::gamerule::E1601),
+            "the selected power_curve package must fire: {diags:?}"
+        );
+    }
+
+    /// Review P3-1: a package name that no built-in package carries is a
+    /// hard usage error — never a silent "select nothing".
+    #[test]
+    fn an_unknown_rule_package_is_a_hard_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig {
+            validation: Some(policy(None, &[], &["banana"])),
+            ..Default::default()
+        };
+        let err = effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap_err();
+        assert!(err.contains("rule_packages"), "{err}");
+        assert!(err.contains("banana"), "{err}");
+        assert!(
+            err.contains("power_curve"),
+            "names the known packages: {err}"
+        );
+    }
+
+    /// Review P3-1: with no package selected the L7 registry carries no
+    /// game-specific validator — a generic project never assumes a curve.
+    #[test]
+    fn no_rule_packages_selects_no_game_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig {
+            validation: Some(policy(Some("gamerule"), &[], &[])),
+            ..Default::default()
+        };
+        let (_, registry) =
+            effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
+        let registry = registry.expect("L7 registry built");
+        assert!(
+            registry.is_empty(),
+            "no packages selected = no game-specific rules"
+        );
     }
 
     /// Manifest paths are trusted only when normalized and relative

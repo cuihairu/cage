@@ -144,7 +144,10 @@ including L7 business rules requires an explicit `--level gamerule`). The projec
 can change that default itself with `[validation] required_level` in cage.toml —
 it raises the default (never lowers it, an unparseable value is a usage error) and
 `[validation] required_plugins` forces the L7 pass and fails with `E1602` when a
-declared plugin id is missing; see Project Validation Policy for details.
+declared plugin id is missing; `[validation] rule_packages` selects built-in
+game-specific sample rule packages (review P3-1 — Cage is generic and never
+runs one by default, so a project opts in, e.g. `rule_packages = ["power_curve"]`);
+an unknown package name is a usage error; see Project Validation Policy for details.
 `--profile` defaults to `client` (same for check / build / gen). `--env` (same for check /
 build / gen) validates after applying the constraint overrides declared by the
 Schema's `env_overrides` for that environment — an undeclared environment name is a

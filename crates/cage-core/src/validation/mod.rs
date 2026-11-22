@@ -172,9 +172,10 @@ pub fn validate(
 }
 
 /// Profile-aware entry point. `profile` gates the E9006 field-visibility
-/// checks (L1) and is carried in the validation context. The L7 pass runs the
-/// built-in registry; use [`validate_with_policy`] to inject a project-built
-/// registry (review P2-5).
+/// checks (L1) and is carried in the validation context. The L7 pass runs no
+/// game-specific rules (review P3-1: a generic project must not assume
+/// another game's numeric curve); use [`validate_with_policy`] to inject a
+/// project-built registry (review P2-5).
 pub fn validate_with_profile(
     schema: &ValidatedSchema,
     document: &Document,
@@ -194,8 +195,9 @@ pub fn validate_with_profile(
 
 /// Policy-aware entry point (review P2-5): [`validate_with_profile`] plus an
 /// injected L7 registry. `registry` is the project-built [`GameRuleRegistry`]
-/// (built-ins + discovered workers + required-plugin enforcement) when the
-/// policy escalates the level to `gamerule`; `None` runs the built-ins only.
+/// (selected built-in packages + discovered workers + required-plugin
+/// enforcement) when the policy escalates the level to `gamerule`; `None`
+/// runs no game-specific rules (review P3-1).
 pub fn validate_with_policy(
     schema: &ValidatedSchema,
     document: &Document,

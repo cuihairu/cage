@@ -102,7 +102,7 @@ fn worker_and_builtin_share_one_diagnostics_surface() {
         &sdk_script(LEVEL_CAP_PLUGIN),
     );
     let manifest = crate::plugin::PluginManifest::load(tmp.path()).expect("manifest");
-    let mut registry = GameRuleRegistry::with_builtins();
+    let mut registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     registry.register_worker(tmp.path(), manifest, serde_json::json!({"cap": 10}));
 
     // level 12 > worker cap 10 → worker finding; attack 1300 > level*100+50
@@ -186,7 +186,7 @@ fn attested_run_records_plugin_identity_and_environment() {
         &sdk_script(LEVEL_CAP_PLUGIN),
     );
     let manifest = crate::plugin::PluginManifest::load(tmp.path()).expect("manifest");
-    let mut registry = GameRuleRegistry::with_builtins();
+    let mut registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     registry.register_worker(tmp.path(), manifest, serde_json::json!({"cap": 10}));
 
     let (diags, attestation) = registry.run_attested(&Schema::new(), &monster_doc(12, 1300));
@@ -214,7 +214,7 @@ fn attested_run_records_plugin_identity_and_environment() {
     assert_eq!(attestation.digest(), again.digest());
 
     let manifest2 = crate::plugin::PluginManifest::load(tmp.path()).expect("manifest");
-    let mut other = GameRuleRegistry::with_builtins();
+    let mut other = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     other.register_worker(tmp.path(), manifest2, serde_json::json!({"cap": 1000}));
     let (_, changed) = other.run_attested(&Schema::new(), &monster_doc(12, 1300));
     assert_ne!(attestation.digest(), changed.digest());
@@ -274,7 +274,7 @@ fn an_unloadable_plugin_is_attested_as_missing() {
 
 #[test]
 fn a_run_without_workers_has_no_python_in_the_fingerprint() {
-    let registry = GameRuleRegistry::with_builtins();
+    let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     let (_, attestation) = registry.run_attested(&Schema::new(), &monster_doc(1, 1));
     assert_eq!(attestation.plugins.len(), 0);
     assert!(attestation.environment.python.is_none());

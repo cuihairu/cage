@@ -84,7 +84,13 @@ fn gamerule_level_reports_power_curve_violation() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     // level 1 caps attack at 150 — 500 violates; level 5 caps at 550 — fine.
-    write_project(root, &[(1, 1, 500), (2, 5, 400)]);
+    // Review P3-1: the power_curve sample is an opt-in package; selecting it
+    // is what makes the L7 pass run the game-specific formula.
+    write_project_with_policy(
+        root,
+        &[(1, 1, 500), (2, 5, 400)],
+        "\n[validation]\nrule_packages = [\"power_curve\"]\n",
+    );
 
     let out = run_cage(&["check", root.to_str().unwrap(), "--level", "gamerule"]);
     assert_eq!(
@@ -110,7 +116,11 @@ fn gamerule_level_reports_power_curve_violation() {
 fn gamerule_level_passes_clean_data() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    write_project(root, &[(1, 1, 150), (2, 5, 400)]);
+    write_project_with_policy(
+        root,
+        &[(1, 1, 150), (2, 5, 400)],
+        "\n[validation]\nrule_packages = [\"power_curve\"]\n",
+    );
 
     let out = run_cage(&["check", root.to_str().unwrap(), "--level", "gamerule"]);
     assert!(
@@ -152,7 +162,8 @@ fn required_level_raises_the_cli_default_to_gamerule() {
     write_project_with_policy(
         root,
         &[(1, 1, 500)],
-        "\n[validation]\nrequired_level = \"gamerule\"\n",
+        "\n[validation]\nrequired_level = \"gamerule\"\n\
+         rule_packages = [\"power_curve\"]\n",
     );
 
     let out = run_cage(&["check", root.to_str().unwrap()]);
@@ -169,7 +180,8 @@ fn required_level_raises_the_cli_default_to_gamerule() {
     write_project_with_policy(
         root,
         &[(1, 1, 150)],
-        "\n[validation]\nrequired_level = \"gamerule\"\n",
+        "\n[validation]\nrequired_level = \"gamerule\"\n\
+         rule_packages = [\"power_curve\"]\n",
     );
     let out = run_cage(&["check", root.to_str().unwrap()]);
     assert!(
@@ -239,7 +251,8 @@ fn required_level_gates_the_build_too() {
     write_project_with_policy(
         root,
         &[(1, 1, 500)],
-        "\n[validation]\nrequired_level = \"gamerule\"\n",
+        "\n[validation]\nrequired_level = \"gamerule\"\n\
+         rule_packages = [\"power_curve\"]\n",
     );
 
     let out = run_cage(&["build", root.to_str().unwrap()]);
@@ -250,4 +263,47 @@ fn required_level_gates_the_build_too() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("E1601"), "stdout:\n{stdout}");
+}
+
+// ---- review P3-1: game-specific sample rules are opt-in packages ----
+
+/// A plain project at `--level gamerule` (no `[validation]` policy) does NOT
+/// run the power_curve sample — Cage is a generic tool and must not assume
+/// every game shares the same numeric curve.
+#[test]
+fn plain_project_at_gamerule_runs_no_sample_rule() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // level 1 → cap 150; 500 would violate the sample's formula.
+    write_project(root, &[(1, 1, 500)]);
+
+    let out = run_cage(&["check", root.to_str().unwrap(), "--level", "gamerule"]);
+    assert!(
+        out.status.success(),
+        "no package selected = no game-specific rule fires: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("E1601"), "stdout:\n{stdout}");
+    assert!(stdout.contains("cage check: OK"), "stdout:\n{stdout}");
+}
+
+/// A package name no built-in package carries is a hard usage error (exit 2),
+/// never a silent "select nothing" that lets the L7 pass pass vacuously.
+#[test]
+fn an_unknown_rule_package_is_a_usage_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project_with_policy(
+        root,
+        &[(1, 1, 150)],
+        "\n[validation]\nrule_packages = [\"banana\"]\n",
+    );
+
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("rule_packages"), "stderr:\n{stderr}");
+    assert!(stderr.contains("banana"), "stderr:\n{stderr}");
+    assert!(stderr.contains("power_curve"), "stderr:\n{stderr}");
 }

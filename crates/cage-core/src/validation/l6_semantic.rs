@@ -2,8 +2,7 @@
 //! Split out of the validation module (LAY-003).
 
 use super::{
-    expr, rules, schema, semantic, DiagnosticBuilder, ExpressionRule, HashMap, Severity,
-    ValidationContext,
+    expr, schema, semantic, DiagnosticBuilder, ExpressionRule, HashMap, Severity, ValidationContext,
 };
 
 pub(crate) fn validate_semantic(ctx: &mut ValidationContext) {
@@ -103,16 +102,15 @@ pub(crate) fn validate_semantic(ctx: &mut ValidationContext) {
 /// L7: Game Rule validation - plugin validators (see [`rules`]).
 ///
 /// Runs the context's injected registry when the project policy built one
-/// (review P2-5); otherwise the built-in registry. The trait + registry are
+/// (review P2-5). Without an injected registry there are no game-specific
+/// rules (review P3-1): a generic project must not assume another game's
+/// numeric curve, so the built-in sample rules run only when a project
+/// explicitly selects their [`crate::validation::rules::RulePackage`]. The trait + registry are
 /// the stable extension point for embedder-supplied and (phase 2)
 /// dynamic-library validators — see design §17「插件沙箱方案定稿」.
 pub(crate) fn validate_game_rule(ctx: &mut ValidationContext) {
-    let builtins;
-    let registry = if let Some(registry) = ctx.registry {
-        registry
-    } else {
-        builtins = rules::GameRuleRegistry::with_builtins();
-        &builtins
+    let Some(registry) = ctx.registry else {
+        return;
     };
     for diagnostic in registry.run(&ctx.schema.schema, ctx.document) {
         ctx.diagnostics.add(diagnostic);

@@ -103,6 +103,14 @@ pub struct ValidationPolicy {
     /// silently. A non-empty list also forces the L7 pass to run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_plugins: Vec<String>,
+    /// Built-in rule packages to run at the L7 pass (review P3-1). Cage is a
+    /// generic config tool, so a game-specific sample rule (e.g. the
+    /// `power_curve` formula) runs only when its package is explicitly
+    /// selected here — never on every project. An unknown name is a hard
+    /// usage error, not a silent skip. A non-empty list also forces the L7
+    /// pass to run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_packages: Vec<String>,
 }
 
 /// The `[source.<format>]` tables in cage.toml (design §51).

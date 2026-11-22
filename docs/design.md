@@ -863,9 +863,12 @@ Decision (layered, not either/or):
 1. **Now: A (in-process trait)**. The trait `GameRuleValidator` + the registry
    `GameRuleRegistry` are implemented, and the built-in sample rule
    `power_curve` (when any table contains both `level` and `attack` fields,
-   assert `attack <= level * 100 + 50`) runs end to end:
-   `cage check --level gamerule` loads → validates → emits `E1601`
-   diagnostics (row-level location + hint carrying the computation).
+   assert `attack <= level * 100 + 50`) is an **explicitly-selected package**
+   (review P3-1): a project opts in via `[validation] rule_packages =
+   ["power_curve"]`, and `cage check --level gamerule` then loads → validates
+   → emits `E1601` diagnostics (row-level location + hint carrying the
+   computation). A generic project that does not select the package runs no
+   game-specific rule — Cage must not assume another game's numeric curve.
    Embedders (game servers / toolchains) likewise inject their own rules via
    `registry.register(...)`.
 2. **Third-party distribution: B (dynamic library + C ABI shim)**. Game

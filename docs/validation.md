@@ -387,15 +387,25 @@ pub trait GameRuleValidator: Send + Sync {
     fn validate(&self, schema: &Schema, document: &Document) -> Vec<Diagnostic>;
 }
 
-// cage check --level gamerule 运行内建注册表；嵌入方亦可自行组装：
-let mut registry = GameRuleRegistry::with_builtins();
+// The sample rule package is opt-in (review P3-1): an embedder selects the
+// package explicitly, and the project policy selects it in cage.toml:
+let mut registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
 registry.register(Box::new(DropTableValidator));
 let diagnostics = registry.run(&schema, &document);
 ```
 
-The built-in sample rule `power_curve` works end to end: when any table contains both `level`/`attack`
-fields, it validates `attack <= level * 100 + 50`, and violations report `E1601` (row-level location,
-hint includes the computation):
+The built-in sample rule `power_curve` is an **explicitly-selected package**, not a default: Cage
+is a generic configuration tool, so a project that needs the sample's numeric curve declares it in
+`cage.toml` —
+
+```toml
+[validation]
+rule_packages = ["power_curve"]
+```
+
+— rather than every L7 project running the curve. When the package is selected, a table containing
+both `level`/`attack` fields validates `attack <= level * 100 + 50`, and violations report `E1601`
+(row-level location, hint includes the computation):
 
 ```text
 ERROR E1601 — Game Rule Validation Failed
@@ -602,7 +612,7 @@ capability status is marked as it truly is, and the marker is removed once wired
 | `E1607` | Declarative `dungeon_stage` rule: a stage references an unknown monster group or reward |
 | `E1608` | Declarative `client_server_field` rule: a field visible to a profile depends on an entity hidden from that profile |
 
-The E1604-E1608 codes are produced by the **declarative** game-rule engine (`GameRuleRegistry::with_rules` + `RuleConfig`, design §53); they are exercised by library tests but are **not yet wired into `cage check`**, whose L7 today runs only the `PowerCurveValidator` builtin (E1601) via `GameRuleRegistry::with_builtins()`.
+The E1604-E1608 codes are produced by the **declarative** game-rule engine (`GameRuleRegistry::with_rules` + `RuleConfig`, design §53); they are exercised by library tests but are **not yet wired into `cage check`**, whose L7 today runs only the `PowerCurveValidator` sample (E1601) when the project selects its `power_curve` package via `[validation] rule_packages` (review P3-1).
 
 ### Build / Target (Generation Time)
 

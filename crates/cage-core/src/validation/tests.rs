@@ -2,7 +2,9 @@
 
 use super::l1_schema::check_profile_visibility;
 use super::l2_types::value_matches_type;
-use super::{validate, validate_with_profile, ReferenceCache, ValidationLevel};
+use super::{
+    validate, validate_with_policy, validate_with_profile, ReferenceCache, ValidationLevel,
+};
 use crate::diagnostics::Severity;
 use crate::error::codes::{build, parse};
 use crate::error::codes::{reference, schema, semantic, table, type_val, value};
@@ -1722,7 +1724,42 @@ fn l4_detects_duplicate_composite_unique_constraint() {
 }
 
 #[test]
-fn l7_gamerule_level_surfaces_builtin_e1601_end_to_end() {
+fn l7_gamerule_level_runs_no_sample_rule_without_a_selected_package() {
+    let mut schema = Schema::new();
+    schema.add_table(plain_table(
+        "Monster",
+        &["id"],
+        vec![
+            plain_field("id", FieldType::UInt32),
+            plain_field("level", FieldType::UInt32),
+            plain_field("attack", FieldType::UInt32),
+        ],
+    ));
+    let vs = validated(schema);
+    let doc = doc_with(
+        "Monster",
+        vec![row(
+            0,
+            &[
+                ("id", Value::UInt(1)),
+                ("level", Value::UInt(1)),
+                ("attack", Value::UInt(500)), // would violate the curve
+            ],
+        )],
+    );
+
+    // Review P3-1: `validate` carries no registry, so no game-specific sample
+    // runs — a generic project never assumes another game's numeric curve.
+    let diags = validate(&vs, &doc, ValidationLevel::GameRule, false);
+    assert!(
+        diags.errors().is_empty(),
+        "no registry = no game-specific rules: {:?}",
+        diags.errors()
+    );
+}
+
+#[test]
+fn l7_gamerule_level_surfaces_e1601_for_a_selected_package() {
     let mut schema = Schema::new();
     schema.add_table(plain_table(
         "Monster",
@@ -1746,7 +1783,19 @@ fn l7_gamerule_level_surfaces_builtin_e1601_end_to_end() {
         )],
     );
 
-    let diags = validate(&vs, &doc, ValidationLevel::GameRule, false);
+    // Review P3-1: explicitly selecting the `power_curve` package makes the
+    // sample run, surfacing E1601 on the same validation surface.
+    let registry = crate::validation::rules::GameRuleRegistry::with_packages(&[
+        crate::validation::rules::RulePackage::SamplePowerCurve,
+    ]);
+    let diags = validate_with_policy(
+        &vs,
+        &doc,
+        ValidationLevel::GameRule,
+        false,
+        None,
+        Some(&registry),
+    );
     let errors = diags.errors();
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].code, crate::error::codes::gamerule::E1601);

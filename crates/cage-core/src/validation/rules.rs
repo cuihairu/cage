@@ -178,6 +178,44 @@ impl RuleConfig {
     }
 }
 
+/// An explicitly-selectable built-in rule package (review P3-1).
+///
+/// Cage is a generic configuration tool: a game-specific *sample* rule (the
+/// `power_curve` formula) keys on hard-coded field names and a fixed numeric
+/// curve, so it must not run on every project that reaches the L7 pass. Such
+/// rules live in named packages that a project selects explicitly — via
+/// `[validation] rule_packages` in cage.toml — instead of being baked into
+/// the default registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RulePackage {
+    /// The `power_curve` sample: `attack <= level * 100 + 50`.
+    SamplePowerCurve,
+}
+
+impl RulePackage {
+    /// The stable name used in `[validation] rule_packages`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            RulePackage::SamplePowerCurve => "power_curve",
+        }
+    }
+
+    /// Parse a package by its `[validation] rule_packages` name. `None` for
+    /// an unknown name — the caller reports a hard error, never a silent skip
+    /// (a declared-but-unrecognized package must not quietly run nothing).
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "power_curve" => Some(RulePackage::SamplePowerCurve),
+            _ => None,
+        }
+    }
+
+    /// Every selectable package name (for error messages and discovery).
+    pub fn all_names() -> &'static [&'static str] {
+        &["power_curve"]
+    }
+}
+
 /// A worker plugin (an independent-process validator) registered with the
 /// unified L7 executor, together with the project context it needs to run.
 struct WorkerRule {
@@ -231,10 +269,19 @@ impl GameRuleRegistry {
         Self::default()
     }
 
-    /// Registry preloaded with Cage's built-in sample rules.
-    pub fn with_builtins() -> Self {
+    /// Registry preloaded with the explicitly-selected built-in rule packages
+    /// (review P3-1). Game-specific sample rules are opt-in: selecting
+    /// nothing (the default) registers none, so a generic project never
+    /// assumes another game's numeric curve.
+    pub fn with_packages(packages: &[RulePackage]) -> Self {
         let mut reg = Self::new();
-        reg.register(Box::new(PowerCurveValidator));
+        for package in packages {
+            match package {
+                RulePackage::SamplePowerCurve => {
+                    reg.register(Box::new(PowerCurveValidator));
+                }
+            }
+        }
         reg
     }
 

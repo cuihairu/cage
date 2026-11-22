@@ -24,7 +24,7 @@ Status as of the 2026-10 code: the MVP is fully delivered, phase two is fully de
 
 ### Validation Pipeline (core, executed level by level)
 - [x] L0 Parse (syntax errors, E0001 family) / L1 Schema (missing field E1001, unknown field E1002) / L2 Type (E1101) / L3 Value (E1201 range/regex/enum) / L4 Table (E1301 primary key/composite uniqueness) / L5 Reference (E1401 existence, E1410 semantic predicate)
-- [x] L6 Semantic (expression rules: asserts such as min_level <= max_level) / L7 Game Rule (plugin Validator trait, the built-in sample rule power_curve reports E1601)
+- [x] L6 Semantic (expression rules: asserts such as min_level <= max_level) / L7 Game Rule (plugin Validator trait, the built-in sample rule power_curve reports E1601 when selected as a `rule_packages` opt-in, review P3-1)
 - [x] `cage check --level N` can run a chosen level
 
 ### Diagnostics (a first-class citizen)
@@ -74,7 +74,7 @@ Status as of the 2026-10 code: the MVP is fully delivered, phase two is fully de
       deterministic bytes; zero runtime consumption by non-cage toolchains, see the
       `docs/design.md` §Code Targets decision record)
 - [x] Plugin surface: the SourceAdapter / TargetGenerator / GameRuleValidator traits (registered in-process)
-- [x] Game Rule Validator implemented (E1601, `cage check --level gamerule`; the declarative rule engine — `skill_item_category` / `reference_cycle` / `drop_reward` / `dungeon_stage` / `client_server_field`, E1604-E1608 — additionally exists as a library API (`GameRuleRegistry::with_rules`) and is not yet wired into `cage check`, whose L7 runs only the `power_curve` builtin)
+- [x] Game Rule Validator implemented (E1601, `cage check --level gamerule`; the declarative rule engine — `skill_item_category` / `reference_cycle` / `drop_reward` / `dungeon_stage` / `client_server_field`, E1604-E1608 — additionally exists as a library API (`GameRuleRegistry::with_rules`) and is not yet wired into `cage check`, whose L7 runs only the `power_curve` sample when the project selects its package via `[validation] rule_packages`, review P3-1)
 - [x] Dependency Graph (reference graph → build order/change impact/cycle detection, E1403 wired into L5)
 - [x] Incremental builds (`cage build --incremental`: three layers — skip the whole run by hash / rebuild only affected tables through dependency propagation / propagate target configuration)
 - [x] CI integration (a top-level `warnings_as_errors` switch + CI gating in the repo itself)

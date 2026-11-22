@@ -35,7 +35,7 @@ fn monster_doc(rows: Vec<Row>) -> Document {
 
 #[test]
 fn registry_runs_builtin_and_reports_e1601() {
-    let registry = GameRuleRegistry::with_builtins();
+    let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     assert_eq!(registry.len(), 1);
 
     // level 1 caps attack at 150 — 500 violates; level 5 caps at 550 — passes.
@@ -51,7 +51,7 @@ fn registry_runs_builtin_and_reports_e1601() {
 
 #[test]
 fn tables_without_both_fields_are_untouched() {
-    let registry = GameRuleRegistry::with_builtins();
+    let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     let doc = monster_doc(vec![row(0, 1, 500)]);
     // Rename attack away — the rule no longer applies, no diagnostics.
     let mut doc = doc;
@@ -84,7 +84,7 @@ fn flex_row(index: usize, level: Value, attack: Value) -> Row {
 
 #[test]
 fn power_curve_checks_uint_and_float_stats() {
-    let registry = GameRuleRegistry::with_builtins();
+    let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     let rows = vec![
         // level 5 → cap 550; 600 violates.
         flex_row(0, Value::UInt(5), Value::UInt(600)),
@@ -103,7 +103,7 @@ fn power_curve_checks_uint_and_float_stats() {
 
 #[test]
 fn power_curve_skips_rows_with_non_numeric_stats() {
-    let registry = GameRuleRegistry::with_builtins();
+    let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     let rows = vec![
         flex_row(0, Value::String("high".to_string()), Value::Int(9)),
         flex_row(1, Value::Int(9), Value::String("max".to_string())),
@@ -143,10 +143,38 @@ fn custom_validator_registers_and_runs() {
 
 #[test]
 fn boundary_value_passes() {
-    let registry = GameRuleRegistry::with_builtins();
+    let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     // Exactly at the cap (level 1 → 150) is allowed.
     let doc = monster_doc(vec![row(0, 1, 150)]);
     assert!(registry.run(&Schema::new(), &doc).is_empty());
+}
+
+/// Review P3-1: game-specific sample rules are opt-in packages. A registry
+/// with no selected package runs nothing — even on rows that would violate a
+/// game's curve, a generic project must not assume one.
+#[test]
+fn no_package_selection_runs_no_game_specific_rules() {
+    let registry = GameRuleRegistry::new();
+    assert!(registry.is_empty());
+    // level 1 → cap 150 — 500 would violate the curve, but no package is
+    // selected, so the sample never fires.
+    let doc = monster_doc(vec![row(0, 1, 500)]);
+    assert!(registry.run(&Schema::new(), &doc).is_empty());
+    // Explicitly selecting nothing is the same as the default.
+    let registry = GameRuleRegistry::with_packages(&[]);
+    assert!(registry.run(&Schema::new(), &doc).is_empty());
+}
+
+/// Review P3-1: the package names parse back to the same package and the
+/// known-name list is what error messages cite.
+#[test]
+fn rule_package_names_roundtrip_and_unknown_is_refused() {
+    assert_eq!(
+        RulePackage::parse(RulePackage::SamplePowerCurve.name()),
+        Some(RulePackage::SamplePowerCurve)
+    );
+    assert_eq!(RulePackage::parse("banana"), None);
+    assert!(RulePackage::all_names().contains(&"power_curve"));
 }
 
 fn declarative_field(

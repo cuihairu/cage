@@ -383,13 +383,21 @@ pub trait GameRuleValidator: Send + Sync {
     fn validate(&self, schema: &Schema, document: &Document) -> Vec<Diagnostic>;
 }
 
-// cage check --level gamerule 运行内建注册表；嵌入方亦可自行组装：
-let mut registry = GameRuleRegistry::with_builtins();
+// 样例规则包是显式选择的（评审 P3-1）：嵌入方显式选包，项目策略在 cage.toml 选择：
+let mut registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
 registry.register(Box::new(DropTableValidator));
 let diagnostics = registry.run(&schema, &document);
 ```
 
-内建样例规则 `power_curve` 端到端可用：任一表同时含 `level`/`attack`
+内建样例规则 `power_curve` 是**显式选择的规则包**，不是默认项：Cage 是通用配置工具，
+需要该样例数值曲线的项目在 `cage.toml` 声明——
+
+```toml
+[validation]
+rule_packages = ["power_curve"]
+```
+
+——而不是每个 L7 项目都跑该曲线。选中该包后，任一表同时含 `level`/`attack`
 字段时校验 `attack <= level * 100 + 50`，违者报 `E1601`（行级定位，
 hint 带计算过程）：
 
@@ -594,7 +602,7 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 | `E1607` | 声明式 `dungeon_stage` 规则：关卡引用了未知的怪物组或奖励 |
 | `E1608` | 声明式 `client_server_field` 规则：某 profile 可见字段依赖该 profile 不可见的实体 |
 
-E1604-E1608 由**声明式**游戏规则引擎产生（`GameRuleRegistry::with_rules` + `RuleConfig`，design §53）；目前由库级测试覆盖，**尚未接入 `cage check`**——其 L7 今天只通过 `GameRuleRegistry::with_builtins()` 跑内置的 `PowerCurveValidator`（E1601）。
+E1604-E1608 由**声明式**游戏规则引擎产生（`GameRuleRegistry::with_rules` + `RuleConfig`，design §53）；目前由库级测试覆盖，**尚未接入 `cage check`**——其 L7 今天只在项目通过 `[validation] rule_packages` 选择 `power_curve` 包时跑 `PowerCurveValidator` 样例（E1601，评审 P3-1）。
 
 ### Build / Target（生成期）
 

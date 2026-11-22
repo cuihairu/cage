@@ -129,7 +129,9 @@ semantic / gamerule（默认 `semantic`，即默认执行到 L6，含 L7 业务�
 需显式 `--level gamerule`）。项目可在 `cage.toml` 用 `[validation] required_level`
 自行改动该默认——它只抬高默认（绝不降级，无法解析的值是用法错误），而
 `[validation] required_plugins` 强制 L7 关卡运行，声明的插件 id 缺失时以
-`E1602` 使校验失败；详见项目校验策略。`--profile` 默认 `client`（check / build /
+`E1602` 使校验失败；`[validation] rule_packages` 选择内建游戏特定样例规则包
+（评审 P3-1——Cage 通用，绝不默认运行样例，项目显式选择，如
+`rule_packages = ["power_curve"]`；未知名是用法错误）；详见项目校验策略。`--profile` 默认 `client`（check / build /
 gen 同）。`--env`（check / build / gen 同）按 Schema `env_overrides`
 声明的环境抹约束后验证——未声明的环境名是用法错误（exit 2），详见
 Schema 分环境约束覆盖。
