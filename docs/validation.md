@@ -415,6 +415,39 @@ ERROR E1601 — Game Rule Validation Failed
   Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 ```
 
+### Rule package versioning, parameters and capability (review P3-2)
+
+A package is the reusable unit across projects: a name, a shipped version, a declared capability
+and (optionally) editable parameters. Per-package configuration rides in
+`[validation.rule_packages_config.<name>]`, keyed by the package name —
+
+```toml
+[validation]
+rule_packages = ["power_curve"]
+
+[validation.rule_packages_config.power_curve]
+version = "1.0.0"
+params = { slope = 50, intercept = 0 }
+```
+
+- **Version pinning (upgrade-compatibility check).** `version` is a semver-ish pin (`"1"`,
+  `"1.0.0"`, `"*"`). `None` accepts whatever the installed cage ships. A pin on the same **major**
+  version is accepted (semver: the same major stays behavior-compatible); a pin on a different
+  major — or one that does not parse — is a **hard usage error** (exit 2) naming the shipped
+  version. The project must migrate its pin; a rule of unknown behavior never runs silently.
+  (cage-core ships `power_curve` at version `1.0.0`.)
+- **Parameter editing.** The package's own keys — `power_curve` takes `slope` and `intercept` for
+  `attack <= level * slope + intercept` (defaults `100`/`50`). An unknown key or a non-numeric
+  value is a hard usage error at registry build, never a silently-ignored override.
+- **Capability declaration.** Each package declares the schema fields it needs
+  (`power_curve` → `level` and `attack` in some table). When the schema satisfies none of them,
+  the selected package reports `E1609` and fails the check instead of running nothing — a
+  selected rule that the schema cannot support is a defect, not a vacuous pass.
+- **Cross-project reuse.** The same selection block — name, pin, parameters — works in any
+  project with no per-project code; the package is stateless and name-addressed.
+- A `[validation.rule_packages_config]` key that names a package **not** in `rule_packages` is a
+  hard usage error (configuring a package the project did not select).
+
 Besides the trait plugin path, the rule engine also carries a **declarative** data-driven channel
 (`RuleConfig` entries registered via `GameRuleRegistry::with_rules`, design §53): the built-in
 rule kinds `skill_item_category` / `reference_cycle` / `drop_reward` / `dungeon_stage` /
@@ -451,6 +484,11 @@ pass `--level gamerule`:
 [validation]
 required_level = "gamerule"
 required_plugins = ["drop_rewards", "quest_consistency"]
+rule_packages = ["power_curve"]
+
+[validation.rule_packages_config.power_curve]
+version = "1.0.0"
+params = { slope = 100, intercept = 50 }
 ```
 
 - `required_level` — the minimum level the CLI must run. It **raises** the default; it is never
@@ -459,6 +497,16 @@ required_plugins = ["drop_rewards", "quest_consistency"]
 - `required_plugins` — plugin ids that must be discovered and run. An id not present under
   `plugins/` fails validation with `E1602` instead of passing silently; declaring plugins forces
   the L7 pass to run even without a `required_level`.
+- `rule_packages` — built-in game-specific sample rule packages to run (review P3-1). A
+  non-empty list forces the L7 pass; an unknown name is a hard usage error (exit 2), never a
+  silent "select nothing". A key in `rule_packages_config` naming a package that is **not** in
+  `rule_packages` is likewise a hard usage error.
+- `rule_packages_config.<name>` (review P3-2) — per-package configuration: `version` pins the
+  package (a pin on a different major than the shipped version is a hard usage error — the
+  upgrade-compatibility check; `"*"` accepts any), and `params` edits the package's own
+  parameters (e.g. `power_curve`'s `slope`/`intercept` for
+  `attack <= level * slope + intercept`; an unknown key or non-numeric value is a hard usage
+  error).
 
 The policy is applied by `cage check`, `cage build`, the LSP editor lane and the web editor's
 `/api/validate/data` precheck — the same rule set for local runs, the editor and CI. The page can
@@ -611,8 +659,9 @@ capability status is marked as it truly is, and the marker is removed once wired
 | `E1606` | Declarative `drop_reward` rule: a drop reward references an unknown item or carries an invalid quantity/weight |
 | `E1607` | Declarative `dungeon_stage` rule: a stage references an unknown monster group or reward |
 | `E1608` | Declarative `client_server_field` rule: a field visible to a profile depends on an entity hidden from that profile |
+| `E1609` | A selected rule package's declared capability is not satisfied by the schema (review P3-2): e.g. `power_curve` needs `level`/`attack` fields, and the schema declares neither — reported instead of a silent no-op |
 
-The E1604-E1608 codes are produced by the **declarative** game-rule engine (`GameRuleRegistry::with_rules` + `RuleConfig`, design §53); they are exercised by library tests but are **not yet wired into `cage check`**, whose L7 today runs only the `PowerCurveValidator` sample (E1601) when the project selects its `power_curve` package via `[validation] rule_packages` (review P3-1).
+The E1604-E1608 codes are produced by the **declarative** game-rule engine (`GameRuleRegistry::with_rules` + `RuleConfig`, design §53); they are exercised by library tests but are **not yet wired into `cage check`**, whose L7 runs the `PowerCurveValidator` sample (E1601) only when the project selects its `power_curve` package via `[validation] rule_packages` (review P3-1), and reports `E1609` when a selected package's capability is unmet (review P3-2).
 
 ### Build / Target (Generation Time)
 

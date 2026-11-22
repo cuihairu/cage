@@ -871,6 +871,19 @@ Decision (layered, not either/or):
    game-specific rule — Cage must not assume another game's numeric curve.
    Embedders (game servers / toolchains) likewise inject their own rules via
    `registry.register(...)`.
+
+   Review P3-2 generalizes the package into a reusable, versioned unit:
+   `[validation.rule_packages_config.<name>]` carries a `version` pin and
+   `params` overrides (`power_curve` → `slope`/`intercept`, editing
+   `attack <= level * slope + intercept`). The package ships `1.0.0`; a pin on
+   the same major is accepted, a pin on another major is a hard usage error
+   (upgrade-compatibility check — semver: a major change is breaking, and a
+   rule of unknown behavior must never run silently). Each package declares
+   its capability (`power_curve` → `level`/`attack` fields in some table); a
+   selected package whose capability the schema cannot satisfy reports `E1609`
+   instead of running nothing — a vacuous pass is a defect, not a pass. The
+   same selection block (name + pin + params) works across projects with no
+   per-project code: the package is stateless and name-addressed.
 2. **Third-party distribution: B (dynamic library + C ABI shim)**. Game
    teams write plugins in their own language stack and compile them into
    dylibs; the host loads them through the shim and adapts them back to the

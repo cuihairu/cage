@@ -132,6 +132,11 @@ pub mod gamerule {
     /// E1608 - A field visible to a profile depends on an entity hidden from
     /// that profile (declarative `client_server_field` rule)
     pub const E1608: &str = "E1608";
+    /// E1609 - A selected rule package's declared capability is not satisfied
+    /// by the schema (review P3-2): e.g. the `power_curve` package requires
+    /// `level`/`attack` fields in some table, and a schema that declares
+    /// neither cannot run it — reported instead of a silent no-op
+    pub const E1609: &str = "E1609";
 }
 
 /// Editor interchange errors (Web UI / Schema Editor, third phase)

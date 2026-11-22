@@ -409,6 +409,37 @@ ERROR E1601 — Game Rule Validation Failed
   Hint: power_curve: attack 500 exceeds the level 1 cap 150 (level * 100 + 50)
 ```
 
+### 规则包版本化 / 参数编辑 / 能力声明（评审 P3-2）
+
+规则包是跨项目复用的单元：一个名字、一个随包版本、一个声明的能力、以及
+（可选）可编辑参数。每包配置挂在 `[validation.rule_packages_config.<name>]`，
+以包名为键——
+
+```toml
+[validation]
+rule_packages = ["power_curve"]
+
+[validation.rule_packages_config.power_curve]
+version = "1.0.0"
+params = { slope = 50, intercept = 0 }
+```
+
+- **版本固定（升级兼容检查）。** `version` 是 semver 风格固定串（`"1"`、
+  `"1.0.0"`、`"*"`）。`None` 接受安装的 cage 自带版本。固定到同一**主**版本
+  被接受（semver：同主版本行为兼容）；固定到不同主版本——或无法解析的固定串——
+  是**硬用法错误**（exit 2）并点名自带版本。项目必须迁移其固定串；行为未知的
+  规则绝不静默运行。（cage-core 自带 `power_curve` 版本 `1.0.0`。）
+- **参数编辑。** 包的自身键——`power_curve` 取 `slope` 与 `intercept`，公式
+  `attack <= level * slope + intercept`（默认 `100`/`50`）。未知键或非数值值是
+  注册表构建时的硬用法错误，绝不静默忽略覆盖项。
+- **能力声明。** 每包声明它需要的 schema 字段（`power_curve` → 某表同时含
+  `level` 与 `attack`）。当 schema 一个都不满足时，选中的包报 `E1609` 并使
+  check 失败——选了一个 schema 撑不起来的规则是缺陷，不是空跑通过。
+- **跨项目复用。** 同一选择块——名字、固定、参数——在任意项目生效，无需
+  每项目代码；包无状态、按名寻址。
+- `[validation.rule_packages_config]` 里的键若不在 `rule_packages` 中，是硬
+  用法错误（配置了项目未选择的包）。
+
 除 trait 插件通道外，规则引擎还带一条**声明式**数据驱动通道（经
 `GameRuleRegistry::with_rules` 注册的 `RuleConfig` 条目，design §53）：
 内建规则种类 `skill_item_category` / `reference_cycle` / `drop_reward` /
@@ -444,6 +475,11 @@ CLI 默认级别是 `semantic`，永远到不了 L7 关卡。需要真正跑插�
 [validation]
 required_level = "gamerule"
 required_plugins = ["drop_rewards", "quest_consistency"]
+rule_packages = ["power_curve"]
+
+[validation.rule_packages_config.power_curve]
+version = "1.0.0"
+params = { slope = 100, intercept = 50 }
 ```
 
 - `required_level` — CLI 必须运行的最低级别。它只会**抬高**默认值，绝不静默降级。
@@ -451,6 +487,13 @@ required_plugins = ["drop_rewards", "quest_consistency"]
 - `required_plugins` — 必须被发现并运行的插件 id。不在 `plugins/` 下的 id 以
   `E1602` 使校验失败，而不是静默通过；声明插件即使没有 `required_level`
   也会强制 L7 关卡运行。
+- `rule_packages` — 要运行的内建游戏特定样例规则包（评审 P3-1）。非空列表强制
+  L7 关卡；未知名是硬用法错误（退出码 2），绝不「选择空」静默通过。
+  `rule_packages_config` 里的键若不在 `rule_packages` 中，同样是硬用法错误。
+- `rule_packages_config.<name>`（评审 P3-2）— 每包配置：`version` 固定包版本
+  （固定到与自带版本不同主版本是硬用法错误——升级兼容检查；`"*"` 接受任意），
+  `params` 编辑包自身参数（如 `power_curve` 的 `slope`/`intercept`，公式
+  `attack <= level * slope + intercept`；未知键或非数值值是硬用法错误）。
 
 该策略被 `cage check`、`cage build`、LSP 编辑通道以及 Web 编辑器的
 `/api/validate/data` 预检一致应用——本地、编辑器和 CI 用同一套规则。
@@ -601,8 +644,9 @@ lint 层），与本配置项不同层，两者都在跑（见仓库 ci.yml）�
 | `E1606` | 声明式 `drop_reward` 规则：掉落引用了未知物品或数量/权重非法 |
 | `E1607` | 声明式 `dungeon_stage` 规则：关卡引用了未知的怪物组或奖励 |
 | `E1608` | 声明式 `client_server_field` 规则：某 profile 可见字段依赖该 profile 不可见的实体 |
+| `E1609` | 选中的规则包声明的能力不被 schema 满足（评审 P3-2）：如 `power_curve` 需 `level`/`attack` 字段而 schema 一个都没声明——报此码而非静默空跑 |
 
-E1604-E1608 由**声明式**游戏规则引擎产生（`GameRuleRegistry::with_rules` + `RuleConfig`，design §53）；目前由库级测试覆盖，**尚未接入 `cage check`**——其 L7 今天只在项目通过 `[validation] rule_packages` 选择 `power_curve` 包时跑 `PowerCurveValidator` 样例（E1601，评审 P3-1）。
+E1604-E1608 由**声明式**游戏规则引擎产生（`GameRuleRegistry::with_rules` + `RuleConfig`，design §53）；目前由库级测试覆盖，**尚未接入 `cage check`**——其 L7 只在项目通过 `[validation] rule_packages` 选择 `power_curve` 包时跑 `PowerCurveValidator` 样例（E1601，评审 P3-1），并在选中包能力不满足时报 `E1609`（评审 P3-2）。
 
 ### Build / Target（生成期）
 

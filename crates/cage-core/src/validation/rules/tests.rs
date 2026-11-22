@@ -2,6 +2,7 @@ use super::declarative::reference_edge_location;
 use super::*;
 use crate::schema::{FieldSchema, FieldType, ReferenceSchema, TableSchema};
 use crate::value::{Row, SourceLocation, Table, TypedValue};
+use serde_json::json;
 
 fn row(index: usize, level: i64, attack: i64) -> Row {
     let mut fields = indexmap::IndexMap::new();
@@ -33,6 +34,44 @@ fn monster_doc(rows: Vec<Row>) -> Document {
     doc
 }
 
+/// A schema whose Monster table declares the `level`/`attack` fields the
+/// `power_curve` package needs (review P3-2 capability declaration).
+fn power_curve_schema() -> Schema {
+    let mut fields = indexmap::IndexMap::new();
+    for name in ["id", "level", "attack"] {
+        fields.insert(
+            name.to_string(),
+            FieldSchema {
+                name: name.to_string(),
+                field_type: FieldType::Int32,
+                description: None,
+                required: true,
+                nullable: false,
+                default: None,
+                min: None,
+                max: None,
+                min_length: None,
+                max_length: None,
+                pattern: None,
+                enum_values: None,
+                min_items: None,
+                max_items: None,
+                items: None,
+                separator: None,
+                properties: None,
+                additional_properties: None,
+                reference: None,
+                targets: vec![],
+                rules: vec![],
+                metadata: indexmap::IndexMap::new(),
+            },
+        );
+    }
+    let mut schema = Schema::new();
+    schema.add_table(plain_table_schema("Monster", fields));
+    schema
+}
+
 #[test]
 fn registry_runs_builtin_and_reports_e1601() {
     let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
@@ -40,7 +79,7 @@ fn registry_runs_builtin_and_reports_e1601() {
 
     // level 1 caps attack at 150 — 500 violates; level 5 caps at 550 — passes.
     let doc = monster_doc(vec![row(0, 1, 500), row(1, 5, 400)]);
-    let diags = registry.run(&Schema::new(), &doc);
+    let diags = registry.run(&power_curve_schema(), &doc);
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].code, "E1601");
     assert!(diags[0]
@@ -59,7 +98,9 @@ fn tables_without_both_fields_are_untouched() {
     for r in &mut table.rows {
         r.fields.shift_remove("attack");
     }
-    assert!(registry.run(&Schema::new(), &doc).is_empty());
+    // The schema declares both fields (capability satisfied), but the rows
+    // carry no attack — the per-row skip leaves them untouched.
+    assert!(registry.run(&power_curve_schema(), &doc).is_empty());
 }
 
 /// Same shape as [`row`] but with caller-chosen value families — used to
@@ -91,7 +132,7 @@ fn power_curve_checks_uint_and_float_stats() {
         // level 1.0 → cap 150; 200.0 violates.
         flex_row(1, Value::Float(1.0), Value::Float(200.0)),
     ];
-    let diags = registry.run(&Schema::new(), &monster_doc(rows));
+    let diags = registry.run(&power_curve_schema(), &monster_doc(rows));
     assert_eq!(diags.len(), 2);
     assert!(diags.iter().all(|d| d.code == gamerule::E1601));
     assert!(diags.iter().any(|d| {
@@ -109,12 +150,14 @@ fn power_curve_skips_rows_with_non_numeric_stats() {
         flex_row(1, Value::Int(9), Value::String("max".to_string())),
         flex_row(2, Value::Null, Value::Null),
     ];
-    assert!(registry.run(&Schema::new(), &monster_doc(rows)).is_empty());
+    assert!(registry
+        .run(&power_curve_schema(), &monster_doc(rows))
+        .is_empty());
 }
 
 #[test]
 fn builtin_validator_reports_its_name() {
-    assert_eq!(PowerCurveValidator.name(), "power_curve");
+    assert_eq!(PowerCurveValidator::default().name(), "power_curve");
 }
 
 #[test]
@@ -146,7 +189,7 @@ fn boundary_value_passes() {
     let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     // Exactly at the cap (level 1 → 150) is allowed.
     let doc = monster_doc(vec![row(0, 1, 150)]);
-    assert!(registry.run(&Schema::new(), &doc).is_empty());
+    assert!(registry.run(&power_curve_schema(), &doc).is_empty());
 }
 
 /// Review P3-1: game-specific sample rules are opt-in packages. A registry
@@ -175,6 +218,185 @@ fn rule_package_names_roundtrip_and_unknown_is_refused() {
     );
     assert_eq!(RulePackage::parse("banana"), None);
     assert!(RulePackage::all_names().contains(&"power_curve"));
+}
+
+// ---- review P3-2: versioning / parameterization / capability declaration ----
+
+/// A selection with a version pin and parameter overrides (review P3-2).
+fn selection(
+    package: RulePackage,
+    version: Option<&str>,
+    params: &[(&str, serde_json::Value)],
+) -> RulePackageSelection {
+    RulePackageSelection {
+        package,
+        version: version.map(str::to_string),
+        params: params
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect(),
+    }
+}
+
+#[test]
+fn power_curve_params_override_the_default_curve() {
+    // The configured curve (level * 50 + 0) caps level 1 at 50; a level 1
+    // row with attack 100 violates the override while the default curve
+    // (cap 150) would have passed it.
+    let sel = selection(
+        RulePackage::SamplePowerCurve,
+        None,
+        &[("slope", json!(50)), ("intercept", json!(0))],
+    );
+    let registry = GameRuleRegistry::with_package_selections(&[sel])
+        .expect("valid parameters build the registry");
+    assert_eq!(registry.len(), 1);
+
+    let doc = monster_doc(vec![row(0, 1, 100)]);
+    let diags = registry.run(&power_curve_schema(), &doc);
+    assert_eq!(
+        diags.len(),
+        1,
+        "override fires where default passes: {diags:?}"
+    );
+    assert_eq!(diags[0].code, gamerule::E1601);
+    assert!(
+        diags[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("level * 50 + 0")),
+        "the hint names the configured curve: {diags:?}"
+    );
+}
+
+#[test]
+fn the_same_package_spec_reuses_across_registries() {
+    // Cross-project reuse (review P3-2): one name-addressable, versioned,
+    // parameterized spec drives identical rules in two independent
+    // registries (two projects) with no per-project code.
+    let sel = selection(
+        RulePackage::SamplePowerCurve,
+        Some("1"),
+        &[("slope", json!(10)), ("intercept", json!(0))],
+    );
+    let reg_a = GameRuleRegistry::with_package_selections(std::slice::from_ref(&sel))
+        .expect("selection A builds");
+    let reg_b = GameRuleRegistry::with_package_selections(&[sel]).expect("selection B builds");
+
+    // level 1 → cap 10; 25 violates both registries identically.
+    let doc = monster_doc(vec![row(0, 1, 25)]);
+    let diags_a = reg_a.run(&power_curve_schema(), &doc);
+    let diags_b = reg_b.run(&power_curve_schema(), &doc);
+    assert_eq!(diags_a.len(), 1);
+    assert_eq!(diags_b.len(), 1);
+    assert_eq!(diags_a[0].code, gamerule::E1601);
+    assert_eq!(diags_b[0].code, gamerule::E1601);
+    assert!(diags_a[0]
+        .hint
+        .as_deref()
+        .unwrap()
+        .contains("level * 10 + 0"));
+    assert!(diags_b[0]
+        .hint
+        .as_deref()
+        .unwrap()
+        .contains("level * 10 + 0"));
+}
+
+#[test]
+fn power_curve_unknown_param_is_refused() {
+    let sel = selection(RulePackage::SamplePowerCurve, None, &[("banana", json!(1))]);
+    let err = GameRuleRegistry::with_package_selections(&[sel]).unwrap_err();
+    assert_eq!(
+        err,
+        RulePackageError::InvalidParam {
+            name: "power_curve".to_string(),
+            key: "banana".to_string(),
+            detail: "unknown parameter (known: slope, intercept)".to_string(),
+        }
+    );
+    assert_eq!(err.to_string(), "invalid parameter 'banana' for rule package 'power_curve': unknown parameter (known: slope, intercept)");
+}
+
+#[test]
+fn power_curve_non_numeric_param_is_refused() {
+    let sel = selection(
+        RulePackage::SamplePowerCurve,
+        None,
+        &[("slope", json!("fast"))],
+    );
+    let err = GameRuleRegistry::with_package_selections(&[sel]).unwrap_err();
+    match &err {
+        RulePackageError::InvalidParam { key, detail, .. } => {
+            assert_eq!(key, "slope");
+            assert!(detail.contains("number"), "{detail}");
+        }
+        RulePackageError::IncompatibleVersion { .. } => {
+            panic!("expected InvalidParam, got {err:?}")
+        }
+    }
+}
+
+#[test]
+fn version_pin_within_the_shipped_major_is_accepted() {
+    for pin in ["1", "1.0.0", "1.9.9", "*"] {
+        let sel = selection(RulePackage::SamplePowerCurve, Some(pin), &[]);
+        let registry = GameRuleRegistry::with_package_selections(&[sel])
+            .unwrap_or_else(|e| panic!("pin '{pin}' must be compatible: {e}"));
+        assert_eq!(registry.len(), 1);
+    }
+}
+
+#[test]
+fn version_pin_of_a_different_major_is_refused() {
+    // The shipped package is 1.0.0; a pin on major 2 is a breaking change.
+    assert_eq!(RulePackage::SamplePowerCurve.version(), "1.0.0");
+    let sel = selection(RulePackage::SamplePowerCurve, Some("2"), &[]);
+    let err = GameRuleRegistry::with_package_selections(&[sel]).unwrap_err();
+    assert_eq!(
+        err,
+        RulePackageError::IncompatibleVersion {
+            name: "power_curve".to_string(),
+            pinned: "2".to_string(),
+            shipped: "1.0.0".to_string(),
+        }
+    );
+    assert!(err
+        .to_string()
+        .contains("different major version is a breaking change"));
+}
+
+#[test]
+fn an_unparseable_version_pin_is_refused() {
+    let sel = selection(RulePackage::SamplePowerCurve, Some("banana"), &[]);
+    assert!(matches!(
+        GameRuleRegistry::with_package_selections(&[sel]),
+        Err(RulePackageError::IncompatibleVersion { .. })
+    ));
+}
+
+/// Review P3-2: a selected package whose declared capability the schema does
+/// not satisfy reports E1609 instead of silently running nothing.
+#[test]
+fn selected_package_without_its_capability_reports_e1609() {
+    let sel = selection(RulePackage::SamplePowerCurve, None, &[]);
+    let registry = GameRuleRegistry::with_package_selections(&[sel]).unwrap();
+    // No schema table declares level/attack (Schema::new() has no tables).
+    let diags = registry.run(&Schema::new(), &monster_doc(vec![row(0, 1, 500)]));
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].code, gamerule::E1609);
+    assert!(diags[0].hint.as_deref().unwrap().contains("level"));
+    assert!(diags[0].hint.as_deref().unwrap().contains("attack"));
+    // The capability diagnostic, not a row-level E1601 — the schema cannot
+    // run the rule, so nothing is checked.
+}
+
+#[test]
+fn capability_declares_the_required_fields() {
+    assert_eq!(
+        RulePackage::SamplePowerCurve.required_fields(),
+        &["level", "attack"]
+    );
 }
 
 fn declarative_field(

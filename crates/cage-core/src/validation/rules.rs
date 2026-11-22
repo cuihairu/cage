@@ -21,6 +21,8 @@ use crate::plugin::attestation::{
 use crate::plugin::{run_plugin, PluginManifest, WorkerOutcome, WorkerRun};
 use crate::schema::Schema;
 use crate::value::{Document, Value};
+use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use declarative::{
@@ -178,14 +180,20 @@ impl RuleConfig {
     }
 }
 
-/// An explicitly-selectable built-in rule package (review P3-1).
+/// An explicitly-selectable built-in rule package (review P3-1, extended by
+/// P3-2).
 ///
 /// Cage is a generic configuration tool: a game-specific *sample* rule (the
-/// `power_curve` formula) keys on hard-coded field names and a fixed numeric
-/// curve, so it must not run on every project that reaches the L7 pass. Such
-/// rules live in named packages that a project selects explicitly — via
-/// `[validation] rule_packages` in cage.toml — instead of being baked into
-/// the default registry.
+/// `power_curve` formula) keys on field names and a numeric curve, so it must
+/// not run on every project that reaches the L7 pass. Such rules live in
+/// named packages that a project selects explicitly — via `[validation]
+/// rule_packages` in cage.toml — instead of being baked into the default
+/// registry. Each package ships a version ([`RulePackage::version`]),
+/// declares the fields it needs ([`RulePackage::required_fields`]) and lets a
+/// project pin its version and override its parameters
+/// ([`crate::manifest::config::RulePackageConfig`]); a package is
+/// name-addressed and stateless, so one selection block is reusable across
+/// projects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RulePackage {
     /// The `power_curve` sample: `attack <= level * 100 + 50`.
@@ -214,6 +222,112 @@ impl RulePackage {
     pub fn all_names() -> &'static [&'static str] {
         &["power_curve"]
     }
+
+    /// The version this cage ships for the package (review P3-2). A project
+    /// may pin a version via [`crate::manifest::config::RulePackageConfig`];
+    /// a pin on a different *major* version is refused as an upgrade-
+    /// compatibility error, while a pin on the same major is accepted (semver:
+    /// the same major stays behavior-compatible).
+    pub fn version(&self) -> &'static str {
+        match self {
+            RulePackage::SamplePowerCurve => "1.0.0",
+        }
+    }
+
+    /// The schema fields this package needs to be meaningful (review P3-2,
+    /// capability declaration). When a selected package is run against a
+    /// schema that declares none of them, the run reports `E1609` instead of
+    /// silently doing nothing — the project asked for a rule the schema
+    /// cannot support, and that must be visible, not vacuous.
+    pub fn required_fields(&self) -> &'static [&'static str] {
+        match self {
+            RulePackage::SamplePowerCurve => &["level", "attack"],
+        }
+    }
+}
+
+/// One selected rule package plus its project-side configuration (review
+/// P3-2). The selection carries the resolved package, an optional version pin
+/// and the parameter overrides; `GameRuleRegistry::with_package_selections`
+/// validates both before building the validator.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RulePackageSelection {
+    /// The resolved package to run.
+    pub package: RulePackage,
+    /// Version pin (`"1"`, `"1.0.0"`, `"*"`); `None` accepts the shipped one.
+    pub version: Option<String>,
+    /// Parameter overrides, validated by the package itself.
+    pub params: BTreeMap<String, serde_json::Value>,
+}
+
+impl RulePackageSelection {
+    /// A selection with the default version (no pin) and no parameter
+    /// overrides — the plain `[validation] rule_packages = ["power_curve"]`
+    /// form of review P3-1.
+    pub fn new(package: RulePackage) -> Self {
+        Self {
+            package,
+            version: None,
+            params: BTreeMap::new(),
+        }
+    }
+}
+
+/// Why a rule package selection is refused (review P3-2): an incompatible
+/// version pin or an invalid parameter. These are *usage* errors — the
+/// project declared a package it cannot actually run — so the CLI reports
+/// them as hard errors, never as a silent skip.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RulePackageError {
+    /// The version pin targets a different major than the shipped version —
+    /// a breaking change the project must migrate to.
+    IncompatibleVersion {
+        /// Package name.
+        name: String,
+        /// The pin the project wrote.
+        pinned: String,
+        /// The version this cage ships.
+        shipped: String,
+    },
+    /// A parameter the package does not know, or a known parameter carrying a
+    /// value of the wrong type.
+    InvalidParam {
+        /// Package name.
+        name: String,
+        /// The offending parameter key.
+        key: String,
+        /// What went wrong.
+        detail: String,
+    },
+}
+
+impl fmt::Display for RulePackageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RulePackageError::IncompatibleVersion {
+                name,
+                pinned,
+                shipped,
+            } => write!(
+                f,
+                "rule package '{name}' is pinned to version '{pinned}' but this cage \
+                 ships {shipped} — a different major version is a breaking change, \
+                 migrate the project's pin or select the shipped major"
+            ),
+            RulePackageError::InvalidParam { name, key, detail } => write!(
+                f,
+                "invalid parameter '{key}' for rule package '{name}': {detail}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RulePackageError {}
+
+/// The major version segment of a semver string; `None` when it does not
+/// parse as a number.
+fn major_of(version: &str) -> Option<u64> {
+    version.split('.').next()?.parse().ok()
 }
 
 /// A worker plugin (an independent-process validator) registered with the
@@ -272,17 +386,36 @@ impl GameRuleRegistry {
     /// Registry preloaded with the explicitly-selected built-in rule packages
     /// (review P3-1). Game-specific sample rules are opt-in: selecting
     /// nothing (the default) registers none, so a generic project never
-    /// assumes another game's numeric curve.
+    /// assumes another game's numeric curve. Uses the default version (no
+    /// pin) and default parameters for every package; the parameterized,
+    /// version-pinned form is [`Self::with_package_selections`].
     pub fn with_packages(packages: &[RulePackage]) -> Self {
+        let selections: Vec<RulePackageSelection> = packages
+            .iter()
+            .map(|p| RulePackageSelection::new(*p))
+            .collect();
+        // A default selection carries no version pin and no parameters, which
+        // every package accepts — the fallible constructor cannot fail here.
+        Self::with_package_selections(&selections)
+            .expect("a default rule package selection is always valid")
+    }
+
+    /// Registry preloaded with explicitly-selected rule packages carrying a
+    /// version pin and parameter overrides (review P3-2). Each selection's
+    /// version is checked for upgrade compatibility and its parameters are
+    /// validated by the package; a refusal is a hard error, never a silent
+    /// skip. Game-specific sample rules stay opt-in: selecting nothing (the
+    /// default) registers none.
+    pub fn with_package_selections(
+        selections: &[RulePackageSelection],
+    ) -> Result<Self, RulePackageError> {
         let mut reg = Self::new();
-        for package in packages {
-            match package {
-                RulePackage::SamplePowerCurve => {
-                    reg.register(Box::new(PowerCurveValidator));
-                }
-            }
+        for selection in selections {
+            check_version_compatibility(selection.package, selection.version.as_deref())?;
+            let validator = package_validator(selection)?;
+            reg.register(validator);
         }
-        reg
+        Ok(reg)
     }
 
     /// Registry preloaded with a data-declared list of game rules. Entries
@@ -604,16 +737,118 @@ fn document_digest(document: &Document) -> String {
     value_digest(&value)
 }
 
-/// L7.1 declarative rule: every skill must reference an item whose category
-/// is in the declared allowed set. Resolves the cross-table pair
-/// (`skill_table.item_field` → `item_table.item_id_field`) then checks the
-/// referenced item's `category_field`. Unresolved references are reported by
-/// the L5 reference check, so they are skipped here.
-pub struct PowerCurveValidator;
+/// Check a selection's version pin against the shipped package version
+/// (review P3-2, upgrade-compatibility check). A pin on the same major is
+/// accepted (semver: same major stays behavior-compatible); a pin on a
+/// different major, or a pin that does not parse, is refused. `"*"` accepts
+/// any version.
+fn check_version_compatibility(
+    package: RulePackage,
+    pin: Option<&str>,
+) -> Result<(), RulePackageError> {
+    let Some(pin) = pin else { return Ok(()) };
+    if pin == "*" {
+        return Ok(());
+    }
+    let shipped = package.version();
+    match (major_of(pin), major_of(shipped)) {
+        (Some(pinned_major), Some(shipped_major)) if pinned_major == shipped_major => Ok(()),
+        _ => Err(RulePackageError::IncompatibleVersion {
+            name: package.name().to_string(),
+            pinned: pin.to_string(),
+            shipped: shipped.to_string(),
+        }),
+    }
+}
 
-/// Cap the attack stat may reach at a given level: level * 100 + 50.
-fn power_cap(level: f64) -> f64 {
-    level * 100.0 + 50.0
+/// Build the validator for one selected package, validating its parameters
+/// (review P3-2). An unknown parameter key or a non-numeric value is refused
+/// as a usage error — never silently ignored.
+fn package_validator(
+    selection: &RulePackageSelection,
+) -> Result<Box<dyn GameRuleValidator>, RulePackageError> {
+    let name = selection.package.name();
+    match selection.package {
+        RulePackage::SamplePowerCurve => {
+            let (slope, intercept) = power_curve_params(name, &selection.params)?;
+            Ok(Box::new(PowerCurveValidator { slope, intercept }))
+        }
+    }
+}
+
+/// The `power_curve` sample's parameter overrides: `slope` and `intercept`
+/// for the cap `attack <= level * slope + intercept`. Only those two keys are
+/// accepted; a value must be a JSON number.
+fn power_curve_params(
+    name: &str,
+    params: &BTreeMap<String, serde_json::Value>,
+) -> Result<(f64, f64), RulePackageError> {
+    let mut slope = 100.0;
+    let mut intercept = 50.0;
+    for (key, value) in params {
+        let number = value
+            .as_f64()
+            .ok_or_else(|| RulePackageError::InvalidParam {
+                name: name.to_string(),
+                key: key.clone(),
+                detail: "expected a number (JSON integer or float)".to_string(),
+            })?;
+        match key.as_str() {
+            "slope" => slope = number,
+            "intercept" => intercept = number,
+            _ => {
+                return Err(RulePackageError::InvalidParam {
+                    name: name.to_string(),
+                    key: key.clone(),
+                    detail: "unknown parameter (known: slope, intercept)".to_string(),
+                })
+            }
+        }
+    }
+    Ok((slope, intercept))
+}
+
+/// The `power_curve` sample: `attack <= level * slope + intercept`. Its
+/// `slope`/`intercept` come from the package's parameter overrides (default
+/// 100/50) and it declares the `level`/`attack` capability it needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowerCurveValidator {
+    /// Multiplier applied to the level.
+    pub slope: f64,
+    /// Constant added to the product.
+    pub intercept: f64,
+}
+
+impl Default for PowerCurveValidator {
+    fn default() -> Self {
+        Self {
+            slope: 100.0,
+            intercept: 50.0,
+        }
+    }
+}
+
+impl PowerCurveValidator {
+    /// Cap the attack stat may reach at a given level: level * slope + intercept.
+    fn cap(&self, level: f64) -> f64 {
+        level * self.slope + self.intercept
+    }
+
+    /// The curve as a readable formula, e.g. `level * 100 + 50`.
+    fn formula(&self) -> String {
+        let slope = format_number(self.slope);
+        let intercept = format_number(self.intercept);
+        format!("level * {slope} + {intercept}")
+    }
+}
+
+/// Format a parameter for the hint text without needless decimals.
+fn format_number(value: f64) -> String {
+    if value.fract() == 0.0 && value.is_finite() {
+        format!("{value:.0}")
+    } else {
+        format!("{value}")
+    }
 }
 
 /// Numeric view of a value (int/uint/float); `None` for anything else.
@@ -631,7 +866,29 @@ impl GameRuleValidator for PowerCurveValidator {
         "power_curve"
     }
 
-    fn validate(&self, _schema: &Schema, document: &Document) -> Vec<Diagnostic> {
+    fn validate(&self, schema: &Schema, document: &Document) -> Vec<Diagnostic> {
+        // Capability declaration (review P3-2): a selected package whose
+        // required fields the schema never declares reports E1609 instead of
+        // silently running nothing — the project asked for a rule the schema
+        // cannot support, and a vacuous pass must be visible.
+        let capable = schema
+            .tables
+            .values()
+            .any(|table| table.fields.contains_key("level") && table.fields.contains_key("attack"));
+        if !capable {
+            return vec![DiagnosticBuilder::error(
+                gamerule::E1609,
+                "Selected rule package cannot run on this schema",
+            )
+            .source("schema")
+            .hint(
+                "power_curve requires fields 'level' and 'attack' in some table; \
+                     none of the schema's tables declares both (the package runs \
+                     nothing when its capability is unmet)"
+                    .to_string(),
+            )
+            .build()];
+        }
         let mut out = Vec::new();
         for table in document.tables.values() {
             for row in &table.rows {
@@ -644,7 +901,7 @@ impl GameRuleValidator for PowerCurveValidator {
                 let (Some(level), Some(attack)) = (as_f64(level), as_f64(attack)) else {
                     continue;
                 };
-                let cap = power_cap(level);
+                let cap = self.cap(level);
                 if attack > cap {
                     out.push(
                         DiagnosticBuilder::error(
@@ -655,7 +912,8 @@ impl GameRuleValidator for PowerCurveValidator {
                         .table(&table.name)
                         .row(format!("{}", row.index))
                         .hint(format!(
-                            "power_curve: attack {attack} exceeds the level {level} cap {cap} (level * 100 + 50)"
+                            "power_curve: attack {attack} exceeds the level {level} cap {cap} ({})",
+                            self.formula()
                         ))
                         .build(),
                     );

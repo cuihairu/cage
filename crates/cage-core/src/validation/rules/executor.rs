@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::plugin::AttestationOutcome;
+use crate::schema::{FieldSchema, FieldType, TableSchema};
 use crate::value::{Row, SourceLocation, Table, TypedValue};
 use indexmap::IndexMap;
 use std::path::PathBuf;
@@ -63,6 +64,53 @@ fn monster_doc(level: i64, attack: i64) -> Document {
     doc
 }
 
+/// A schema whose Monster table declares the `level`/`attack` fields the
+/// `power_curve` package needs (review P3-2 capability declaration).
+fn power_curve_schema() -> Schema {
+    let mut fields = IndexMap::new();
+    for name in ["id", "level", "attack"] {
+        fields.insert(
+            name.to_string(),
+            FieldSchema {
+                name: name.to_string(),
+                field_type: FieldType::Int32,
+                description: None,
+                required: true,
+                nullable: false,
+                default: None,
+                min: None,
+                max: None,
+                min_length: None,
+                max_length: None,
+                pattern: None,
+                enum_values: None,
+                min_items: None,
+                max_items: None,
+                items: None,
+                separator: None,
+                properties: None,
+                additional_properties: None,
+                reference: None,
+                targets: vec![],
+                rules: vec![],
+                metadata: indexmap::IndexMap::new(),
+            },
+        );
+    }
+    let mut schema = Schema::new();
+    schema.add_table(TableSchema {
+        name: "Monster".to_string(),
+        description: None,
+        primary_key: vec!["id".to_string()],
+        fields,
+        unique_constraints: vec![],
+        order_by: None,
+        targets: vec![],
+        env_overrides: indexmap::IndexMap::new(),
+    });
+    schema
+}
+
 fn write_plugin(dir: &Path, manifest: &str, script: &str) {
     std::fs::create_dir_all(dir).expect("plugin dir");
     std::fs::write(dir.join("plugin.toml"), manifest).expect("write manifest");
@@ -107,7 +155,7 @@ fn worker_and_builtin_share_one_diagnostics_surface() {
 
     // level 12 > worker cap 10 → worker finding; attack 1300 > level*100+50
     // (1250) → builtin finding. Both land on the same surface.
-    let diags = registry.run(&Schema::new(), &monster_doc(12, 1300));
+    let diags = registry.run(&power_curve_schema(), &monster_doc(12, 1300));
     let worker = diags
         .iter()
         .find(|d| d.message == "level too high")
@@ -189,7 +237,7 @@ fn attested_run_records_plugin_identity_and_environment() {
     let mut registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     registry.register_worker(tmp.path(), manifest, serde_json::json!({"cap": 10}));
 
-    let (diags, attestation) = registry.run_attested(&Schema::new(), &monster_doc(12, 1300));
+    let (diags, attestation) = registry.run_attested(&power_curve_schema(), &monster_doc(12, 1300));
     assert!(!diags.is_empty());
 
     assert_eq!(attestation.plugins.len(), 1);
@@ -210,13 +258,13 @@ fn attested_run_records_plugin_identity_and_environment() {
     assert!(attestation.passed);
 
     // The same inputs reproduce the same digest; a changed option changes it.
-    let (_, again) = registry.run_attested(&Schema::new(), &monster_doc(12, 1300));
+    let (_, again) = registry.run_attested(&power_curve_schema(), &monster_doc(12, 1300));
     assert_eq!(attestation.digest(), again.digest());
 
     let manifest2 = crate::plugin::PluginManifest::load(tmp.path()).expect("manifest");
     let mut other = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
     other.register_worker(tmp.path(), manifest2, serde_json::json!({"cap": 1000}));
-    let (_, changed) = other.run_attested(&Schema::new(), &monster_doc(12, 1300));
+    let (_, changed) = other.run_attested(&power_curve_schema(), &monster_doc(12, 1300));
     assert_ne!(attestation.digest(), changed.digest());
     assert_ne!(
         attestation.plugins[0].options_digest,
@@ -275,7 +323,7 @@ fn an_unloadable_plugin_is_attested_as_missing() {
 #[test]
 fn a_run_without_workers_has_no_python_in_the_fingerprint() {
     let registry = GameRuleRegistry::with_packages(&[RulePackage::SamplePowerCurve]);
-    let (_, attestation) = registry.run_attested(&Schema::new(), &monster_doc(1, 1));
+    let (_, attestation) = registry.run_attested(&power_curve_schema(), &monster_doc(1, 1));
     assert_eq!(attestation.plugins.len(), 0);
     assert!(attestation.environment.python.is_none());
     assert!(attestation.passed);

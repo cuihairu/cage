@@ -147,7 +147,14 @@ it raises the default (never lowers it, an unparseable value is a usage error) a
 declared plugin id is missing; `[validation] rule_packages` selects built-in
 game-specific sample rule packages (review P3-1 — Cage is generic and never
 runs one by default, so a project opts in, e.g. `rule_packages = ["power_curve"]`);
-an unknown package name is a usage error; see Project Validation Policy for details.
+an unknown package name is a usage error. Per-package configuration —
+`[validation.rule_packages_config.<name>]` with a `version` pin and `params`
+overrides — edits the package's parameters and pins its version (review P3-2):
+a pin on a different major is a usage error (upgrade-compatibility check), an
+unknown or non-numeric parameter is a usage error, and configuring a package
+the project did not select is a usage error. A selected package whose declared
+capability the schema cannot satisfy reports `E1609` instead of a silent no-op;
+see Project Validation Policy for details.
 `--profile` defaults to `client` (same for check / build / gen). `--env` (same for check /
 build / gen) validates after applying the constraint overrides declared by the
 Schema's `env_overrides` for that environment — an undeclared environment name is a

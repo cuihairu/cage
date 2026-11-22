@@ -779,7 +779,7 @@ pub(crate) fn effective_validation(
 > {
     let mut effective = level;
     let mut need_gamerule = false;
-    let mut packages: Vec<cage_core::validation::rules::RulePackage> = Vec::new();
+    let mut selections: Vec<cage_core::validation::rules::RulePackageSelection> = Vec::new();
     if let Some(policy) = &config.validation {
         if let Some(required) = &policy.required_level {
             let required = required.parse::<ValidationLevel>().map_err(|_| {
@@ -794,6 +794,16 @@ pub(crate) fn effective_validation(
         }
         // Declaring required plugins or rule packages is meaningless unless L7 runs.
         need_gamerule = !policy.required_plugins.is_empty();
+        // Review P3-2: configuring a package the project does not select is a
+        // hard usage error, never a silently-ignored config block.
+        for name in policy.rule_packages_config.keys() {
+            if !policy.rule_packages.contains(name) {
+                return Err(format!(
+                    "[validation] rule_packages_config configures '{name}' but that \
+                     package is not in rule_packages"
+                ));
+            }
+        }
         // Review P3-1: game-specific sample rules are opt-in packages; an
         // unknown name is a hard usage error, never a silent skip.
         for name in &policy.rule_packages {
@@ -804,9 +814,15 @@ pub(crate) fn effective_validation(
                         cage_core::validation::rules::RulePackage::all_names().join(", ")
                     )
                 })?;
-            packages.push(package);
+            let cfg = policy.rule_packages_config.get(name);
+            let selection = cage_core::validation::rules::RulePackageSelection {
+                package,
+                version: cfg.and_then(|c| c.version.clone()),
+                params: cfg.map_or_else(std::collections::BTreeMap::new, |c| c.params.clone()),
+            };
+            selections.push(selection);
         }
-        if !packages.is_empty() {
+        if !selections.is_empty() {
             need_gamerule = true;
         }
     }
@@ -816,7 +832,9 @@ pub(crate) fn effective_validation(
     if effective < ValidationLevel::GameRule {
         return Ok((effective, None));
     }
-    let mut registry = cage_core::validation::rules::GameRuleRegistry::with_packages(&packages);
+    let mut registry =
+        cage_core::validation::rules::GameRuleRegistry::with_package_selections(&selections)
+            .map_err(|e| e.to_string())?;
     registry.discover_workers(root);
     if let Some(policy) = &config.validation {
         if !policy.required_plugins.is_empty() {
@@ -960,7 +978,56 @@ mod tests {
             required_level: required_level.map(str::to_string),
             required_plugins: required_plugins.iter().map(ToString::to_string).collect(),
             rule_packages: rule_packages.iter().map(ToString::to_string).collect(),
+            rule_packages_config: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// A schema whose Monster table declares the `level`/`attack` fields the
+    /// `power_curve` package needs (review P3-2 capability declaration).
+    fn power_curve_schema() -> Schema {
+        use cage_core::schema::{FieldSchema, FieldType, TableSchema};
+        let mut fields = IndexMap::new();
+        for name in ["id", "level", "attack"] {
+            fields.insert(
+                name.to_string(),
+                FieldSchema {
+                    name: name.to_string(),
+                    field_type: FieldType::Int32,
+                    description: None,
+                    required: true,
+                    nullable: false,
+                    default: None,
+                    min: None,
+                    max: None,
+                    min_length: None,
+                    max_length: None,
+                    pattern: None,
+                    enum_values: None,
+                    min_items: None,
+                    max_items: None,
+                    items: None,
+                    separator: None,
+                    properties: None,
+                    additional_properties: None,
+                    reference: None,
+                    targets: vec![],
+                    rules: vec![],
+                    metadata: indexmap::IndexMap::new(),
+                },
+            );
+        }
+        let mut schema = Schema::new();
+        schema.add_table(TableSchema {
+            name: "Monster".to_string(),
+            description: None,
+            primary_key: vec!["id".to_string()],
+            fields,
+            unique_constraints: vec![],
+            order_by: None,
+            targets: vec![],
+            env_overrides: indexmap::IndexMap::new(),
+        });
+        schema
     }
 
     #[test]
@@ -1079,7 +1146,9 @@ mod tests {
             source_file: "config/monster.json".to_string(),
             sheet: None,
         });
-        let diags = registry.run(&Schema::new(), &doc);
+        // The schema declares level/attack, so the package's capability is
+        // satisfied and the sample actually runs (review P3-2).
+        let diags = registry.run(&power_curve_schema(), &doc);
         assert!(
             diags.iter().any(|d| d.code == cage_core::gamerule::E1601),
             "the selected power_curve package must fire: {diags:?}"
@@ -1120,6 +1189,170 @@ mod tests {
             registry.is_empty(),
             "no packages selected = no game-specific rules"
         );
+    }
+
+    // ---- review P3-2: versioning / parameter editing / capability declaration ----
+
+    /// The package config keyed by name, for tests that select a package.
+    fn package_config(
+        version: Option<&str>,
+        params: &[(&str, serde_json::Value)],
+    ) -> cage_core::RulePackageConfig {
+        cage_core::RulePackageConfig {
+            version: version.map(str::to_string),
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn rule_package_params_override_the_sample_curve() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut policy = policy(None, &[], &["power_curve"]);
+        policy.rule_packages_config.insert(
+            "power_curve".to_string(),
+            package_config(
+                None,
+                &[
+                    ("slope", serde_json::json!(50)),
+                    ("intercept", serde_json::json!(0)),
+                ],
+            ),
+        );
+        let config = ProjectConfig {
+            validation: Some(policy),
+            ..Default::default()
+        };
+        let (effective, registry) =
+            effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
+        assert_eq!(effective, ValidationLevel::GameRule);
+        let registry = registry.expect("L7 registry built");
+
+        // level 1, attack 100: fine at the default curve (cap 150), but the
+        // configured curve caps at 50 — the override must take effect.
+        let fields = IndexMap::from([
+            (
+                "level".to_string(),
+                TypedValue::new(Value::Int(1), SourceLocation::default()),
+            ),
+            (
+                "attack".to_string(),
+                TypedValue::new(Value::Int(100), SourceLocation::default()),
+            ),
+        ]);
+        let row = Row {
+            primary_key: vec![Value::Int(1)],
+            fields,
+            location: SourceLocation::default(),
+            index: 0,
+        };
+        let mut doc = Document::new();
+        doc.add_table(Table {
+            name: "Monster".to_string(),
+            primary_key_fields: vec!["id".to_string()],
+            rows: vec![row],
+            source_file: "config/monster.json".to_string(),
+            sheet: None,
+        });
+        let diags = registry.run(&power_curve_schema(), &doc);
+        assert_eq!(
+            diags.len(),
+            1,
+            "custom curve fires where the default would not: {diags:?}"
+        );
+        assert_eq!(diags[0].code, cage_core::gamerule::E1601);
+        assert!(
+            diags[0]
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("level * 50 + 0")),
+            "the hint names the configured curve: {diags:?}"
+        );
+    }
+
+    /// A version pin on a different major than the shipped version is a hard
+    /// usage error — the project must migrate, never run a rule of unknown
+    /// behavior.
+    #[test]
+    fn an_incompatible_rule_package_version_is_a_hard_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut policy = policy(None, &[], &["power_curve"]);
+        policy
+            .rule_packages_config
+            .insert("power_curve".to_string(), package_config(Some("2"), &[]));
+        let config = ProjectConfig {
+            validation: Some(policy),
+            ..Default::default()
+        };
+        let err = effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap_err();
+        assert!(err.contains("power_curve"), "{err}");
+        assert!(err.contains('2'), "{err}");
+        assert!(err.contains("1.0.0"), "names the shipped version: {err}");
+    }
+
+    /// Configuring a package the project did not select is a hard usage error,
+    /// never a silently-ignored config block.
+    #[test]
+    fn config_for_a_non_selected_package_is_a_hard_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut policy = policy(None, &[], &[]);
+        policy
+            .rule_packages_config
+            .insert("power_curve".to_string(), package_config(None, &[]));
+        let config = ProjectConfig {
+            validation: Some(policy),
+            ..Default::default()
+        };
+        let err = effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap_err();
+        assert!(err.contains("rule_packages_config"), "{err}");
+        assert!(err.contains("power_curve"), "{err}");
+    }
+
+    /// A selected package whose declared capability the schema does not
+    /// satisfy reports E1609 instead of silently running nothing.
+    #[test]
+    fn a_selected_package_without_its_capability_reports_e1609() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ProjectConfig {
+            validation: Some(policy(None, &[], &["power_curve"])),
+            ..Default::default()
+        };
+        let (_, registry) =
+            effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap();
+        let registry = registry.expect("L7 registry built");
+        // The schema declares no level/attack fields anywhere.
+        let diags = registry.run(&Schema::new(), &Document::new());
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, cage_core::gamerule::E1609);
+        assert!(
+            diags[0]
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("level") && h.contains("attack")),
+            "{diags:?}"
+        );
+    }
+
+    /// An invalid package parameter (unknown key or wrong type) is a hard
+    /// usage error at registry build.
+    #[test]
+    fn an_invalid_rule_package_param_is_a_hard_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut policy = policy(None, &[], &["power_curve"]);
+        policy.rule_packages_config.insert(
+            "power_curve".to_string(),
+            package_config(None, &[("slope", serde_json::json!("abc"))]),
+        );
+        let config = ProjectConfig {
+            validation: Some(policy),
+            ..Default::default()
+        };
+        let err = effective_validation(tmp.path(), &config, ValidationLevel::Semantic).unwrap_err();
+        assert!(err.contains("slope"), "{err}");
+        assert!(err.contains("power_curve"), "{err}");
+        assert!(err.contains("number"), "{err}");
     }
 
     /// Manifest paths are trusted only when normalized and relative

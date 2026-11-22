@@ -3,6 +3,7 @@
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Profile configuration for build
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +112,32 @@ pub struct ValidationPolicy {
     /// pass to run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rule_packages: Vec<String>,
+    /// Per-package configuration for the selected rule packages (review
+    /// P3-2), keyed by package name. The key must be a name that is also
+    /// listed in `rule_packages` — configuring a package the project does not
+    /// select is a hard usage error. Each entry carries a version pin and the
+    /// package's parameter overrides.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rule_packages_config: BTreeMap<String, RulePackageConfig>,
+}
+
+/// Configuration attached to one selected rule package (review P3-2): a
+/// version pin and parameter overrides. The key of this entry in
+/// [`ValidationPolicy::rule_packages_config`] names the package it configures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RulePackageConfig {
+    /// The package version this project targets — a semver-ish pin such as
+    /// `"1"`, `"1.0.0"` or the wildcard `"*"`. `None` accepts whatever the
+    /// installed cage ships. A pin whose major version differs from the
+    /// shipped major is a hard error (the package's behavior changed and the
+    /// project must migrate) — never a silent run of an incompatible rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Package parameter overrides, e.g. `power_curve`'s `slope` and
+    /// `intercept`. The package validates its own keys: an unknown key or a
+    /// non-numeric value is a hard usage error at registry build.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, serde_json::Value>,
 }
 
 /// The `[source.<format>]` tables in cage.toml (design §51).

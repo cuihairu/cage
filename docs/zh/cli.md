@@ -131,7 +131,12 @@ semantic / gamerule（默认 `semantic`，即默认执行到 L6，含 L7 业务�
 `[validation] required_plugins` 强制 L7 关卡运行，声明的插件 id 缺失时以
 `E1602` 使校验失败；`[validation] rule_packages` 选择内建游戏特定样例规则包
 （评审 P3-1——Cage 通用，绝不默认运行样例，项目显式选择，如
-`rule_packages = ["power_curve"]`；未知名是用法错误）；详见项目校验策略。`--profile` 默认 `client`（check / build /
+`rule_packages = ["power_curve"]`；未知名是用法错误）。每包配置——
+`[validation.rule_packages_config.<name>]` 携带 `version` 固定串与 `params`
+覆盖——编辑包参数并固定其版本（评审 P3-2）：固定到不同主版本是用法错误
+（升级兼容检查），未知或非数值参数是用法错误，配置未选择包的键也是用法
+错误；选中的包若 schema 撑不起其声明能力，报 `E1609` 而非静默空跑；
+详见项目校验策略。`--profile` 默认 `client`（check / build /
 gen 同）。`--env`（check / build / gen 同）按 Schema `env_overrides`
 声明的环境抹约束后验证——未声明的环境名是用法错误（exit 2），详见
 Schema 分环境约束覆盖。

@@ -307,3 +307,125 @@ fn an_unknown_rule_package_is_a_usage_error() {
     assert!(stderr.contains("banana"), "stderr:\n{stderr}");
     assert!(stderr.contains("power_curve"), "stderr:\n{stderr}");
 }
+
+// ---- review P3-2: versioning / parameterization / capability declaration ----
+
+/// Package parameters ride in `[validation.rule_packages_config.<name>]` and
+/// edit the sample's curve: `slope`/`intercept` replace the hard-coded
+/// 100/50, and the hint names the configured formula.
+#[test]
+fn rule_package_params_configure_the_curve_end_to_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // slope 50 / intercept 0 → level 1 caps at 50: attack 100 violates the
+    // configured curve (the default curve would have passed it), attack 50
+    // sits exactly on the boundary and passes.
+    write_project_with_policy(
+        root,
+        &[(1, 1, 100), (2, 1, 50)],
+        "\n[validation]\nrule_packages = [\"power_curve\"]\n\
+         \n[validation.rule_packages_config.power_curve]\n\
+         params = { slope = 50, intercept = 0 }\n",
+    );
+
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the configured curve must fail the violating row"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E1601"), "diagnostics:\n{stdout}");
+    assert!(stdout.contains("level * 50 + 0"), "diagnostics:\n{stdout}");
+    assert!(
+        stdout.contains("cage check: FAILED (1 errors"),
+        "only the one violating row fails: {stdout}"
+    );
+}
+
+/// A version pin on a different major than the shipped version is a hard
+/// usage error (exit 2) — the project must migrate, never run a rule of
+/// unknown behavior. A pin on the shipped major passes the same project.
+#[test]
+fn an_incompatible_rule_package_version_is_a_usage_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project_with_policy(
+        root,
+        &[(1, 1, 150)],
+        "\n[validation]\nrule_packages = [\"power_curve\"]\n\
+         \n[validation.rule_packages_config.power_curve]\n\
+         version = \"2\"\n",
+    );
+
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("power_curve"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("1.0.0"),
+        "names the shipped version: {stderr}"
+    );
+    assert!(stderr.contains("2"), "stderr:\n{stderr}");
+
+    // The same project pinning the shipped major (1.0.0) is compatible and
+    // passes its clean data.
+    write_project_with_policy(
+        root,
+        &[(1, 1, 150)],
+        "\n[validation]\nrule_packages = [\"power_curve\"]\n\
+         \n[validation.rule_packages_config.power_curve]\n\
+         version = \"1.0.0\"\n",
+    );
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "a pin on the shipped major is compatible: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// A selected package whose declared capability the schema does not satisfy
+/// reports E1609 and fails the check — the run is vacuous and that must be
+/// visible, never a silent pass.
+#[test]
+fn a_selected_package_without_its_fields_reports_e1609() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_project_with_policy(
+        root,
+        &[(1, 1, 150)],
+        "\n[validation]\nrule_packages = [\"power_curve\"]\n",
+    );
+    // Replace the fixture with a schema/data pair that carries no level or
+    // attack fields anywhere.
+    fs::write(
+        root.join("schemas/monster.yaml"),
+        r#"tables:
+  Monster:
+    name: Monster
+    primary_key: [id]
+    fields:
+      id: { name: id, type: { kind: Int32 }, required: true }
+      name: { name: name, type: { kind: String }, required: true }
+enums: {}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("config/monster.json"),
+        r#"{"Monster": [{"id": 1, "name": "slime"}]}"#,
+    )
+    .unwrap();
+
+    let out = run_cage(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a vacuous package run must fail the check"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E1609"), "diagnostics:\n{stdout}");
+    assert!(stdout.contains("power_curve"), "diagnostics:\n{stdout}");
+    assert!(stdout.contains("level"), "diagnostics:\n{stdout}");
+}
