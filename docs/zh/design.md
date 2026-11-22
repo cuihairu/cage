@@ -453,9 +453,7 @@ Game Rules
 例如：
 
 ```yaml
-foo:
-    - a
-      - b
+level: a: b
 ```
 
 YAML 本身非法。
@@ -463,15 +461,10 @@ YAML 本身非法。
 Cage：
 
 ```text
-ERROR E0001
-
-Source:
-    config/test.yaml
-
-Location:
-    line 3
-
-Invalid YAML syntax.
+ERROR E0001 — Syntax Error
+  Source: ./config/test.yaml | Format: yaml | Line: 1
+  Message: YAML syntax error: mapping values are not allowed in this context at line 1 column 9
+  Hint: Check YAML syntax - common issues: indentation, missing colons, unquoted special characters
 ```
 
 ---
@@ -480,26 +473,38 @@ Invalid YAML syntax.
 
 检查配置结构是否符合 Schema。
 
-例如缺少字段：
+例如一行缺少必填的 `price`，且带了一个未知字段 `pric`：
+
+```yaml
+Item:
+  - id: 10001
+    name: Charm
+    level: 1
+    pric: 9
+```
+
+Cage：
 
 ```text
-ERROR E1001
-
-Item[10001]
-
-Missing required field:
-    price
+ERROR E1001 — Missing Required Field
+  Source: ./config/Item.yaml | Format: yaml | Row: 1 | Field: price
+  Table: Item
+  Row: 0
+  Field: price
+  Message: Missing required field
+  Hint: Add required field 'price' to this row
 ```
 
 未知字段：
 
 ```text
-ERROR E1002
-
-Item[10001]
-
-Unknown field:
-    pric
+WARNING E1002 — Unknown Field
+  Source: ./config/Item.yaml | Format: yaml | Row: 1 | Field: pric
+  Table: Item
+  Row: 0
+  Field: pric
+  Message: Unknown field not defined in schema
+  Hint: Remove this field or add it to the schema
 ```
 
 ---
@@ -508,31 +513,28 @@ Unknown field:
 
 例如：
 
-```text
-Level = "abc"
+```yaml
+level: abc
 ```
 
 Schema：
 
 ```yaml
-type: uint32
+level:
+  type: { kind: Int32 }
 ```
 
 错误：
 
 ```text
-ERROR E1101
-
-Item[10001].Level
-
-Expected:
-    uint32
-
-Actual:
-    string
-
-Value:
-    "abc"
+ERROR E1101 — Type Mismatch
+  Source: ./config/Item.yaml | Format: yaml | Row: 3 | Col: level | Field: level
+  Table: Item
+  Row: 2
+  Field: level
+  Value: {"type":"String","value":"abc"}
+  Message: Type mismatch
+  Hint: Expected type: Int32, got: string
 ```
 
 ---
@@ -545,26 +547,28 @@ Value:
 
 ```yaml
 level:
-  type: uint32
+  type: { kind: Int32 }
   min: 1
   max: 100
 ```
 
 数据：
 
-```text
-level = 999
+```yaml
+level: 999
 ```
 
 结果：
 
 ```text
-ERROR E1201
-
-Item[10001].level = 999
-
-Allowed range:
-    1..100
+ERROR E1201 — Value Out of Range
+  Source: ./config/Item.yaml | Format: yaml | Row: 4 | Col: level | Field: level
+  Table: Item
+  Row: 3
+  Field: level
+  Value: {"type":"Int","value":999}
+  Message: Value exceeds maximum
+  Hint: Maximum allowed: 100
 ```
 
 支持：
@@ -603,15 +607,13 @@ ID 必须唯一
 结果：
 
 ```text
-ERROR E1301
-
-Duplicate primary key:
-
-Item.ID = 10001
-
-Rows:
-    2
-    4
+ERROR E1301 — Duplicate Primary Key
+  Source: ./config/Item.yaml | Format: yaml | Row: 3
+  Table: Item
+  Row: 2
+  Value: ["10001"]
+  Message: Duplicate primary key
+  Hint: First occurrence at row 0
 ```
 
 还可以检查：
@@ -653,27 +655,24 @@ Schema：
 
 ```yaml
 DropItemID:
-  type: uint32
+  type: { kind: Int32 }
 
   reference:
     table: Item
-    field: ID
+    field: id
 ```
 
 Cage：
 
 ```text
-ERROR E1401
-
-Monster[20003].DropItemID
-
-Value:
-    99999
-
-Reference:
-    Item.ID
-
-Target does not exist.
+ERROR E1401 — Reference Target Not Found
+  Source: ./config/Monster.yaml | Format: yaml | Row: 3 | Col: DropItemID | Field: DropItemID
+  Table: Monster
+  Row: 2
+  Field: DropItemID
+  Value: {"type":"Int","value":99999}
+  Message: Referenced target does not exist
+  Hint: No Item with id=99999 found
 ```
 
 ---
@@ -709,26 +708,30 @@ Armor
 Consumable
 ```
 
-这时候应该继续报告：
+这时候应该继续报告。用 `compatible_with` 声明允许的值；违规报 `E1411`：
 
-```text
-ERROR E1410
+```yaml
+DropItemID:
+  type: { kind: Int32 }
 
-Monster[20001].DropItemID = 10001
-
-Referenced Item exists,
-but its type is not valid for Monster drops.
-
-Actual:
-    QuestItem
-
-Allowed:
-    Weapon
-    Armor
-    Consumable
+  reference:
+    table: Item
+    field: id
+    compatible_with: [Weapon, Armor, Consumable]
 ```
 
-因此 Reference 系统应该支持：
+```text
+ERROR E1411 — Reference Field Constraint Violation
+  Source: ./config/Monster.yaml | Format: yaml | Row: 1 | Col: DropItemID | Field: DropItemID
+  Table: Monster
+  Row: 0
+  Field: DropItemID
+  Value: {"type":"Int","value":10001}
+  Message: Referenced object field value not compatible
+  Hint: Referenced Item.type = 'QuestItem', allowed: Weapon, Armor, Consumable
+```
+
+对被引用行上的任意谓词（如 level 范围）是 `E1410` 变体。因此 Reference 系统应该支持：
 
 ```text
 Existence
@@ -935,48 +938,27 @@ Diagnostics 应该是一等公民。
 ```text
 Code
 Severity
-Source
-Location
+Title
+Source        file | Format | Sheet | Row | Col | Field | Line
 Table
 Row
-Column
 Field
 Value
 Message
 Hint
 ```
 
-例如：
+源定位折叠成单行 `Source`。例如同一条引用缺失诊断，从 Excel 单元格读出时：
 
 ```text
-ERROR E1401
-
-File:
-    monster.xlsx
-
-Sheet:
-    Monster
-
-Cell:
-    G27
-
-Row:
-    Monster[20003]
-
-Field:
-    DropItemID
-
-Value:
-    99999
-
-Reference:
-    Item.ID
-
-Message:
-    Target does not exist.
-
-Hint:
-    Add Item[99999] or change DropItemID.
+ERROR E1401 — Reference Target Not Found
+  Source: ./config/Monster.xlsx | Format: excel | Sheet: Monster | Row: 4 | Col: B | Field: DropItemID
+  Table: Monster
+  Row: 2
+  Field: DropItemID
+  Value: {"type":"Int","value":99999}
+  Message: Referenced target does not exist
+  Hint: No Item with id=99999 found
 ```
 
 支持：
