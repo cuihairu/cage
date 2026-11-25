@@ -1,14 +1,16 @@
-//! `cage lsp` process-level coverage (design §49 I 系列 IDE 立项): the
-//! diagnostics-only Language Server speaks hand-rolled JSON-RPC 2.0 over
-//! stdio — Content-Length framing on both sides — and pushes the check
+//! `cage lsp` process-level coverage (design §49, I-series IDE ruling):
+//! the diagnostics-only Language Server speaks LSP framing and the
+//! JSON-RPC envelope through the `lsp-server` crate, and pushes the check
 //! pipeline's diagnostics onto every open document. These tests drive the
 //! real binary as a subprocess: request in, frame out, assertions both
 //! ways (initialize/shutdown replies and didOpen/didClose publishes).
 
-use std::io::{Read, Write};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, Command, Stdio};
 
-use serde_json::json;
+use lsp_server::Message;
+use lsp_types::Url;
+use serde_json::{json, Value};
 
 /// The shared example project, absolute (cargo runs test binaries from the
 /// package directory).
@@ -23,44 +25,47 @@ fn example_root() -> String {
     )
 }
 
-/// One framed LSP message written to the server's stdin.
+/// The URI as the server sees it: lsp-types' `Url` normalizes `..` segments
+/// away on parse, and every publish echoes through that same type — so the
+/// assertions must compare against the normalized form, not the raw test
+/// string.
+fn normalized(uri: String) -> String {
+    Url::parse(&uri).expect("test uri parses").to_string()
+}
+
+/// One client message, framed by the library's writer.
 fn write_message(stdin: &mut impl Write, body: &str) {
-    write!(stdin, "Content-Length: {}\r\n\r\n{}", body.len(), body).unwrap();
+    let message: Message = serde_json::from_str(body).expect("test message parses");
+    message.write(stdin).expect("frame writes");
     stdin.flush().unwrap();
 }
 
-/// One LSP frame read from the server's stdout, parsed as JSON.
-fn read_message(stdout: &mut impl Read) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-    loop {
-        let mut line = Vec::new();
-        let mut byte = [0_u8; 1];
-        loop {
-            stdout.read_exact(&mut byte).unwrap();
-            line.push(byte[0]);
-            if byte[0] == b'\n' {
-                break;
-            }
-        }
-        let header = String::from_utf8_lossy(&line);
-        let header = header.trim_end_matches(['\n', '\r']);
-        if header.is_empty() {
-            break;
-        }
-        if let Some(value) = header.strip_prefix("Content-Length:") {
-            content_length = Some(value.trim().parse().unwrap());
-        }
+/// One frame whose framing is valid but whose body is not JSON. The
+/// library writer only emits valid messages, so this lone frame is
+/// assembled by hand — the only literal frame in this file, and the pin
+/// for the approved "unreadable frame ends the session" semantics.
+fn write_broken_frame(stdin: &mut impl Write, body: &str) {
+    use std::fmt::Write as _;
+    let mut wire = String::new();
+    let _ = write!(wire, "Content-Length: {}\r\n\r\n", body.len());
+    wire.push_str(body);
+    stdin.write_all(wire.as_bytes()).unwrap();
+    stdin.flush().unwrap();
+}
+
+/// One server frame, decoded through the library's reader, as JSON.
+fn read_message(stdout: &mut impl BufRead) -> Value {
+    match Message::read(stdout).expect("server frame reads") {
+        Some(message) => serde_json::to_value(&message).expect("server frame serializes"),
+        None => panic!("server closed the stream before a frame arrived"),
     }
-    let mut body = vec![0_u8; content_length.expect("server sent Content-Length")];
-    stdout.read_exact(&mut body).unwrap();
-    serde_json::from_slice(&body).unwrap()
 }
 
 /// A live `cage lsp` session: the parent writes the session, reads the
 /// expected replies, and reaps the child on scope exit.
 struct Session {
     child: Child,
-    stdout: ChildStdout,
+    stdout: BufReader<std::process::ChildStdout>,
 }
 
 impl Session {
@@ -72,7 +77,7 @@ impl Session {
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap_or_else(|e| panic!("spawn `cage lsp {root}`: {e}"));
-        let stdout = child.stdout.take().expect("stdout piped");
+        let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
         Self { child, stdout }
     }
 
@@ -81,7 +86,7 @@ impl Session {
     }
 
     /// Send a request, read its reply.
-    fn request(&mut self, body: &str) -> serde_json::Value {
+    fn request(&mut self, body: &str) -> Value {
         write_message(self.stdin(), body);
         read_message(&mut self.stdout)
     }
@@ -124,7 +129,7 @@ fn did_change(uri: &str) -> String {
 #[test]
 fn initialize_shows_capabilities_and_clean_projects_publish_an_empty_panel() {
     let root = example_root();
-    let uri = format!("file://{}/schemas/item.yaml", root);
+    let uri = normalized(format!("file://{}/schemas/item.yaml", root));
     let mut session = Session::new(&root);
 
     let reply = session.request(
@@ -165,7 +170,7 @@ fn initialize_shows_capabilities_and_clean_projects_publish_an_empty_panel() {
 #[test]
 fn broken_projects_publish_error_diagnostics_with_location_and_code() {
     let root = format!("{}/bad", example_root());
-    let uri = format!("file://{}/schemas/item.yaml", root);
+    let uri = normalized(format!("file://{}/schemas/item.yaml", root));
     let mut session = Session::new(&root);
     session.request(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
     session.notify(&did_open(&uri));
@@ -213,8 +218,8 @@ fn broken_projects_publish_error_diagnostics_with_location_and_code() {
 #[test]
 fn did_close_clears_only_that_document_and_changes_republish() {
     let root = example_root();
-    let uri = format!("file://{}/schemas/item.yaml", root);
-    let other = format!("file://{}/schemas/quest.yaml", root);
+    let uri = normalized(format!("file://{}/schemas/item.yaml", root));
+    let other = normalized(format!("file://{}/schemas/quest.yaml", root));
     let mut session = Session::new(&root);
     session.request(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
 
@@ -251,7 +256,7 @@ fn did_close_clears_only_that_document_and_changes_republish() {
 #[test]
 fn bad_level_from_initialization_options_becomes_a_visible_error() {
     let root = example_root();
-    let uri = format!("file://{}/schemas/item.yaml", root);
+    let uri = normalized(format!("file://{}/schemas/item.yaml", root));
     let mut session = Session::new(&root);
     session.request(
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize",
@@ -273,7 +278,7 @@ fn bad_level_from_initialization_options_becomes_a_visible_error() {
 }
 
 #[test]
-fn unknown_requests_and_garbage_bodies_get_json_rpc_errors() {
+fn unknown_requests_get_32601_and_the_session_keeps_serving() {
     let root = example_root();
     let mut session = Session::new(&root);
     // Unknown request → -32601, id echoed.
@@ -285,15 +290,28 @@ fn unknown_requests_and_garbage_bodies_get_json_rpc_errors() {
         .as_str()
         .unwrap()
         .contains("textDocument/hover"));
-    // Malformed body → -32700, null id — and the session keeps serving.
-    write_message(session.stdin(), "{not json");
-    let reply = read_message(&mut session.stdout);
-    assert!(reply["id"].is_null());
-    assert_eq!(reply["error"]["code"], -32700);
+    // The session survived the unknown request: shutdown answers normally.
     let reply = session.request(r#"{"jsonrpc":"2.0","id":9,"method":"shutdown"}"#);
     assert!(reply["result"].is_null());
     session.notify(r#"{"jsonrpc":"2.0","method":"exit"}"#);
     assert_eq!(session.wait(), 0);
+}
+
+#[test]
+fn malformed_frame_ends_the_session() {
+    // Adopted library semantics (approved deviation from the hand-rolled
+    // era): a frame the reader cannot deserialize ends the session
+    // cleanly — there is no reply-to-garbage anymore.
+    let root = example_root();
+    let mut session = Session::new(&root);
+    let reply = session.request(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
+    assert_eq!(reply["id"], 1);
+    write_broken_frame(session.stdin(), "{not json");
+    assert_eq!(
+        session.wait(),
+        0,
+        "the reader gives up and the session ends cleanly"
+    );
 }
 
 #[test]

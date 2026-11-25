@@ -1,15 +1,22 @@
-//! `cage lsp` — a diagnostics-only Language Server over stdio (design §49
-//! I 系列 IDE 立项). Hand-rolled JSON-RPC 2.0 with LSP framing: the whole
-//! wire is "headers until a blank line, then a `Content-Length` body" —
-//! small enough to test exhaustively over in-memory buffers, so the server
-//! stays synchronous and the workspace keeps zero new dependencies and no
-//! async runtime (`lsp-types` + `tokio` would bring both for no gain).
+//! `cage lsp` — a diagnostics-only Language Server over stdio (design §49,
+//! I-series IDE ruling). Transport, framing, and the JSON-RPC envelope come
+//! from the `lsp-server` crate (the scaffold rust-analyzer and kode-server
+//! sit on): frames travel via [`lsp_server::Message::read`]/[`lsp_server::Message::write`],
+//! envelopes are `lsp_server::{Request, Response, Notification}`, and the
+//! payload shapes are `lsp-types` structs. Dispatch stays a plain
+//! synchronous loop — the library owns every protocol byte.
 //!
 //! Protocol subset (the ruling's list): `initialize` / `initialized` /
 //! `textDocument/didOpen` / `didChange` / `didClose` / `shutdown` / `exit`,
 //! with `textDocument/publishDiagnostics` as the push channel (not the
 //! pull-based `textDocument/diagnostic`). Anything else: requests get
 //! -32601, notifications are ignored — both LSP-legal.
+//!
+//! Adopted library semantics (approved deviation from the hand-rolled
+//! era): a frame whose body fails to deserialize makes `Message::read`
+//! fail and ends the session (the library reader cannot resync
+//! mid-stream), and there is no per-frame size cap anymore — the library
+//! trusts the declared body length. Both match kode-server's behavior.
 //!
 //! Diagnostics are the check pipeline's own output — [`crate::validate_project`],
 //! the single entry `cage check` also runs — mapped onto every open
@@ -18,10 +25,11 @@
 //! location + hint, and every diagnostic the project produces is on the
 //! panel (per-file anchoring would hide the cross-file errors — references,
 //! dependencies — the panel exists to surface). didOpen / didChange trigger
-//! a full validation from disk (the ruling's no-incremental boundary: 配置
-//! 规模是百表量级，全量毫秒级); the editor buffer is not virtualized, so
-//! what gets diagnosed is the saved state and Full sync says so honestly.
-//! didClose clears the closed document's panel.
+//! a full validation from disk (the ruling's no-incremental boundary:
+//! config scale is hundreds of tables, a full pass is milliseconds); the
+//! editor buffer is not virtualized, so what gets diagnosed is the saved
+//! state and Full sync says so honestly. didClose clears the closed
+//! document's panel.
 //!
 //! `env` / `level` ride the initialize request's `initializationOptions`
 //! (`{"env": "prod", "level": "semantic"}`); defaults match `check` (base
@@ -30,67 +38,15 @@
 //! error-severity diagnostic instead of a silent server.
 
 use cage_core::{Diagnostic, Severity};
-use serde_json::{json, Value};
+use lsp_server::{ErrorCode, Message, Notification, Response};
+use lsp_types::{
+    Diagnostic as LspDiagnostic, DiagnosticSeverity, InitializeResult, NumberOrString, Position,
+    PublishDiagnosticsParams, Range, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, Url,
+};
 use std::collections::BTreeSet;
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-
-/// Maximum accepted LSP message body (bounds per-frame allocation).
-const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
-
-/// Read one `\n`-terminated header line; `None` on EOF with nothing read.
-fn read_line(input: &mut impl Read) -> Option<String> {
-    let mut line = Vec::new();
-    let mut byte = [0_u8; 1];
-    loop {
-        match input.read(&mut byte) {
-            Ok(0) => break,
-            Ok(_) => {
-                line.push(byte[0]);
-                if byte[0] == b'\n' {
-                    break;
-                }
-            }
-            Err(_) => return None,
-        }
-    }
-    if line.is_empty() {
-        None
-    } else {
-        Some(String::from_utf8_lossy(&line).into_owned())
-    }
-}
-
-/// Read one LSP frame body, or `None` when the stream ends (cleanly or
-/// mid-frame — either way the session is over).
-fn read_frame(input: &mut impl Read) -> Option<Vec<u8>> {
-    let mut content_length: Option<usize> = None;
-    loop {
-        let header = read_line(input)?;
-        let header = header.trim_end_matches(['\n', '\r']);
-        if header.is_empty() {
-            break;
-        }
-        if let Some(value) = header.strip_prefix("Content-Length:") {
-            content_length = value.trim().parse().ok();
-        }
-        // Other headers (Content-Type, …) are legal and irrelevant here.
-    }
-    let content_length = content_length?;
-    if content_length > MAX_FRAME_BYTES {
-        return None;
-    }
-    let mut body = vec![0_u8; content_length];
-    input.read_exact(&mut body).ok()?;
-    Some(body)
-}
-
-/// Write one LSP frame.
-fn write_frame(output: &mut impl Write, body: &str) -> std::io::Result<()> {
-    write!(output, "Content-Length: {}\r\n\r\n", body.len())?;
-    output.write_all(body.as_bytes())?;
-    output.flush()
-}
 
 /// The server session: project root + the two check-aligned knobs + the
 /// URIs the editor currently holds open (each receives the panel).
@@ -98,7 +54,7 @@ struct Server {
     root: PathBuf,
     env: Option<String>,
     level: String,
-    open_documents: BTreeSet<String>,
+    open_documents: BTreeSet<Url>,
 }
 
 impl Server {
@@ -107,7 +63,7 @@ impl Server {
     /// registry reference) becomes one error diagnostic instead of
     /// silence — a broken project must be visible in the editor.
     fn publish_all(&self, output: &mut impl Write) {
-        let diagnostics: Vec<Value> = match crate::validate_project(
+        let diagnostics: Vec<LspDiagnostic> = match crate::validate_project(
             &self.root,
             &self.level,
             self.env.as_deref(),
@@ -119,40 +75,41 @@ impl Server {
                 .iter()
                 .map(lsp_diagnostic)
                 .collect::<Vec<_>>(),
-            Err(load_error) => vec![json!({
-                "range": zero_range(),
-                "severity": 1,
-                "source": "cage",
-                "message": load_error,
-            })],
+            Err(load_error) => vec![LspDiagnostic {
+                range: zero_range(),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some(String::from("cage")),
+                message: load_error,
+                ..LspDiagnostic::default()
+            }],
         };
         for uri in &self.open_documents {
-            let _ = write_frame(
-                output,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "method": "textDocument/publishDiagnostics",
-                    "params": { "uri": uri, "diagnostics": diagnostics },
-                })
-                .to_string(),
+            let notification = Notification::new(
+                String::from("textDocument/publishDiagnostics"),
+                PublishDiagnosticsParams {
+                    uri: uri.clone(),
+                    diagnostics: diagnostics.clone(),
+                    version: None,
+                },
             );
+            let _ = Message::from(notification).write(output);
         }
     }
 }
 
 /// The zero-width file-level range every cage diagnostic is anchored to.
-fn zero_range() -> Value {
-    json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } })
+fn zero_range() -> Range {
+    Range::new(Position::new(0, 0), Position::new(0, 0))
 }
 
 /// Map one cage diagnostic onto the LSP shape: severity 1/2/3 = error /
 /// warning / info, zero-width range, the E code + real location + hint
 /// all in the message (the editor sidebar reads like `cage check` output).
-fn lsp_diagnostic(diag: &Diagnostic) -> Value {
+fn lsp_diagnostic(diag: &Diagnostic) -> LspDiagnostic {
     let severity = match diag.severity {
-        Severity::Error => 1,
-        Severity::Warning => 2,
-        Severity::Info => 3,
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+        Severity::Info => DiagnosticSeverity::INFORMATION,
     };
     let mut message = format!("{}: {}", diag.code, diag.message);
     if let Some(location) = &diag.location {
@@ -169,161 +126,164 @@ fn lsp_diagnostic(diag: &Diagnostic) -> Value {
         use std::fmt::Write as _;
         let _ = write!(message, " [hint: {hint}]");
     }
-    json!({
-        "range": zero_range(),
-        "severity": severity,
-        "code": diag.code,
-        "source": "cage",
-        "message": message,
-    })
+    LspDiagnostic {
+        range: zero_range(),
+        severity: Some(severity),
+        code: Some(NumberOrString::String(diag.code.clone())),
+        source: Some(String::from("cage")),
+        message,
+        ..LspDiagnostic::default()
+    }
 }
 
-/// Answer a request with `result` (the id is echoed verbatim — number,
-/// string, whatever the client chose).
-fn reply(output: &mut impl Write, id: Option<&Value>, result: &Value) {
-    let _ = write_frame(
-        output,
-        &json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string(),
-    );
+/// Send one response frame.
+fn send_response(output: &mut impl Write, response: Response) {
+    let _ = Message::from(response).write(output);
 }
 
-/// Answer a request with a JSON-RPC error object. `None` id serializes as
-/// null — the parse-error reply's shape (the request was unreadable).
-fn reply_error(output: &mut impl Write, id: Option<&Value>, code: i64, message: &str) {
-    let _ = write_frame(
-        output,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": { "code": code, "message": message },
-        })
-        .to_string(),
-    );
+/// Read a URI out of a notification's params and parse it. Params stay
+/// loosely read on purpose: the pinned contract accepts documents opened
+/// without the full typed item (no `languageId`/`version`/`text`), which
+/// the strict typed params would reject. Unparseable params or URIs drop
+/// the notification.
+fn parse_uri(params: &serde_json::Value, pointer: &str) -> Option<Url> {
+    params
+        .pointer(pointer)
+        .and_then(|value| value.as_str())
+        .and_then(|uri| Url::parse(uri).ok())
 }
 
 /// `cage lsp <root>`: serve the diagnostics subset over stdio until the
 /// client sends `exit` or closes the stream. Exit code: 0 after a proper
-/// `shutdown` → `exit` handshake or on EOF, 1 on a bare `exit` (the LSP
-/// spec's "client misbehaved" signal).
-pub(crate) fn run_lsp(root: &Path, mut input: impl Read, mut output: impl Write) -> i32 {
+/// `shutdown` → `exit` handshake, on EOF, or when the reader gives up on
+/// an unreadable frame; 1 on a bare `exit` (the LSP spec's "client
+/// misbehaved" signal).
+pub(crate) fn run_lsp(root: &Path, input: impl Read, mut output: impl Write) -> i32 {
     let mut server = Server {
         root: root.to_path_buf(),
         env: None,
         level: String::from("semantic"),
         open_documents: BTreeSet::new(),
     };
+    let mut reader = BufReader::new(input);
     let mut shutdown = false;
-    while let Some(body) = read_frame(&mut input) {
-        let message: Value = match serde_json::from_slice(&body) {
-            Ok(value) => value,
-            Err(e) => {
-                reply_error(&mut output, None, -32700, &format!("parse error: {e}"));
-                continue;
-            }
+    loop {
+        // EOF is the ordinary session end; an unreadable frame (bad
+        // header, bad body) also ends it — the library reader cannot
+        // resync, so neither can the session (adopted semantics).
+        let Ok(Some(message)) = Message::read(&mut reader) else {
+            return 0;
         };
-        let method = message.get("method").and_then(Value::as_str);
-        let id = message.get("id");
-        match (method, id.is_some()) {
-            (Some("initialize"), true) => {
-                // The two check-aligned knobs ride initializationOptions;
-                // anything else there is ignored (forward compatible).
-                if let Some(options) = message.pointer("/params/initializationOptions") {
-                    if let Some(env) = options.get("env").and_then(Value::as_str) {
-                        server.env = Some(env.to_string());
+        match message {
+            Message::Request(request) => match request.method.as_str() {
+                "initialize" => {
+                    // The two check-aligned knobs ride `initializationOptions`;
+                    // anything else there is ignored (forward compatible).
+                    // The params stay loosely read (see `parse_uri`): the
+                    // pinned contract accepts initialize requests without a
+                    // capabilities object, which the typed `InitializeParams`
+                    // (strict `capabilities` field) would reject.
+                    if let Some(options) = request.params.pointer("/initializationOptions") {
+                        if let Some(env) = options.get("env").and_then(|v| v.as_str()) {
+                            server.env = Some(env.to_string());
+                        }
+                        if let Some(level) = options.get("level").and_then(|v| v.as_str()) {
+                            server.level = level.to_string();
+                        }
                     }
-                    if let Some(level) = options.get("level").and_then(Value::as_str) {
-                        server.level = level.to_string();
-                    }
-                }
-                reply(
-                    &mut output,
-                    id,
-                    &json!({
-                        "capabilities": {
-                            "textDocumentSync": { "openClose": true, "change": 1 },
+                    let result = InitializeResult {
+                        capabilities: ServerCapabilities {
+                            text_document_sync: Some(TextDocumentSyncCapability::Options(
+                                TextDocumentSyncOptions {
+                                    open_close: Some(true),
+                                    change: Some(TextDocumentSyncKind::FULL),
+                                    ..TextDocumentSyncOptions::default()
+                                },
+                            )),
+                            ..ServerCapabilities::default()
                         },
-                        "serverInfo": {
-                            "name": "cage-lsp",
-                            "version": env!("CARGO_PKG_VERSION"),
-                        },
-                    }),
-                );
-            }
-            (Some("shutdown"), true) => {
-                shutdown = true;
-                reply(&mut output, id, &Value::Null);
-            }
-            (Some("exit"), _) => {
-                return i32::from(!shutdown);
-            }
-            (Some("textDocument/didOpen"), false) => {
-                if let Some(uri) = message
-                    .pointer("/params/textDocument/uri")
-                    .and_then(Value::as_str)
-                {
-                    server.open_documents.insert(uri.to_string());
-                    server.publish_all(&mut output);
+                        server_info: Some(ServerInfo {
+                            name: String::from("cage-lsp"),
+                            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                        }),
+                    };
+                    send_response(&mut output, Response::new_ok(request.id, result));
                 }
-            }
-            (Some("textDocument/didChange"), false) => {
-                // Full revalidation from disk on every change (the ruling's
-                // no-incremental boundary); the buffer text is not consumed —
-                // the editor's saved state is what gets diagnosed.
-                server.publish_all(&mut output);
-            }
-            (Some("textDocument/didClose"), false) => {
-                if let Some(uri) = message
-                    .pointer("/params/textDocument/uri")
-                    .and_then(Value::as_str)
-                {
-                    server.open_documents.remove(uri);
-                    // Clear the closed document's panel; other documents
-                    // keep theirs.
-                    let _ = write_frame(
+                "shutdown" => {
+                    shutdown = true;
+                    send_response(&mut output, Response::new_ok(request.id, ()));
+                }
+                unknown => {
+                    send_response(
                         &mut output,
-                        &json!({
-                            "jsonrpc": "2.0",
-                            "method": "textDocument/publishDiagnostics",
-                            "params": { "uri": uri, "diagnostics": [] },
-                        })
-                        .to_string(),
+                        Response::new_err(
+                            request.id,
+                            ErrorCode::MethodNotFound as i32,
+                            format!("method not found: {unknown}"),
+                        ),
                     );
                 }
-            }
-            (Some(unknown), true) => {
-                reply_error(
-                    &mut output,
-                    id,
-                    -32601,
-                    &format!("method not found: {unknown}"),
-                );
-            }
-            (Some(_), false) | (None, _) => {
+            },
+            Message::Notification(notification) => match notification.method.as_str() {
+                "exit" => return i32::from(!shutdown),
+                "textDocument/didOpen" => {
+                    if let Some(uri) = parse_uri(&notification.params, "/textDocument/uri") {
+                        server.open_documents.insert(uri);
+                        server.publish_all(&mut output);
+                    }
+                }
+                // Full revalidation from disk on every change (the ruling's
+                // no-incremental boundary); the buffer is not consumed —
+                // the editor's saved state is what gets diagnosed.
+                "textDocument/didChange" => server.publish_all(&mut output),
+                "textDocument/didClose" => {
+                    if let Some(uri) = parse_uri(&notification.params, "/textDocument/uri") {
+                        server.open_documents.remove(&uri);
+                        // Clear the closed document's panel; other documents
+                        // keep theirs.
+                        let notification = Notification::new(
+                            String::from("textDocument/publishDiagnostics"),
+                            PublishDiagnosticsParams {
+                                uri,
+                                diagnostics: Vec::new(),
+                                version: None,
+                            },
+                        );
+                        let _ = Message::from(notification).write(&mut output);
+                    }
+                }
                 // Unknown notifications and client responses need no action.
-            }
+                _ => {}
+            },
+            // Responses to server-initiated requests; the server never
+            // sends one, so a stray response is ignored.
+            Message::Response(_) => {}
         }
     }
-    0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lsp_server::Request;
+    use serde_json::Value;
     use std::io::Cursor;
 
-    /// Wrap a JSON body into an LSP frame.
+    /// Encode one client message through the library's writer — the same
+    /// framing the real stdin side speaks.
     fn frame(body: &str) -> Vec<u8> {
-        let mut bytes = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
-        bytes.extend_from_slice(body.as_bytes());
+        let message: Message = serde_json::from_str(body).expect("test message parses");
+        let mut bytes = Vec::new();
+        message.write(&mut bytes).expect("frame writes");
         bytes
     }
 
-    /// Collect every JSON-RPC message the server wrote.
+    /// Decode every server frame back into JSON for the assertions.
     fn messages(output: &[u8]) -> Vec<Value> {
         let mut cursor = Cursor::new(output.to_vec());
         let mut out = Vec::new();
-        while let Some(body) = read_frame(&mut cursor) {
-            out.push(serde_json::from_slice(&body).expect("server wrote valid json"));
+        while let Ok(Some(message)) = Message::read(&mut cursor) {
+            out.push(serde_json::to_value(&message).expect("server frames are serializable"));
         }
         out
     }
@@ -371,34 +331,42 @@ mod tests {
     }
 
     #[test]
-    fn frames_round_trip_and_tolerate_extra_headers() {
-        // A well-formed frame with a legal extra header decodes intact.
+    fn library_frames_round_trip_and_tolerate_extra_headers() {
+        // A well-formed frame carrying a legal extra header decodes intact.
         let mut wire = b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n".to_vec();
-        wire.extend_from_slice(frame("{\"a\":1}").as_slice());
-        let mut cursor = Cursor::new(wire);
-        assert_eq!(
-            read_frame(&mut cursor),
-            Some(b"{\"a\":1}".to_vec()),
-            "body survives an extra header"
-        );
-        // No Content-Length → no body length → no frame.
-        let mut cursor = Cursor::new(b"Content-Type: text/plain\r\n\r\n{}".to_vec());
-        assert_eq!(read_frame(&mut cursor), None, "missing length is no frame");
+        wire.extend_from_slice(frame(r#"{"jsonrpc":"2.0","method":"initialized"}"#).as_slice());
+        let decoded = Message::read(&mut Cursor::new(wire))
+            .expect("frame reads")
+            .expect("one frame");
+        match decoded {
+            Message::Notification(notification) => {
+                assert_eq!(notification.method, "initialized", "body survives");
+            }
+            other => panic!("expected a notification, got {other:?}"),
+        }
+        // No length header at all → the library rejects the frame.
+        let mut raw = Cursor::new(b"Content-Type: text/plain\r\n\r\n{}".to_vec());
+        assert!(Message::read(&mut raw).is_err(), "missing length is a read error");
         // Clean EOF between frames is the ordinary session end.
-        let mut cursor = Cursor::new(Vec::new());
-        assert_eq!(read_frame(&mut cursor), None, "empty stream is no frame");
-        // A written frame reads back byte-identically (write/read symmetry).
+        let mut empty = Cursor::new(Vec::new());
+        assert!(
+            matches!(Message::read(&mut empty), Ok(None)),
+            "empty stream ends cleanly"
+        );
+        // A written frame reads back identically (write/read symmetry).
+        let sent = Message::Request(Request {
+            id: 7.into(),
+            method: String::from("initialize"),
+            params: serde_json::json!({ "a": 1 }),
+        });
         let mut buffer = Vec::new();
-        write_frame(&mut buffer, "{\"b\":2}").unwrap();
-        let mut cursor = Cursor::new(buffer);
-        assert_eq!(read_frame(&mut cursor), Some(b"{\"b\":2}".to_vec()));
-    }
-
-    #[test]
-    fn framing_rejects_content_length_over_limit() {
-        let input = format!("Content-Length: {}\r\n\r\n", MAX_FRAME_BYTES + 1);
-        let mut cursor = Cursor::new(input.into_bytes());
-        assert_eq!(read_frame(&mut cursor), None);
+        sent.write(&mut buffer).unwrap();
+        let read_back = Message::read(&mut Cursor::new(buffer)).unwrap().expect("one frame");
+        assert_eq!(
+            serde_json::to_value(&sent).unwrap(),
+            serde_json::to_value(&read_back).unwrap(),
+            "a written frame reads back identically"
+        );
     }
 
     #[test]
@@ -583,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_requests_get_32601_garbage_gets_32700_notifications_stay_quiet() {
+    fn unknown_requests_get_32601_and_notifications_stay_quiet() {
         let tmp = tempfile::tempdir().unwrap();
         write_project(tmp.path(), false);
         // Unknown REQUEST → -32601 with the id echoed.
@@ -597,11 +565,6 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["id"], "abc");
         assert_eq!(msgs[0]["error"]["code"], -32601);
-        // Unparseable body → -32700 with a null id.
-        let (_, msgs) = session(tmp.path(), &[frame("{not json")]);
-        assert_eq!(msgs.len(), 1);
-        assert!(msgs[0]["id"].is_null());
-        assert_eq!(msgs[0]["error"]["code"], -32700);
         // Unknown NOTIFICATION (no id) → no reply at all.
         let (_, msgs) = session(
             tmp.path(),
