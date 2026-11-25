@@ -346,7 +346,10 @@ mod tests {
         }
         // No length header at all → the library rejects the frame.
         let mut raw = Cursor::new(b"Content-Type: text/plain\r\n\r\n{}".to_vec());
-        assert!(Message::read(&mut raw).is_err(), "missing length is a read error");
+        assert!(
+            Message::read(&mut raw).is_err(),
+            "missing length is a read error"
+        );
         // Clean EOF between frames is the ordinary session end.
         let mut empty = Cursor::new(Vec::new());
         assert!(
@@ -361,7 +364,9 @@ mod tests {
         });
         let mut buffer = Vec::new();
         sent.write(&mut buffer).unwrap();
-        let read_back = Message::read(&mut Cursor::new(buffer)).unwrap().expect("one frame");
+        let read_back = Message::read(&mut Cursor::new(buffer))
+            .unwrap()
+            .expect("one frame");
         assert_eq!(
             serde_json::to_value(&sent).unwrap(),
             serde_json::to_value(&read_back).unwrap(),
