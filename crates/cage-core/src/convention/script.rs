@@ -4,7 +4,7 @@ use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::error::codes::source_convention::{E2202, E2203, E2204, E2205, E2206, E2207};
 use indexmap::IndexMap;
 use serde_json::Value as JsonValue;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -126,20 +126,43 @@ pub fn run_script(
     request: &JsonValue,
 ) -> Result<JsonValue, Diagnostics> {
     let script = resolve_script(root, rel)?;
-    let mut child = std::process::Command::new(&script)
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            let mut diags = Diagnostics::new();
-            diags.add(Diagnostic::error(
-                E2203,
-                format!("failed to start script {}: {e}", script.display()),
-            ));
-            diags
-        })?;
+    let spawn = || {
+        std::process::Command::new(&script)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    };
+    // ETXTBSY can win the first spawn right after a chmod on a shared /tmp:
+    // another thread still holds the script for writing. A short bounded
+    // retry turns that transient into a clean start.
+    let mut child = None;
+    let mut spawn_err = None;
+    for _ in 0..5 {
+        match spawn() {
+            Ok(c) => {
+                child = Some(c);
+                break;
+            }
+            Err(e) if e.kind() == ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                spawn_err = Some(e);
+                break;
+            }
+        }
+    }
+    let Some(mut child) = child else {
+        let e = spawn_err.expect("spawn retries exhausted without an error");
+        let mut diags = Diagnostics::new();
+        diags.add(Diagnostic::error(
+            E2203,
+            format!("failed to start script {}: {e}", script.display()),
+        ));
+        return Err(diags);
+    };
 
     // The request goes out before we wait: a script that exits early gets a
     // broken pipe, reported as E2205 (it chose to stop reading).
