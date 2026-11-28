@@ -201,6 +201,18 @@ pub struct MapField {
 /// shape and keeps the recursive walks safely bounded.
 pub const MAX_FIELD_TYPE_DEPTH: usize = 64;
 
+/// Hard cap on `serde_json::Value` nesting accepted by
+/// [`FieldType::from_json_value`]. A legal type at [`MAX_FIELD_TYPE_DEPTH`]
+/// costs at most a handful of JSON wrapper levels per `FieldType` level
+/// (worst case 4 for `TaggedUnion`), so any legal wire stays under ~257
+/// levels — the same budget [`crate::schema::field_type_serde`] already
+/// relies on for its content buffer. Deeper values are refused up front
+/// because `serde_json`'s consumption of an owned `Value` (deserialization
+/// recursion plus the recursive `Drop` of the consumed tree, upstream
+/// serde-rs/json#440) follows the input's depth and overflows the stack on
+/// adversarial input.
+pub const MAX_JSON_VALUE_DEPTH: usize = MAX_FIELD_TYPE_DEPTH * 8;
+
 /// Key kinds accepted by [`MapField::key_type`] (wire format: `string` | `int`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1000,4 +1012,70 @@ pub(crate) fn field_type_depth(t: &FieldType) -> Option<DepthMeasure> {
         }
     }
     walk(t, 0)
+}
+
+impl FieldType {
+    /// Consumes an owned `serde_json::Value` into a [`FieldType`], refusing
+    /// adversarially deep input without ever recursing over it.
+    ///
+    /// `serde_json::from_value` is not safe to point at an untrusted owned
+    /// `Value`: its deserialization recursion and the recursive `Drop` of the
+    /// consumed tree both follow the input's depth (upstream serde-rs/json#440),
+    /// so deeply nested input overflows the stack before any `FieldType` depth
+    /// rule gets a say — in debug builds the residual recursive `Drop` becomes
+    /// lethal a few thousand layers in, in release builds around 10^5 layers
+    /// (measured on 2 MiB stacks; see `tests/field_type_depth.rs`). This entry
+    /// point measures the value's depth with an explicit worklist first: input
+    /// past [`MAX_JSON_VALUE_DEPTH`] is dismantled iteratively (the same
+    /// pattern `FieldType`'s own `Drop` uses) and refused, and shallower input
+    /// is delegated to the bounded `Deserialize`, which enforces the
+    /// [`MAX_FIELD_TYPE_DEPTH`] type rule as usual.
+    pub fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        use serde::de::Error as _;
+        if json_value_depth(&value) > MAX_JSON_VALUE_DEPTH {
+            // Dismantle the spine before any recursive `Drop` can run.
+            drain_json_value_iteratively(value);
+            return Err(serde_json::Error::custom(format!(
+                "schema value exceeds the maximum nesting depth limit of {MAX_JSON_VALUE_DEPTH}"
+            )));
+        }
+        serde_json::from_value(value)
+    }
+}
+
+/// Iteratively measures the nesting depth of a `serde_json::Value` (root
+/// counts as 1) with an explicit worklist, so the walk itself never follows
+/// the input's depth on the call stack.
+fn json_value_depth(value: &serde_json::Value) -> usize {
+    let mut max = 1usize;
+    let mut pending: Vec<(&serde_json::Value, usize)> = vec![(value, 1)];
+    while let Some((node, depth)) = pending.pop() {
+        if depth > max {
+            max = depth;
+        }
+        match node {
+            serde_json::Value::Array(items) => {
+                pending.extend(items.iter().map(|item| (item, depth + 1)));
+            }
+            serde_json::Value::Object(map) => {
+                pending.extend(map.values().map(|child| (child, depth + 1)));
+            }
+            _ => {}
+        }
+    }
+    max
+}
+
+/// Drops a `serde_json::Value` without recursing, so an adversarially deep
+/// owned value is reclaimed through an explicit worklist instead of the
+/// recursive derived `Drop` that `serde_json` generates for its `Value`.
+fn drain_json_value_iteratively(value: serde_json::Value) {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Array(items) => pending.extend(items),
+            serde_json::Value::Object(map) => pending.extend(map.into_values()),
+            _ => {}
+        }
+    }
 }

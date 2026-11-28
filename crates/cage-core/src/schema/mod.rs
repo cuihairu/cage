@@ -568,4 +568,6 @@ mod field_type_serde;
 mod tests;
 
 pub(crate) use field_type::field_type_depth;
-pub use field_type::{FieldType, MapField, MapKeyType, TaggedUnion, MAX_FIELD_TYPE_DEPTH};
+pub use field_type::{
+    FieldType, MapField, MapKeyType, TaggedUnion, MAX_FIELD_TYPE_DEPTH, MAX_JSON_VALUE_DEPTH,
+};

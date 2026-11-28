@@ -1,4 +1,4 @@
-use cage_core::schema::{FieldType, MAX_FIELD_TYPE_DEPTH};
+use cage_core::schema::{FieldType, MAX_FIELD_TYPE_DEPTH, MAX_JSON_VALUE_DEPTH};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -319,4 +319,75 @@ fn non_unit_variant_without_value_is_refused() {
     let err = serde_json::from_str::<FieldType>(r#"{"kind":"Enum"}"#)
         .expect_err("non-unit variant must demand a value");
     assert!(err.to_string().contains("missing field `value`"), "{err}");
+}
+
+/// `serde_json::from_value` on an owned adversarially deep `Value` overflows
+/// the stack in debug builds through the consumed tree's recursive `Drop`
+/// (measured lethal between 4,000 and 8,000 layers on a 2 MiB thread; the
+/// release-mode threshold is around 10^5 layers) — upstream serde-rs/json#440.
+/// `FieldType::from_json_value` measures the input with an explicit worklist,
+/// dismantles anything past the value cap iteratively, and never recurses.
+#[test]
+fn owned_json_value_way_over_value_cap_is_drained_and_refused() {
+    let err =
+        FieldType::from_json_value(build(10_000)).expect_err("owned deep value must be refused");
+    assert!(
+        err.to_string()
+            .contains(&format!("nesting depth limit of {MAX_JSON_VALUE_DEPTH}")),
+        "{err}"
+    );
+}
+
+#[test]
+fn owned_value_first_json_value_way_over_cap_is_drained_and_refused() {
+    let err = FieldType::from_json_value(build_value_first(10_000))
+        .expect_err("owned deep value-first value must be refused");
+    assert!(
+        err.to_string()
+            .contains(&format!("nesting depth limit of {MAX_JSON_VALUE_DEPTH}")),
+        "{err}"
+    );
+}
+
+/// Input within the value cap but past the type cap is delegated to the
+/// bounded `Deserialize`, which reports the type rule as usual. (An
+/// array-chain wire costs one JSON level per FieldType level, so depth 300
+/// is 301 JSON levels: past the 64 type cap, within the 512 value cap.)
+#[test]
+fn owned_json_value_between_caps_is_refused_by_the_type_rule() {
+    let err = FieldType::from_json_value(build(300))
+        .expect_err("over-cap type within the value cap must be refused");
+    assert!(
+        err.to_string()
+            .contains(&format!("nesting depth limit of {MAX_FIELD_TYPE_DEPTH}")),
+        "{err}"
+    );
+}
+
+/// A legal type at the cap parses identically through the owned entry point
+/// and plain `from_value`, and round-trips through the wire.
+#[test]
+fn from_json_value_at_type_cap_matches_from_value() {
+    let owned =
+        FieldType::from_json_value(build(MAX_FIELD_TYPE_DEPTH)).expect("at-cap owned value parses");
+    let plain: FieldType = serde_json::from_value(build(MAX_FIELD_TYPE_DEPTH))
+        .expect("at-cap plain from_value parses");
+    assert_eq!(owned, plain);
+    let owned_value_first = FieldType::from_json_value(build_value_first(MAX_FIELD_TYPE_DEPTH))
+        .expect("at-cap owned value-first value parses");
+    assert_eq!(owned_value_first, owned);
+    let wire = serde_json::to_string(&owned).expect("at-cap type serializes");
+    let back: FieldType = serde_json::from_str(&wire).expect("at-cap wire re-parses");
+    assert_eq!(back, owned);
+}
+
+/// Non-type scalars keep the derive's refusal semantics on the owned path.
+#[test]
+fn from_json_value_keeps_derive_refusal_for_non_types() {
+    let err = FieldType::from_json_value(serde_json::json!(42))
+        .expect_err("a bare number is not a field type");
+    assert!(err.to_string().contains("invalid type"), "{err}");
+    let err = FieldType::from_json_value(serde_json::json!({"kind": "Bogus"}))
+        .expect_err("an unknown variant must be refused");
+    assert!(err.to_string().contains("unknown variant"), "{err}");
 }
